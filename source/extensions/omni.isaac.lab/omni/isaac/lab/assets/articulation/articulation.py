@@ -172,7 +172,7 @@ class Articulation(AssetBase):
         # reset external wrench
         self._external_force_b[env_ids] = 0.0
         self._external_torque_b[env_ids] = 0.0
-        self._wrench_positions_b[env_ids] = 0.0
+        self._external_wrench_positions_b[env_ids] = 0.0
 
     def write_data_to_sim(self):
         """Write external wrenches and joint commands to the simulation.
@@ -820,7 +820,7 @@ class Articulation(AssetBase):
                 self._external_wrench_positions_b.flatten(0, 1)[indices] = positions.flatten(0, 1)
             else:
                 # If the positions are not provided, and the flag is set, then we need to ensure that the positions are zeroed.
-                if self.uses_external_wrench_positions == True:
+                if self.uses_external_wrench_positions:
                     self._external_wrench_positions_b.flatten(0, 1)[indices].fill_(0.0)
         else:
             self.has_external_wrench = False

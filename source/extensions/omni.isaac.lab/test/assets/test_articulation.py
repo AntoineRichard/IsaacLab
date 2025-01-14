@@ -616,8 +616,12 @@ class TestArticulation(unittest.TestCase):
         for num_articulations in (1, 2):
             for device in ("cuda:0", "cpu"):
                 for use_wrench_positions in (True, False):
-                    with self.subTest(num_articulations=num_articulations, device=device, use_wrench_positions=use_wrench_positions):
-                        with build_simulation_context(device=device, add_ground_plane=False, auto_add_lighting=True) as sim:
+                    with self.subTest(
+                        num_articulations=num_articulations, device=device, use_wrench_positions=use_wrench_positions
+                    ):
+                        with build_simulation_context(
+                            device=device, add_ground_plane=False, auto_add_lighting=True
+                        ) as sim:
                             articulation_cfg = generate_articulation_cfg(articulation_type="anymal")
                             articulation, _ = generate_articulation(articulation_cfg, num_articulations, device)
                             # Play the simulator
@@ -626,7 +630,9 @@ class TestArticulation(unittest.TestCase):
                             # Find bodies to apply the force
                             body_ids, _ = articulation.find_bodies("base")
                             # Sample a large force
-                            external_wrench_b = torch.zeros(articulation.num_instances, len(body_ids), 6, device=sim.device)
+                            external_wrench_b = torch.zeros(
+                                articulation.num_instances, len(body_ids), 6, device=sim.device
+                            )
                             external_wrench_b[..., 1] = 1000.0
 
                             # If we use wrench positions, we need to set the positions of the wrenches
@@ -665,7 +671,16 @@ class TestArticulation(unittest.TestCase):
                                 if use_wrench_positions:
                                     if num_articulations == 1:
                                         articulation.set_external_force_and_torque(
-                                            external_wrench_b[..., :3], external_wrench_b[..., 3:], positions=external_wrench_positions_b_2, body_ids=body_ids
+                                            external_wrench_b[..., :3],
+                                            external_wrench_b[..., 3:],
+                                            positions=external_wrench_positions_b_0,
+                                            body_ids=body_ids,
+                                        )
+                                        self.assertTrue(
+                                            torch.equal(
+                                                articulation._external_wrench_positions_b[:, body_ids],
+                                                external_wrench_positions_b_0,
+                                            )
                                         )
                                     else:
                                         k = it % 4
@@ -673,49 +688,99 @@ class TestArticulation(unittest.TestCase):
                                             case 0:
                                                 # Applied in one step
                                                 articulation.set_external_force_and_torque(
-                                                    external_wrench_b[..., :3], external_wrench_b[..., 3:], positions=external_wrench_positions_b_0, body_ids=[0]
+                                                    external_wrench_b[..., :3],
+                                                    external_wrench_b[..., 3:],
+                                                    positions=external_wrench_positions_b_2,
+                                                    body_ids=body_ids,
                                                 )
-                                                torch.testing.assert_equal(articulation._external_wrench_positions_b, external_wrench_positions_b_2)
+                                                self.assertTrue(
+                                                    torch.equal(
+                                                        articulation._external_wrench_positions_b[:, body_ids],
+                                                        external_wrench_positions_b_2,
+                                                    )
+                                                )
                                             case 1:
                                                 # Applied in two steps
                                                 articulation.set_external_force_and_torque(
-                                                    external_wrench_b[0, 0, :3], external_wrench_b[0, 0, 3:], positions=external_wrench_positions_b_0, body_ids=[0]
+                                                    external_wrench_b[0, :, :3],
+                                                    external_wrench_b[0, :, 3:],
+                                                    positions=external_wrench_positions_b_0,
+                                                    body_ids=body_ids,
+                                                    env_ids=[0],
                                                 )
                                                 articulation.set_external_force_and_torque(
-                                                    external_wrench_b[1, 0, :3], external_wrench_b[1, 0, 3:], positions=external_wrench_positions_b_1, body_ids=[1]
+                                                    external_wrench_b[1, :, :3],
+                                                    external_wrench_b[1, :, 3:],
+                                                    positions=external_wrench_positions_b_1,
+                                                    body_ids=body_ids,
+                                                    env_ids=[1],
                                                 )
-                                                torch.testing.assert_equal(articulation._external_wrench_positions_b, external_wrench_positions_b_2)
+                                                self.assertTrue(
+                                                    torch.equal(
+                                                        articulation._external_wrench_positions_b[:, body_ids],
+                                                        external_wrench_positions_b_2,
+                                                    )
+                                                )
                                             case 2:
                                                 # First call does not provide wrench positions
                                                 articulation.set_external_force_and_torque(
-                                                    external_wrench_b[0, 0, :3], external_wrench_b[0, 0, 3:], body_ids=[0]
+                                                    external_wrench_b[0, :, :3],
+                                                    external_wrench_b[0, :, 3:],
+                                                    body_ids=body_ids,
+                                                    env_ids=[0],
                                                 )
                                                 articulation.set_external_force_and_torque(
-                                                    external_wrench_b[0, 1, :3], external_wrench_b[0 , 1, 3:], positions=external_wrench_positions_b_2, body_ids=[1]
+                                                    external_wrench_b[1, :, :3],
+                                                    external_wrench_b[1, :, 3:],
+                                                    positions=external_wrench_positions_b_1,
+                                                    body_ids=body_ids,
+                                                    env_ids=[1],
                                                 )
-                                                torch.testing.assert_equal(articulation._external_wrench_positions_b, external_wrench_positions_b_3)
+                                                self.assertTrue(
+                                                    torch.equal(
+                                                        articulation._external_wrench_positions_b[:, body_ids],
+                                                        external_wrench_positions_b_3,
+                                                    )
+                                                )
                                             case 3:
                                                 # Second call does not provide wrench positions
                                                 articulation.set_external_force_and_torque(
-                                                    external_wrench_b[0, 0, :3], external_wrench_b[0, 0, 3:], positions=external_wrench_positions_b_1, body_ids=[0]
+                                                    external_wrench_b[0, :, :3],
+                                                    external_wrench_b[0, :, 3:],
+                                                    positions=external_wrench_positions_b_0,
+                                                    body_ids=body_ids,
+                                                    env_ids=[0],
                                                 )
                                                 articulation.set_external_force_and_torque(
-                                                    external_wrench_b[0, 1, :3], external_wrench_b[0, 1, 3:], body_ids=[1]
+                                                    external_wrench_b[1, :, :3],
+                                                    external_wrench_b[1, :, 3:],
+                                                    body_ids=body_ids,
+                                                    env_ids=[1],
                                                 )
-                                                torch.testing.assert_equal(articulation._external_wrench_positions_b, external_wrench_positions_b_4)
-                                        
+                                                self.assertTrue(
+                                                    torch.equal(
+                                                        articulation._external_wrench_positions_b[:, body_ids],
+                                                        external_wrench_positions_b_4,
+                                                    )
+                                                )
+
                                 else:
                                     articulation.set_external_force_and_torque(
                                         external_wrench_b[..., :3], external_wrench_b[..., 3:], body_ids=body_ids
                                     )
                                 # perform simulation
-                                for _ in range(100):
+                                for i in range(100):
                                     # apply action to the articulation
                                     articulation.set_joint_position_target(articulation.data.default_joint_pos.clone())
                                     articulation.write_data_to_sim()
-                                    if use_wrench_positions:
+                                    if use_wrench_positions and (i == 0):
                                         # check that the wrench positions are set to zero after application
-                                        torch.testing.assert_equal(articulation._external_wrench_positions_b, torch.zeros_like(articulation._external_wrench_positions_b))
+                                        self.assertTrue(
+                                            torch.equal(
+                                                articulation._external_wrench_positions_b,
+                                                torch.zeros_like(articulation._external_wrench_positions_b),
+                                            )
+                                        )
                                     # perform step
                                     sim.step()
                                     # update buffers
