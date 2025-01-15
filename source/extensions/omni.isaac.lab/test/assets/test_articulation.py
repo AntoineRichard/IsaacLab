@@ -1064,10 +1064,18 @@ class TestArticulation(unittest.TestCase):
                                     ext_wrench_p1 = torch.rand((1, num_bodies, 3), device=device)
                                     ext_wrench_p2 = torch.cat([ext_wrench_p0, ext_wrench_p1], axis=0)
                                     articulation.set_external_force_and_torque(
-                                        force[0].unsqueeze(0), torque[0].unsqueeze(0), positions=ext_wrench_p0, body_ids=body_ids, env_ids=[0]
+                                        force[0].unsqueeze(0),
+                                        torque[0].unsqueeze(0),
+                                        positions=ext_wrench_p0,
+                                        body_ids=body_ids,
+                                        env_ids=[0],
                                     )
                                     articulation.set_external_force_and_torque(
-                                        force[1].unsqueeze(0), torque[1].unsqueeze(0), positions=ext_wrench_p1, body_ids=body_ids, env_ids=[1]
+                                        force[1].unsqueeze(0),
+                                        torque[1].unsqueeze(0),
+                                        positions=ext_wrench_p1,
+                                        body_ids=body_ids,
+                                        env_ids=[1],
                                     )
                                     self.assertTrue(
                                         torch.equal(
@@ -1083,7 +1091,11 @@ class TestArticulation(unittest.TestCase):
                                         force[0].unsqueeze(0), torque[0].unsqueeze(0), body_ids=body_ids, env_ids=[0]
                                     )
                                     articulation.set_external_force_and_torque(
-                                        force[1].unsqueeze(0), torque[1].unsqueeze(0), positions=ext_wrench_p1, body_ids=body_ids, env_ids=[1]
+                                        force[1].unsqueeze(0),
+                                        torque[1].unsqueeze(0),
+                                        positions=ext_wrench_p1,
+                                        body_ids=body_ids,
+                                        env_ids=[1],
                                     )
                                     self.assertTrue(
                                         torch.equal(
@@ -1096,7 +1108,11 @@ class TestArticulation(unittest.TestCase):
                                     ext_wrench_p1 = torch.zeros((1, num_bodies, 3), device=device)
                                     ext_wrench_p2 = torch.cat([ext_wrench_p0, ext_wrench_p1], axis=0)
                                     articulation.set_external_force_and_torque(
-                                        force[0].unsqueeze(0), torque[0].unsqueeze(0), positions=ext_wrench_p0, body_ids=body_ids, env_ids=[0]
+                                        force[0].unsqueeze(0),
+                                        torque[0].unsqueeze(0),
+                                        positions=ext_wrench_p0,
+                                        body_ids=body_ids,
+                                        env_ids=[0],
                                     )
                                     articulation.set_external_force_and_torque(
                                         force[1].unsqueeze(0), torque[1].unsqueeze(0), body_ids=body_ids, env_ids=[1]
