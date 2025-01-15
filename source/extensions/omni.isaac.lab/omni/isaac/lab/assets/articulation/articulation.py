@@ -818,12 +818,12 @@ class Articulation(AssetBase):
 
             # If the positions are not provided, the behavior and performance of the simulation should not be affected.
             if positions is not None:
-                # Generates a flag that is set for the whole simulation step. This is done this way to avoid discarding
+                # Generates a flag that is set for a full simulation step. This is done to avoid discarding
                 # the external wrench positions when multiple calls to this functions are made with and without positions.
                 self.uses_external_wrench_positions = True
                 self._external_wrench_positions_b.flatten(0, 1)[indices] = positions.flatten(0, 1)
             else:
-                # If the positions are not provided, and the flag is set, then we need to ensure that the positions are zeroed.
+                # If the positions are not provided, and the flag is set, then we need to ensure that the desired positions are zeroed.
                 if self.uses_external_wrench_positions:
                     self._external_wrench_positions_b.flatten(0, 1)[indices].fill_(0.0)
         else:
