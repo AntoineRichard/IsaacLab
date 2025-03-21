@@ -859,8 +859,8 @@ class TestArticulation(unittest.TestCase):
                         # reset root state
                         root_state = articulation.data.default_root_state.clone()
 
-                        articulation.write_root_link_pose_to_sim(root_state[:, :7])
-                        articulation.write_root_com_velocity_to_sim(root_state[:, 7:])
+                        articulation.write_root_pose_to_sim(root_state[:, :7])
+                        articulation.write_root_velocity_to_sim(root_state[:, 7:])
                         # reset dof state
                         joint_pos, joint_vel = (
                             articulation.data.default_joint_pos,
@@ -1022,8 +1022,8 @@ class TestArticulation(unittest.TestCase):
                         # reset root state
                         root_state = articulation.data.default_root_state.clone()
 
-                        articulation.write_root_link_pose_to_sim(root_state[:, :7])
-                        articulation.write_root_com_velocity_to_sim(root_state[:, 7:])
+                        articulation.write_root_pose_to_sim(root_state[:, :7])
+                        articulation.write_root_velocity_to_sim(root_state[:, 7:])
                         # reset dof state
                         joint_pos, joint_vel = (
                             articulation.data.default_joint_pos,
@@ -1115,7 +1115,6 @@ class TestArticulation(unittest.TestCase):
                             sim.step()
                             # update buffers
                             articulation.update(sim.cfg.dt)
-
 
     def test_loading_gains_from_usd(self):
         """Test that gains are loaded from USD file if actuator model has them as None."""
