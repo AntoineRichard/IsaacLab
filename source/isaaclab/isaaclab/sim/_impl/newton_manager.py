@@ -10,9 +10,11 @@ import usdrt
 import warp as wp
 from isaacsim.core.utils.stage import get_current_stage
 from newton import Axis, Contacts, Control, Model, ModelBuilder, State, eval_fk
+import newton
 from newton.sensors import ContactSensor as NewtonContactSensor
 from newton.sensors import populate_contacts
 from newton.solvers import SolverBase, SolverFeatherstone, SolverMuJoCo, SolverXPBD
+from newton._src.utils.recorder import RecorderModelAndState
 
 from isaaclab.sim._impl.newton_manager_cfg import NewtonCfg
 from isaaclab.sim._impl.newton_viewer import NewtonViewerGL
@@ -135,6 +137,7 @@ class NewtonManager:
 
         This function finalizes the model and initializes the simulation state.
         """
+        return
 
         print(f"[INFO] Builder: {NewtonManager._builder}")
         if NewtonManager._builder is None:
@@ -196,29 +199,117 @@ class NewtonManager:
             simulation once to capture the graph. Hence, this function should only be called after everything else in
             the simulation is initialized.
         """
-        with Timer(name="newton_initialize_solver", msg="Initialize solver took:", enable=True, format="ms"):
-            NewtonManager._num_substeps = NewtonManager._cfg.num_substeps
-            NewtonManager._solver_dt = NewtonManager._dt / NewtonManager._num_substeps
-            NewtonManager._solver = NewtonManager._get_solver(NewtonManager._model, NewtonManager._cfg.solver_cfg)
+        # with Timer(name="newton_initialize_solver", msg="Initialize solver took:", enable=True, format="ms"):
+        #     NewtonManager._num_substeps = NewtonManager._cfg.num_substeps
+        #     NewtonManager._solver_dt = NewtonManager._dt / NewtonManager._num_substeps
+        #     NewtonManager._solver = NewtonManager._get_solver(NewtonManager._model, NewtonManager._cfg.solver_cfg)
 
-        import omni.usd
-        stage = omni.usd.get_context().get_stage()
-        # Save the flatten stage as USDA
-        stage.Export("flattened_stage.usda")
+        # import omni.usd
+        # stage = omni.usd.get_context().get_stage()
+        # # Save the flatten stage as USDA
+        # stage.Export("flattened_stage.usda")
 
-        # Ensure we are using a CUDA enabled device
+        # # Ensure we are using a CUDA enabled device
         assert NewtonManager._device.startswith("cuda"), "NewtonManager only supports CUDA enabled devices"
 
+        # recorder = RecorderModelAndState()
+        # recorder.record_model(NewtonManager._model)
+        # recorder.record(NewtonManager._state_0)
+        # recorder.save_to_file("/tmp/il-model.json")
+        # recorder.save_to_file("/tmp/il-model.bin")
+        # exit(0)
+
         # Capture the graph if CUDA is enabled
-        with Timer(name="newton_cuda_graph", msg="CUDA graph took:", enable=True, format="ms"):
-            if NewtonManager._cfg.use_cuda_graph:
-                with wp.ScopedCapture() as capture:
-                    NewtonManager.simulate()
-                NewtonManager._graph = capture.graph
-        print(NewtonManager._state_0)
-        for i in range(10):
-            NewtonManager.step()
+        # with Timer(name="newton_cuda_graph", msg="CUDA graph took:", enable=True, format="ms"):
+        #     if NewtonManager._cfg.use_cuda_graph:
+        #         with wp.ScopedCapture() as capture:
+        #             NewtonManager.simulate()
+        #         NewtonManager._graph = capture.graph
+        # print(NewtonManager._state_0)
+
+
+        g1 = newton.ModelBuilder()
+        g1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        g1.default_shape_cfg.ke = 5.0e4
+        g1.default_shape_cfg.kd = 5.0e2
+        g1.default_shape_cfg.kf = 1.0e3
+        g1.default_shape_cfg.mu = 0.75
+
+        #asset_path = newton.utils.download_asset("unitree_g1")
+
+        g1.add_usd(
+            "/home/chris/Downloads/flattened_stage.usda",
+            root_path="/World/envs/env_0",
+            #str(asset_path / "usd" / "g1_isaac.usd"),
+            xform=wp.transform(wp.vec3(0, 0, 0.8)),
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            hide_collision_shapes=False,
+            load_non_physics_prims=False,
+            joint_ordering="dfs",
+        )
+
+        for i in range(6, g1.joint_dof_count):
+            g1.joint_target_ke[i] = 100.0
+            g1.joint_target_kd[i] = 5.0
+
+        # approximate meshes for faster collision detection
+        g1.approximate_meshes("convex_hull")
+
+        builder = newton.ModelBuilder()
+        builder.replicate(g1, NewtonManager._num_envs, spacing=(3, 3, 0))
+        builder.add_ground_plane()
+
+        model = builder.finalize()
+        solver = newton.solvers.SolverMuJoCo(
+            model,
+            use_mujoco_cpu=False,
+            solver="newton",
+            integrator="implicit",
+            njmax=80,
+            ncon_per_env=20,
+            cone="pyramidal",
+            impratio=1,
+            iterations=100,
+            ls_iterations=20,
+        )
+
+        state_0 = model.state()
+        state_1 = model.state()
+
+        sim_substeps = 2
+        sim_dt = 1.0/100/sim_substeps
+        control = model.control()
+
+        def simulate(state_0, state_1):
+            for _ in range(sim_substeps):
+                state_0.clear_forces()
+                # apply forces to the model for picking, wind, etc
+                solver.step(state_0, state_1, control, None, sim_dt)
+                # swap states
+                state_0, state_1 = state_1, state_0
+
+
+        with wp.ScopedCapture() as capture:
+            simulate(state_0, state_1)
+
+        NewtonManager._model = model
+
+        for i in range(1000):
+            wp.capture_launch(capture.graph)
+            print(f"step {i} exciting state parts: {state_0.joint_q[3::50].numpy()}")
+            NewtonManager._state_0 = state_0
+            NewtonManager.render()
         exit(0)
+
+        # recorder = RecorderModelAndState()
+        # recorder.record_model(self.model)
+        # recorder.record(self.state_0)
+        # recorder.save_to_file("/tmp/newton-model.json")
+        # recorder.save_to_file("/tmp/newton-model.bin")
+        # print("Recorder newton model")
+        # exit(0)
+
 
     @classmethod
     def simulate(cls) -> None:
@@ -292,6 +383,7 @@ class NewtonManager:
 
         This function steps the simulation by the specified time step in the simulation configuration.
         """
+        print(f"dt={NewtonManager._solver_dt}")
         if NewtonManager._cfg.use_cuda_graph:
             wp.capture_launch(NewtonManager._graph)
         else:
@@ -333,7 +425,7 @@ class NewtonManager:
         if NewtonManager._renderer is None:
             NewtonManager._renderer = NewtonViewerGL(width=1280, height=720)
             NewtonManager._renderer.set_model(NewtonManager._model)
-            NewtonManager._renderer.camera.pos = wp.vec3(*NewtonManager._cfg.newton_viewer_camera_pos)
+            #NewtonManager._renderer.camera.pos = wp.vec3(*NewtonManager._cfg.newton_viewer_camera_pos)
             NewtonManager._renderer.up_axis = NewtonManager._up_axis
             NewtonManager._renderer.scaling = 1.0
             NewtonManager._renderer._paused = False

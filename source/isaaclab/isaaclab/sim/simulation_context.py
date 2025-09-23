@@ -562,8 +562,8 @@ class SimulationContext(_SimulationContext):
         if not soft:
             if not self.is_stopped():
                 self.stop()
-            NewtonManager.start_simulation()
-            self.play()
+            # NewtonManager.start_simulation()
+            # self.play()
             NewtonManager.initialize_solver()
 
         # app.update() may be changing the cuda device in reset, so we force it back to our desired device here

@@ -17,16 +17,16 @@ class G1FlatEnvCfg(G1RoughEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         newton_cfg=NewtonCfg(
             solver_cfg=MJWarpSolverCfg(
-                njmax=300,
-                ncon_per_env=200,
-                ls_iterations=100,
+                njmax=80,
+                ncon_per_env=20,
+                ls_iterations=20,
                 ls_parallel=True,
                 cone="pyramidal",
                 impratio=1,
                 integrator="implicit",
-                save_to_mjcf="G1_v0_flat_env_no_approx.xml",
+                #save_to_mjcf="G1_v0_flat_env_no_approx.xml",
             ),
-            num_substeps=1,
+            num_substeps=2,
             debug_mode=True,
         )
     )

@@ -47,14 +47,15 @@ def replicate_environment(
     with Timer(name="newton_env_builder", msg="Env Builder took:", enable=True, format="ms"):
         builder = ModelBuilder(up_axis=up_axis)
 
-        stage_info = builder.add_usd(
-            source,
-            ignore_paths=[prototype_path],
-            **usd_kwargs,
-        )
+        #stage_info = builder.add_usd(
+        #    source,
+        #    ignore_paths=[prototype_path],
+        #    **usd_kwargs,
+        #)
+        builder.add_ground_plane()
 
         # up_axis sanity check
-        stage_up_axis = stage_info.get("up_axis")
+        stage_up_axis = "z"
         if isinstance(stage_up_axis, str) and stage_up_axis.upper() != up_axis.upper():
             print(f"WARNING: up_axis '{up_axis}' does not match USD stage up_axis '{stage_up_axis}'")
 
@@ -69,51 +70,39 @@ def replicate_environment(
             stage = source
 
         # Get the prototype prim
-        prototype_prim = stage.GetPrimAtPath(prototype_path)
-        if prototype_prim.IsValid():
-            # Get all child prims that are Xforms
-            for child_prim in prototype_prim.GetAllChildren():
-                if child_prim.GetTypeName() == "Xform":
-                    child_xforms.append(child_prim.GetPath().pathString)
+        # prototype_prim = stage.GetPrimAtPath(prototype_path)
+        # if prototype_prim.IsValid():
+        #     # Get all child prims that are Xforms
+        #     for child_prim in prototype_prim.GetAllChildren():
+        #         if child_prim.GetTypeName() == "Xform":
+        #             child_xforms.append(child_prim.GetPath().pathString)
 
         # If no child xforms found, use the prototype path itself
-        if not child_xforms:
-            child_xforms = [prototype_path]
+        # if not child_xforms:
+        #     child_xforms = [prototype_path]
 
         prototype_builder = ModelBuilder(up_axis=up_axis)
-        for child_path in child_xforms:
-            prototype_builder.add_usd(
-                source,
-                root_path=child_path,
-                load_non_physics_prims=False,
-                **usd_kwargs,
-            )
+        prototype_builder.default_joint_cfg = ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        prototype_builder.default_shape_cfg.ke = 5.0e4
+        prototype_builder.default_shape_cfg.kd = 5.0e2
+        prototype_builder.default_shape_cfg.kf = 1.0e3
+        prototype_builder.default_shape_cfg.mu = 0.75
         prototype_builder.approximate_meshes("convex_hull")
+        prototype_builder.add_usd(
+            "/home/chris/Downloads/flattened_stage.usda",
+            #source,
+            root_path=prototype_path,
+            xform=wp.transformf(wp.vec3(0, 0, 0.8), wp.quat_identity()),
+            load_non_physics_prims=False,
+            **usd_kwargs,
+        )
 
-    with Timer(name="newton_multiple_add_to_builder", msg="All add to builder took:", enable=True, format="ms"):
-        # clone the prototype env with updated paths
-        for i, (pos, ori) in enumerate(zip(positions, orientations)):
-            body_start = builder.body_count
-            shape_start = builder.shape_count
-            joint_start = builder.joint_count
-            articulation_start = builder.articulation_count
+        for i in range(6, prototype_builder.joint_dof_count):
+            prototype_builder.joint_target_ke[i] = 100.0
+            prototype_builder.joint_target_kd[i] = 5.0
 
-            builder.add_builder(
-                prototype_builder, xform=wp.transform(np.array(pos) + np.array(spawn_offset), wp.quat_identity())
-            )
-
-            if i > 0:
-                update_paths(
-                    builder,
-                    prototype_path,
-                    path_pattern.format(i),
-                    body_start=body_start,
-                    shape_start=shape_start,
-                    joint_start=joint_start,
-                    articulation_start=articulation_start,
-                )
-
-    return builder, stage_info
+        builder.replicate(prototype_builder, len(positions), spacing=(3, 3, 0))
+    return builder, prototype_builder
 
 
 def update_paths(

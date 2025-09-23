@@ -208,7 +208,7 @@ class Articulation(AssetBase):
         # apply actuator models
         self._apply_actuator_model()
         # write actions into simulation
-        self._root_newton_view.set_attribute("joint_f", NewtonManager.get_control(), self._joint_effort_target_sim)
+        # self._root_newton_view.set_attribute("joint_f", NewtonManager.get_control(), self._joint_effort_target_sim)
         # position and velocity targets only for implicit actuators
         if self._has_implicit_actuators:
             # Sets the position or velocity target for the implicit actuators depending on the actuator type.
@@ -398,7 +398,7 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_root_transforms(NewtonManager.get_state_0(), root_poses_xyzw, mask=self._mask)
+        # self._root_newton_view.set_root_transforms(NewtonManager.get_state_0(), root_poses_xyzw, mask=self._mask)
 
     def write_root_com_pose_to_sim(self, root_pose: torch.Tensor, env_ids: Sequence[int] | None = None):
         """Set the root center of mass pose over selected environment indices into the simulation.
@@ -479,9 +479,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_root_velocities(
-            NewtonManager.get_state_0(), self._data.root_state_w[:, 7:].clone(), mask=self._mask
-        )
+        # self._root_newton_view.set_root_velocities(
+                #NewtonManager.get_state_0(), self._data.root_state_w[:, 7:].clone(), mask=self._mask
+            #)
 
     def write_root_link_velocity_to_sim(self, root_velocity: torch.Tensor, env_ids: Sequence[int] | None = None):
         """Set the root link velocity over selected environment indices into the simulation.
@@ -574,9 +574,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_dof_positions(
-            NewtonManager.get_state_0(), self._data.joint_pos.clone(), mask=self._mask
-        )
+        # self._root_newton_view.set_dof_positions(
+                # NewtonManager.get_state_0(), self._data.joint_pos.clone(), mask=self._mask
+                # )
 
     def write_joint_velocity_to_sim(
         self,
@@ -608,9 +608,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_dof_velocities(
-            NewtonManager.get_state_0(), self._data.joint_vel.clone(), mask=self._mask
-        )
+        # self._root_newton_view.set_dof_velocities(
+                # NewtonManager.get_state_0(), self._data.joint_vel.clone(), mask=self._mask
+                # )
 
     """
     Operations - Simulation Parameters Writers.
@@ -656,9 +656,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_dof_mode", NewtonManager.get_model(), self._data.joint_control_mode, mask=self._mask
-        )
+        # self._root_newton_view.set_attribute(
+                # "joint_dof_mode", NewtonManager.get_model(), self._data.joint_control_mode, mask=self._mask
+                # )
 
     def write_joint_stiffness_to_sim(
         self,
@@ -689,9 +689,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_target_ke", NewtonManager.get_model(), self._data.joint_stiffness, mask=self._mask
-        )
+        # self._root_newton_view.set_attribute(
+                # "joint_target_ke", NewtonManager.get_model(), self._data.joint_stiffness, mask=self._mask
+                # )
 
     def write_joint_damping_to_sim(
         self,
@@ -722,9 +722,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_target_kd", NewtonManager.get_model(), self._data.joint_damping, mask=self._mask
-        )
+        # self._root_newton_view.set_attribute(
+                # "joint_target_kd", NewtonManager.get_model(), self._data.joint_damping, mask=self._mask
+                # )
 
     def write_joint_position_limit_to_sim(
         self,
@@ -776,12 +776,12 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_limit_lower", NewtonManager.get_model(), self._data.joint_pos_limits[..., 0], mask=self._mask
-        )
-        self._root_newton_view.set_attribute(
-            "joint_limit_upper", NewtonManager.get_model(), self._data.joint_pos_limits[..., 1], mask=self._mask
-        )
+        # self._root_newton_view.set_attribute(
+                # "joint_limit_lower", NewtonManager.get_model(), self._data.joint_pos_limits[..., 0], mask=self._mask
+                # )
+        # self._root_newton_view.set_attribute(
+                # "joint_limit_upper", NewtonManager.get_model(), self._data.joint_pos_limits[..., 1], mask=self._mask
+                # )
 
         # compute the soft limits based on the joint limits
         # TODO: Optimize this computation for only selected joints
@@ -834,9 +834,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_velocity_limit", NewtonManager.get_model(), self._data.joint_vel_limits, mask=self._mask
-        )
+        # self._root_newton_view.set_attribute(
+                # "joint_velocity_limit", NewtonManager.get_model(), self._data.joint_vel_limits, mask=self._mask
+                # )
 
     def write_joint_effort_limit_to_sim(
         self,
@@ -873,9 +873,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_effort_limit", NewtonManager.get_model(), self._data.joint_effort_limits, mask=self._mask
-        )
+        # self._root_newton_view.set_attribute(
+                # "joint_effort_limit", NewtonManager.get_model(), self._data.joint_effort_limits, mask=self._mask
+                # )
 
     def write_joint_armature_to_sim(
         self,
@@ -908,9 +908,9 @@ class Articulation(AssetBase):
         # set into simulation: Only used by the Featherstone solver
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_armature", NewtonManager.get_model(), self._data.joint_armature, mask=self._mask
-        )
+        # self._root_newton_view.set_attribute(
+                # "joint_armature", NewtonManager.get_model(), self._data.joint_armature, mask=self._mask
+                # )
 
     def write_joint_friction_coefficient_to_sim(
         self,
@@ -949,9 +949,9 @@ class Articulation(AssetBase):
         # set into simulation
         self._mask.fill_(False)
         self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_friction", NewtonManager.get_model(), self._data.joint_friction_coeff, mask=self._mask
-        )
+        # self._root_newton_view.set_attribute(
+                # "joint_friction", NewtonManager.get_model(), self._data.joint_friction_coeff, mask=self._mask
+                # )
 
     """
     Operations - Setters.
@@ -1369,20 +1369,20 @@ class Articulation(AssetBase):
         self._process_actuators_cfg()
         self._process_tendons()
         # validate configuration
-        self._validate_cfg()
+        # self._validate_cfg()
         # update the robot data
         self.update(0.0)
         # log joint information
         self._log_articulation_info()
 
-        # Moves the articulation to its default pose before the solver is initialized
-        generated_pose = self._data.default_root_state[:, :7].clone()
-        generated_pose[:, 3:] = math_utils.convert_quat(generated_pose[:, 3:], to="xyzw")
-        generated_pose[:, :2] += wp.to_torch(self._root_newton_view.get_root_transforms(NewtonManager.get_model()))[
-            :, :2
-        ]
-        self._root_newton_view.set_root_transforms(NewtonManager.get_state_0(), generated_pose)
-        self._root_newton_view.set_root_transforms(NewtonManager.get_model(), generated_pose)
+        # # Moves the articulation to its default pose before the solver is initialized
+        # generated_pose = self._data.default_root_state[:, :7].clone()
+        # generated_pose[:, 3:] = math_utils.convert_quat(generated_pose[:, 3:], to="xyzw")
+        # generated_pose[:, :2] += wp.to_torch(self._root_newton_view.get_root_transforms(NewtonManager.get_model()))[
+        #     :, :2
+        # ]
+        # self._root_newton_view.set_root_transforms(NewtonManager.get_state_0(), generated_pose)
+        # self._root_newton_view.set_root_transforms(NewtonManager.get_model(), generated_pose)
 
     def _create_buffers(self):
         # constants
