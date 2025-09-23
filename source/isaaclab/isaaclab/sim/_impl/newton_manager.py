@@ -201,6 +201,11 @@ class NewtonManager:
             NewtonManager._solver_dt = NewtonManager._dt / NewtonManager._num_substeps
             NewtonManager._solver = NewtonManager._get_solver(NewtonManager._model, NewtonManager._cfg.solver_cfg)
 
+        import omni.usd
+        stage = omni.usd.get_context().get_stage()
+        # Save the flatten stage as USDA
+        stage.Export("flattened_stage.usda")
+
         # Ensure we are using a CUDA enabled device
         assert NewtonManager._device.startswith("cuda"), "NewtonManager only supports CUDA enabled devices"
 
@@ -210,6 +215,10 @@ class NewtonManager:
                 with wp.ScopedCapture() as capture:
                     NewtonManager.simulate()
                 NewtonManager._graph = capture.graph
+        print(NewtonManager._state_0)
+        for i in range(10):
+            NewtonManager.step()
+        exit(0)
 
     @classmethod
     def simulate(cls) -> None:
