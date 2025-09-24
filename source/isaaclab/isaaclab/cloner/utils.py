@@ -47,12 +47,12 @@ def replicate_environment(
     with Timer(name="newton_env_builder", msg="Env Builder took:", enable=True, format="ms"):
         builder = ModelBuilder(up_axis=up_axis)
 
-        #stage_info = builder.add_usd(
-        #    source,
-        #    ignore_paths=[prototype_path],
-        #    **usd_kwargs,
-        #)
-        builder.add_ground_plane()
+        stage_info = builder.add_usd(
+            source,
+            ignore_paths=[prototype_path],
+            **usd_kwargs,
+        )
+        #builder.add_ground_plane()
 
         # up_axis sanity check
         stage_up_axis = "z"
@@ -89,8 +89,8 @@ def replicate_environment(
         prototype_builder.default_shape_cfg.mu = 0.75
         prototype_builder.approximate_meshes("convex_hull")
         prototype_builder.add_usd(
-            "/home/antoiner/Desktop/flattened_stage.usda",
-            #source,
+            #"/home/antoiner/Desktop/flattened_stage.usda",
+            source,
             root_path=prototype_path,
             xform=wp.transformf(wp.vec3(0, 0, 0.8), wp.quat_identity()),
             load_non_physics_prims=False,

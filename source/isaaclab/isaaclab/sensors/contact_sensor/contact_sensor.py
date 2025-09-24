@@ -317,7 +317,7 @@ class ContactSensor(SensorBase):
 
     def _update_buffers_impl(self, env_ids: Sequence[int]):
         """Fills the buffers of the sensor data."""
-
+        return
         # default to all sensors
         if len(env_ids) == self._num_envs:
             env_ids = slice(None)
