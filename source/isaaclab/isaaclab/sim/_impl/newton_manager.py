@@ -157,9 +157,8 @@ class NewtonManager:
         NewtonManager.forward_kinematics()
         print("[INFO] Running on start callbacks")
         for priority in sorted(NewtonManager._on_start_callbacks.keys()):
-            if priority == 0:
-                for callback in NewtonManager._on_start_callbacks[priority]:
-                    callback()
+            for callback in NewtonManager._on_start_callbacks[priority]:
+                callback()
         if not NewtonManager._clone_physics_only:
             NewtonManager._usdrt_stage = get_current_stage(fabric=True)
             for i, prim_path in enumerate(NewtonManager._model.body_key):
@@ -474,15 +473,23 @@ class NewtonManager:
                         f"[INFO] Adding contact view for {shape_names_expr} with filter {contact_partners_shape_expr}."
                     )
 
-        NewtonManager._newton_contact_sensor = NewtonContactSensor(
-            NewtonManager._model,
-            sensing_obj_bodies=body_names_expr,
-            sensing_obj_shapes=shape_names_expr,
-            counterpart_bodies=contact_partners_body_expr,
-            counterpart_shapes=contact_partners_shape_expr,
-            match_fn=flipped_match,
-            include_total=True,
-            prune_noncolliding=prune_noncolliding,
-            verbose=verbose,
-        )
-        NewtonManager._report_contacts = True
+        print(f"Body names expression: {body_names_expr}")
+        print(f"Shape names expression: {shape_names_expr}")
+        print(f"Contact partners body expression: {contact_partners_body_expr}")
+        print(f"Contact partners shape expression: {contact_partners_shape_expr}")
+        print(f"Prune noncolliding: {prune_noncolliding}")
+        print(f"Verbose: {verbose}")
+        #exit(0)
+
+        #NewtonManager._newton_contact_sensor = NewtonContactSensor(
+        #    NewtonManager._model,
+        #    sensing_obj_bodies=body_names_expr,
+        #    sensing_obj_shapes=shape_names_expr,
+        #    counterpart_bodies=contact_partners_body_expr,
+        #    counterpart_shapes=contact_partners_shape_expr,
+        #    match_fn=flipped_match,
+        #    include_total=True,
+        #    prune_noncolliding=prune_noncolliding,
+        #    verbose=verbose,
+        #)
+        NewtonManager._report_contacts = False

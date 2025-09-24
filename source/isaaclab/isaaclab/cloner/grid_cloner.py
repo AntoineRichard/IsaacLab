@@ -176,11 +176,11 @@ class GridCloner(Cloner):
                 clone_base_path + "{}",
                 positions,
                 orientations,
-                #spawn_offset=spawn_offset,
+                spawn_offset=spawn_offset,
                 simplify_meshes=False,
                 collapse_fixed_joints=False,
-                #joint_ordering="dfs",
-                #joint_drive_gains_scaling=1.0,
+                joint_ordering="dfs",
+                joint_drive_gains_scaling=1.0,
             )
             NewtonManager.set_builder(builder)
         if not NewtonManager._clone_physics_only:

@@ -70,16 +70,16 @@ def replicate_environment(
             stage = source
 
         # Get the prototype prim
-        # prototype_prim = stage.GetPrimAtPath(prototype_path)
-        # if prototype_prim.IsValid():
-        #     # Get all child prims that are Xforms
-        #     for child_prim in prototype_prim.GetAllChildren():
-        #         if child_prim.GetTypeName() == "Xform":
-        #             child_xforms.append(child_prim.GetPath().pathString)
+        prototype_prim = stage.GetPrimAtPath(prototype_path)
+        if prototype_prim.IsValid():
+            # Get all child prims that are Xforms
+            for child_prim in prototype_prim.GetAllChildren():
+                if child_prim.GetTypeName() == "Xform":
+                    child_xforms.append(child_prim.GetPath().pathString)
 
-        # If no child xforms found, use the prototype path itself
-        # if not child_xforms:
-        #     child_xforms = [prototype_path]
+        #If no child xforms found, use the prototype path itself
+        if not child_xforms:
+            child_xforms = [prototype_path]
 
         prototype_builder = ModelBuilder(up_axis=up_axis)
         prototype_builder.default_joint_cfg = ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
@@ -101,7 +101,29 @@ def replicate_environment(
             prototype_builder.joint_target_ke[i] = 100.0
             prototype_builder.joint_target_kd[i] = 5.0
 
-        builder.replicate(prototype_builder, len(positions), spacing=(3, 3, 0))
+    with Timer(name="newton_multiple_add_to_builder", msg="All add to builder took:", enable=True, format="ms"):
+        # clone the prototype env with updated paths
+        for i, (pos, ori) in enumerate(zip(positions, orientations)):
+            body_start = builder.body_count
+            shape_start = builder.shape_count
+            joint_start = builder.joint_count
+            articulation_start = builder.articulation_count
+
+            builder.add_builder(
+                prototype_builder, xform=wp.transform(np.array(pos) + np.array(spawn_offset), wp.quat_identity())
+            )
+
+            if i > 0:
+                update_paths(
+                    builder,
+                    prototype_path,
+                    path_pattern.format(i),
+                    body_start=body_start,
+                    shape_start=shape_start,
+                    joint_start=joint_start,
+                    articulation_start=articulation_start,
+                )
+
     return builder, prototype_builder
 
 
