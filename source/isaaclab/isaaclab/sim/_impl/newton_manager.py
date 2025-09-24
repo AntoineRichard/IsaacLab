@@ -481,15 +481,15 @@ class NewtonManager:
         print(f"Verbose: {verbose}")
         #exit(0)
 
-        #NewtonManager._newton_contact_sensor = NewtonContactSensor(
-        #    NewtonManager._model,
-        #    sensing_obj_bodies=body_names_expr,
-        #    sensing_obj_shapes=shape_names_expr,
-        #    counterpart_bodies=contact_partners_body_expr,
-        #    counterpart_shapes=contact_partners_shape_expr,
-        #    match_fn=flipped_match,
-        #    include_total=True,
-        #    prune_noncolliding=prune_noncolliding,
-        #    verbose=verbose,
-        #)
+        NewtonManager._newton_contact_sensor = NewtonContactSensor(
+            NewtonManager._model,
+            sensing_obj_bodies=body_names_expr,
+            sensing_obj_shapes=shape_names_expr,
+            counterpart_bodies=contact_partners_body_expr,
+            counterpart_shapes=contact_partners_shape_expr,
+            match_fn=flipped_match,
+            include_total=True,
+            prune_noncolliding=prune_noncolliding,
+            verbose=verbose,
+        )
         NewtonManager._report_contacts = False
