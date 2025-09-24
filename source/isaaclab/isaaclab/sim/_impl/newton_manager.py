@@ -156,9 +156,10 @@ class NewtonManager:
         NewtonManager._contacts = Contacts(0, 0)
         NewtonManager.forward_kinematics()
         print("[INFO] Running on start callbacks")
-        #for priority in sorted(NewtonManager._on_start_callbacks.keys()):
-        #    for callback in NewtonManager._on_start_callbacks[priority]:
-        #        callback()
+        for priority in sorted(NewtonManager._on_start_callbacks.keys()):
+            if priority == 0:
+                for callback in NewtonManager._on_start_callbacks[priority]:
+                    callback()
         if not NewtonManager._clone_physics_only:
             NewtonManager._usdrt_stage = get_current_stage(fabric=True)
             for i, prim_path in enumerate(NewtonManager._model.body_key):
