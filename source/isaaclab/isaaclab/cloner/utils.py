@@ -89,7 +89,7 @@ def replicate_environment(
         prototype_builder.default_shape_cfg.mu = 0.75
         prototype_builder.approximate_meshes("convex_hull")
         prototype_builder.add_usd(
-            "/home/chris/Downloads/flattened_stage.usda",
+            "/home/antoiner/Desktop/flattened_stage.usda",
             #source,
             root_path=prototype_path,
             xform=wp.transformf(wp.vec3(0, 0, 0.8), wp.quat_identity()),

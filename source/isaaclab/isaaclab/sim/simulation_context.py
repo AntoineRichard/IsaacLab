@@ -562,7 +562,7 @@ class SimulationContext(_SimulationContext):
         if not soft:
             if not self.is_stopped():
                 self.stop()
-            # NewtonManager.start_simulation()
+            NewtonManager.start_simulation()
             # self.play()
             NewtonManager.initialize_solver()
 
