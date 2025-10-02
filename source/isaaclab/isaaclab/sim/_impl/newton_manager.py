@@ -13,6 +13,7 @@ from isaacsim.core.utils.stage import get_current_stage
 from newton import Axis, Contacts, Control, Model, ModelBuilder, State, eval_fk
 from newton.sensors import ContactSensor as NewtonContactSensor
 from newton.sensors import populate_contacts
+from newton.utils import RecorderModelAndState
 from newton.solvers import SolverBase, SolverFeatherstone, SolverMuJoCo, SolverXPBD
 
 from isaaclab.sim._impl.newton_manager_cfg import NewtonCfg
@@ -80,6 +81,7 @@ class NewtonManager:
     _visualizer_update_frequency: int = 1  # Configurable frequency for all rendering updates
     _visualizer_train_mode: bool = True  # Whether visualizer is in training mode
     _visualizer_disabled: bool = False  # Whether visualizer has been disabled by user
+    _recorder: RecorderModelAndState = None
 
     @classmethod
     def clear(cls):
@@ -106,6 +108,7 @@ class NewtonManager:
         NewtonManager._visualizer_update_counter = 0
         NewtonManager._visualizer_disabled = False
         NewtonManager._visualizer_update_frequency = NewtonManager._cfg.newton_viewer_update_frequency
+        NewtonManager._recorder = None
 
     @classmethod
     def set_builder(cls, builder):
@@ -133,7 +136,7 @@ class NewtonManager:
         for callback in NewtonManager._on_init_callbacks:
             callback()
         print(f"[INFO] Finalizing model on device: {NewtonManager._device}")
-        NewtonManager._builder.gravity = np.array(NewtonManager._gravity_vector)
+        NewtonManager._builder.gravity = np.array(NewtonManager._gravity_vector)[-1]
         NewtonManager._builder.up_axis = Axis.from_string(NewtonManager._up_axis)
         with Timer(name="newton_finalize_builder", msg="Finalize builder took:", enable=True, format="ms"):
             NewtonManager._model = NewtonManager._builder.finalize(device=NewtonManager._device)
@@ -155,6 +158,10 @@ class NewtonManager:
                 xformable_prim = usdrt.Rt.Xformable(prim)
                 if not xformable_prim.HasWorldXform():
                     xformable_prim.SetWorldXformFromUsd()
+
+        if NewtonManager._cfg.record:
+            NewtonManager._recorder = RecorderModelAndState(max_history_size=NewtonManager._cfg.record_length)
+            NewtonManager._recorder.record_model(NewtonManager._model)
 
     @classmethod
     def instantiate_builder_from_stage(cls):
@@ -276,11 +283,18 @@ class NewtonManager:
         else:
             NewtonManager.simulate()
 
+        if NewtonManager._recorder is not None:
+            NewtonManager._recorder.record(NewtonManager._state_0)
+
         if NewtonManager._cfg.debug_mode:
             convergence_data = NewtonManager.get_solver_convergence_steps()
             # print(f"solver niter: {convergence_data}")
             if convergence_data["max"] == NewtonManager._solver.mjw_model.opt.iterations:
                 print("solver didn't converge!", convergence_data["max"])
+                if NewtonManager._cfg.dump_record_on_solver_divergence:
+                    print(f"[INFO] Dumping record to file: {NewtonManager._cfg.record_file_path}")
+                    NewtonManager._recorder.save_to_file(NewtonManager._cfg.record_file_path)
+                    raise RuntimeError("Solver diverged!")
 
         NewtonManager._sim_time += NewtonManager._solver_dt * NewtonManager._num_substeps
 

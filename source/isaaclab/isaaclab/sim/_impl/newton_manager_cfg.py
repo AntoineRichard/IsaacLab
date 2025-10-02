@@ -21,6 +21,18 @@ class NewtonCfg:
     debug_mode: bool = False
     """Whether to enable debug mode for the solver."""
 
+    record: bool = False
+    """Whether to record the simulation using the Newton recorder."""
+
+    record_length: int = 20
+    """Length of the simulation to record."""
+
+    dump_record_on_solver_divergence: bool = False
+    """Whether to dump the record on solver divergence."""
+
+    record_file_path: str = "newton_recording"
+    """Name of the file to record the simulation."""
+
     use_cuda_graph: bool = True
     """Whether to use CUDA graphing when simulating.
 
