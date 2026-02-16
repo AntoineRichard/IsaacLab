@@ -72,6 +72,7 @@ def test_global_force_invariant_under_rotation(device):
 
         body_ids, _ = cube_object.find_bodies(".*")
         mass = cube_object.root_physx_view.get_masses()[0].item()
+        com = cube_object.data.body_com_pos_w.clone()
 
         # Apply permanent global force along +X at CoM
         forces = torch.zeros(1, len(body_ids), 3, device=device)
@@ -81,6 +82,7 @@ def test_global_force_invariant_under_rotation(device):
         cube_object.permanent_wrench_composer.set_forces_and_torques(
             forces=forces,
             torques=torques,
+            positions=com,
             body_ids=body_ids,
             is_global=True,
         )
@@ -115,14 +117,14 @@ def test_global_force_invariant_under_rotation(device):
         torch.testing.assert_close(
             torch.tensor(delta_v_phase1),
             torch.tensor(expected_dv),
-            rtol=0.1,
-            atol=0.01,
+            rtol=0.001,
+            atol=0.0001,
         )
         torch.testing.assert_close(
             torch.tensor(delta_v_phase2),
             torch.tensor(expected_dv),
-            rtol=0.1,
-            atol=0.01,
+            rtol=0.001,
+            atol=0.0001,
         )
 
         # Y and Z velocity should remain ~0
@@ -183,8 +185,8 @@ def test_local_force_follows_rotation(device):
         torch.testing.assert_close(
             vel_after_phase2[0],
             torch.tensor(0.0, device=device),
-            atol=0.5,
-            rtol=0.0,
+            atol=0.0001,
+            rtol=0.001,
         )
 
 
@@ -294,6 +296,6 @@ def test_global_torque_invariant_under_rotation(device):
         torch.testing.assert_close(
             torch.tensor(omega_z_after_phase1),
             torch.tensor(omega_z_after_phase2),
-            rtol=0.1,
-            atol=0.01,
+            rtol=0.001,
+            atol=0.0001,
         )
