@@ -1572,13 +1572,17 @@ def test_reset(sim, num_articulations, device):
         assert articulation._instantaneous_wrench_composer.active
         assert articulation._permanent_wrench_composer.active
         assert (
-            torch.count_nonzero(wp.to_torch(articulation._instantaneous_wrench_composer.local_force_b)) == num_bodies * 3
+            torch.count_nonzero(wp.to_torch(articulation._instantaneous_wrench_composer.local_force_b))
+            == num_bodies * 3
         )
         assert (
-            torch.count_nonzero(wp.to_torch(articulation._instantaneous_wrench_composer.local_torque_b)) == num_bodies * 3
+            torch.count_nonzero(wp.to_torch(articulation._instantaneous_wrench_composer.local_torque_b))
+            == num_bodies * 3
         )
         assert torch.count_nonzero(wp.to_torch(articulation._permanent_wrench_composer.local_force_b)) == num_bodies * 3
-        assert torch.count_nonzero(wp.to_torch(articulation._permanent_wrench_composer.local_torque_b)) == num_bodies * 3
+        assert (
+            torch.count_nonzero(wp.to_torch(articulation._permanent_wrench_composer.local_torque_b)) == num_bodies * 3
+        )
 
 
 @pytest.mark.parametrize("num_articulations", [1, 2])

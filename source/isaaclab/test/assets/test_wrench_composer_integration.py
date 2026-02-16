@@ -79,7 +79,10 @@ def test_global_force_invariant_under_rotation(device):
         torques = torch.zeros(1, len(body_ids), 3, device=device)
 
         cube_object.permanent_wrench_composer.set_forces_and_torques(
-            forces=forces, torques=torques, body_ids=body_ids, is_global=True,
+            forces=forces,
+            torques=torques,
+            body_ids=body_ids,
+            is_global=True,
         )
 
         # Phase 1: run N_STEPS
@@ -110,10 +113,16 @@ def test_global_force_invariant_under_rotation(device):
         expected_dv = FORCE_MAGNITUDE / mass * sim.cfg.dt * N_STEPS
 
         torch.testing.assert_close(
-            torch.tensor(delta_v_phase1), torch.tensor(expected_dv), rtol=0.1, atol=0.01,
+            torch.tensor(delta_v_phase1),
+            torch.tensor(expected_dv),
+            rtol=0.1,
+            atol=0.01,
         )
         torch.testing.assert_close(
-            torch.tensor(delta_v_phase2), torch.tensor(expected_dv), rtol=0.1, atol=0.01,
+            torch.tensor(delta_v_phase2),
+            torch.tensor(expected_dv),
+            rtol=0.1,
+            atol=0.01,
         )
 
         # Y and Z velocity should remain ~0
@@ -142,7 +151,10 @@ def test_local_force_follows_rotation(device):
         torques = torch.zeros(1, len(body_ids), 3, device=device)
 
         cube_object.permanent_wrench_composer.set_forces_and_torques(
-            forces=forces, torques=torques, body_ids=body_ids, is_global=False,
+            forces=forces,
+            torques=torques,
+            body_ids=body_ids,
+            is_global=False,
         )
 
         # Phase 1: run N_STEPS — object accelerates along world +X
@@ -169,7 +181,10 @@ def test_local_force_follows_rotation(device):
 
         # Velocity should be approximately zero: decelerated by the same amount as it accelerated
         torch.testing.assert_close(
-            vel_after_phase2[0], torch.tensor(0.0, device=device), atol=0.5, rtol=0.0,
+            vel_after_phase2[0],
+            torch.tensor(0.0, device=device),
+            atol=0.5,
+            rtol=0.0,
         )
 
 
@@ -201,7 +216,11 @@ def test_global_force_at_offset_generates_torque(device):
         positions[..., 1] += 1.0  # +1m Y offset
 
         cube_object.permanent_wrench_composer.set_forces_and_torques(
-            forces=forces, torques=torques, positions=positions, body_ids=body_ids, is_global=True,
+            forces=forces,
+            torques=torques,
+            positions=positions,
+            body_ids=body_ids,
+            is_global=True,
         )
 
         # Run 50 steps
@@ -242,7 +261,10 @@ def test_global_torque_invariant_under_rotation(device):
         torques[..., 2] = TORQUE_MAGNITUDE
 
         cube_object.permanent_wrench_composer.set_forces_and_torques(
-            forces=forces, torques=torques, body_ids=body_ids, is_global=True,
+            forces=forces,
+            torques=torques,
+            body_ids=body_ids,
+            is_global=True,
         )
 
         # Phase 1: run N_STEPS
@@ -270,5 +292,8 @@ def test_global_torque_invariant_under_rotation(device):
 
         # Both phases start from rest — angular acceleration about Z should be the same
         torch.testing.assert_close(
-            torch.tensor(omega_z_after_phase1), torch.tensor(omega_z_after_phase2), rtol=0.1, atol=0.01,
+            torch.tensor(omega_z_after_phase1),
+            torch.tensor(omega_z_after_phase2),
+            rtol=0.1,
+            atol=0.01,
         )

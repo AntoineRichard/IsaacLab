@@ -474,9 +474,9 @@ def compose_wrench_to_body_frame(
     """
     tid_env, tid_body = wp.tid()
     q = link_quaternions[tid_env, tid_body]
-    out_force_b[tid_env, tid_body] = wp.quat_rotate_inv(q, global_force_w[tid_env, tid_body]) + local_force_b[
-        tid_env, tid_body
-    ]
-    out_torque_b[tid_env, tid_body] = wp.quat_rotate_inv(q, global_torque_w[tid_env, tid_body]) + local_torque_b[
-        tid_env, tid_body
-    ]
+    out_force_b[tid_env, tid_body] = (
+        wp.quat_rotate_inv(q, global_force_w[tid_env, tid_body]) + local_force_b[tid_env, tid_body]
+    )
+    out_torque_b[tid_env, tid_body] = (
+        wp.quat_rotate_inv(q, global_torque_w[tid_env, tid_body]) + local_torque_b[tid_env, tid_body]
+    )

@@ -777,12 +777,8 @@ def test_add_raw_buffers_from(device: str):
     composer_a.add_raw_buffers_from(composer_b)
 
     # Verify merged buffers
-    assert np.allclose(
-        composer_a.global_force_w.numpy(), forces_a_global_np + forces_b_global_np, atol=1e-4
-    )
-    assert np.allclose(
-        composer_a.local_force_b.numpy(), forces_a_local_np + forces_b_local_np, atol=1e-4
-    )
+    assert np.allclose(composer_a.global_force_w.numpy(), forces_a_global_np + forces_b_global_np, atol=1e-4)
+    assert np.allclose(composer_a.local_force_b.numpy(), forces_a_local_np + forces_b_local_np, atol=1e-4)
 
 
 # ============================================================================

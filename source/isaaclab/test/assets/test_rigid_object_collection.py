@@ -645,7 +645,9 @@ def test_reset_object_collection(sim, num_envs, num_cubes, device):
             # Reset should zero external forces and torques
             assert not object_collection._instantaneous_wrench_composer.active
             assert not object_collection._permanent_wrench_composer.active
-            assert torch.count_nonzero(wp.to_torch(object_collection._instantaneous_wrench_composer.global_force_w)) == 0
+            assert (
+                torch.count_nonzero(wp.to_torch(object_collection._instantaneous_wrench_composer.global_force_w)) == 0
+            )
             assert torch.count_nonzero(wp.to_torch(object_collection._instantaneous_wrench_composer.local_force_b)) == 0
             assert torch.count_nonzero(wp.to_torch(object_collection._permanent_wrench_composer.global_force_w)) == 0
             assert torch.count_nonzero(wp.to_torch(object_collection._permanent_wrench_composer.local_force_b)) == 0
