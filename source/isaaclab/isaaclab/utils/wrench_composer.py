@@ -5,13 +5,19 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import torch
 import warp as wp
 
 from isaaclab.utils.math import convert_quat
-from isaaclab.utils.warp.kernels import add_forces_and_torques_at_position, set_forces_and_torques_at_position
+from isaaclab.utils.warp.kernels import (
+    add_forces_to_dual_buffers,
+    add_raw_wrench_buffers,
+    compose_wrench_to_body_frame,
+    set_forces_to_dual_buffers,
+)
 
 if TYPE_CHECKING:
     from isaaclab.assets import Articulation, RigidObject, RigidObjectCollection
@@ -19,14 +25,18 @@ if TYPE_CHECKING:
 
 class WrenchComposer:
     def __init__(self, asset: Articulation | RigidObject | RigidObjectCollection) -> None:
-        """Wrench composer.
+        """Wrench composer with dual-buffer architecture (global + local).
 
-        This class composes forces and torques from multiple sources into a single wrench per body.
-        Forces and torques are stored in "mixed" representation: expressed in frame whose orientation is global,
-        while the origin is at the link origin. This allows for straightforward composition of forces and torques.
+        Forces and torques are stored in two separate pairs of buffers:
+        - **Global buffers** (``_global_force_w``, ``_global_torque_w``): world-frame forces/torques.
+        - **Local buffers** (``_local_force_b``, ``_local_torque_b``): body-frame forces/torques.
+
+        At apply time, :meth:`compose_to_body_frame` rotates global forces into the body frame
+        using the current body quaternion and sums with local forces, producing a single
+        body-frame wrench that can be applied with ``is_global=False``.
 
         Args:
-            asset: Asset to use. Defaults to None.
+            asset: Asset to use.
         """
         self.num_envs = asset.num_instances
         # Avoid isinstance to prevent circular import issues, use attribute presence instead.
@@ -37,6 +47,7 @@ class WrenchComposer:
         self.device = asset.device
         self._asset = asset
         self._active = False
+        self._dirty = False
 
         # Avoid isinstance here due to potential circular import issues; check by attribute presence instead.
         if hasattr(self._asset.data, "body_link_pos_w") and hasattr(self._asset.data, "body_link_quat_w"):
@@ -48,9 +59,19 @@ class WrenchComposer:
         else:
             raise ValueError(f"Unsupported asset type: {self._asset.__class__.__name__}")
 
-        # Create buffers - all forces and torques are stored in mixed representation: origin at link frame, orientation in global frame.
-        self._composed_force_m = wp.zeros((self.num_envs, self.num_bodies), dtype=wp.vec3f, device=self.device)
-        self._composed_torque_m = wp.zeros((self.num_envs, self.num_bodies), dtype=wp.vec3f, device=self.device)
+        shape = (self.num_envs, self.num_bodies)
+
+        # Input buffers: global (world-frame) and local (body-frame)
+        self._global_force_w = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
+        self._global_torque_w = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
+        self._local_force_b = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
+        self._local_torque_b = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
+
+        # Output buffers: composed body-frame wrench
+        self._out_force_b = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
+        self._out_torque_b = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
+
+        # Index arrays
         self._ALL_ENV_INDICES_WP = wp.from_torch(
             torch.arange(self.num_envs, dtype=torch.int32, device=self.device), dtype=wp.int32
         )
@@ -58,12 +79,9 @@ class WrenchComposer:
             torch.arange(self.num_bodies, dtype=torch.int32, device=self.device), dtype=wp.int32
         )
 
-        # Pinning the composed force and torque to the torch tensor to avoid copying the data to the torch tensor
-        self._composed_force_m_torch = wp.to_torch(self._composed_force_m)
-        self._composed_torque_m_torch = wp.to_torch(self._composed_torque_m)
-        # Pinning the environment and body indices to the torch tensor to allow for slicing.
-        self._ALL_ENV_INDICES_TORCH = wp.to_torch(self._ALL_ENV_INDICES_WP)
-        self._ALL_BODY_INDICES_TORCH = wp.to_torch(self._ALL_BODY_INDICES_WP)
+        # Pinned torch views of output buffers (for PhysX apply calls)
+        self._out_force_b_torch = wp.to_torch(self._out_force_b)
+        self._out_torque_b_torch = wp.to_torch(self._out_torque_b)
 
     @property
     def active(self) -> bool:
@@ -71,51 +89,64 @@ class WrenchComposer:
         return self._active
 
     @property
-    def composed_force(self) -> wp.array:
-        """Composed force mixed representation: origin at link frame, orientation in global frame.
-
-        Forces are stored in "mixed" representation: global frame orientation, applied at link origin.
-        Any position offsets provided when setting forces contribute to torque, not to this force buffer.
-
-        Returns:
-            wp.array: Composed force in mixed representation. Shape: (num_envs, num_bodies, 3)
-        """
-        return self._composed_force_m
+    def global_force_w(self) -> wp.array:
+        """Global (world-frame) force buffer. Shape: (num_envs, num_bodies) vec3f."""
+        return self._global_force_w
 
     @property
-    def composed_torque(self) -> wp.array:
-        """Composed torque in mixed representation: origin at link frame, orientation in global frame.
-
-        Torques are stored in "mixed" representation.
-        This includes both user-provided torques and torque contributions from forces applied at
-        offset positions (τ = (pos - link_origin) × force).
-
-        Returns:
-            wp.array: Composed torque in global frame. Shape: (num_envs, num_bodies, 3)
-        """
-        return self._composed_torque_m
+    def global_torque_w(self) -> wp.array:
+        """Global (world-frame) torque buffer. Shape: (num_envs, num_bodies) vec3f."""
+        return self._global_torque_w
 
     @property
-    def composed_force_as_torch(self) -> torch.Tensor:
-        """Composed force in mixed representation: origin at link frame, orientation in global frame, as torch tensor.
-
-        Forces are stored in "mixed" representation.
-
-        Returns:
-            torch.Tensor: Composed force in mixed representation. Shape: (num_envs, num_bodies, 3)
-        """
-        return self._composed_force_m_torch
+    def local_force_b(self) -> wp.array:
+        """Local (body-frame) force buffer. Shape: (num_envs, num_bodies) vec3f."""
+        return self._local_force_b
 
     @property
-    def composed_torque_as_torch(self) -> torch.Tensor:
-        """Composed torque mixed representation: origin at link frame, orientation in global frame, as torch tensor.
+    def local_torque_b(self) -> wp.array:
+        """Local (body-frame) torque buffer. Shape: (num_envs, num_bodies) vec3f."""
+        return self._local_torque_b
 
-        Torques are stored in "mixed" representation.
+    @property
+    def out_force_b(self) -> wp.array:
+        """Composed output force in body frame. Shape: (num_envs, num_bodies) vec3f.
 
-        Returns:
-            torch.Tensor: Composed torque in mixed representation. Shape: (num_envs, num_bodies, 3)
+        If the output is stale (buffers were modified since last :meth:`compose_to_body_frame`),
+        this will automatically recompose and emit a performance warning.
         """
-        return self._composed_torque_m_torch
+        self._ensure_composed()
+        return self._out_force_b
+
+    @property
+    def out_torque_b(self) -> wp.array:
+        """Composed output torque in body frame. Shape: (num_envs, num_bodies) vec3f.
+
+        If the output is stale (buffers were modified since last :meth:`compose_to_body_frame`),
+        this will automatically recompose and emit a performance warning.
+        """
+        self._ensure_composed()
+        return self._out_torque_b
+
+    @property
+    def out_force_b_as_torch(self) -> torch.Tensor:
+        """Composed output force in body frame as torch tensor. Shape: (num_envs, num_bodies, 3).
+
+        If the output is stale (buffers were modified since last :meth:`compose_to_body_frame`),
+        this will automatically recompose and emit a performance warning.
+        """
+        self._ensure_composed()
+        return self._out_force_b_torch
+
+    @property
+    def out_torque_b_as_torch(self) -> torch.Tensor:
+        """Composed output torque in body frame as torch tensor. Shape: (num_envs, num_bodies, 3).
+
+        If the output is stale (buffers were modified since last :meth:`compose_to_body_frame`),
+        this will automatically recompose and emit a performance warning.
+        """
+        self._ensure_composed()
+        return self._out_torque_b_torch
 
     def add_forces_and_torques(
         self,
@@ -126,63 +157,23 @@ class WrenchComposer:
         env_ids: wp.array | torch.Tensor | None = None,
         is_global: bool = False,
     ):
-        """Add forces and torques to the composed force and torque.
+        """Add forces and torques to the appropriate global or local buffer.
 
-        It can compose global wrenches and local wrenches.
-        It first convert them to the mixed representation and then add them to the already composed force and torque.
-
-        Forces and torques are always stored in mixed representation: global frame orientation and application point at the link frame.
-
-        Positions are NOT stored - they are used to compute torque contributions from forces applied at
-        offset positions (τ = (pos - link_origin) × force).
-
-        .. note:: Users may want to call `reset` function after every simulation step to ensure no force is carried
-        over to the next step. However, this may not necessary if the user calls `set_forces_and_torques` function
-        instead of `add_forces_and_torques`.
+        Routes to global buffers when ``is_global=True``, local buffers when ``is_global=False``.
+        Position offsets contribute additional torque via cross product.
 
         Args:
             forces: Forces. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
             torques: Torques. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
             positions: Positions. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
-                When is_global is False, the user-provided positions are offsetting the application of the force relatively
-                to the link frame of the body. When is_global is True, the user-provided positions are the global positions
-                of the force application.
+                When is_global is False, positions are local offsets from the link frame.
+                When is_global is True, positions are global coordinates.
             body_ids: Body ids. Defaults to None (all bodies).
             env_ids: Environment ids. Defaults to None (all environments).
             is_global: Whether forces and torques are in global frame. Defaults to False.
-
-        Raises:
-            ValueError: If the type of the input is not supported.
-            ValueError: If the input is a slice and it is not None.
         """
-        # Resolve all indices
-        # -- env_ids
-        if env_ids is None:
-            env_ids = self._ALL_ENV_INDICES_WP
-        elif isinstance(env_ids, torch.Tensor):
-            env_ids = wp.from_torch(env_ids.to(torch.int32), dtype=wp.int32)
-        elif isinstance(env_ids, list):
-            env_ids = wp.array(env_ids, dtype=wp.int32, device=self.device)
-        elif isinstance(env_ids, slice):
-            if env_ids == slice(None):
-                env_ids = self._ALL_ENV_INDICES_WP
-            else:
-                raise ValueError(f"Doesn't support slice input for env_ids: {env_ids}")
-        # -- body_ids
-        if body_ids is None:
-            body_ids = self._ALL_BODY_INDICES_WP
-        elif isinstance(body_ids, torch.Tensor):
-            body_ids = wp.from_torch(body_ids.to(torch.int32), dtype=wp.int32)
-        elif isinstance(body_ids, list):
-            body_ids = wp.array(body_ids, dtype=wp.int32, device=self.device)
-        elif isinstance(body_ids, slice):
-            if body_ids == slice(None):
-                body_ids = self._ALL_BODY_INDICES_WP
-            else:
-                raise ValueError(f"Doesn't support slice input for body_ids: {body_ids}")
+        env_ids, body_ids = self._resolve_indices(env_ids, body_ids)
 
-        # Resolve remaining inputs
-        # -- don't launch if no forces or torques are provided
         if forces is None and torques is None:
             return
         if isinstance(forces, torch.Tensor):
@@ -192,17 +183,16 @@ class WrenchComposer:
         if isinstance(positions, torch.Tensor):
             positions = wp.from_torch(positions, dtype=wp.vec3f)
 
-        # Get the link positions and quaternions
-        self._link_positions = wp.from_torch(self._get_link_position_fn().clone(), dtype=wp.vec3f)
-        self._link_quaternions = wp.from_torch(
-            convert_quat(self._get_link_quaternion_fn().clone(), to="xyzw"), dtype=wp.quatf
-        )
+        # Fetch link positions only when needed (global forces with position offsets)
+        link_positions = None
+        if is_global and positions is not None:
+            link_positions = wp.from_torch(self._get_link_position_fn().clone(), dtype=wp.vec3f)
 
-        # Set the active flag to true
         self._active = True
+        self._dirty = True
 
         wp.launch(
-            add_forces_and_torques_at_position,
+            add_forces_to_dual_buffers,
             dim=(env_ids.shape[0], body_ids.shape[0]),
             inputs=[
                 env_ids,
@@ -210,10 +200,11 @@ class WrenchComposer:
                 forces,
                 torques,
                 positions,
-                self._link_positions,
-                self._link_quaternions,
-                self._composed_force_m,
-                self._composed_torque_m,
+                link_positions,
+                self._global_force_w,
+                self._global_torque_w,
+                self._local_force_b,
+                self._local_torque_b,
                 is_global,
             ],
             device=self.device,
@@ -228,61 +219,23 @@ class WrenchComposer:
         env_ids: wp.array | torch.Tensor | None = None,
         is_global: bool = False,
     ):
-        """Set forces and torques to the composed force and torque (replaces existing values).
+        """Set forces and torques to the appropriate global or local buffer (replaces existing values).
 
-        It can compose global wrenches and local wrenches.
-        It first convert them to the mixed representation and then add them to the already composed force and torque.
-
-        Forces and torques are always stored in "mixed" representation: global frame orientation,
-        with application point at the link frame.
-
-        Positions are NOT stored - they are used to compute torque
-        contributions from forces applied at offset positions (τ = (pos - link_origin) × force).
-
-        The total torque set is: user_torque + cross(position - link_origin, force).
+        Routes to global buffers when ``is_global=True``, local buffers when ``is_global=False``.
+        Position offsets contribute additional torque via cross product.
 
         Args:
             forces: Forces. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
             torques: Torques. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
             positions: Positions. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
-                When is_global is False, the user-provided positions are offsetting the application of the force relatively
-                to the link frame of the body. When is_global is True, the user-provided positions are the global positions
-                of the force application.
+                When is_global is False, positions are local offsets from the link frame.
+                When is_global is True, positions are global coordinates.
             body_ids: Body ids. Defaults to None (all bodies).
             env_ids: Environment ids. Defaults to None (all environments).
             is_global: Whether forces and torques are in global frame. Defaults to False.
-
-        Raises:
-            ValueError: If the type of the input is not supported.
-            ValueError: If the input is a slice and it is not None.
         """
-        # Resolve all indices
-        # -- env_ids
-        if env_ids is None:
-            env_ids = self._ALL_ENV_INDICES_WP
-        elif isinstance(env_ids, torch.Tensor):
-            env_ids = wp.from_torch(env_ids.to(torch.int32), dtype=wp.int32)
-        elif isinstance(env_ids, list):
-            env_ids = wp.array(env_ids, dtype=wp.int32, device=self.device)
-        elif isinstance(env_ids, slice):
-            if env_ids == slice(None):
-                env_ids = self._ALL_ENV_INDICES_WP
-            else:
-                raise ValueError(f"Doesn't support slice input for env_ids: {env_ids}")
-        # -- body_ids
-        if body_ids is None:
-            body_ids = self._ALL_BODY_INDICES_WP
-        elif isinstance(body_ids, torch.Tensor):
-            body_ids = wp.from_torch(body_ids.to(torch.int32), dtype=wp.int32)
-        elif isinstance(body_ids, list):
-            body_ids = wp.array(body_ids, dtype=wp.int32, device=self.device)
-        elif isinstance(body_ids, slice):
-            if body_ids == slice(None):
-                body_ids = self._ALL_BODY_INDICES_WP
-            else:
-                raise ValueError(f"Doesn't support slice input for body_ids: {body_ids}")
-        # Resolve remaining inputs
-        # -- don't launch if no forces or torques are provided
+        env_ids, body_ids = self._resolve_indices(env_ids, body_ids)
+
         if forces is None and torques is None:
             return
         if forces is None:
@@ -298,17 +251,16 @@ class WrenchComposer:
         elif isinstance(positions, torch.Tensor):
             positions = wp.from_torch(positions, dtype=wp.vec3f)
 
-        # Get the link positions and quaternions
-        self._link_positions = wp.from_torch(self._get_link_position_fn().clone(), dtype=wp.vec3f)
-        self._link_quaternions = wp.from_torch(
-            convert_quat(self._get_link_quaternion_fn().clone(), to="xyzw"), dtype=wp.quatf
-        )
+        # Fetch link positions only when needed (global forces with position offsets)
+        link_positions = None
+        if is_global and positions.shape[0] > 0:
+            link_positions = wp.from_torch(self._get_link_position_fn().clone(), dtype=wp.vec3f)
 
-        # Set the active flag to true
         self._active = True
+        self._dirty = True
 
         wp.launch(
-            set_forces_and_torques_at_position,
+            set_forces_to_dual_buffers,
             dim=(env_ids.shape[0], body_ids.shape[0]),
             inputs=[
                 env_ids,
@@ -316,28 +268,80 @@ class WrenchComposer:
                 forces,
                 torques,
                 positions,
-                self._link_positions,
-                self._link_quaternions,
-                self._composed_force_m,
-                self._composed_torque_m,
+                link_positions,
+                self._global_force_w,
+                self._global_torque_w,
+                self._local_force_b,
+                self._local_torque_b,
                 is_global,
             ],
             device=self.device,
         )
 
-    def reset(self, env_ids: wp.array | torch.Tensor | None = None):
-        """Reset the composed force and torque.
+    def add_raw_buffers_from(self, other: WrenchComposer):
+        """Element-wise add another composer's 4 input buffers into this composer's buffers.
 
-        This function will reset the composed force and torque to zero.
-        It will also make sure the link positions and quaternions are updated in the next call of the
-        `add_forces_and_torques` or `set_forces_and_torques` functions.
+        Args:
+            other: Source wrench composer whose buffers will be added.
+        """
+        self._dirty = True
+        wp.launch(
+            add_raw_wrench_buffers,
+            dim=(self.num_envs, self.num_bodies),
+            inputs=[
+                other._global_force_w,
+                other._global_torque_w,
+                other._local_force_b,
+                other._local_torque_b,
+                self._global_force_w,
+                self._global_torque_w,
+                self._local_force_b,
+                self._local_torque_b,
+            ],
+            device=self.device,
+        )
 
-        .. note:: This function should be called after every simulation step / reset to ensure no force is carried
-        over to the next step.
+    def compose_to_body_frame(self):
+        """Compose global and local buffers into body-frame output.
+
+        Fetches current link quaternions, rotates global forces/torques into body frame
+        via ``quat_rotate_inv``, and sums with local forces/torques. Result is written
+        to :attr:`out_force_b` / :attr:`out_torque_b`.
+        """
+        link_quaternions = wp.from_torch(
+            convert_quat(self._get_link_quaternion_fn().clone(), to="xyzw"), dtype=wp.quatf
+        )
+
+        wp.launch(
+            compose_wrench_to_body_frame,
+            dim=(self.num_envs, self.num_bodies),
+            inputs=[
+                self._global_force_w,
+                self._global_torque_w,
+                self._local_force_b,
+                self._local_torque_b,
+                link_quaternions,
+                self._out_force_b,
+                self._out_torque_b,
+            ],
+            device=self.device,
+        )
+        self._dirty = False
+
+    def reset(self, env_ids: wp.array | torch.Tensor | None = None, env_mask: wp.array | None = None):
+        """Reset all input and output buffers to zero.
+
+        Args:
+            env_ids: Environment indices to reset. If None, resets all.
+            env_mask: Environment mask (unused, kept for API compatibility).
         """
         if env_ids is None:
-            self._composed_force_m.zero_()
-            self._composed_torque_m.zero_()
+            self._global_force_w.zero_()
+            self._global_torque_w.zero_()
+            self._local_force_b.zero_()
+            self._local_torque_b.zero_()
+            self._out_force_b.zero_()
+            self._out_torque_b.zero_()
             self._active = False
         else:
             indices = env_ids
@@ -351,5 +355,54 @@ class WrenchComposer:
                 else:
                     indices = env_ids
 
-            self._composed_force_m[indices].zero_()
-            self._composed_torque_m[indices].zero_()
+            self._global_force_w[indices].zero_()
+            self._global_torque_w[indices].zero_()
+            self._local_force_b[indices].zero_()
+            self._local_torque_b[indices].zero_()
+            self._out_force_b[indices].zero_()
+            self._out_torque_b[indices].zero_()
+        self._dirty = False
+
+    def _ensure_composed(self):
+        """Ensure output buffers are up-to-date. If dirty, recomposes and warns."""
+        if self._dirty:
+            warnings.warn(
+                "WrenchComposer: accessing output property triggered compose_to_body_frame() kernel launch. "
+                "Call compose_to_body_frame() explicitly before accessing output properties to avoid this overhead. "
+                "If you only need forces/torques in a single frame, use the raw buffer properties instead "
+                "(global_force_w, global_torque_w, local_force_b, local_torque_b) which require no composition.",
+                stacklevel=3,
+            )
+            self.compose_to_body_frame()
+
+    def _resolve_indices(
+        self,
+        env_ids: wp.array | torch.Tensor | None,
+        body_ids: wp.array | torch.Tensor | None,
+    ) -> tuple[wp.array, wp.array]:
+        """Resolve env and body indices to warp arrays."""
+        if env_ids is None:
+            env_ids = self._ALL_ENV_INDICES_WP
+        elif isinstance(env_ids, torch.Tensor):
+            env_ids = wp.from_torch(env_ids.to(torch.int32), dtype=wp.int32)
+        elif isinstance(env_ids, list):
+            env_ids = wp.array(env_ids, dtype=wp.int32, device=self.device)
+        elif isinstance(env_ids, slice):
+            if env_ids == slice(None):
+                env_ids = self._ALL_ENV_INDICES_WP
+            else:
+                raise ValueError(f"Doesn't support slice input for env_ids: {env_ids}")
+
+        if body_ids is None:
+            body_ids = self._ALL_BODY_INDICES_WP
+        elif isinstance(body_ids, torch.Tensor):
+            body_ids = wp.from_torch(body_ids.to(torch.int32), dtype=wp.int32)
+        elif isinstance(body_ids, list):
+            body_ids = wp.array(body_ids, dtype=wp.int32, device=self.device)
+        elif isinstance(body_ids, slice):
+            if body_ids == slice(None):
+                body_ids = self._ALL_BODY_INDICES_WP
+            else:
+                raise ValueError(f"Doesn't support slice input for body_ids: {body_ids}")
+
+        return env_ids, body_ids
