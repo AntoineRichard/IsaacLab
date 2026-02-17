@@ -355,9 +355,7 @@ def set_forces_to_dual_buffers(
                         positions[tid_env, tid_body], forces[tid_env, tid_body]
                     )
                 else:
-                    global_torque_w[ei, bi] = wp.cross(
-                        positions[tid_env, tid_body], forces[tid_env, tid_body]
-                    )
+                    global_torque_w[ei, bi] = wp.cross(positions[tid_env, tid_body], forces[tid_env, tid_body])
     else:
         if torques:
             local_torque_b[ei, bi] = torques[tid_env, tid_body]
@@ -369,9 +367,7 @@ def set_forces_to_dual_buffers(
                         positions[tid_env, tid_body], forces[tid_env, tid_body]
                     )
                 else:
-                    local_torque_b[ei, bi] = wp.cross(
-                        positions[tid_env, tid_body], forces[tid_env, tid_body]
-                    )
+                    local_torque_b[ei, bi] = wp.cross(positions[tid_env, tid_body], forces[tid_env, tid_body])
 
 
 @wp.kernel
@@ -496,6 +492,4 @@ def compose_wrench_to_body_frame(
     out_force_b[tid_env, tid_body] = (
         wp.quat_rotate_inv(q, global_force_w[tid_env, tid_body]) + local_force_b[tid_env, tid_body]
     )
-    out_torque_b[tid_env, tid_body] = (
-        wp.quat_rotate_inv(q, corrected_torque_w) + local_torque_b[tid_env, tid_body]
-    )
+    out_torque_b[tid_env, tid_body] = wp.quat_rotate_inv(q, corrected_torque_w) + local_torque_b[tid_env, tid_body]

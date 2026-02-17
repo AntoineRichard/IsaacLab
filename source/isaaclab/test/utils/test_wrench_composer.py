@@ -789,9 +789,7 @@ def test_compose_with_changing_position(device: str):
     wrench_composer.compose_to_body_frame()
     out_torque_1 = wrench_composer.out_torque_b.numpy()
     expected_torque_1 = np.array([[[0.0, 0.0, -10.0]]], dtype=np.float32)
-    assert np.allclose(out_torque_1, expected_torque_1, atol=1e-4), (
-        f"Expected {expected_torque_1}, got {out_torque_1}"
-    )
+    assert np.allclose(out_torque_1, expected_torque_1, atol=1e-4), f"Expected {expected_torque_1}, got {out_torque_1}"
 
     # Move body to origin: link_pos = (0,0,0)
     mock_asset.data.body_link_pos_w = torch.zeros((1, 1, 3), dtype=torch.float32, device=device)
@@ -801,9 +799,7 @@ def test_compose_with_changing_position(device: str):
     wrench_composer.compose_to_body_frame()
     out_torque_2 = wrench_composer.out_torque_b.numpy()
     expected_torque_2 = np.zeros((1, 1, 3), dtype=np.float32)
-    assert np.allclose(out_torque_2, expected_torque_2, atol=1e-4), (
-        f"Expected {expected_torque_2}, got {out_torque_2}"
-    )
+    assert np.allclose(out_torque_2, expected_torque_2, atol=1e-4), f"Expected {expected_torque_2}, got {out_torque_2}"
 
 
 # ============================================================================
@@ -1081,9 +1077,7 @@ def test_compose_with_changing_position_and_quaternion(device: str):
     link_pos_torch_1 = torch.from_numpy(link_pos_np_1)
     link_quat_torch_1 = torch.from_numpy(link_quat_np_1)
 
-    mock_asset = MockRigidObject(
-        num_envs, num_bodies, device, link_pos=link_pos_torch_1, link_quat=link_quat_torch_1
-    )
+    mock_asset = MockRigidObject(num_envs, num_bodies, device, link_pos=link_pos_torch_1, link_quat=link_quat_torch_1)
     wrench_composer = WrenchComposer(mock_asset)
 
     # Add global force at position
