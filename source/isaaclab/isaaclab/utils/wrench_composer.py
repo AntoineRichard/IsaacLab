@@ -183,11 +183,6 @@ class WrenchComposer:
         if isinstance(positions, torch.Tensor):
             positions = wp.from_torch(positions, dtype=wp.vec3f)
 
-        # Fetch link positions only when needed (global forces with position offsets)
-        link_positions = None
-        if is_global and positions is not None:
-            link_positions = wp.from_torch(self._get_link_position_fn().clone(), dtype=wp.vec3f)
-
         self._active = True
         self._dirty = True
 
@@ -200,7 +195,6 @@ class WrenchComposer:
                 forces,
                 torques,
                 positions,
-                link_positions,
                 self._global_force_w,
                 self._global_torque_w,
                 self._local_force_b,
@@ -251,11 +245,6 @@ class WrenchComposer:
         elif isinstance(positions, torch.Tensor):
             positions = wp.from_torch(positions, dtype=wp.vec3f)
 
-        # Fetch link positions only when needed (global forces with position offsets)
-        link_positions = None
-        if is_global and positions.shape[0] > 0:
-            link_positions = wp.from_torch(self._get_link_position_fn().clone(), dtype=wp.vec3f)
-
         self._active = True
         self._dirty = True
 
@@ -268,7 +257,6 @@ class WrenchComposer:
                 forces,
                 torques,
                 positions,
-                link_positions,
                 self._global_force_w,
                 self._global_torque_w,
                 self._local_force_b,
@@ -304,13 +292,16 @@ class WrenchComposer:
     def compose_to_body_frame(self):
         """Compose global and local buffers into body-frame output.
 
-        Fetches current link quaternions, rotates global forces/torques into body frame
-        via ``quat_rotate_inv``, and sums with local forces/torques. Result is written
+        Fetches current link positions and quaternions. Global torques stored about
+        the world origin are corrected to be about the current CoM via
+        ``-cross(link_pos, global_force)``, then rotated into body frame via
+        ``quat_rotate_inv`` and summed with local forces/torques. Result is written
         to :attr:`out_force_b` / :attr:`out_torque_b`.
         """
         link_quaternions = wp.from_torch(
             convert_quat(self._get_link_quaternion_fn().clone(), to="xyzw"), dtype=wp.quatf
         )
+        link_positions = wp.from_torch(self._get_link_position_fn().clone(), dtype=wp.vec3f)
 
         wp.launch(
             compose_wrench_to_body_frame,
@@ -320,6 +311,7 @@ class WrenchComposer:
                 self._global_torque_w,
                 self._local_force_b,
                 self._local_torque_b,
+                link_positions,
                 link_quaternions,
                 self._out_force_b,
                 self._out_torque_b,
