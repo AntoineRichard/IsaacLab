@@ -4,12 +4,33 @@ Changelog
 0.54.4 (2026-02-13)
 ~~~~~~~~~~~~~~~~~~~
 
+Changed
+^^^^^^^
+
+* Refactored :class:`~isaaclab.utils.wrench_composer.WrenchComposer` to a dual-buffer architecture with separate
+  global (world-frame) and local (body-frame) buffers. A new
+  :meth:`~isaaclab.utils.wrench_composer.WrenchComposer.compose_to_body_frame` method rotates global forces/torques into
+  the body frame at apply time using the current body orientation, then sums with local forces/torques. Composed
+  wrenches are now applied to PhysX with ``is_global=False``.
+* Replaced the ``add_forces_and_torques_at_position`` and ``set_forces_and_torques_at_position`` warp kernels with
+  ``set_forces_to_dual_buffers``, ``add_forces_to_dual_buffers``, ``add_raw_wrench_buffers``, and
+  ``compose_wrench_to_body_frame``.
+
 Fixed
 ^^^^^
 
-* Fixed :class:`~isaaclab.utils.wrench_composer.WrenchComposer` to correctly handle composed wrenches when link poses
-  change during simulation. Forces and torques are composed and stored in "mixed" frame representation (global frame
-  orientation, link frame position) and passed to Physx  with `is_global=True`.
+* Fixed :class:`~isaaclab.utils.wrench_composer.WrenchComposer` not correctly updating the composed torque from global
+  positional forces when the body moves. Global positional torques are now stored as ``cross(P, F)`` about the world
+  origin and corrected at compose time via ``-cross(link_pos, F)`` to produce torque about the current CoM.
+* Fixed :meth:`~isaaclab.utils.wrench_composer.WrenchComposer.reset` not clearing the ``_active`` flag when called
+  with ``slice(None)`` (the path taken by all asset reset methods). Added a ``ValueError`` for unsupported arbitrary
+  slices.
+
+Added
+^^^^^
+
+* Added integration tests for :class:`~isaaclab.utils.wrench_composer.WrenchComposer` that validate global and local
+  force/torque behavior with a full physics simulation in the loop.
 
 
 0.54.3 (2026-02-04)

@@ -597,3 +597,105 @@ def test_multi_cube_different_torques_from_same_force(device):
         assert abs(lin_vel_y_0 - lin_vel_y_1) < 0.5, (
             f"Both cubes should have similar Y velocity, got {lin_vel_y_0} and {lin_vel_y_1}"
         )
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_global_force_torque_far_from_origin(device):
+    """Test that global force torque correction produces correct physics at large world coordinates.
+
+    Two cubes with identical relative geometry (force offset = (1, 0, 0) from CoM):
+      Cube 0 at (0, 0, 1)    — near origin (reference)
+      Cube 1 at (2000, 0, 1) — far from origin
+
+    Both get global F=(0, 10, 0) at offset (1, 0, 0) from their respective CoMs.
+    Expected torque: cross((1,0,0), (0,10,0)) = (0, 0, 10) for both.
+
+    The compose kernel computes cross(P, F) - cross(link_pos, F):
+      Cube 0: cross((1,0,1), F) - cross((0,0,1), F) — small values, no cancellation
+      Cube 1: cross((2001,0,1), F) - cross((2000,0,1), F) — large values nearly cancel
+
+    Both cubes should produce the same angular and linear velocities.
+    """
+    with build_simulation_context(device=device, gravity_enabled=False, auto_add_lighting=True) as sim:
+        sim._app_control_on_stop_handle = None
+        cube_object, _ = generate_cubes_scene(num_cubes=2, height=1.0, device=device)
+
+        sim.reset()
+
+        body_ids, _ = cube_object.find_bodies(".*")
+
+        # Position cubes: Cube 0 near origin, Cube 1 far from origin
+        root_state = cube_object.data.root_state_w.clone()
+        # Cube 0 at (0, 0, 1)
+        root_state[0, 0] = 0.0
+        root_state[0, 1] = 0.0
+        root_state[0, 2] = 1.0
+        root_state[0, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)
+        root_state[0, 7:] = 0.0
+        # Cube 1 at (2000, 0, 1)
+        root_state[1, 0] = 2000.0
+        root_state[1, 1] = 0.0
+        root_state[1, 2] = 1.0
+        root_state[1, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)
+        root_state[1, 7:] = 0.0
+        cube_object.write_root_state_to_sim(root_state)
+        sim.step()
+        cube_object.update(sim.cfg.dt)
+
+        # Apply F=(0, 10, 0) at +1m X offset from each cube's CoM
+        forces = torch.zeros(2, len(body_ids), 3, device=device)
+        forces[..., 1] = FORCE_MAGNITUDE  # +Y force
+        torques = torch.zeros(2, len(body_ids), 3, device=device)
+
+        # Positions: each cube's CoM + (1, 0, 0)
+        com_pos = cube_object.data.body_com_pos_w[:, body_ids, :3].clone()
+        positions = com_pos.clone()
+        positions[..., 0] += 1.0  # +1m X offset from CoM
+
+        cube_object.permanent_wrench_composer.set_forces_and_torques(
+            forces=forces,
+            torques=torques,
+            positions=positions,
+            body_ids=body_ids,
+            is_global=True,
+        )
+
+        # Run 50 steps
+        for _ in range(50):
+            cube_object.write_data_to_sim()
+            sim.step()
+            cube_object.update(sim.cfg.dt)
+
+        # Both cubes should have positive omega_z (cross((1,0,0), (0,10,0)) = (0,0,10))
+        omega_z_0 = cube_object.data.root_ang_vel_w[0, 2].item()
+        omega_z_1 = cube_object.data.root_ang_vel_w[1, 2].item()
+        assert omega_z_0 > 0.1, f"Cube 0: expected positive omega_z, got {omega_z_0}"
+        assert omega_z_1 > 0.1, f"Cube 1: expected positive omega_z, got {omega_z_1}"
+
+        # omega_z values should match within 1% (same relative geometry)
+        torch.testing.assert_close(
+            torch.tensor(omega_z_0),
+            torch.tensor(omega_z_1),
+            rtol=0.01,
+            atol=0.0,
+            msg=lambda msg: (
+                f"Angular velocity mismatch between near-origin and far-from-origin cubes:\n"
+                f"  Cube 0 (near): omega_z = {omega_z_0:.6f}\n"
+                f"  Cube 1 (far):  omega_z = {omega_z_1:.6f}\n{msg}"
+            ),
+        )
+
+        # Linear velocity in +Y should also match
+        lin_vel_y_0 = cube_object.data.root_lin_vel_w[0, 1].item()
+        lin_vel_y_1 = cube_object.data.root_lin_vel_w[1, 1].item()
+        torch.testing.assert_close(
+            torch.tensor(lin_vel_y_0),
+            torch.tensor(lin_vel_y_1),
+            rtol=0.01,
+            atol=0.0,
+            msg=lambda msg: (
+                f"Linear velocity mismatch between near-origin and far-from-origin cubes:\n"
+                f"  Cube 0 (near): lin_vel_y = {lin_vel_y_0:.6f}\n"
+                f"  Cube 1 (far):  lin_vel_y = {lin_vel_y_1:.6f}\n{msg}"
+            ),
+        )

@@ -629,7 +629,7 @@ def test_composition_local_and_global(device: str):
 
     out_force_np = wrench_composer.out_force_b.numpy()
     assert np.allclose(out_force_np, expected_total, atol=1e-4, rtol=1e-5), (
-        f"Mixed local/global composition failed.\nExpected:\n{expected_total}\nGot:\n{out_force_np}"
+        f"local/global composition failed.\nExpected:\n{expected_total}\nGot:\n{out_force_np}"
     )
 
 
@@ -1117,6 +1117,62 @@ def test_compose_with_changing_position_and_quaternion(device: str):
 
     # Verify they differ (different pose → different output)
     assert not np.allclose(expected_torque_1, expected_torque_2, atol=1e-3)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_large_origin_offset_precision(device: str):
+    """Test that compose correction doesn't lose unacceptable precision at large world offsets.
+
+    The compose kernel computes: cross(P, F) - cross(link_pos, F) = cross(P - link_pos, F).
+    When link_pos is large (e.g., 2000), both cross products are ~O(20000) but nearly cancel
+    to ~O(10), risking catastrophic cancellation in float32.
+
+    This test compares the kernel's result against a direct cross(P - link_pos, F) reference
+    (which has no cancellation) across increasing world offsets.
+    """
+    rng = np.random.default_rng(seed=50)
+    num_envs, num_bodies = 10, 3
+
+    offsets = [0.0, 100.0, 1000.0, 2000.0, 5000.0]
+
+    for world_offset in offsets:
+        # Random small perturbations around the offset
+        link_pos_np = rng.uniform(-1.0, 1.0, (num_envs, num_bodies, 3)).astype(np.float32)
+        link_pos_np[..., 0] += world_offset  # shift along X
+
+        # Force application point: 1m relative offset from link
+        relative_offset_np = rng.uniform(-2.0, 2.0, (num_envs, num_bodies, 3)).astype(np.float32)
+        positions_np = link_pos_np + relative_offset_np
+
+        # Random force and quaternion
+        forces_np = rng.uniform(-10.0, 10.0, (num_envs, num_bodies, 3)).astype(np.float32)
+        link_quat_np = random_unit_quaternion_np(rng, (num_envs, num_bodies))
+
+        link_pos_torch = torch.from_numpy(link_pos_np)
+        link_quat_torch = torch.from_numpy(link_quat_np)
+
+        mock_asset = MockRigidObject(num_envs, num_bodies, device, link_pos=link_pos_torch, link_quat=link_quat_torch)
+        wrench_composer = WrenchComposer(mock_asset)
+
+        wrench_composer.add_forces_and_torques(
+            forces=wp.from_numpy(forces_np, dtype=wp.vec3f, device=device),
+            positions=wp.from_numpy(positions_np, dtype=wp.vec3f, device=device),
+            is_global=True,
+        )
+        wrench_composer.compose_to_body_frame()
+        actual_torque_b = wrench_composer.out_torque_b.numpy()
+
+        # Reference: compute cross(P - link_pos, F) directly (no cancellation)
+        reference_torque_w = np.cross(relative_offset_np, forces_np)
+        reference_torque_b = quat_rotate_inv_np(link_quat_np, reference_torque_w)
+
+        # With atol=0.1, we accept ~0.01 rad/s error on a 1kg cube — acceptable for robotics
+        # but flags gross precision issues from catastrophic cancellation.
+        assert np.allclose(actual_torque_b, reference_torque_b, atol=0.1, rtol=0.0), (
+            f"Precision loss at world offset {world_offset}:\n"
+            f"  max absolute error: {np.max(np.abs(actual_torque_b - reference_torque_b)):.6f}\n"
+            f"  mean absolute error: {np.mean(np.abs(actual_torque_b - reference_torque_b)):.6f}"
+        )
 
 
 # ============================================================================

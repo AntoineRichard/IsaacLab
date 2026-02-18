@@ -324,10 +324,13 @@ class WrenchComposer:
         """Reset all input and output buffers to zero.
 
         Args:
-            env_ids: Environment indices to reset. If None, resets all.
+            env_ids: Environment indices to reset. If None or slice(None), resets all.
             env_mask: Environment mask (unused, kept for API compatibility).
+
+        Raises:
+            ValueError: If env_ids is a slice other than slice(None).
         """
-        if env_ids is None:
+        if env_ids is None or env_ids == slice(None):
             self._global_force_w.zero_()
             self._global_torque_w.zero_()
             self._local_force_b.zero_()
@@ -336,16 +339,16 @@ class WrenchComposer:
             self._out_torque_b.zero_()
             self._active = False
         else:
+            if isinstance(env_ids, slice):
+                raise ValueError(
+                    f"WrenchComposer.reset() does not support arbitrary slices, got {env_ids!r}. "
+                    "Use None, slice(None), or explicit index arrays instead."
+                )
             indices = env_ids
             if isinstance(env_ids, torch.Tensor):
                 indices = wp.from_torch(env_ids.to(torch.int32), dtype=wp.int32)
             elif isinstance(env_ids, list):
                 indices = wp.array(env_ids, dtype=wp.int32, device=self.device)
-            elif isinstance(env_ids, slice):
-                if env_ids == slice(None):
-                    indices = self._ALL_ENV_INDICES_WP
-                else:
-                    indices = env_ids
 
             self._global_force_w[indices].zero_()
             self._global_torque_w[indices].zero_()
