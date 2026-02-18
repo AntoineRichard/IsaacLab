@@ -846,9 +846,7 @@ def test_add_raw_buffers_from(device: str):
     composer_a.add_raw_buffers_from(composer_b)
 
     # Global forces without positions go to global_force_at_com_w
-    assert np.allclose(
-        composer_a.global_force_at_com_w.numpy(), forces_a_global_np + forces_b_global_np, atol=1e-4
-    )
+    assert np.allclose(composer_a.global_force_at_com_w.numpy(), forces_a_global_np + forces_b_global_np, atol=1e-4)
     assert np.allclose(composer_a.local_force_b.numpy(), forces_a_local_np + forces_b_local_np, atol=1e-4)
 
 
@@ -1365,15 +1363,11 @@ def test_add_raw_buffers_from_with_force_at_com(device: str):
 
     # Composer A: global force without position (at CoM)
     fa_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
-    composer_a.add_forces_and_torques(
-        forces=wp.from_numpy(fa_np, dtype=wp.vec3f, device=device), is_global=True
-    )
+    composer_a.add_forces_and_torques(forces=wp.from_numpy(fa_np, dtype=wp.vec3f, device=device), is_global=True)
 
     # Composer B: global force without position (at CoM)
     fb_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
-    composer_b.add_forces_and_torques(
-        forces=wp.from_numpy(fb_np, dtype=wp.vec3f, device=device), is_global=True
-    )
+    composer_b.add_forces_and_torques(forces=wp.from_numpy(fb_np, dtype=wp.vec3f, device=device), is_global=True)
 
     # Merge B into A
     composer_a.add_raw_buffers_from(composer_b)
@@ -1506,8 +1500,8 @@ def test_partial_reset_preserves_other_envs(device: str):
         wrench_composer._out_torque_b,
     ]:
         buf_np = buf.numpy()
-        assert np.allclose(buf_np[0], zeros, atol=1e-7), f"Env 0 not zeroed in buffer"
-        assert np.allclose(buf_np[2], zeros, atol=1e-7), f"Env 2 not zeroed in buffer"
+        assert np.allclose(buf_np[0], zeros, atol=1e-7), "Env 0 not zeroed in buffer"
+        assert np.allclose(buf_np[2], zeros, atol=1e-7), "Env 2 not zeroed in buffer"
 
     # Env 1 should retain its data
     assert np.allclose(wrench_composer.local_force_b.numpy()[1], forces_local_np[1], atol=1e-4)
