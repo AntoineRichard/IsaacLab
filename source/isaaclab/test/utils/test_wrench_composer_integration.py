@@ -6,7 +6,6 @@
 """Integration tests for wrench composer with rigid objects.
 
 These tests validate that global forces/torques remain invariant under body rotation
-(PR #4604 fix: store composed wrenches in mixed frame, apply with is_global=True).
 """
 
 """Launch Isaac Sim Simulator first."""
