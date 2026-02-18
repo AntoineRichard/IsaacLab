@@ -315,6 +315,7 @@ def set_forces_to_dual_buffers(
     positions: wp.array2d(dtype=wp.vec3f),
     global_force_w: wp.array2d(dtype=wp.vec3f),
     global_torque_w: wp.array2d(dtype=wp.vec3f),
+    global_force_at_com_w: wp.array2d(dtype=wp.vec3f),
     local_force_b: wp.array2d(dtype=wp.vec3f),
     local_torque_b: wp.array2d(dtype=wp.vec3f),
     is_global: bool,
@@ -328,14 +329,18 @@ def set_forces_to_dual_buffers(
     world origin). At compose time, the correction ``-cross(link_pos, F)`` converts this
     to torque about the current CoM.
 
+    Global forces without positions are routed to ``global_force_at_com_w`` — they are applied
+    at the body's CoM and produce no positional torque.
+
     Args:
         env_ids: Environment indices.
         body_ids: Body indices.
         forces: Input forces. Shape: (len(env_ids), len(body_ids)).
         torques: Input torques. Shape: (len(env_ids), len(body_ids)).
         positions: Application positions. Shape: (len(env_ids), len(body_ids)).
-        global_force_w: Output global force buffer. Shape: (num_envs, num_bodies).
+        global_force_w: Output global force buffer (positional). Shape: (num_envs, num_bodies).
         global_torque_w: Output global torque buffer. Shape: (num_envs, num_bodies).
+        global_force_at_com_w: Output global force at CoM buffer (no torque). Shape: (num_envs, num_bodies).
         local_force_b: Output local force buffer. Shape: (num_envs, num_bodies).
         local_torque_b: Output local torque buffer. Shape: (num_envs, num_bodies).
         is_global: Whether forces/torques are in the global frame.
@@ -348,14 +353,16 @@ def set_forces_to_dual_buffers(
         if torques:
             global_torque_w[ei, bi] = torques[tid_env, tid_body]
         if forces:
-            global_force_w[ei, bi] = forces[tid_env, tid_body]
             if positions:
+                global_force_w[ei, bi] = forces[tid_env, tid_body]
                 if torques:
                     global_torque_w[ei, bi] = global_torque_w[ei, bi] + wp.cross(
                         positions[tid_env, tid_body], forces[tid_env, tid_body]
                     )
                 else:
                     global_torque_w[ei, bi] = wp.cross(positions[tid_env, tid_body], forces[tid_env, tid_body])
+            else:
+                global_force_at_com_w[ei, bi] = forces[tid_env, tid_body]
     else:
         if torques:
             local_torque_b[ei, bi] = torques[tid_env, tid_body]
@@ -379,6 +386,7 @@ def add_forces_to_dual_buffers(
     positions: wp.array2d(dtype=wp.vec3f),
     global_force_w: wp.array2d(dtype=wp.vec3f),
     global_torque_w: wp.array2d(dtype=wp.vec3f),
+    global_force_at_com_w: wp.array2d(dtype=wp.vec3f),
     local_force_b: wp.array2d(dtype=wp.vec3f),
     local_torque_b: wp.array2d(dtype=wp.vec3f),
     is_global: bool,
@@ -393,8 +401,9 @@ def add_forces_to_dual_buffers(
         forces: Input forces. Shape: (len(env_ids), len(body_ids)).
         torques: Input torques. Shape: (len(env_ids), len(body_ids)).
         positions: Application positions. Shape: (len(env_ids), len(body_ids)).
-        global_force_w: Output global force buffer. Shape: (num_envs, num_bodies).
+        global_force_w: Output global force buffer (positional). Shape: (num_envs, num_bodies).
         global_torque_w: Output global torque buffer. Shape: (num_envs, num_bodies).
+        global_force_at_com_w: Output global force at CoM buffer (no torque). Shape: (num_envs, num_bodies).
         local_force_b: Output local force buffer. Shape: (num_envs, num_bodies).
         local_torque_b: Output local torque buffer. Shape: (num_envs, num_bodies).
         is_global: Whether forces/torques are in the global frame.
@@ -405,11 +414,13 @@ def add_forces_to_dual_buffers(
 
     if is_global:
         if forces:
-            global_force_w[ei, bi] = global_force_w[ei, bi] + forces[tid_env, tid_body]
             if positions:
+                global_force_w[ei, bi] = global_force_w[ei, bi] + forces[tid_env, tid_body]
                 global_torque_w[ei, bi] = global_torque_w[ei, bi] + wp.cross(
                     positions[tid_env, tid_body], forces[tid_env, tid_body]
                 )
+            else:
+                global_force_at_com_w[ei, bi] = global_force_at_com_w[ei, bi] + forces[tid_env, tid_body]
         if torques:
             global_torque_w[ei, bi] = global_torque_w[ei, bi] + torques[tid_env, tid_body]
     else:
@@ -427,31 +438,36 @@ def add_forces_to_dual_buffers(
 def add_raw_wrench_buffers(
     src_gf: wp.array2d(dtype=wp.vec3f),
     src_gt: wp.array2d(dtype=wp.vec3f),
+    src_gfc: wp.array2d(dtype=wp.vec3f),
     src_lf: wp.array2d(dtype=wp.vec3f),
     src_lt: wp.array2d(dtype=wp.vec3f),
     dst_gf: wp.array2d(dtype=wp.vec3f),
     dst_gt: wp.array2d(dtype=wp.vec3f),
+    dst_gfc: wp.array2d(dtype=wp.vec3f),
     dst_lf: wp.array2d(dtype=wp.vec3f),
     dst_lt: wp.array2d(dtype=wp.vec3f),
 ):
     """Element-wise adds source wrench buffers into destination buffers.
 
-    Used to merge one composer's 4 buffers (global force/torque, local force/torque)
-    into another composer's buffers.
+    Used to merge one composer's 5 buffers (global force/torque, global force at CoM,
+    local force/torque) into another composer's buffers.
 
     Args:
-        src_gf: Source global forces.
+        src_gf: Source global forces (positional).
         src_gt: Source global torques.
+        src_gfc: Source global forces at CoM.
         src_lf: Source local forces.
         src_lt: Source local torques.
         dst_gf: Destination global forces (modified in-place).
         dst_gt: Destination global torques (modified in-place).
+        dst_gfc: Destination global forces at CoM (modified in-place).
         dst_lf: Destination local forces (modified in-place).
         dst_lt: Destination local torques (modified in-place).
     """
     tid_env, tid_body = wp.tid()
     dst_gf[tid_env, tid_body] = dst_gf[tid_env, tid_body] + src_gf[tid_env, tid_body]
     dst_gt[tid_env, tid_body] = dst_gt[tid_env, tid_body] + src_gt[tid_env, tid_body]
+    dst_gfc[tid_env, tid_body] = dst_gfc[tid_env, tid_body] + src_gfc[tid_env, tid_body]
     dst_lf[tid_env, tid_body] = dst_lf[tid_env, tid_body] + src_lf[tid_env, tid_body]
     dst_lt[tid_env, tid_body] = dst_lt[tid_env, tid_body] + src_lt[tid_env, tid_body]
 
@@ -460,6 +476,7 @@ def add_raw_wrench_buffers(
 def compose_wrench_to_body_frame(
     global_force_w: wp.array2d(dtype=wp.vec3f),
     global_torque_w: wp.array2d(dtype=wp.vec3f),
+    global_force_at_com_w: wp.array2d(dtype=wp.vec3f),
     local_force_b: wp.array2d(dtype=wp.vec3f),
     local_torque_b: wp.array2d(dtype=wp.vec3f),
     link_positions: wp.array2d(dtype=wp.vec3f),
@@ -473,9 +490,13 @@ def compose_wrench_to_body_frame(
     corrects them to be about the current CoM by subtracting ``cross(link_pos, F)``,
     then rotates into body frame using ``quat_rotate_inv`` and adds local-frame values.
 
+    Global forces at CoM (``global_force_at_com_w``) contribute to force output but
+    produce no positional torque — they bypass the ``cross(link_pos, F)`` correction.
+
     Args:
-        global_force_w: Global forces in world frame.
+        global_force_w: Global forces in world frame (with positions, participate in torque correction).
         global_torque_w: Global torques in world frame (about world origin).
+        global_force_at_com_w: Global forces applied at CoM (no positional torque).
         local_force_b: Local forces in body frame.
         local_torque_b: Local torques in body frame.
         link_positions: Current link positions in world frame.
@@ -485,11 +506,12 @@ def compose_wrench_to_body_frame(
     """
     tid_env, tid_body = wp.tid()
     q = link_quaternions[tid_env, tid_body]
+    # Total world-frame force: positional + at-CoM
+    total_force_w = global_force_w[tid_env, tid_body] + global_force_at_com_w[tid_env, tid_body]
     # Correct global torque: stored about world origin → about current CoM
+    # Only positional forces (global_force_w) participate in the correction
     corrected_torque_w = global_torque_w[tid_env, tid_body] - wp.cross(
         link_positions[tid_env, tid_body], global_force_w[tid_env, tid_body]
     )
-    out_force_b[tid_env, tid_body] = (
-        wp.quat_rotate_inv(q, global_force_w[tid_env, tid_body]) + local_force_b[tid_env, tid_body]
-    )
+    out_force_b[tid_env, tid_body] = wp.quat_rotate_inv(q, total_force_w) + local_force_b[tid_env, tid_body]
     out_torque_b[tid_env, tid_body] = wp.quat_rotate_inv(q, corrected_torque_w) + local_torque_b[tid_env, tid_body]

@@ -25,6 +25,11 @@ Fixed
 * Fixed :meth:`~isaaclab.utils.wrench_composer.WrenchComposer.reset` not clearing the ``_active`` flag when called
   with ``slice(None)`` (the path taken by all asset reset methods). Added a ``ValueError`` for unsupported arbitrary
   slices.
+* Fixed :class:`~isaaclab.utils.wrench_composer.WrenchComposer` producing spurious torque when global forces are
+  applied without explicit positions. Previously, the compose kernel always applied the ``-cross(link_pos, F)``
+  correction, causing torque proportional to the body's distance from the world origin. Global forces without
+  positions are now routed to a separate ``global_force_at_com_w`` buffer that bypasses the positional torque
+  correction, correctly applying the force at the body's center of mass.
 
 Added
 ^^^^^

@@ -64,6 +64,7 @@ class WrenchComposer:
         # Input buffers: global (world-frame) and local (body-frame)
         self._global_force_w = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
         self._global_torque_w = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
+        self._global_force_at_com_w = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
         self._local_force_b = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
         self._local_torque_b = wp.zeros(shape, dtype=wp.vec3f, device=self.device)
 
@@ -97,6 +98,11 @@ class WrenchComposer:
     def global_torque_w(self) -> wp.array:
         """Global (world-frame) torque buffer. Shape: (num_envs, num_bodies) vec3f."""
         return self._global_torque_w
+
+    @property
+    def global_force_at_com_w(self) -> wp.array:
+        """Global force applied at CoM (no positional torque). Shape: (num_envs, num_bodies) vec3f."""
+        return self._global_force_at_com_w
 
     @property
     def local_force_b(self) -> wp.array:
@@ -162,12 +168,26 @@ class WrenchComposer:
         Routes to global buffers when ``is_global=True``, local buffers when ``is_global=False``.
         Position offsets contribute additional torque via cross product.
 
+        When ``is_global=True``:
+
+        - Forces **with** positions are stored in the global positional buffer. The torque
+          ``cross(P, F)`` is stored about the world origin and corrected at compose time.
+        - Forces **without** positions are applied at the body's center of mass (no positional torque).
+        - Torques are stored directly in the global torque buffer.
+
+        When ``is_global=False``:
+
+        - Forces and torques are stored in the local (body-frame) buffers.
+        - Positions are local offsets from the link frame contributing ``cross(pos, F)`` torque.
+
         Args:
             forces: Forces. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
             torques: Torques. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
-            positions: Positions. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
-                When is_global is False, positions are local offsets from the link frame.
-                When is_global is True, positions are global coordinates.
+            positions: Application points for forces. Shape: (len(env_ids), len(body_ids), 3).
+                Defaults to None.
+                When ``is_global=False``, positions are local offsets from the link frame.
+                When ``is_global=True``, positions are world-frame coordinates. If None,
+                forces are applied at the body's center of mass (no positional torque).
             body_ids: Body ids. Defaults to None (all bodies).
             env_ids: Environment ids. Defaults to None (all environments).
             is_global: Whether forces and torques are in global frame. Defaults to False.
@@ -197,6 +217,7 @@ class WrenchComposer:
                 positions,
                 self._global_force_w,
                 self._global_torque_w,
+                self._global_force_at_com_w,
                 self._local_force_b,
                 self._local_torque_b,
                 is_global,
@@ -218,12 +239,26 @@ class WrenchComposer:
         Routes to global buffers when ``is_global=True``, local buffers when ``is_global=False``.
         Position offsets contribute additional torque via cross product.
 
+        When ``is_global=True``:
+
+        - Forces **with** positions are stored in the global positional buffer. The torque
+          ``cross(P, F)`` is stored about the world origin and corrected at compose time.
+        - Forces **without** positions are applied at the body's center of mass (no positional torque).
+        - Torques are stored directly in the global torque buffer.
+
+        When ``is_global=False``:
+
+        - Forces and torques are stored in the local (body-frame) buffers.
+        - Positions are local offsets from the link frame contributing ``cross(pos, F)`` torque.
+
         Args:
             forces: Forces. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
             torques: Torques. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
-            positions: Positions. Shape: (len(env_ids), len(body_ids), 3). Defaults to None.
-                When is_global is False, positions are local offsets from the link frame.
-                When is_global is True, positions are global coordinates.
+            positions: Application points for forces. Shape: (len(env_ids), len(body_ids), 3).
+                Defaults to None.
+                When ``is_global=False``, positions are local offsets from the link frame.
+                When ``is_global=True``, positions are world-frame coordinates. If None,
+                forces are applied at the body's center of mass (no positional torque).
             body_ids: Body ids. Defaults to None (all bodies).
             env_ids: Environment ids. Defaults to None (all environments).
             is_global: Whether forces and torques are in global frame. Defaults to False.
@@ -259,6 +294,7 @@ class WrenchComposer:
                 positions,
                 self._global_force_w,
                 self._global_torque_w,
+                self._global_force_at_com_w,
                 self._local_force_b,
                 self._local_torque_b,
                 is_global,
@@ -279,10 +315,12 @@ class WrenchComposer:
             inputs=[
                 other._global_force_w,
                 other._global_torque_w,
+                other._global_force_at_com_w,
                 other._local_force_b,
                 other._local_torque_b,
                 self._global_force_w,
                 self._global_torque_w,
+                self._global_force_at_com_w,
                 self._local_force_b,
                 self._local_torque_b,
             ],
@@ -309,6 +347,7 @@ class WrenchComposer:
             inputs=[
                 self._global_force_w,
                 self._global_torque_w,
+                self._global_force_at_com_w,
                 self._local_force_b,
                 self._local_torque_b,
                 link_positions,
@@ -333,6 +372,7 @@ class WrenchComposer:
         if env_ids is None or env_ids == slice(None):
             self._global_force_w.zero_()
             self._global_torque_w.zero_()
+            self._global_force_at_com_w.zero_()
             self._local_force_b.zero_()
             self._local_torque_b.zero_()
             self._out_force_b.zero_()
@@ -352,6 +392,7 @@ class WrenchComposer:
 
             self._global_force_w[indices].zero_()
             self._global_torque_w[indices].zero_()
+            self._global_force_at_com_w[indices].zero_()
             self._local_force_b[indices].zero_()
             self._local_torque_b[indices].zero_()
             self._out_force_b[indices].zero_()

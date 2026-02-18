@@ -519,28 +519,26 @@ class RigidObjectCollection(AssetBase):
         time (for instance, during the policy control). This function allows us to store the external force and torque
         into buffers which are then applied to the simulation at every step.
 
-        .. caution::
-            If the function is called with empty forces and torques, then this function disables the application
-            of external wrench to the simulation.
-
-            .. code-block:: python
-
-                # example of disabling external wrench
-                asset.set_external_force_and_torque(forces=torch.zeros(0, 0, 3), torques=torch.zeros(0, 0, 3))
-
         .. note::
             This function does not apply the external wrench to the simulation. It only fills the buffers with
             the desired values. To apply the external wrench, call the :meth:`write_data_to_sim` function
             right before the simulation step.
 
         Args:
-            forces: External forces in bodies' local frame. Shape is (len(env_ids), len(object_ids), 3).
-            torques: External torques in bodies' local frame. Shape is (len(env_ids), len(object_ids), 3).
-            positions: External wrench positions in bodies' local frame. Shape is (len(env_ids), len(object_ids), 3).
+            forces: External forces. Shape is (len(env_ids), len(object_ids), 3).
+                When ``is_global=False``, forces are in the bodies' local frame.
+                When ``is_global=True``, forces are in the world frame.
+            torques: External torques. Shape is (len(env_ids), len(object_ids), 3).
+                When ``is_global=False``, torques are in the bodies' local frame.
+                When ``is_global=True``, torques are in the world frame.
+            positions: Application points for forces. Shape is (len(env_ids), len(object_ids), 3).
+                Defaults to None.
+                When ``is_global=False``, positions are local offsets from the link frame.
+                When ``is_global=True``, positions are world-frame coordinates. If None,
+                forces are applied at the body's center of mass (no positional torque).
             object_ids: Object indices to apply external wrench to. Defaults to None (all objects).
             env_ids: Environment indices to apply external wrench to. Defaults to None (all instances).
-            is_global: Whether to apply the external wrench in the global frame. Defaults to False. If set to False,
-                the external wrench is applied in the link frame of the bodies.
+            is_global: Whether forces and torques are in the global (world) frame. Defaults to False.
         """
         logger.warning(
             "The function 'set_external_force_and_torque' will be deprecated in a future release. Please"
