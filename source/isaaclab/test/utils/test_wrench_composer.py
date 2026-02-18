@@ -1380,3 +1380,250 @@ def test_add_raw_buffers_from_with_force_at_com(device: str):
 
     # Verify merged global_force_at_com_w buffer
     assert np.allclose(composer_a.global_force_at_com_w.numpy(), fa_np + fb_np, atol=1e-4)
+
+
+# ============================================================================
+# API Behavior Tests
+# ============================================================================
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_active_property_lifecycle(device: str):
+    """Test active property transitions: False → True after add → False after reset."""
+    num_envs, num_bodies = 4, 2
+    mock_asset = MockRigidObject(num_envs, num_bodies, device)
+    wrench_composer = WrenchComposer(mock_asset)
+
+    # Initially inactive
+    assert wrench_composer.active is False
+
+    # Active after adding forces
+    forces_np = np.ones((num_envs, num_bodies, 3), dtype=np.float32)
+    forces = wp.from_numpy(forces_np, dtype=wp.vec3f, device=device)
+    wrench_composer.add_forces_and_torques(forces=forces)
+    assert wrench_composer.active is True
+
+    # Inactive after full reset
+    wrench_composer.reset()
+    assert wrench_composer.active is False
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_set_clears_all_buffers(device: str):
+    """Test that set clears all 5 input buffers before writing new values.
+
+    1. set(forces=F1, positions=P1, is_global=True) → writes global_force_w + global_torque_w
+    2. set(forces=F2, is_global=True) (no positions) → writes global_force_at_com_w, clears global_force_w
+    3. Verify global_force_w is zero (cleared), global_force_at_com_w has F2
+    4. Compose and verify output includes only F2
+    """
+    rng = np.random.default_rng(seed=100)
+    num_envs, num_bodies = 4, 2
+
+    link_quat_np = random_unit_quaternion_np(rng, (num_envs, num_bodies))
+    link_quat_torch = torch.from_numpy(link_quat_np)
+    mock_asset = MockRigidObject(num_envs, num_bodies, device, link_quat=link_quat_torch)
+    wrench_composer = WrenchComposer(mock_asset)
+    zeros = np.zeros((num_envs, num_bodies, 3), dtype=np.float32)
+
+    # Step 1: set with positions → global_force_w + global_torque_w
+    f1_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    p1_np = rng.uniform(-10.0, 10.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    wrench_composer.set_forces_and_torques(
+        forces=wp.from_numpy(f1_np, dtype=wp.vec3f, device=device),
+        positions=wp.from_numpy(p1_np, dtype=wp.vec3f, device=device),
+        is_global=True,
+    )
+    assert np.allclose(wrench_composer.global_force_w.numpy(), f1_np, atol=1e-4)
+
+    # Step 2: set without positions → global_force_at_com_w; should clear global_force_w
+    f2_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    wrench_composer.set_forces_and_torques(
+        forces=wp.from_numpy(f2_np, dtype=wp.vec3f, device=device),
+        is_global=True,
+    )
+
+    # Step 3: global_force_w cleared, only global_force_at_com_w has data
+    assert np.allclose(wrench_composer.global_force_w.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.global_torque_w.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.global_force_at_com_w.numpy(), f2_np, atol=1e-4)
+    assert np.allclose(wrench_composer.local_force_b.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.local_torque_b.numpy(), zeros, atol=1e-7)
+
+    # Step 4: compose — only F2 contributes (no stale F1)
+    wrench_composer.compose_to_body_frame()
+    expected_force_b = quat_rotate_inv_np(link_quat_np, f2_np)
+    assert np.allclose(wrench_composer.out_force_b.numpy(), expected_force_b, atol=1e-3, rtol=1e-4)
+    # No positional torque — force at CoM
+    assert np.allclose(wrench_composer.out_torque_b.numpy(), zeros, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_partial_reset_preserves_other_envs(device: str):
+    """Test that reset(env_ids=[0, 2]) zeros envs 0 and 2 but preserves env 1."""
+    rng = np.random.default_rng(seed=101)
+    num_envs, num_bodies = 3, 2
+
+    mock_asset = MockRigidObject(num_envs, num_bodies, device)
+    wrench_composer = WrenchComposer(mock_asset)
+
+    # Add forces to all 3 envs (local + global + global at CoM)
+    forces_local_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    forces_global_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    positions_np = rng.uniform(-10.0, 10.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    forces_at_com_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    torques_local_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+
+    wrench_composer.add_forces_and_torques(
+        forces=wp.from_numpy(forces_local_np, dtype=wp.vec3f, device=device),
+        torques=wp.from_numpy(torques_local_np, dtype=wp.vec3f, device=device),
+        is_global=False,
+    )
+    wrench_composer.add_forces_and_torques(
+        forces=wp.from_numpy(forces_global_np, dtype=wp.vec3f, device=device),
+        positions=wp.from_numpy(positions_np, dtype=wp.vec3f, device=device),
+        is_global=True,
+    )
+    wrench_composer.add_forces_and_torques(
+        forces=wp.from_numpy(forces_at_com_np, dtype=wp.vec3f, device=device),
+        is_global=True,
+    )
+
+    # Reset envs 0 and 2 only
+    reset_ids = wp.array([0, 2], dtype=wp.int32, device=device)
+    wrench_composer.reset(env_ids=reset_ids)
+
+    zeros = np.zeros((num_bodies, 3), dtype=np.float32)
+
+    # All 7 buffers: envs 0 and 2 should be zeroed
+    for buf in [
+        wrench_composer.global_force_w,
+        wrench_composer.global_torque_w,
+        wrench_composer.global_force_at_com_w,
+        wrench_composer.local_force_b,
+        wrench_composer.local_torque_b,
+        wrench_composer._out_force_b,
+        wrench_composer._out_torque_b,
+    ]:
+        buf_np = buf.numpy()
+        assert np.allclose(buf_np[0], zeros, atol=1e-7), f"Env 0 not zeroed in buffer"
+        assert np.allclose(buf_np[2], zeros, atol=1e-7), f"Env 2 not zeroed in buffer"
+
+    # Env 1 should retain its data
+    assert np.allclose(wrench_composer.local_force_b.numpy()[1], forces_local_np[1], atol=1e-4)
+    assert np.allclose(wrench_composer.local_torque_b.numpy()[1], torques_local_np[1], atol=1e-4)
+    assert np.allclose(wrench_composer.global_force_w.numpy()[1], forces_global_np[1], atol=1e-4)
+    expected_global_torque_1 = np.cross(positions_np[1], forces_global_np[1])
+    assert np.allclose(wrench_composer.global_torque_w.numpy()[1], expected_global_torque_1, atol=1e-3)
+    assert np.allclose(wrench_composer.global_force_at_com_w.numpy()[1], forces_at_com_np[1], atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_torch_tensor_input_conversion(device: str):
+    """Test that add_forces_and_torques correctly handles torch.Tensor inputs."""
+    rng = np.random.default_rng(seed=102)
+    num_envs, num_bodies = 4, 2
+
+    mock_asset = MockRigidObject(num_envs, num_bodies, device)
+    wrench_composer = WrenchComposer(mock_asset)
+
+    forces_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    torques_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    positions_np = rng.uniform(-10.0, 10.0, (num_envs, num_bodies, 3)).astype(np.float32)
+
+    # Pass torch tensors instead of warp arrays
+    forces_torch = torch.from_numpy(forces_np).to(device=device)
+    torques_torch = torch.from_numpy(torques_np).to(device=device)
+    positions_torch = torch.from_numpy(positions_np).to(device=device)
+
+    wrench_composer.add_forces_and_torques(
+        forces=forces_torch, torques=torques_torch, positions=positions_torch, is_global=False
+    )
+
+    # Verify buffers contain correct values
+    assert np.allclose(wrench_composer.local_force_b.numpy(), forces_np, atol=1e-4)
+    expected_torque = torques_np + np.cross(positions_np, forces_np)
+    assert np.allclose(wrench_composer.local_torque_b.numpy(), expected_torque, atol=1e-3)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_resolve_indices_slice_none(device: str):
+    """Test that slice(None) selects all envs/bodies."""
+    rng = np.random.default_rng(seed=103)
+    num_envs, num_bodies = 4, 2
+
+    mock_asset = MockRigidObject(num_envs, num_bodies, device)
+    wrench_composer = WrenchComposer(mock_asset)
+
+    forces_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    forces = wp.from_numpy(forces_np, dtype=wp.vec3f, device=device)
+
+    wrench_composer.add_forces_and_torques(forces=forces, env_ids=slice(None), body_ids=slice(None))
+
+    assert np.allclose(wrench_composer.local_force_b.numpy(), forces_np, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_resolve_indices_invalid_slice_raises(device: str):
+    """Test that a non-None slice for env_ids raises ValueError."""
+    num_envs, num_bodies = 4, 2
+    mock_asset = MockRigidObject(num_envs, num_bodies, device)
+    wrench_composer = WrenchComposer(mock_asset)
+
+    forces_np = np.ones((2, num_bodies, 3), dtype=np.float32)
+    forces = wp.from_numpy(forces_np, dtype=wp.vec3f, device=device)
+
+    with pytest.raises(ValueError, match="Doesn't support slice input"):
+        wrench_composer.add_forces_and_torques(forces=forces, env_ids=slice(0, 5))
+
+    with pytest.raises(ValueError, match="Doesn't support slice input"):
+        wrench_composer.add_forces_and_torques(forces=forces, body_ids=slice(0, 2))
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_set_local_forces(device: str):
+    """Test that set_forces_and_torques with is_global=False writes to local buffers only."""
+    rng = np.random.default_rng(seed=104)
+    num_envs, num_bodies = 4, 2
+
+    mock_asset = MockRigidObject(num_envs, num_bodies, device)
+    wrench_composer = WrenchComposer(mock_asset)
+
+    forces_np = rng.uniform(-100.0, 100.0, (num_envs, num_bodies, 3)).astype(np.float32)
+    forces = wp.from_numpy(forces_np, dtype=wp.vec3f, device=device)
+
+    wrench_composer.set_forces_and_torques(forces=forces, is_global=False)
+
+    # Local buffer should have the forces
+    assert np.allclose(wrench_composer.local_force_b.numpy(), forces_np, atol=1e-4)
+
+    # Global buffers should remain zero
+    zeros = np.zeros((num_envs, num_bodies, 3), dtype=np.float32)
+    assert np.allclose(wrench_composer.global_force_w.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.global_torque_w.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.global_force_at_com_w.numpy(), zeros, atol=1e-7)
+
+    # Compose and verify output equals local force (identity quat)
+    wrench_composer.compose_to_body_frame()
+    assert np.allclose(wrench_composer.out_force_b.numpy(), forces_np, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_both_none_is_noop(device: str):
+    """Test that add_forces_and_torques with forces=None and torques=None is a no-op."""
+    num_envs, num_bodies = 4, 2
+    mock_asset = MockRigidObject(num_envs, num_bodies, device)
+    wrench_composer = WrenchComposer(mock_asset)
+
+    wrench_composer.add_forces_and_torques(forces=None, torques=None)
+
+    # Should remain inactive
+    assert wrench_composer.active is False
+
+    # All buffers should be zero
+    zeros = np.zeros((num_envs, num_bodies, 3), dtype=np.float32)
+    assert np.allclose(wrench_composer.local_force_b.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.local_torque_b.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.global_force_w.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.global_torque_w.numpy(), zeros, atol=1e-7)
+    assert np.allclose(wrench_composer.global_force_at_com_w.numpy(), zeros, atol=1e-7)

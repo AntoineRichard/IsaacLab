@@ -519,6 +519,11 @@ class RigidObjectCollection(AssetBase):
         time (for instance, during the policy control). This function allows us to store the external force and torque
         into buffers which are then applied to the simulation at every step.
 
+        .. caution::
+            This method clears **all** internal wrench buffers before writing the provided values.
+            Any previously set forces or torques (local or global) are discarded. To accumulate
+            on top of existing values, use ``permanent_wrench_composer.add_forces_and_torques`` instead.
+
         .. note::
             This function does not apply the external wrench to the simulation. It only fills the buffers with
             the desired values. To apply the external wrench, call the :meth:`write_data_to_sim` function

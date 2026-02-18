@@ -1010,6 +1010,11 @@ class Articulation(AssetBase):
         into buffers which are then applied to the simulation at every step. Optionally, set the position to apply the
         external wrench at (in the local link frame of the bodies).
 
+        .. caution::
+            This method clears **all** internal wrench buffers before writing the provided values.
+            Any previously set forces or torques (local or global) are discarded. To accumulate
+            on top of existing values, use ``permanent_wrench_composer.add_forces_and_torques`` instead.
+
         .. note::
             This function does not apply the external wrench to the simulation. It only fills the buffers with
             the desired values. To apply the external wrench, call the :meth:`write_data_to_sim` function

@@ -234,7 +234,10 @@ class WrenchComposer:
         env_ids: wp.array | torch.Tensor | None = None,
         is_global: bool = False,
     ):
-        """Set forces and torques to the appropriate global or local buffer (replaces existing values).
+        """Set forces and torques, replacing all existing values in every buffer.
+
+        All 5 input buffers are cleared first, then the provided values are written to the
+        appropriate buffer. Use :meth:`add_forces_and_torques` to accumulate on top of existing values.
 
         Routes to global buffers when ``is_global=True``, local buffers when ``is_global=False``.
         Position offsets contribute additional torque via cross product.
@@ -282,6 +285,13 @@ class WrenchComposer:
 
         self._active = True
         self._dirty = True
+
+        # Clear all input buffers first — set means "replace everything"
+        self._global_force_w.zero_()
+        self._global_torque_w.zero_()
+        self._global_force_at_com_w.zero_()
+        self._local_force_b.zero_()
+        self._local_torque_b.zero_()
 
         wp.launch(
             set_forces_to_dual_buffers,
