@@ -8,7 +8,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import MISSING
 
-from isaaclab.sim import converters, schemas
+from isaaclab.sim import schemas
+from isaaclab.sim.converters.mjcf_converter_cfg import MjcfConverterCfg
+from isaaclab.sim.converters.urdf_converter_cfg import UrdfConverterCfg
 from isaaclab.sim.spawners import materials
 from isaaclab.sim.spawners.spawner_cfg import DeformableObjectSpawnerCfg, RigidObjectSpawnerCfg, SpawnerCfg
 from isaaclab.utils.configclass import configclass
@@ -111,7 +113,7 @@ class UsdFileCfg(FileCfg):
 
 
 @configclass
-class UrdfFileCfg(FileCfg, converters.UrdfConverterCfg):
+class UrdfFileCfg(FileCfg, UrdfConverterCfg):
     """URDF file to spawn asset from.
 
     It uses the :class:`UrdfConverter` class to create a USD file from URDF and spawns the imported
@@ -133,7 +135,7 @@ class UrdfFileCfg(FileCfg, converters.UrdfConverterCfg):
 
 
 @configclass
-class MjcfFileCfg(FileCfg, converters.MjcfConverterCfg):
+class MjcfFileCfg(FileCfg, MjcfConverterCfg):
     """MJCF file to spawn asset from.
 
     It uses the :class:`MjcfConverter` class to create a USD file from MJCF and spawns the imported

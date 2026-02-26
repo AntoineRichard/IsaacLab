@@ -26,9 +26,14 @@ import torch
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
-import isaaclab.sim as sim_utils
 
 from .visualization_markers_cfg import VisualizationMarkersCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
+from isaaclab.sim.spawners.spawner_cfg import SpawnerCfg
+from isaaclab.sim.utils.prims import change_prim_property
+from isaaclab.sim.utils.queries import get_next_free_prim_path
+from isaaclab.sim.utils.stage import get_current_stage
 
 # import logger
 logger = logging.getLogger(__name__)
@@ -65,7 +70,6 @@ class VisualizationMarkers:
 
         .. code-block:: python
 
-            import isaaclab.sim as sim_utils
             from isaaclab.markers import VisualizationMarkersCfg, VisualizationMarkers
 
             # Create the markers configuration
@@ -74,13 +78,13 @@ class VisualizationMarkers:
             cfg = VisualizationMarkersCfg(
                 prim_path="/World/Visuals/testMarkers",
                 markers={
-                    "marker1": sim_utils.SphereCfg(
+                    "marker1": SphereCfg(
                         radius=1.0,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                     ),
                     "marker2": VisualizationMarkersCfg.SphereCfg(
                         radius=1.0,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+                        visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
                     ),
                 },
             )
@@ -128,9 +132,9 @@ class VisualizationMarkers:
             ValueError: When no markers are provided in the :obj:`cfg`.
         """
         # get next free path for the prim
-        prim_path = sim_utils.get_next_free_prim_path(cfg.prim_path)
+        prim_path = get_next_free_prim_path(cfg.prim_path)
         # create a new prim
-        self.stage = sim_utils.get_current_stage()
+        self.stage = get_current_stage()
         self._instancer_manager = UsdGeom.PointInstancer.Define(self.stage, prim_path)
         # store inputs
         self.prim_path = prim_path
@@ -320,7 +324,7 @@ class VisualizationMarkers:
     Helper functions.
     """
 
-    def _add_markers_prototypes(self, markers_cfg: dict[str, sim_utils.SpawnerCfg]):
+    def _add_markers_prototypes(self, markers_cfg: dict[str, SpawnerCfg]):
         """Adds markers prototypes to the scene and sets the markers instancer to use them."""
         # add markers based on config
         for name, cfg in markers_cfg.items():
@@ -378,7 +382,7 @@ class VisualizationMarkers:
             # check if prim is a mesh -> if so, make it invisible to secondary rays
             if child_prim.IsA(UsdGeom.Gprim):
                 # invisible to secondary rays such as depth images
-                sim_utils.change_prim_property(
+                change_prim_property(
                     prop_path=f"{child_prim.GetPrimPath().pathString}.primvars:invisibleToSecondaryRays",
                     value=True,
                     stage=prim.GetStage(),

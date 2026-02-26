@@ -19,14 +19,15 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-import isaaclab.sim as sim_utils
 from isaaclab.app.settings_manager import get_settings_manager
-from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
+from isaaclab.envs.direct_marl_env import DirectMARLEnv
+from isaaclab.envs.utils.marl import multi_agent_to_single_agent
 
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture(scope="module")
@@ -60,7 +61,7 @@ def test_random_actions(registered_tasks):
         # Use pytest's subtests
         print(f">>> Running test for environment: {task_name}")
         # create a new stage
-        sim_utils.create_new_stage()
+        create_new_stage()
         # reset the rtx sensors carb setting to False
         get_settings_manager().set_bool("/isaaclab/render/rtx_sensors", False)
         try:
@@ -112,7 +113,7 @@ def test_no_time_outs(registered_tasks):
         # Use pytest's subtests
         print(f">>> Running test for environment: {task_name}")
         # create a new stage
-        sim_utils.create_new_stage()
+        create_new_stage()
         # parse configuration
         env_cfg = parse_env_cfg(task_name, device=device, num_envs=num_envs)
         # change to finite horizon

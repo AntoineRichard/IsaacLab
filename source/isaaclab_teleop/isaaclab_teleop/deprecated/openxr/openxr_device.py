@@ -41,7 +41,8 @@ XRCoreEventType = None
 with contextlib.suppress(ModuleNotFoundError):
     from omni.kit.xr.core import XRCore, XRCoreEventType, XRPoseValidityFlags
 
-import isaaclab.sim as sim_utils
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import get_current_stage
 
 
 class OpenXRDevice(DeviceBase):
@@ -119,9 +120,9 @@ class OpenXRDevice(DeviceBase):
             self._xr_anchor_headset_path = "/World/XRAnchor"
 
         # Only create the anchor prim if it doesn't already exist (supports multiple devices sharing anchor)
-        stage = sim_utils.get_current_stage()
+        stage = get_current_stage()
         if not stage.GetPrimAtPath(self._xr_anchor_headset_path).IsValid():
-            sim_utils.create_prim(
+            create_prim(
                 self._xr_anchor_headset_path,
                 prim_type="Xform",
                 position=self._xr_cfg.anchor_pos,

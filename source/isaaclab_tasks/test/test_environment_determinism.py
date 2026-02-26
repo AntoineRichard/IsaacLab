@@ -18,10 +18,10 @@ import gymnasium as gym
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -93,7 +93,7 @@ def _test_environment_determinism(task_name: str, device: str):
 def _obtain_transition_tuples(task_name: str, num_envs: int, device: str, num_steps: int) -> tuple[dict, torch.Tensor]:
     """Run random actions and obtain transition tuples after fixed number of steps."""
     # create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     try:
         # parse configuration
         env_cfg = parse_env_cfg(task_name, device=device, num_envs=num_envs)

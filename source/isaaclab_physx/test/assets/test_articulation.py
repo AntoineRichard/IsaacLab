@@ -24,14 +24,14 @@ import torch
 import warp as wp
 from isaaclab_physx.assets import Articulation
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
-from isaaclab.actuators import ActuatorBase, IdealPDActuatorCfg, ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg
+from isaaclab.actuators.actuator_base import ActuatorBase
+from isaaclab.actuators.actuator_pd_cfg import IdealPDActuatorCfg, ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.envs.mdp.terminations import joint_effort_out_of_limit
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sim import build_simulation_context
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sim.simulation_context import build_simulation_context
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.version import get_isaac_sim_version, has_kit
 
@@ -39,6 +39,9 @@ from isaaclab.utils.version import get_isaac_sim_version, has_kit
 # Pre-defined configs
 ##
 from isaaclab_assets import ANYMAL_C_CFG, FRANKA_PANDA_CFG, SHADOW_HAND_CFG  # isort:skip
+from isaaclab.sim.schemas import JointDrivePropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def generate_articulation_cfg(
@@ -75,7 +78,7 @@ def generate_articulation_cfg(
     """
     if articulation_type == "humanoid":
         articulation_cfg = ArticulationCfg(
-            spawn=sim_utils.UsdFileCfg(
+            spawn=UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/IsaacSim/Humanoid/humanoid_instanceable.usd"
             ),
             init_state=ArticulationCfg.InitialStateCfg(pos=(0.0, 0.0, 1.34)),
@@ -90,9 +93,9 @@ def generate_articulation_cfg(
     elif articulation_type == "single_joint_implicit":
         articulation_cfg = ArticulationCfg(
             # we set 80.0 default for max force because default in USD is 10e10 which makes testing annoying.
-            spawn=sim_utils.UsdFileCfg(
+            spawn=UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/IsaacSim/SimpleArticulation/revolute_articulation.usd",
-                joint_drive_props=sim_utils.JointDrivePropertiesCfg(max_effort=80.0, max_velocity=5.0),
+                joint_drive_props=JointDrivePropertiesCfg(max_effort=80.0, max_velocity=5.0),
             ),
             actuators={
                 "joint": ImplicitActuatorCfg(
@@ -114,9 +117,9 @@ def generate_articulation_cfg(
     elif articulation_type == "single_joint_explicit":
         # we set 80.0 default for max force because default in USD is 10e10 which makes testing annoying.
         articulation_cfg = ArticulationCfg(
-            spawn=sim_utils.UsdFileCfg(
+            spawn=UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/IsaacSim/SimpleArticulation/revolute_articulation.usd",
-                joint_drive_props=sim_utils.JointDrivePropertiesCfg(max_effort=80.0, max_velocity=5.0),
+                joint_drive_props=JointDrivePropertiesCfg(max_effort=80.0, max_velocity=5.0),
             ),
             actuators={
                 "joint": IdealPDActuatorCfg(
@@ -133,7 +136,7 @@ def generate_articulation_cfg(
     elif articulation_type == "spatial_tendon_test_asset":
         # we set 80.0 default for max force because default in USD is 10e10 which makes testing annoying.
         articulation_cfg = ArticulationCfg(
-            spawn=sim_utils.UsdFileCfg(
+            spawn=UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/IsaacLab/Tests/spatial_tendons.usd",
             ),
             actuators={
@@ -176,7 +179,7 @@ def generate_articulation(
 
     # Create Top-level Xforms, one for each articulation
     for i in range(num_articulations):
-        sim_utils.create_prim(f"/World/Env_{i}", "Xform", translation=translations[i][:3])
+        create_prim(f"/World/Env_{i}", "Xform", translation=translations[i][:3])
     articulation = Articulation(articulation_cfg.replace(prim_path="/World/Env_.*/Robot"))
 
     return articulation, translations

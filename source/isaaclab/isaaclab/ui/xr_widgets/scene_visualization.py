@@ -19,7 +19,7 @@ import torch
 
 from pxr import Gf
 
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.ui.xr_widgets import show_instruction
 
 # import logger

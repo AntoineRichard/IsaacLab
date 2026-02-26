@@ -12,11 +12,12 @@ import numpy as np
 import torch
 import trimesh
 
-import isaaclab.sim as sim_utils
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 
 from .utils import create_prim_from_mesh
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UsdFileCfg
 
 if TYPE_CHECKING:
     from .terrain_importer_cfg import TerrainImporterCfg
@@ -71,7 +72,7 @@ class TerrainImporter:
         cfg.validate()
         # store inputs
         self.cfg = cfg
-        self.device = sim_utils.SimulationContext.instance().device  # type: ignore
+        self.device = SimulationContext.instance().device  # type: ignore
 
         # create buffers for the terrains
         self.terrain_prim_paths = list()
@@ -220,7 +221,7 @@ class TerrainImporter:
                 )
 
         # get the mesh
-        ground_plane_cfg = sim_utils.GroundPlaneCfg(physics_material=self.cfg.physics_material, size=size, color=color)
+        ground_plane_cfg = GroundPlaneCfg(physics_material=self.cfg.physics_material, size=size, color=color)
         ground_plane_cfg.func(prim_path, ground_plane_cfg)
 
     def import_mesh(self, name: str, mesh: trimesh.Trimesh):
@@ -281,7 +282,7 @@ class TerrainImporter:
         self.terrain_prim_paths.append(prim_path)
 
         # add the prim path
-        cfg = sim_utils.UsdFileCfg(usd_path=usd_path)
+        cfg = UsdFileCfg(usd_path=usd_path)
         cfg.func(prim_path, cfg)
 
     """
@@ -355,7 +356,7 @@ class TerrainImporter:
 
     def _compute_env_origins_grid(self, num_envs: int, env_spacing: float) -> torch.Tensor:
         """Compute the origins of the environments in a grid based on configured spacing."""
-        from isaaclab.cloner import grid_transforms
+        from isaaclab.cloner.cloner_utils import grid_transforms
 
         env_origins, _ = grid_transforms(num_envs, env_spacing, device=self.device)
         return env_origins

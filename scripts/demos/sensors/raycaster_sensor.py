@@ -25,10 +25,10 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors.ray_caster import RayCasterCfg, patterns
+from isaaclab.sensors.ray_caster.ray_caster_cfg import RayCasterCfg
+from isaaclab.sensors.ray_caster import patterns
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
@@ -36,6 +36,10 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort: skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 @configclass
@@ -45,7 +49,7 @@ class RaycasterSensorSceneCfg(InteractiveSceneCfg):
     # ground plane
     ground = AssetBaseCfg(
         prim_path="/World/Ground",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd",
             scale=(1, 1, 1),
         ),
@@ -53,7 +57,7 @@ class RaycasterSensorSceneCfg(InteractiveSceneCfg):
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # robot
@@ -72,7 +76,7 @@ class RaycasterSensorSceneCfg(InteractiveSceneCfg):
     )
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Run the simulator."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -140,8 +144,8 @@ def main():
     """Main function."""
 
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[3.5, 3.5, 3.5], target=[0.0, 0.0, 0.0])
     # design scene

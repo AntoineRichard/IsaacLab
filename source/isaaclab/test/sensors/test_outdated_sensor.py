@@ -19,11 +19,11 @@ import gymnasium as gym
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.app.settings_manager import get_settings_manager
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture()
@@ -45,7 +45,7 @@ def temp_dir():
 @pytest.mark.isaacsim_ci
 def test_action_state_recorder_terms(temp_dir, task_name, device, num_envs):
     """Check FrameTransformer values after reset."""
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     # parse configuration
     env_cfg = parse_env_cfg(task_name, device=device, num_envs=num_envs)

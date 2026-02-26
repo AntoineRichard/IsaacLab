@@ -23,15 +23,29 @@ import warp as wp
 
 import omni.replicator.core as rep
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
-from isaaclab.sensors.camera import TiledCameraCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.sensors.camera.tiled_camera_cfg import TiledCameraCfg
 from isaaclab.terrains.trimesh.utils import make_plane
 from isaaclab.terrains.utils import create_prim_from_mesh
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensor, VisuoTactileSensorCfg
 from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_cfg import GelSightRenderCfg
+from isaaclab.sim.schemas import (
+    ArticulationRootPropertiesCfg,
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import UsdFileCfg, UsdFileWithCompliantContactCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 # Sample sensor poses
 
@@ -119,14 +133,14 @@ def setup(sensor_type: str = "cube"):
         Tuple containing simulation context, sensor config, timestep, robot config, cube config, and nut config.
     """
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     # Simulation time-step
     dt = 0.01
 
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=dt)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=dt)
+    sim = SimulationContext(sim_cfg)
 
     # Ground-plane
     mesh = make_plane(size=(100, 100), height=0.0, center_zero=True)
@@ -138,9 +152,9 @@ def setup(sensor_type: str = "cube"):
     # robot
     robot_cfg = ArticulationCfg(
         prim_path="/World/Robot",
-        spawn=sim_utils.UsdFileWithCompliantContactCfg(
+        spawn=UsdFileWithCompliantContactCfg(
             usd_path=usd_file_path,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
+            rigid_props=RigidBodyPropertiesCfg(disable_gravity=True),
             compliant_contact_stiffness=10.0,
             compliant_contact_damping=1.0,
             physics_material_prim_path="elastomer",
@@ -156,20 +170,20 @@ def setup(sensor_type: str = "cube"):
     # Cube
     cube_cfg = RigidObjectCfg(
         prim_path="/World/Cube",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.1, 0.1, 0.1),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            rigid_props=RigidBodyPropertiesCfg(),
+            collision_props=CollisionPropertiesCfg(),
         ),
     )
     # Nut
     nut_cfg = RigidObjectCfg(
         prim_path="/World/Nut",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Factory/factory_nut_m16.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+            rigid_props=RigidBodyPropertiesCfg(disable_gravity=False),
+            articulation_props=ArticulationRootPropertiesCfg(articulation_enabled=False),
+            mass_props=MassPropertiesCfg(mass=0.1),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(0.0, 0.0 + 0.06776, 0.52),
@@ -181,7 +195,7 @@ def setup(sensor_type: str = "cube"):
     sensor_cfg = get_sensor_cfg_by_type(sensor_type)
 
     # load stage
-    sim_utils.update_stage()
+    update_stage()
     return sim, sensor_cfg, dt, robot_cfg, cube_cfg, nut_cfg
 
 
@@ -315,7 +329,7 @@ def test_sensor_cam_new_spawn(setup_tactile_cam):
     """Test sensor with camera configuration that spawns a new camera."""
     sim, sensor_cfg, dt, robot_cfg, object_cfg, nut_cfg = setup_tactile_cam
     sensor_cfg.camera_cfg.prim_path = "/World/Robot/elastomer_tip/cam_new"
-    sensor_cfg.camera_cfg.spawn = sim_utils.PinholeCameraCfg(
+    sensor_cfg.camera_cfg.spawn = PinholeCameraCfg(
         focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.01, 1.0e5)
     )
     robot = Articulation(cfg=robot_cfg)

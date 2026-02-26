@@ -13,13 +13,13 @@ import warp as wp
 from pink.tasks import FrameTask
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets.articulation import Articulation
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.controllers.pink_ik import PinkIKController
 from isaaclab.controllers.pink_ik.local_frame_task import LocalFrameTask
 from isaaclab.managers.action_manager import ActionTerm
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
     from isaaclab.envs.utils.io_descriptors import GenericActionIODescriptor
 
     from . import pink_actions_cfg

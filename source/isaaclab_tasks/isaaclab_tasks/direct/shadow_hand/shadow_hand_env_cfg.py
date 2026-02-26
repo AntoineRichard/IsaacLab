@@ -5,21 +5,30 @@
 
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.envs.mdp as mdp
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
-from isaaclab.envs import DirectRLEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
 
 from isaaclab_assets.robots.shadow_hand import SHADOW_HAND_CFG
+from isaaclab.envs.mdp.events import (
+    randomize_actuator_gains,
+    randomize_fixed_tendon_parameters,
+    randomize_joint_parameters,
+    randomize_physics_scene_gravity,
+    randomize_rigid_body_mass,
+    randomize_rigid_body_material,
+)
+from isaaclab.sim.schemas import MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 
 @configclass
@@ -28,7 +37,7 @@ class EventCfg:
 
     # -- robot
     robot_physics_material = EventTerm(
-        func=mdp.randomize_rigid_body_material,
+        func=randomize_rigid_body_material,
         mode="reset",
         min_step_count_between_reset=720,
         params={
@@ -40,7 +49,7 @@ class EventCfg:
         },
     )
     robot_joint_stiffness_and_damping = EventTerm(
-        func=mdp.randomize_actuator_gains,
+        func=randomize_actuator_gains,
         min_step_count_between_reset=720,
         mode="reset",
         params={
@@ -52,7 +61,7 @@ class EventCfg:
         },
     )
     robot_joint_pos_limits = EventTerm(
-        func=mdp.randomize_joint_parameters,
+        func=randomize_joint_parameters,
         min_step_count_between_reset=720,
         mode="reset",
         params={
@@ -64,7 +73,7 @@ class EventCfg:
         },
     )
     robot_tendon_properties = EventTerm(
-        func=mdp.randomize_fixed_tendon_parameters,
+        func=randomize_fixed_tendon_parameters,
         min_step_count_between_reset=720,
         mode="reset",
         params={
@@ -78,7 +87,7 @@ class EventCfg:
 
     # -- object
     object_physics_material = EventTerm(
-        func=mdp.randomize_rigid_body_material,
+        func=randomize_rigid_body_material,
         min_step_count_between_reset=720,
         mode="reset",
         params={
@@ -90,7 +99,7 @@ class EventCfg:
         },
     )
     object_scale_mass = EventTerm(
-        func=mdp.randomize_rigid_body_mass,
+        func=randomize_rigid_body_mass,
         min_step_count_between_reset=720,
         mode="reset",
         params={
@@ -103,7 +112,7 @@ class EventCfg:
 
     # -- scene
     reset_gravity = EventTerm(
-        func=mdp.randomize_physics_scene_gravity,
+        func=randomize_physics_scene_gravity,
         mode="interval",
         is_global_time=True,
         interval_range_s=(36.0, 36.0),  # time_s = num_steps * (decimation * dt)
@@ -176,9 +185,9 @@ class ShadowHandEnvCfg(DirectRLEnvCfg):
     # in-hand object
     object_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/object",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
                 disable_gravity=False,
                 enable_gyroscopic_forces=True,
@@ -188,7 +197,7 @@ class ShadowHandEnvCfg(DirectRLEnvCfg):
                 stabilization_threshold=0.0025,
                 max_depenetration_velocity=1000.0,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(density=567.0),
+            mass_props=MassPropertiesCfg(density=567.0),
             semantic_tags=[("class", "cube")],
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.39, 0.6), rot=(0.0, 0.0, 0.0, 1.0)),
@@ -197,7 +206,7 @@ class ShadowHandEnvCfg(DirectRLEnvCfg):
     goal_object_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/goal_marker",
         markers={
-            "goal": sim_utils.UsdFileCfg(
+            "goal": UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
                 scale=(1.0, 1.0, 1.0),
             )

@@ -8,18 +8,20 @@ from dataclasses import MISSING
 
 from isaaclab_physx.physics import PhysxCfg
 
-from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.devices.device_base import DevicesCfg
 from isaaclab.devices.keyboard import Se3KeyboardCfg
 from isaaclab.devices.spacemouse import Se3SpaceMouseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
 from isaaclab.envs.mdp.actions.rmpflow_actions_cfg import RMPFlowActionCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.sim.schemas.schemas_cfg import MassPropertiesCfg, RigidBodyPropertiesCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg

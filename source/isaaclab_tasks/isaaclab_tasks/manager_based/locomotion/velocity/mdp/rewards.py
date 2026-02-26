@@ -16,13 +16,13 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-from isaaclab.envs import mdp
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensor
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
+from isaaclab.envs.mdp.rewards import joint_deviation_l1
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def feet_air_time(
@@ -124,4 +124,4 @@ def stand_still_joint_deviation_l1(
     """Penalize offsets from the default joint positions when the command is very small."""
     command = env.command_manager.get_command(command_name)
     # Penalize motion when command is nearly zero.
-    return mdp.joint_deviation_l1(env, asset_cfg) * (torch.linalg.norm(command[:, :2], dim=1) < command_threshold)
+    return joint_deviation_l1(env, asset_cfg) * (torch.linalg.norm(command[:, :2], dim=1) < command_threshold)

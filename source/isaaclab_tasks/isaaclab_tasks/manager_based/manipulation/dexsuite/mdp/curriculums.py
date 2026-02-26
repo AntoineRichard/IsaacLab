@@ -11,13 +11,15 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.envs import mdp
-from isaaclab.managers import ManagerTermBase, SceneEntityCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.math import combine_frame_transforms, compute_pose_error
+from isaaclab.envs.mdp.curriculums import modify_env_param
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def initial_final_interpolate_fn(env: ManagerBasedRLEnv, env_id, data, initial_value, final_value, difficulty_term_str):
@@ -31,7 +33,7 @@ def initial_final_interpolate_fn(env: ManagerBasedRLEnv, env_id, data, initial_v
     frac = difficulty_term.difficulty_frac
     if frac < 0.1:
         # no-op during start, since the difficulty fraction near 0 is wasting of resource.
-        return mdp.modify_env_param.NO_CHANGE
+        return modify_env_param.NO_CHANGE
 
     # convert iv/fv to tensors, but we'll peel them apart in recursion
     initial_value_tensor = torch.tensor(initial_value, device=env.device)

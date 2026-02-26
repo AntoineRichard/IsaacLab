@@ -12,6 +12,9 @@ import trimesh
 import warp as wp
 
 from isaaclab.utils.warp import raycast_mesh
+from isaaclab.sim.schemas import CollisionPropertiesCfg, define_collision_properties
+from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg, VisualMaterialCfg
+from isaaclab.sim.utils.prims import bind_physics_material, bind_visual_material, create_prim
 
 
 def color_meshes_by_height(meshes: list[trimesh.Trimesh], **kwargs) -> trimesh.Trimesh:
@@ -81,12 +84,11 @@ def create_prim_from_mesh(prim_path: str, mesh: trimesh.Trimesh, **kwargs):
     # need to import these here to prevent isaacsim launching when importing this module
     from pxr import UsdGeom
 
-    import isaaclab.sim as sim_utils
 
     # create parent prim
-    sim_utils.create_prim(prim_path, "Xform")
+    create_prim(prim_path, "Xform")
     # create mesh prim
-    prim = sim_utils.create_prim(
+    prim = create_prim(
         f"{prim_path}/mesh",
         "Mesh",
         translation=kwargs.get("translation"),
@@ -99,8 +101,8 @@ def create_prim_from_mesh(prim_path: str, mesh: trimesh.Trimesh, **kwargs):
         },
     )
     # apply collider properties
-    collider_cfg = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
-    sim_utils.define_collision_properties(prim.GetPrimPath(), collider_cfg)
+    collider_cfg = CollisionPropertiesCfg(collision_enabled=True)
+    define_collision_properties(prim.GetPrimPath(), collider_cfg)
     # add rgba color to the mesh primvars
     if mesh.visual.vertex_colors is not None:
         # obtain color from the mesh
@@ -118,16 +120,16 @@ def create_prim_from_mesh(prim_path: str, mesh: trimesh.Trimesh, **kwargs):
 
     # create visual material
     if kwargs.get("visual_material") is not None:
-        visual_material_cfg: sim_utils.VisualMaterialCfg = kwargs.get("visual_material")
+        visual_material_cfg: VisualMaterialCfg = kwargs.get("visual_material")
         # spawn the material
         visual_material_cfg.func(f"{prim_path}/visualMaterial", visual_material_cfg)
-        sim_utils.bind_visual_material(prim.GetPrimPath(), f"{prim_path}/visualMaterial")
+        bind_visual_material(prim.GetPrimPath(), f"{prim_path}/visualMaterial")
     # create physics material
     if kwargs.get("physics_material") is not None:
-        physics_material_cfg: sim_utils.RigidBodyMaterialCfg = kwargs.get("physics_material")
+        physics_material_cfg: RigidBodyMaterialCfg = kwargs.get("physics_material")
         # spawn the material
         physics_material_cfg.func(f"{prim_path}/physicsMaterial", physics_material_cfg)
-        sim_utils.bind_physics_material(prim.GetPrimPath(), f"{prim_path}/physicsMaterial")
+        bind_physics_material(prim.GetPrimPath(), f"{prim_path}/physicsMaterial")
 
 
 def find_flat_patches(

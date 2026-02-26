@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 
 from pxr import Usd, UsdLux
 
-from isaaclab.sim.utils import clone, create_prim, get_current_stage, safe_set_attribute_on_usd_prim
+from isaaclab.sim.utils.prims import clone, create_prim, safe_set_attribute_on_usd_prim
+from isaaclab.sim.utils.stage import get_current_stage
 
 if TYPE_CHECKING:
     from . import lights_cfg

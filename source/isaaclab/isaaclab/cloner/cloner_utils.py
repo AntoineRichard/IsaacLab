@@ -13,7 +13,7 @@ import torch
 
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-import isaaclab.sim as sim_utils
+from isaaclab.sim.utils.queries import find_matching_prim_paths, get_all_matching_child_prims
 
 if TYPE_CHECKING:
     from .cloner_cfg import TemplateCloneCfg
@@ -37,7 +37,7 @@ def clone_from_template(stage: Usd.Stage, num_clones: int, template_clone_cfg: T
     world_indices = torch.arange(num_clones, device=cfg.device)
     clone_path_fmt = cfg.clone_regex.replace(".*", "{}")
     prototype_id = cfg.template_prototype_identifier
-    prototypes = sim_utils.get_all_matching_child_prims(
+    prototypes = get_all_matching_child_prims(
         cfg.template_root,
         predicate=lambda prim: str(prim.GetPath()).split("/")[-1].startswith(prototype_id),
     )
@@ -48,7 +48,7 @@ def clone_from_template(stage: Usd.Stage, num_clones: int, template_clone_cfg: T
         dest: list[str] = []
 
         for prototype_root in prototype_root_set:
-            protos = sim_utils.find_matching_prim_paths(f"{prototype_root}/.*")
+            protos = find_matching_prim_paths(f"{prototype_root}/.*")
             protos = [proto for proto in protos if proto.split("/")[-1].startswith(prototype_id)]
             src.append(protos)
             dest.append(prototype_root.replace(cfg.template_root, clone_path_fmt))

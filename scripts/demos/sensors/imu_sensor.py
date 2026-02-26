@@ -26,16 +26,19 @@ simulation_app = app_launcher.app
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import ImuCfg
+from isaaclab.sensors.imu.imu_cfg import ImuCfg
 from isaaclab.utils.configclass import configclass
 
 ##
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort: skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 @configclass
@@ -43,11 +46,11 @@ class ImuSensorSceneCfg(InteractiveSceneCfg):
     """Design the scene with sensors on the robot."""
 
     # ground plane
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=GroundPlaneCfg())
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # robot
@@ -58,7 +61,7 @@ class ImuSensorSceneCfg(InteractiveSceneCfg):
     imu_LF = ImuCfg(prim_path="{ENV_REGEX_NS}/Robot/RF_FOOT", gravity_bias=(0, 0, 0), debug_vis=True)
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Run the simulator."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -122,8 +125,8 @@ def main():
     """Main function."""
 
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[3.5, 3.5, 3.5], target=[0.0, 0.0, 0.0])
     # design scene

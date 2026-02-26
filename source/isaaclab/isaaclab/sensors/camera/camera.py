@@ -17,7 +17,6 @@ from packaging import version
 
 from pxr import Sdf, UsdGeom
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.sensors as sensor_utils
 from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.sim.views import XformPrimView
@@ -32,6 +31,7 @@ from isaaclab.utils.version import get_isaac_sim_version
 
 from ..sensor_base import SensorBase
 from .camera_data import CameraData
+from isaaclab.sim.utils.queries import find_matching_prims
 
 if TYPE_CHECKING:
     from .camera_cfg import CameraCfg
@@ -178,7 +178,7 @@ class Camera(SensorBase):
             if self.cfg.spawn is not None and getattr(self.cfg.spawn, "spawn_path", None) is not None
             else self.cfg.prim_path
         )
-        matching_prims = sim_utils.find_matching_prims(check_path)
+        matching_prims = find_matching_prims(check_path)
         if len(matching_prims) == 0:
             raise RuntimeError(f"Could not find prim with path {check_path}.")
 

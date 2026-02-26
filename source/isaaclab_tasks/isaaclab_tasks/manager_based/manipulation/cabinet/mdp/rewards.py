@@ -10,11 +10,11 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.math import matrix_from_quat
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def approach_ee_handle(env: ManagerBasedRLEnv, threshold: float) -> torch.Tensor:

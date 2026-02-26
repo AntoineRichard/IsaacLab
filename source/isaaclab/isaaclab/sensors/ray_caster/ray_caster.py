@@ -15,7 +15,6 @@ import warp as wp
 
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.sim.views import XformPrimView
@@ -26,6 +25,10 @@ from isaaclab.utils.warp import convert_to_warp_mesh, raycast_mesh
 from ..sensor_base import SensorBase
 from .ray_cast_utils import obtain_world_pose_from_view
 from .ray_caster_data import RayCasterData
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.utils.queries import find_first_matching_prim, find_matching_prims, get_first_matching_child_prim
+from isaaclab.sim.utils.stage import get_current_stage
+from isaaclab.sim.utils.transforms import resolve_prim_pose
 
 if TYPE_CHECKING:
     from .ray_caster_cfg import RayCasterCfg
@@ -134,10 +137,10 @@ class RayCaster(SensorBase):
         super()._initialize_impl()
         # obtain global simulation view
 
-        self._physics_sim_view = sim_utils.SimulationContext.instance().physics_manager.get_physics_sim_view()
-        prim = sim_utils.find_first_matching_prim(self.cfg.prim_path)
+        self._physics_sim_view = SimulationContext.instance().physics_manager.get_physics_sim_view()
+        prim = find_first_matching_prim(self.cfg.prim_path)
         if prim is None:
-            available_prims = ",".join([str(p.GetPath()) for p in sim_utils.get_current_stage().Traverse()])
+            available_prims = ",".join([str(p.GetPath()) for p in get_current_stage().Traverse()])
             raise RuntimeError(
                 f"Failed to find a prim at path expression: {self.cfg.prim_path}. Available prims: {available_prims}"
             )
@@ -164,13 +167,13 @@ class RayCaster(SensorBase):
 
             # check if the prim is a plane - handle PhysX plane as a special case
             # if a plane exists then we need to create an infinite mesh that is a plane
-            mesh_prim = sim_utils.get_first_matching_child_prim(
+            mesh_prim = get_first_matching_child_prim(
                 mesh_prim_path, lambda prim: prim.GetTypeName() == "Plane"
             )
             # if we did not find a plane then we need to read the mesh
             if mesh_prim is None:
                 # obtain the mesh prim
-                mesh_prim = sim_utils.get_first_matching_child_prim(
+                mesh_prim = get_first_matching_child_prim(
                     mesh_prim_path, lambda prim: prim.GetTypeName() == "Mesh"
                 )
                 # check if valid
@@ -351,7 +354,7 @@ class RayCaster(SensorBase):
 
         """
 
-        mesh_prim = sim_utils.find_first_matching_prim(target_prim_path)
+        mesh_prim = find_first_matching_prim(target_prim_path)
         current_prim = mesh_prim
         current_path_expr = target_prim_path
 
@@ -387,8 +390,8 @@ class RayCaster(SensorBase):
             current_prim = new_root_prim
 
         # obtain the relative transforms between target prim and the view prims
-        mesh_prims = sim_utils.find_matching_prims(target_prim_path)
-        view_prims = sim_utils.find_matching_prims(current_path_expr)
+        mesh_prims = find_matching_prims(target_prim_path)
+        view_prims = find_matching_prims(current_path_expr)
         if len(mesh_prims) != len(view_prims):
             raise RuntimeError(
                 f"The number of mesh prims ({len(mesh_prims)}) does not match the number of physics prims"
@@ -398,7 +401,7 @@ class RayCaster(SensorBase):
         positions = []
         quaternions = []
         for mesh_prim, view_prim in zip(mesh_prims, view_prims):
-            pos, orientation = sim_utils.resolve_prim_pose(mesh_prim, view_prim)
+            pos, orientation = resolve_prim_pose(mesh_prim, view_prim)
             positions.append(torch.tensor(pos, dtype=torch.float32, device=self.device))
             quaternions.append(torch.tensor(orientation, dtype=torch.float32, device=self.device))
 

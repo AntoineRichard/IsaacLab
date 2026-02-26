@@ -5,15 +5,15 @@
 
 import math
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import RewardTermCfg as RewTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils.configclass import configclass
 
@@ -23,6 +23,8 @@ import isaaclab_tasks.manager_based.classic.cartpole.mdp as mdp
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.cartpole import CARTPOLE_CFG  # isort:skip
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 ##
@@ -37,7 +39,7 @@ class CartpoleSceneCfg(InteractiveSceneCfg):
     # ground plane
     ground = AssetBaseCfg(
         prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
+        spawn=GroundPlaneCfg(size=(100.0, 100.0)),
     )
 
     # cartpole
@@ -46,7 +48,7 @@ class CartpoleSceneCfg(InteractiveSceneCfg):
     # lights
     dome_light = AssetBaseCfg(
         prim_path="/World/DomeLight",
-        spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
+        spawn=DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
     )
 
 

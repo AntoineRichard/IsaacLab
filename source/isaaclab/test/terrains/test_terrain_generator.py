@@ -19,7 +19,9 @@ import numpy as np
 import pytest
 import torch
 
-from isaaclab.terrains import FlatPatchSamplingCfg, TerrainGenerator, TerrainGeneratorCfg
+from isaaclab.terrains.sub_terrain_cfg import FlatPatchSamplingCfg
+from isaaclab.terrains.terrain_generator import TerrainGenerator
+from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
 from isaaclab.utils.seed import configure_seed
 

@@ -36,35 +36,43 @@ simulation_app = app_launcher.app
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import DeformableObject, DeformableObjectCfg
-from isaaclab.sim import SimulationContext
+from isaaclab_physx.assets.deformable_object.deformable_object import DeformableObject
+from isaaclab_physx.assets.deformable_object.deformable_object_cfg import DeformableObjectCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.schemas import DeformableBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import DeformableBodyMaterialCfg, PreviewSurfaceCfg
+from isaaclab.sim.spawners.meshes import MeshCuboidCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def design_scene():
     """Designs the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
+    cfg = DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
     cfg.func("/World/Light", cfg)
 
     # Create separate groups called "Origin1", "Origin2", "Origin3"
     # Each group will have a robot in it
     origins = [[0.25, 0.25, 0.0], [-0.25, 0.25, 0.0], [0.25, -0.25, 0.0], [-0.25, -0.25, 0.0]]
     for i, origin in enumerate(origins):
-        sim_utils.create_prim(f"/World/Origin{i}", "Xform", translation=origin)
+        create_prim(f"/World/Origin{i}", "Xform", translation=origin)
 
     # Deformable Object
     cfg = DeformableObjectCfg(
         prim_path="/World/Origin.*/Cube",
-        spawn=sim_utils.MeshCuboidCfg(
+        spawn=MeshCuboidCfg(
             size=(0.2, 0.2, 0.2),
-            deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0, contact_offset=0.001),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.1, 0.0)),
-            physics_material=sim_utils.DeformableBodyMaterialCfg(poissons_ratio=0.4, youngs_modulus=1e5),
+            deformable_props=DeformableBodyPropertiesCfg(rest_offset=0.0, contact_offset=0.001),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.5, 0.1, 0.0)),
+            physics_material=DeformableBodyMaterialCfg(poissons_ratio=0.4, youngs_modulus=1e5),
         ),
         init_state=DeformableObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0)),
         debug_vis=True,
@@ -76,7 +84,7 @@ def design_scene():
     return scene_entities, origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, DeformableObject], origins: torch.Tensor):
+def run_simulator(sim: SimulationContext, entities: dict[str, DeformableObject], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Extract scene entities
     # note: we only do this here for readability. In general, it is better to access the entities directly from
@@ -145,7 +153,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Deformab
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
+    sim_cfg = SimulationCfg(device=args_cli.device)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[3.0, 0.0, 1.0], target=[0.0, 0.0, 0.5])

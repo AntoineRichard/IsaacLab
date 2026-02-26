@@ -8,9 +8,9 @@ import os
 
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.sim as sim_utils
 from isaaclab.envs.mdp.actions.rmpflow_actions_cfg import RMPFlowActionCfg
-from isaaclab.sensors import CameraCfg, FrameTransformerCfg
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils.configclass import configclass
 
@@ -26,6 +26,7 @@ from isaaclab.controllers.config.rmp_flow import (  # isort: skip
     GALBOT_RIGHT_ARM_RMPFLOW_CFG,
 )
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
 
 
 ##
@@ -116,7 +117,7 @@ class RmpFlowGalbotLeftArmCubeStackVisuomotorEnvCfg(RmpFlowGalbotLeftArmCubeStac
             height=256,
             width=256,
             data_types=["rgb", "distance_to_image_plane"],
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=18.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
             ),
             offset=CameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(-0.5, 0.5, -0.5, 0.5), convention="ros"),
@@ -128,7 +129,7 @@ class RmpFlowGalbotLeftArmCubeStackVisuomotorEnvCfg(RmpFlowGalbotLeftArmCubeStac
             height=256,
             width=256,
             data_types=["rgb", "distance_to_image_plane"],
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=18.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
             ),
             offset=CameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(-0.5, 0.5, -0.5, 0.5), convention="ros"),
@@ -141,7 +142,7 @@ class RmpFlowGalbotLeftArmCubeStackVisuomotorEnvCfg(RmpFlowGalbotLeftArmCubeStac
             height=256,
             width=256,
             data_types=["rgb", "distance_to_image_plane"],
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=18.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
             ),
             offset=CameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(-0.5, 0.5, -0.5, 0.5), convention="ros"),
@@ -154,7 +155,7 @@ class RmpFlowGalbotLeftArmCubeStackVisuomotorEnvCfg(RmpFlowGalbotLeftArmCubeStac
             height=256,
             width=256,
             data_types=["rgb", "distance_to_image_plane"],
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
             ),
             offset=CameraCfg.OffsetCfg(pos=(1.0, 0.0, 0.6), rot=(0.5963, 0.5963, -0.3799, -0.3799), convention="ros"),

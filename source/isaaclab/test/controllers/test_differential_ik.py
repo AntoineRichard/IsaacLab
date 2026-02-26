@@ -18,8 +18,7 @@ import warp as wp
 
 from isaacsim.core.cloner import GridCloner
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 
 from isaaclab.utils.math import (  # isort:skip
@@ -34,23 +33,27 @@ from isaaclab.utils.math import (  # isort:skip
 # Pre-defined configs
 ##
 from isaaclab_assets import FRANKA_PANDA_HIGH_PD_CFG, UR10_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture
 def sim():
     """Create a simulation context for testing."""
     # Wait for spawning
-    stage = sim_utils.create_new_stage()
+    stage = create_new_stage()
     # Constants
     num_envs = 1
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.01)
+    sim = SimulationContext(sim_cfg)
     # TODO: Remove this once we have a better way to handle this.
     sim._app_control_on_stop_handle = None
 
     # Create a ground plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/GroundPlane", cfg)
 
     # Create interface to clone the scene
@@ -121,7 +124,7 @@ def _run_ik_controller(
     diff_ik_controller: DifferentialIKController,
     ee_frame_name: str,
     arm_joint_names: list[str],
-    sim: sim_utils.SimulationContext,
+    sim: SimulationContext,
     num_envs: int,
     ee_pose_b_des_set: torch.Tensor,
 ):
@@ -132,7 +135,7 @@ def _run_ik_controller(
         diff_ik_controller (DifferentialIKController): The differential IK controller.
         ee_frame_name (str): The name of the end-effector frame.
         arm_joint_names (list[str]): The names of the arm joints.
-        sim (sim_utils.SimulationContext): The simulation context.
+        sim (SimulationContext): The simulation context.
         num_envs (int): The number of environments.
         ee_pose_b_des_set (torch.Tensor): The set of desired end-effector poses.
     """

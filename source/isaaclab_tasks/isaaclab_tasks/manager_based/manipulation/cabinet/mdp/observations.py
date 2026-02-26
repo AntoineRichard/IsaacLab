@@ -11,11 +11,11 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import ArticulationData
-from isaaclab.sensors import FrameTransformerData
+from isaaclab.assets.articulation.articulation_data import ArticulationData
+from isaaclab.sensors.frame_transformer.frame_transformer_data import FrameTransformerData
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def rel_ee_object_distance(env: ManagerBasedRLEnv) -> torch.Tensor:

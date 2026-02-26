@@ -22,7 +22,7 @@ from .manager_base import ManagerBase, ManagerTermBase
 from .manager_term_cfg import CommandTermCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 if has_kit():
     import omni.kit.app

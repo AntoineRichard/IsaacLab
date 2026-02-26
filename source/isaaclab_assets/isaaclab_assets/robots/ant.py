@@ -7,10 +7,11 @@
 
 from __future__ import annotations
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.schemas import ArticulationRootPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 ##
 # Configuration
@@ -18,14 +19,14 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 ANT_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
-    spawn=sim_utils.UsdFileCfg(
+    spawn=UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/IsaacSim/Ant/ant_instanceable.usd",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=10.0,
             enable_gyroscopic_forces=True,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+        articulation_props=ArticulationRootPropertiesCfg(
             enabled_self_collisions=False,
             solver_position_iteration_count=4,
             solver_velocity_iteration_count=0,

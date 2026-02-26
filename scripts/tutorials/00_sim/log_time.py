@@ -34,7 +34,8 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 
 
 def main():

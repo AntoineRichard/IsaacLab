@@ -16,13 +16,16 @@ import pytest
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sim import build_simulation_context
+from isaaclab.sim.simulation_context import build_simulation_context
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.schemas import CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 
 
 @configclass
@@ -32,7 +35,7 @@ class MySceneCfg(InteractiveSceneCfg):
     # articulation
     robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/IsaacSim/SimpleArticulation/revolute_articulation.usd",
         ),
         actuators={
@@ -42,12 +45,12 @@ class MySceneCfg(InteractiveSceneCfg):
     # rigid object
     rigid_obj = RigidObjectCfg(
         prim_path="/World/envs/env_.*/RigidObj",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.5, 0.5, 0.5),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(
+            collision_props=CollisionPropertiesCfg(
                 collision_enabled=True,
             ),
         ),

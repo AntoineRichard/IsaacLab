@@ -11,7 +11,7 @@ import torch
 
 from isaaclab.devices.device_base import DeviceBase
 from isaaclab.devices.retargeter_base import RetargeterBase, RetargeterCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 
 
 class G1LowerBodyStandingMotionControllerRetargeter(RetargeterBase):

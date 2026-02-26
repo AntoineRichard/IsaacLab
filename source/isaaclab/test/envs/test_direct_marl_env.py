@@ -19,10 +19,11 @@ simulation_app = AppLauncher(headless=True).app
 
 import pytest
 
-import isaaclab.sim as sim_utils
-from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg
+from isaaclab.envs.direct_marl_env import DirectMARLEnv
+from isaaclab.envs.direct_marl_env_cfg import DirectMARLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @configclass
@@ -56,7 +57,7 @@ def get_empty_base_env_cfg(device: str = "cuda:0", num_envs: int = 1, env_spacin
 def test_initialization(device):
     """Test initialization of DirectMARLEnv."""
     # create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     try:
         # create environment
         env = DirectMARLEnv(cfg=get_empty_base_env_cfg(device=device))

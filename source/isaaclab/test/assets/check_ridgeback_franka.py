@@ -36,22 +36,23 @@ simulation_app = app_launcher.app
 
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-
-##
+from isaaclab.assets.articulation.articulation import Articulation
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.ridgeback_franka import RIDGEBACK_FRANKA_PANDA_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
 
 
 def design_scene():
     """Designs the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+    cfg = DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
     # add robots and return them
     return add_robots()
@@ -69,7 +70,7 @@ def add_robots() -> Articulation:
     return robot
 
 
-def run_simulator(sim: sim_utils.SimulationContext, robot: Articulation):
+def run_simulator(sim: SimulationContext, robot: Articulation):
     """Runs the simulator by applying actions to the robot at every time-step"""
     # dummy action
     actions = robot.data.default_joint_pos.clone()
@@ -147,7 +148,7 @@ def run_simulator(sim: sim_utils.SimulationContext, robot: Articulation):
 def main():
     """Main function."""
     # Initialize the simulation context
-    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg())
+    sim = SimulationContext(SimulationCfg())
     # Set main camera
     sim.set_camera_view([1.5, 1.5, 1.5], [0.0, 0.0, 0.0])
     # design scene

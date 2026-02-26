@@ -34,12 +34,15 @@ import sys
 import gymnasium as gym
 import pytest
 
-import isaaclab.sim as sim_utils
-from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg, ManagerBasedRLEnv, ManagerBasedRLEnvCfg
-from isaaclab.sensors import save_images_to_file
+from isaaclab.envs.direct_rl_env import DirectRLEnv
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+from isaaclab.sensors.camera.utils import save_images_to_file
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.mark.skip(reason="Currently takes too long to run")
@@ -108,7 +111,7 @@ def _launch_tests(tile_widths: range, tile_heights: range, num_envs: int):
     for width in tile_widths:
         for height in tile_heights:
             # create a new stage
-            sim_utils.create_new_stage()
+            create_new_stage()
             # parse configuration
             env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg = parse_env_cfg(task_name, device=device, num_envs=num_envs)
             env_cfg.tiled_camera.width = width

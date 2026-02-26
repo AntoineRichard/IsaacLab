@@ -11,9 +11,10 @@ from typing import Any
 
 import torch
 
-from isaaclab.envs import ManagerBasedRLMimicEnv
+from isaaclab.envs.manager_based_rl_mimic_env import ManagerBasedRLMimicEnv
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
-from isaaclab.managers import DatasetExportMode, TerminationTermCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg
+from isaaclab.managers.recorder_manager import DatasetExportMode
 from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg
 
 from isaaclab_mimic.datagen.data_generator import DataGenerator

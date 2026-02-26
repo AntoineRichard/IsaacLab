@@ -74,8 +74,11 @@ from isaacsim.core.utils.extensions import enable_extension
 enable_extension("isaacsim.core.experimental.prims")
 from isaacsim.core.experimental.prims import XformPrim as IsaacSimExperimentalXformPrimView
 
-import isaaclab.sim as sim_utils
 from isaaclab.sim.views import XformPrimView as IsaacLabXformPrimView
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage, get_current_stage
 
 
 @torch.no_grad()
@@ -105,24 +108,24 @@ def benchmark_xform_prim_view(  # noqa: C901
     # Setup scene
     print("  Setting up scene")
     # Clear stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Create simulation context
     start_time = time.perf_counter()
-    sim_cfg = sim_utils.SimulationCfg(
+    sim_cfg = SimulationCfg(
         dt=0.01,
         device=args_cli.device,
         use_fabric=api in ("isaaclab-fabric", "isaacsim-fabric"),
     )
-    sim = sim_utils.SimulationContext(sim_cfg)
-    stage = sim_utils.get_current_stage()
+    sim = SimulationContext(sim_cfg)
+    stage = get_current_stage()
 
     print(f"  Time taken to create simulation context: {time.perf_counter() - start_time} seconds")
 
     # Create prims
     prim_paths = []
     for i in range(args_cli.num_envs):
-        sim_utils.create_prim(f"/World/Env_{i}", "Xform", stage=stage, translation=(i * 2.0, 0.0, 1.0))
-        sim_utils.create_prim(f"/World/Env_{i}/Object", "Xform", stage=stage, translation=(0.0, 0.0, 0.0))
+        create_prim(f"/World/Env_{i}", "Xform", stage=stage, translation=(i * 2.0, 0.0, 1.0))
+        create_prim(f"/World/Env_{i}/Object", "Xform", stage=stage, translation=(0.0, 0.0, 0.0))
         prim_paths.append(f"/World/Env_{i}/Object")
     # Play simulation
     sim.reset()
@@ -622,7 +625,7 @@ def main():
         print()
 
     # Clean up
-    sim_utils.SimulationContext.clear_instance()
+    SimulationContext.clear_instance()
 
 
 if __name__ == "__main__":

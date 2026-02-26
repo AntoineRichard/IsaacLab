@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensor
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
     from isaaclab.managers.command_manager import CommandTerm
 
 """

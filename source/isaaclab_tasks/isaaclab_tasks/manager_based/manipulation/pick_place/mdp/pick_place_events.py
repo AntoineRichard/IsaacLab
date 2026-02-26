@@ -11,10 +11,10 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 def reset_object_poses_nut_pour(

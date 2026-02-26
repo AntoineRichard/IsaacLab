@@ -13,10 +13,10 @@ import warp as wp
 import isaaclab.utils.math as math_utils
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
-from isaaclab.assets import RigidObject
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 """
 Drone control rewards.

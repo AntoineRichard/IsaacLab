@@ -6,7 +6,7 @@
 from collections.abc import Sequence
 from dataclasses import MISSING
 
-from isaaclab.assets.articulation import ArticulationCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_contrib.actuators import ThrusterCfg

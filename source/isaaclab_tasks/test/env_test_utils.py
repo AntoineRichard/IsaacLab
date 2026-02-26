@@ -12,13 +12,13 @@ import gymnasium as gym
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.envs.utils.spaces import sample_space
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.version import get_isaac_sim_version
 
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 def setup_environment(
@@ -194,7 +194,7 @@ def _check_random_actions(
     """
     # create a new context stage, if stage in memory is not enabled
     if not create_stage_in_memory:
-        sim_utils.create_new_stage()
+        create_new_stage()
 
     # reset the rtx sensors setting to False
     get_settings_manager().set_bool("/isaaclab/render/rtx_sensors", False)

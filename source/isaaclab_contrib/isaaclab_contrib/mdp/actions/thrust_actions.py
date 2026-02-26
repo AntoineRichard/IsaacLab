@@ -15,7 +15,7 @@ import isaaclab.utils.string as string_utils
 from isaaclab.managers.action_manager import ActionTerm
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
     from isaaclab.envs.utils.io_descriptors import GenericActionIODescriptor
 
     from isaaclab_contrib.assets import Multirotor
@@ -49,7 +49,7 @@ class ThrustAction(ActionTerm):
     Example:
         .. code-block:: python
 
-            from isaaclab.envs import ManagerBasedRLEnvCfg
+            from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
             from isaaclab_contrib.mdp.actions import ThrustActionCfg
 
 

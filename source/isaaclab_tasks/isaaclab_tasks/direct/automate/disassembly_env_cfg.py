@@ -6,16 +6,17 @@
 
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg
-from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
 from isaaclab.utils.configclass import configclass
 
 from .disassembly_tasks_cfg import ASSET_DIR, Extraction
+from isaaclab.sim.schemas import ArticulationRootPropertiesCfg, CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 OBS_DIM_CFG = {
     "joint_pos": 7,
@@ -131,10 +132,10 @@ class DisassemblyEnvCfg(DirectRLEnvCfg):
 
     robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ASSET_DIR}/franka_mimic.usd",
             activate_contact_sensors=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=True,
                 max_depenetration_velocity=5.0,
                 linear_damping=0.0,
@@ -146,12 +147,12 @@ class DisassemblyEnvCfg(DirectRLEnvCfg):
                 solver_velocity_iteration_count=1,
                 max_contact_impulse=1e32,
             ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_props=ArticulationRootPropertiesCfg(
                 enabled_self_collisions=False,
                 solver_position_iteration_count=192,
                 solver_velocity_iteration_count=1,
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             joint_pos={

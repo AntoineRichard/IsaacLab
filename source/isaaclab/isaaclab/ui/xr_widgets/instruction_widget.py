@@ -14,7 +14,8 @@ import omni.kit.commands
 import omni.ui as ui
 from pxr import Gf
 
-import isaaclab.sim as sim_utils
+from isaaclab.sim.utils.prims import delete_prim
+from isaaclab.sim.utils.stage import get_current_stage
 
 if TYPE_CHECKING:
     from omni.kit.xr.scene_view.utils import UiContainer
@@ -178,10 +179,10 @@ def show_instruction(
         del camera_facing_widget_container[target_prim_path]
 
     # Obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # Clean up existing widget
     if stage.GetPrimAtPath(target_prim_path).IsValid():
-        sim_utils.delete_prim(target_prim_path)
+        delete_prim(target_prim_path)
 
     width, height, wrapped_text = compute_widget_dimensions(text, font_size, max_width, min_width)
 

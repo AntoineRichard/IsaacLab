@@ -257,22 +257,30 @@ import numpy as np
 import psutil
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObject, RigidObjectCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.scene.interactive_scene import InteractiveScene
-from isaaclab.sensors import (
-    Camera,
-    CameraCfg,
-    RayCasterCamera,
-    RayCasterCameraCfg,
-    TiledCamera,
-    TiledCameraCfg,
-    patterns,
-)
+from isaaclab.sensors.camera.camera import Camera
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
+from isaaclab.sensors.camera.tiled_camera import TiledCamera
+from isaaclab.sensors.camera.tiled_camera_cfg import TiledCameraCfg
+from isaaclab.sensors.ray_caster.ray_caster_camera import RayCasterCamera
+from isaaclab.sensors.ray_caster.ray_caster_camera_cfg import RayCasterCameraCfg
+from isaaclab.sensors.ray_caster import patterns
 from isaaclab.test.benchmark import BaseIsaacLabBenchmark, DictMeasurement, SingleMeasurement
 from isaaclab.utils.math import orthogonalize_perspective_depth, unproject_depth
 
 from isaaclab_tasks.utils import load_cfg_from_registry
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
+from isaaclab.sim.spawners.shapes import ConeCfg, CuboidCfg, CylinderCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage
 
 """
 Camera Creation
@@ -295,7 +303,7 @@ def create_camera_base(
     if instantiate:
         # Create the necessary prims
         for idx in range(num_cams):
-            sim_utils.create_prim(f"/World/{name}_{idx:02d}", "Xform")
+            create_prim(f"/World/{name}_{idx:02d}", "Xform")
     if prim_path is None:
         prim_path = f"/World/{name}_.*/{name}"
     # If valid camera settings are provided, create the camera
@@ -306,7 +314,7 @@ def create_camera_base(
             height=height,
             width=width,
             data_types=data_types,
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=24, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1e4)
             ),
         )
@@ -355,7 +363,7 @@ def create_ray_caster_cameras(
 ) -> RayCasterCamera | RayCasterCameraCfg | None:
     """Create the raycaster cameras; different configuration than Standard/Tiled camera"""
     for idx in range(num_cams):
-        sim_utils.create_prim(f"/World/RayCasterCamera_{idx:02d}/RayCaster", "Xform")
+        create_prim(f"/World/RayCasterCamera_{idx:02d}/RayCaster", "Xform")
 
     if num_cams > 0 and len(data_types) > 0 and height > 0 and width > 0:
         cam_cfg = RayCasterCameraCfg(
@@ -445,17 +453,17 @@ def design_scene(
 
     # Populate scene
     # -- Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/ground", cfg)
     # -- Lights
-    cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+    cfg = DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # Create a dictionary for the scene entities
     scene_entities = {}
 
     # Xform to hold objects
-    sim_utils.create_prim("/World/Objects", "Xform")
+    create_prim("/World/Objects", "Xform")
     # Random objects
     for i in range(num_objects):
         # sample random position
@@ -466,18 +474,18 @@ def design_scene(
         # choose random prim type
         prim_type = random.choice(["Cube", "Cone", "Cylinder"])
         common_properties = {
-            "rigid_props": sim_utils.RigidBodyPropertiesCfg(),
-            "mass_props": sim_utils.MassPropertiesCfg(mass=5.0),
-            "collision_props": sim_utils.CollisionPropertiesCfg(),
-            "visual_material": sim_utils.PreviewSurfaceCfg(diffuse_color=color, metallic=0.5),
+            "rigid_props": RigidBodyPropertiesCfg(),
+            "mass_props": MassPropertiesCfg(mass=5.0),
+            "collision_props": CollisionPropertiesCfg(),
+            "visual_material": PreviewSurfaceCfg(diffuse_color=color, metallic=0.5),
             "semantic_tags": [("class", prim_type)],
         }
         if prim_type == "Cube":
-            shape_cfg = sim_utils.CuboidCfg(size=(0.25, 0.25, 0.25), **common_properties)
+            shape_cfg = CuboidCfg(size=(0.25, 0.25, 0.25), **common_properties)
         elif prim_type == "Cone":
-            shape_cfg = sim_utils.ConeCfg(radius=0.1, height=0.25, **common_properties)
+            shape_cfg = ConeCfg(radius=0.1, height=0.25, **common_properties)
         elif prim_type == "Cylinder":
-            shape_cfg = sim_utils.CylinderCfg(radius=0.25, height=0.25, **common_properties)
+            shape_cfg = CylinderCfg(radius=0.25, height=0.25, **common_properties)
         # Rigid Object
         obj_cfg = RigidObjectCfg(
             prim_path=f"/World/Objects/Obj_{i:02d}",
@@ -587,7 +595,7 @@ Experiment
 
 
 def run_simulator(
-    sim: sim_utils.SimulationContext | None,
+    sim: SimulationContext | None,
     scene_entities: dict | InteractiveScene,
     warm_start_length: int = 10,
     experiment_length: int = 100,
@@ -792,8 +800,8 @@ def main():
 
     if args_cli.task is None:
         print("[INFO]: No task environment provided, creating random scene.")
-        sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
-        sim = sim_utils.SimulationContext(sim_cfg)
+        sim_cfg = SimulationCfg(device=args_cli.device)
+        sim = SimulationContext(sim_cfg)
         # Set main camera
         sim.set_camera_view([2.5, 2.5, 2.5], [0.0, 0.0, 0.0])
         scene_entities = design_scene(
@@ -891,7 +899,7 @@ def main():
             final_analysis = analysis
             print("Triggering reset...")
             env.close()
-            sim_utils.create_new_stage()
+            create_new_stage()
         print("[INFO]: DONE! Feel free to CTRL + C Me ")
         print(f"[INFO]: If you've made it this far, you can likely simulate {cur_num_cams} {camera_name_prefix}")
         print("Keep in mind, this is without any training running on the GPU.")

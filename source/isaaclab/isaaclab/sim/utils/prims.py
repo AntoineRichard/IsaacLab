@@ -699,7 +699,7 @@ def clone(func: Callable) -> Callable:
         # clone asset using cloner API
         if len(source_prim_paths) > 1:
             # lazy import to avoid circular import
-            from isaaclab.cloner import usd_replicate
+            from isaaclab.cloner.cloner_utils import usd_replicate
 
             formattable_path = f"{root_path.replace('.*', '{}')}/{asset_path}"
             usd_replicate(

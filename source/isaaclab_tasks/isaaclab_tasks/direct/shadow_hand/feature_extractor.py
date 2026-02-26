@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torchvision
 
-from isaaclab.sensors import save_images_to_file
+from isaaclab.sensors.camera.utils import save_images_to_file
 from isaaclab.utils.configclass import configclass
 
 

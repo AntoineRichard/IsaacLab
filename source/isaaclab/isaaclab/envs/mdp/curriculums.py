@@ -15,10 +15,11 @@ import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
-from isaaclab.managers import CurriculumTermCfg, ManagerTermBase
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.manager_term_cfg import CurriculumTermCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 class modify_reward_weight(ManagerTermBase):

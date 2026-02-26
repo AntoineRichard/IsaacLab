@@ -23,7 +23,7 @@ from isaaclab.utils.warp.kernels import reshape_tiled_image
 from .isaac_rtx_renderer_utils import ensure_isaac_rtx_render_update
 
 if TYPE_CHECKING:
-    from isaaclab.sensors import SensorBase
+    from isaaclab.sensors.sensor_base import SensorBase
 
     from .isaac_rtx_renderer_cfg import IsaacRtxRendererCfg
 

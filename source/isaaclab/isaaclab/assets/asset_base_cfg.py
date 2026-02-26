@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import MISSING
 from typing import Literal
 
-from isaaclab.sim import SpawnerCfg
+from isaaclab.sim.spawners.spawner_cfg import SpawnerCfg
 from isaaclab.utils.configclass import configclass
 
 from .asset_base import AssetBase

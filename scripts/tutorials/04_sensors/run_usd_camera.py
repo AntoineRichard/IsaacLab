@@ -68,13 +68,23 @@ import torch
 
 import omni.replicator.core as rep
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObject, RigidObjectCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import RAY_CASTER_MARKER_CFG
-from isaaclab.sensors.camera import Camera, CameraCfg
+from isaaclab.sensors.camera.camera import Camera
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
 from isaaclab.sensors.camera.utils import create_pointcloud_from_depth
 from isaaclab.utils.dict import convert_dict_to_backend
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
+from isaaclab.sim.spawners.shapes import ConeCfg, CuboidCfg, CylinderCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def define_sensor() -> Camera:
@@ -82,8 +92,8 @@ def define_sensor() -> Camera:
     # Setup camera sensor
     # In contrast to the ray-cast camera, we spawn the prim at these locations.
     # This means the camera sensor will be attached to these prims.
-    sim_utils.create_prim("/World/Origin_00", "Xform")
-    sim_utils.create_prim("/World/Origin_01", "Xform")
+    create_prim("/World/Origin_00", "Xform")
+    create_prim("/World/Origin_01", "Xform")
     camera_cfg = CameraCfg(
         prim_path="/World/Origin_.*/CameraSensor",
         update_period=0,
@@ -100,7 +110,7 @@ def define_sensor() -> Camera:
         colorize_semantic_segmentation=True,
         colorize_instance_id_segmentation=True,
         colorize_instance_segmentation=True,
-        spawn=sim_utils.PinholeCameraCfg(
+        spawn=PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
     )
@@ -114,17 +124,17 @@ def design_scene() -> dict:
     """Design the scene."""
     # Populate scene
     # -- Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # -- Lights
-    cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+    cfg = DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # Create a dictionary for the scene entities
     scene_entities = {}
 
     # Xform to hold objects
-    sim_utils.create_prim("/World/Objects", "Xform")
+    create_prim("/World/Objects", "Xform")
     # Random objects
     for i in range(8):
         # sample random position
@@ -135,18 +145,18 @@ def design_scene() -> dict:
         # choose random prim type
         prim_type = random.choice(["Cube", "Cone", "Cylinder"])
         common_properties = {
-            "rigid_props": sim_utils.RigidBodyPropertiesCfg(),
-            "mass_props": sim_utils.MassPropertiesCfg(mass=5.0),
-            "collision_props": sim_utils.CollisionPropertiesCfg(),
-            "visual_material": sim_utils.PreviewSurfaceCfg(diffuse_color=color, metallic=0.5),
+            "rigid_props": RigidBodyPropertiesCfg(),
+            "mass_props": MassPropertiesCfg(mass=5.0),
+            "collision_props": CollisionPropertiesCfg(),
+            "visual_material": PreviewSurfaceCfg(diffuse_color=color, metallic=0.5),
             "semantic_tags": [("class", prim_type)],
         }
         if prim_type == "Cube":
-            shape_cfg = sim_utils.CuboidCfg(size=(0.25, 0.25, 0.25), **common_properties)
+            shape_cfg = CuboidCfg(size=(0.25, 0.25, 0.25), **common_properties)
         elif prim_type == "Cone":
-            shape_cfg = sim_utils.ConeCfg(radius=0.1, height=0.25, **common_properties)
+            shape_cfg = ConeCfg(radius=0.1, height=0.25, **common_properties)
         elif prim_type == "Cylinder":
-            shape_cfg = sim_utils.CylinderCfg(radius=0.25, height=0.25, **common_properties)
+            shape_cfg = CylinderCfg(radius=0.25, height=0.25, **common_properties)
         # Rigid Object
         obj_cfg = RigidObjectCfg(
             prim_path=f"/World/Objects/Obj_{i:02d}",
@@ -163,7 +173,7 @@ def design_scene() -> dict:
     return scene_entities
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
+def run_simulator(sim: SimulationContext, scene_entities: dict):
     """Run the simulator."""
     # extract entities for simplified notation
     camera: Camera = scene_entities["camera"]
@@ -272,8 +282,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
 def main():
     """Main function."""
     # Load simulation context
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.5, 2.5, 2.5], [0.0, 0.0, 0.0])
     # Design scene

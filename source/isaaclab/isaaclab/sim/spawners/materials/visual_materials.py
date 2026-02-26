@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from pxr import Usd, UsdShade
 
-from isaaclab.sim.utils import clone, safe_set_attribute_on_usd_prim
+from isaaclab.sim.utils.prims import clone, safe_set_attribute_on_usd_prim
 from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.assets import NVIDIA_NUCLEUS_DIR
 from isaaclab.utils.version import has_kit

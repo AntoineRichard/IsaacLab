@@ -18,16 +18,21 @@ import torch
 
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdUtils
 
-import isaaclab.sim as sim_utils
 import isaaclab.sim.utils.stage as stage_utils
 from isaaclab.app.settings_manager import SettingsManager
 from isaaclab.physics import PhysicsManager
-from isaaclab.sim.utils import create_new_stage
-from isaaclab.visualizers import KitVisualizerCfg, NewtonVisualizerCfg, RerunVisualizerCfg, Visualizer
+from isaaclab.utils.version import has_kit
+from isaaclab.visualizers.kit_visualizer_cfg import KitVisualizerCfg
+from isaaclab.visualizers.newton_visualizer_cfg import NewtonVisualizerCfg
+from isaaclab.visualizers.rerun_visualizer_cfg import RerunVisualizerCfg
+from isaaclab.visualizers.visualizer import Visualizer
 
 from .scene_data_providers import SceneDataProvider
 from .simulation_cfg import SimulationCfg
-from .spawners import DomeLightCfg, GroundPlaneCfg
+from .spawners.from_files.from_files_cfg import GroundPlaneCfg
+from .spawners.lights.lights_cfg import DomeLightCfg
+from isaaclab.sim.utils.prims import delete_prim
+from isaaclab.sim.utils.stage import clear_stage, create_new_stage, use_stage
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +129,7 @@ class SimulationContext:
 
         # When Kit is running, attach the stage to Kit's USD context so that
         # Kit extensions (PhysX views, Articulation, viewport) can discover it.
-        if sim_utils.has_kit():
+        if has_kit():
             import omni.usd
 
             kit_context = omni.usd.get_context()
@@ -261,7 +266,7 @@ class SimulationContext:
     def _init_usd_physics_scene(self) -> None:
         """Create and configure the USD physics scene."""
         cfg = self.cfg
-        with sim_utils.use_stage(self.stage):
+        with use_stage(self.stage):
             # Set stage conventions for metric units
             UsdGeom.SetStageUpAxis(self.stage, "Z")
             UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
@@ -270,7 +275,7 @@ class SimulationContext:
             # Find and delete any existing physics scene
             for prim in self.stage.Traverse():
                 if prim.GetTypeName() == "PhysicsScene":
-                    sim_utils.delete_prim(prim.GetPath().pathString, stage=self.stage)
+                    delete_prim(prim.GetPath().pathString, stage=self.stage)
 
             # Create a new physics scene
             if self.stage.GetPrimAtPath(cfg.physics_prim_path).IsValid():
@@ -638,7 +643,7 @@ class SimulationContext:
                 return False
             return True
 
-        sim_utils.clear_stage(predicate=_predicate)
+        clear_stage(predicate=_predicate)
 
 
 @contextmanager
@@ -670,7 +675,7 @@ def build_simulation_context(
     sim: SimulationContext | None = None
     try:
         if create_new_stage:
-            sim_utils.create_new_stage()
+            stage_utils.create_new_stage()
 
         if sim_cfg is None:
             gravity = (0.0, 0.0, -9.81) if gravity_enabled else (0.0, 0.0, 0.0)

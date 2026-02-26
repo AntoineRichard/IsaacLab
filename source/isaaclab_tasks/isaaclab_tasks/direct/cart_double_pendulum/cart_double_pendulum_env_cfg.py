@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
-from isaaclab.assets import ArticulationCfg
-from isaaclab.envs import DirectMARLEnvCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.envs.direct_marl_env_cfg import DirectMARLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_assets.robots.cart_double_pendulum import CART_DOUBLE_PENDULUM_CFG

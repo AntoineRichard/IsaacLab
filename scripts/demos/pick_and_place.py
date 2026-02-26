@@ -32,22 +32,24 @@ from isaaclab_physx.assets import SurfaceGripper, SurfaceGripperCfg
 import carb
 import omni
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import (
-    Articulation,
-    ArticulationCfg,
-    RigidObject,
-    RigidObjectCfg,
-)
-from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.direct_rl_env import DirectRLEnv
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
 from isaaclab.markers import SPHERE_MARKER_CFG, VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.math import sample_uniform
 
 from isaaclab_assets.robots.pick_and_place import PICK_AND_PLACE_CFG
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 
 
 @configclass
@@ -84,12 +86,12 @@ class PickAndPlaceEnvCfg(DirectRLEnvCfg):
     # We add a cube to pick-up
     cube_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Robot/Cube",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.4, 0.4, 0.4),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.0, 0.8)),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            collision_props=CollisionPropertiesCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.8, 0.0, 0.8)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(),
     )
@@ -226,7 +228,7 @@ class PickAndPlaceEnv(DirectRLEnv):
         self.scene.rigid_objects["cube"] = self.cube
         self.scene.surface_grippers["gripper"] = self.gripper
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:

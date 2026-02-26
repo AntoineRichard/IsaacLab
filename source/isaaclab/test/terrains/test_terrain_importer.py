@@ -23,12 +23,19 @@ import warp as wp
 from isaacsim.core.cloner import GridCloner
 from pxr import Usd, UsdGeom
 
-import isaaclab.sim as sim_utils
-import isaaclab.terrains as terrain_gen
-from isaaclab.sim import PreviewSurfaceCfg, SimulationContext, build_simulation_context, get_first_matching_child_prim
-from isaaclab.terrains import TerrainImporter, TerrainImporterCfg
+from isaaclab.sim.simulation_context import SimulationContext, build_simulation_context
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.utils.queries import get_first_matching_child_prim
+from isaaclab.terrains.terrain_importer import TerrainImporter
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg, RigidBodyMaterialCfg
+from isaaclab.sim.spawners.meshes import MeshSphereCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
+from isaaclab.sim.views import XformPrimView
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 
 
 @pytest.mark.parametrize("device", ["cuda:0", "cpu"])
@@ -63,7 +70,7 @@ def test_terrain_generation(device):
     with build_simulation_context(device=device, auto_add_lighting=True) as sim:
         sim._app_control_on_stop_handle = None
         # Handler for terrains importing
-        terrain_importer_cfg = terrain_gen.TerrainImporterCfg(
+        terrain_importer_cfg = TerrainImporterCfg(
             prim_path="/World/ground",
             max_init_terrain_level=None,
             terrain_type="generator",
@@ -104,7 +111,7 @@ def test_plane(device, use_custom_material):
         # create custom material
         visual_material = PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)) if use_custom_material else None
         # Handler for terrains importing
-        terrain_importer_cfg = terrain_gen.TerrainImporterCfg(
+        terrain_importer_cfg = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="plane",
             num_envs=1,
@@ -128,7 +135,7 @@ def test_usd(device):
     with build_simulation_context(device=device, auto_add_lighting=True) as sim:
         sim._app_control_on_stop_handle = None
         # Handler for terrains importing
-        terrain_importer_cfg = terrain_gen.TerrainImporterCfg(
+        terrain_importer_cfg = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="usd",
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd",
@@ -261,7 +268,7 @@ def _populate_scene(sim: SimulationContext, num_balls: int = 2048, geom_sphere: 
     both USD-shape and USD-mesh collisions work as expected.
     """
     # Handler for terrains importing
-    terrain_importer_cfg = terrain_gen.TerrainImporterCfg(
+    terrain_importer_cfg = TerrainImporterCfg(
         prim_path="/World/ground",
         max_init_terrain_level=None,
         terrain_type="generator",
@@ -281,33 +288,33 @@ def _populate_scene(sim: SimulationContext, num_balls: int = 2048, geom_sphere: 
     ball_prim_path = "/World/envs/env_0/ball"
 
     # Create physics material
-    physics_material_cfg = sim_utils.RigidBodyMaterialCfg(
+    physics_material_cfg = RigidBodyMaterialCfg(
         static_friction=0.2,
         dynamic_friction=1.0,
         restitution=0.0,
     )
 
     # Create visual material
-    visual_material_cfg = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0))
+    visual_material_cfg = PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0))
 
     if geom_sphere:
         # Spawn a geom sphere with rigid body properties
-        sphere_cfg = sim_utils.SphereCfg(
+        sphere_cfg = SphereCfg(
             radius=0.25,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=0.5),
+            collision_props=CollisionPropertiesCfg(),
             visual_material=visual_material_cfg,
             physics_material=physics_material_cfg,
         )
         sphere_cfg.func(ball_prim_path, sphere_cfg, translation=(0.0, 0.0, 5.0))
     else:
         # Spawn a mesh sphere with rigid body properties
-        mesh_sphere_cfg = sim_utils.MeshSphereCfg(
+        mesh_sphere_cfg = MeshSphereCfg(
             radius=0.25,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=0.5),
+            collision_props=CollisionPropertiesCfg(collision_enabled=True),
             visual_material=visual_material_cfg,
             physics_material=physics_material_cfg,
         )
@@ -328,7 +335,7 @@ def _populate_scene(sim: SimulationContext, num_balls: int = 2048, geom_sphere: 
 
     # Set ball positions over terrain origins
     # Create a view over all the balls using Isaac Lab's XformPrimView
-    ball_view = sim_utils.XformPrimView("/World/envs/env_.*/ball")
+    ball_view = XformPrimView("/World/envs/env_.*/ball")
     # cache initial state of the balls
     ball_initial_positions = terrain_importer.env_origins.clone()
     ball_initial_positions[:, 2] += 5.0

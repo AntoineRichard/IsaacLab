@@ -21,9 +21,11 @@ from isaaclab.utils.buffers import CircularBuffer
 
 from .manager_base import ManagerBase, ManagerTermBase
 from .manager_term_cfg import ObservationGroupCfg, ObservationTermCfg
+from isaaclab.utils.modifiers.modifier_base import ModifierBase
+from isaaclab.utils.modifiers.modifier_cfg import ModifierCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 class ObservationManager(ManagerBase):
@@ -476,7 +478,7 @@ class ObservationManager(ManagerBase):
         self._group_obs_term_history_buffer: dict[str, dict] = dict()
         # create a list to store classes instances, e.g., for modifiers and noise models
         # we store it as a separate list to only call reset on them and prevent unnecessary calls
-        self._group_obs_class_instances: list[modifiers.ModifierBase | noise.NoiseModel] = list()
+        self._group_obs_class_instances: list[ModifierBase | noise.NoiseModel] = list()
 
         # make sure the simulation is playing since we compute obs dims which needs asset quantities
         if not self._env.sim.is_playing():
@@ -580,10 +582,10 @@ class ObservationManager(ManagerBase):
                     # initialize list of modifiers for term
                     for mod_cfg in term_cfg.modifiers:
                         # check if class modifier and initialize with observation size when adding
-                        if isinstance(mod_cfg, modifiers.ModifierCfg):
+                        if isinstance(mod_cfg, ModifierCfg):
                             # to list of modifiers
                             if inspect.isclass(mod_cfg.func):
-                                if not issubclass(mod_cfg.func, modifiers.ModifierBase):
+                                if not issubclass(mod_cfg.func, ModifierBase):
                                     raise TypeError(
                                         f"Modifier function '{mod_cfg.func}' for observation term '{term_name}'"
                                         f" is not a subclass of 'ModifierBase'. Received: '{type(mod_cfg.func)}'."

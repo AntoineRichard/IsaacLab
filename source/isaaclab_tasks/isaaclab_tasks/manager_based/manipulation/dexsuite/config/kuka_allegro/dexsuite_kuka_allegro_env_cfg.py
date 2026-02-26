@@ -3,10 +3,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import RewardTermCfg as RewTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_assets.robots import KUKA_ALLEGRO_CFG

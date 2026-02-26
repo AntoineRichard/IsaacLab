@@ -5,9 +5,18 @@
 
 """Configuration for custom terrains."""
 
-import isaaclab.terrains as terrain_gen
 
 from ..terrain_generator_cfg import TerrainGeneratorCfg
+from isaaclab.terrains.height_field import (
+    HfInvertedPyramidSlopedTerrainCfg,
+    HfPyramidSlopedTerrainCfg,
+    HfRandomUniformTerrainCfg,
+)
+from isaaclab.terrains.trimesh import (
+    MeshInvertedPyramidStairsTerrainCfg,
+    MeshPyramidStairsTerrainCfg,
+    MeshRandomGridTerrainCfg,
+)
 
 ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0),
@@ -19,7 +28,7 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     slope_threshold=0.75,
     use_cache=False,
     sub_terrains={
-        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+        "pyramid_stairs": MeshPyramidStairsTerrainCfg(
             proportion=0.2,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
@@ -27,7 +36,7 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             border_width=1.0,
             holes=False,
         ),
-        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+        "pyramid_stairs_inv": MeshInvertedPyramidStairsTerrainCfg(
             proportion=0.2,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
@@ -35,16 +44,16 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             border_width=1.0,
             holes=False,
         ),
-        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
+        "boxes": MeshRandomGridTerrainCfg(
             proportion=0.2, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
         ),
-        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+        "random_rough": HfRandomUniformTerrainCfg(
             proportion=0.2, noise_range=(0.02, 0.10), noise_step=0.02, border_width=0.25
         ),
-        "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+        "hf_pyramid_slope": HfPyramidSlopedTerrainCfg(
             proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
         ),
-        "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+        "hf_pyramid_slope_inv": HfInvertedPyramidSlopedTerrainCfg(
             proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
         ),
     },

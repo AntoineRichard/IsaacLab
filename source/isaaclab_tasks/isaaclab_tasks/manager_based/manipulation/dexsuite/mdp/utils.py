@@ -13,7 +13,8 @@ from trimesh.sample import sample_surface
 
 from pxr import UsdGeom
 
-import isaaclab.sim as sim_utils
+from isaaclab.sim.utils.queries import get_all_matching_child_prims
+from isaaclab.sim.utils.stage import get_current_stage
 
 # ---- module-scope caches ----
 _PRIM_SAMPLE_CACHE: dict[tuple[str, int], np.ndarray] = {}  # (prim_hash, num_points) -> (N,3) in root frame
@@ -41,14 +42,14 @@ def sample_object_point_cloud(num_envs: int, num_points: int, prim_path: str, de
     points = torch.zeros((num_envs, num_points, 3), dtype=torch.float32, device=device)
     xform_cache = UsdGeom.XformCache()
     # Obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     for i in range(num_envs):
         # Resolve prim path
         obj_path = prim_path.replace(".*", str(i))
 
         # Gather prims
-        prims = sim_utils.get_all_matching_child_prims(
+        prims = get_all_matching_child_prims(
             obj_path, predicate=lambda p: p.GetTypeName() in ("Mesh", "Cube", "Sphere", "Cylinder", "Capsule", "Cone")
         )
         if not prims:

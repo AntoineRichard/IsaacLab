@@ -22,15 +22,22 @@ import torch
 import warp as wp
 from flaky import flaky
 
-import isaaclab.sim as sim_utils
 from isaaclab.app.settings_manager import get_settings_manager
-from isaaclab.assets import RigidObject, RigidObjectCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import ContactSensor, ContactSensorCfg
-from isaaclab.sim import SimulationCfg, SimulationContext, build_simulation_context
+from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext, build_simulation_context
 from isaaclab.sim.utils.stage import get_current_stage
-from isaaclab.terrains import HfRandomUniformTerrainCfg, TerrainGeneratorCfg, TerrainImporterCfg
+from isaaclab.terrains.height_field import HfRandomUniformTerrainCfg
+from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.sim.schemas import CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import CapsuleCfg, ConeCfg, CuboidCfg, CylinderCfg, SphereCfg
 
 ##
 # Custom helper classes.
@@ -92,16 +99,16 @@ class ContactSensorSceneCfg(InteractiveSceneCfg):
 
 CUBE_CFG = ContactSensorRigidObjectCfg(
     prim_path="/World/Objects/Cube",
-    spawn=sim_utils.CuboidCfg(
+    spawn=CuboidCfg(
         size=(0.5, 0.5, 0.5),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=False,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(
+        collision_props=CollisionPropertiesCfg(
             collision_enabled=True,
         ),
         activate_contact_sensors=True,
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.4, 0.6, 0.4)),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.4, 0.6, 0.4)),
     ),
     init_state=RigidObjectCfg.InitialStateCfg(pos=(0, -1.0, 1.0)),
     contact_pose=torch.tensor([0, -1.0, 0, 1, 0, 0, 0]),
@@ -111,16 +118,16 @@ CUBE_CFG = ContactSensorRigidObjectCfg(
 
 SPHERE_CFG = ContactSensorRigidObjectCfg(
     prim_path="/World/Objects/Sphere",
-    spawn=sim_utils.SphereCfg(
+    spawn=SphereCfg(
         radius=0.25,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=False,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(
+        collision_props=CollisionPropertiesCfg(
             collision_enabled=True,
         ),
         activate_contact_sensors=True,
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.4, 0.4, 0.6)),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.4, 0.4, 0.6)),
     ),
     init_state=RigidObjectCfg.InitialStateCfg(pos=(0, 1.0, 1.0)),
     contact_pose=torch.tensor([0, 1.0, 0.0, 1, 0, 0, 0]),
@@ -130,18 +137,18 @@ SPHERE_CFG = ContactSensorRigidObjectCfg(
 
 CYLINDER_CFG = ContactSensorRigidObjectCfg(
     prim_path="/World/Objects/Cylinder",
-    spawn=sim_utils.CylinderCfg(
+    spawn=CylinderCfg(
         radius=0.5,
         height=0.01,
         axis="Y",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=False,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(
+        collision_props=CollisionPropertiesCfg(
             collision_enabled=True,
         ),
         activate_contact_sensors=True,
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.6, 0.4, 0.4)),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.6, 0.4, 0.4)),
     ),
     init_state=RigidObjectCfg.InitialStateCfg(pos=(0, 0.0, 1.0)),
     contact_pose=torch.tensor([0, 0, 0.0, 1, 0, 0, 0]),
@@ -151,18 +158,18 @@ CYLINDER_CFG = ContactSensorRigidObjectCfg(
 
 CAPSULE_CFG = ContactSensorRigidObjectCfg(
     prim_path="/World/Objects/Capsule",
-    spawn=sim_utils.CapsuleCfg(
+    spawn=CapsuleCfg(
         radius=0.25,
         height=0.5,
         axis="Z",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=False,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(
+        collision_props=CollisionPropertiesCfg(
             collision_enabled=True,
         ),
         activate_contact_sensors=True,
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.4, 0.4)),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.2, 0.4, 0.4)),
     ),
     init_state=RigidObjectCfg.InitialStateCfg(pos=(1.0, 0.0, 1.5)),
     contact_pose=torch.tensor([1.0, 0.0, 0.0, 1, 0, 0, 0]),
@@ -172,18 +179,18 @@ CAPSULE_CFG = ContactSensorRigidObjectCfg(
 
 CONE_CFG = ContactSensorRigidObjectCfg(
     prim_path="/World/Objects/Cone",
-    spawn=sim_utils.ConeCfg(
+    spawn=ConeCfg(
         radius=0.5,
         height=0.5,
         axis="Z",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=False,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(
+        collision_props=CollisionPropertiesCfg(
             collision_enabled=True,
         ),
         activate_contact_sensors=True,
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.4, 0.2, 0.4)),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.4, 0.2, 0.4)),
     ),
     init_state=RigidObjectCfg.InitialStateCfg(pos=(-1.0, 0.0, 1.0)),
     contact_pose=torch.tensor([-1.0, 0.0, 0.0, 1, 0, 0, 0]),
@@ -602,7 +609,7 @@ def _run_contact_sensor_test(
                     scene_cfg.terrain = terrain
                     scene_cfg.shape = shape_cfg
                     test_contact_data = False
-                    if (type(shape_cfg.spawn) is sim_utils.SphereCfg) and (terrain.terrain_type == "plane"):
+                    if (type(shape_cfg.spawn) is SphereCfg) and (terrain.terrain_type == "plane"):
                         test_contact_data = True
                     elif track_contact_data:
                         continue

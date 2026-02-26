@@ -5,13 +5,13 @@
 
 from __future__ import annotations
 
-import isaaclab.sim as sim_utils
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import TiledCameraCfg
+from isaaclab.sensors.camera.tiled_camera_cfg import TiledCameraCfg
 from isaaclab.utils.configclass import configclass
 
 from .feature_extractor import FeatureExtractorCfg
 from .shadow_hand_env_cfg import ShadowHandEnvCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
 
 
 @configclass
@@ -24,7 +24,7 @@ class ShadowHandVisionEnvCfg(ShadowHandEnvCfg):
         prim_path="/World/envs/env_.*/Camera",
         offset=TiledCameraCfg.OffsetCfg(pos=(0, -0.35, 1.0), rot=(0.0, 0.7071, 0.0, 0.7071), convention="world"),
         data_types=["rgb", "depth", "semantic_segmentation"],
-        spawn=sim_utils.PinholeCameraCfg(
+        spawn=PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20.0)
         ),
         width=120,

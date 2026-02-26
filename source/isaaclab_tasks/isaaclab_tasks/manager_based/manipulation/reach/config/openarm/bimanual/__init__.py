@@ -17,7 +17,7 @@ from . import agents
 
 gym.register(
     id="Isaac-Reach-OpenArm-Bi-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:OpenArmReachEnvCfg",
@@ -28,7 +28,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Reach-OpenArm-Bi-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:OpenArmReachEnvCfg_PLAY",

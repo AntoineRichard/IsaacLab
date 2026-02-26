@@ -8,19 +8,21 @@ from dataclasses import MISSING
 
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+from isaaclab.managers.manager_term_cfg import CurriculumTermCfg as CurrTerm
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import RewardTermCfg as RewTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
+from isaaclab.sensors.ray_caster.ray_caster_cfg import RayCasterCfg
+from isaaclab.sensors.ray_caster import patterns
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
@@ -31,6 +33,8 @@ import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 # Pre-defined configs
 ##
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import MdlFileCfg, RigidBodyMaterialCfg
 
 
 ##
@@ -49,13 +53,13 @@ class MySceneCfg(InteractiveSceneCfg):
         terrain_generator=ROUGH_TERRAINS_CFG,
         max_init_terrain_level=5,
         collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
+        physics_material=RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
             dynamic_friction=1.0,
         ),
-        visual_material=sim_utils.MdlFileCfg(
+        visual_material=MdlFileCfg(
             mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
             project_uvw=True,
             texture_scale=(0.25, 0.25),
@@ -77,7 +81,7 @@ class MySceneCfg(InteractiveSceneCfg):
     # lights
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
-        spawn=sim_utils.DomeLightCfg(
+        spawn=DomeLightCfg(
             intensity=750.0,
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
         ),

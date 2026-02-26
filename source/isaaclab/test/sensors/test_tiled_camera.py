@@ -26,14 +26,32 @@ import warp as wp
 import omni.replicator.core as rep
 from pxr import Gf, UsdGeom, UsdPhysics
 
-import isaaclab.sim as sim_utils
-from isaaclab.sensors.camera import Camera, CameraCfg, TiledCamera, TiledCameraCfg
+from isaaclab.sensors.camera.camera import Camera
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
+from isaaclab.sensors.camera.tiled_camera import TiledCamera
+from isaaclab.sensors.camera.tiled_camera_cfg import TiledCameraCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.timer import Timer
+from isaaclab.sim.schemas import (
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+    define_collision_properties,
+    define_mass_properties,
+    define_rigid_body_properties,
+)
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import SphereLightCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.semantics import add_labels
+from isaaclab.sim.utils.stage import create_new_stage, get_current_stage, update_stage
 
 
 @pytest.fixture(scope="function")
-def setup_camera(device) -> tuple[sim_utils.SimulationContext, TiledCameraCfg, float]:
+def setup_camera(device) -> tuple[SimulationContext, TiledCameraCfg, float]:
     """Fixture to set up and tear down the camera simulation environment."""
     camera_cfg = TiledCameraCfg(
         height=128,
@@ -42,21 +60,21 @@ def setup_camera(device) -> tuple[sim_utils.SimulationContext, TiledCameraCfg, f
         prim_path="/World/Camera",
         update_period=0,
         data_types=["rgb", "distance_to_camera"],
-        spawn=sim_utils.PinholeCameraCfg(
+        spawn=PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
     )
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Simulation time-step
     dt = 0.01
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=dt, device=device)
-    sim: sim_utils.SimulationContext = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=dt, device=device)
+    sim: SimulationContext = SimulationContext(sim_cfg)
     # populate scene
     _populate_scene()
     # load stage
-    sim_utils.update_stage()
+    update_stage()
     yield sim, camera_cfg, dt
     # Teardown
     rep.vp_manager.destroy_hydra_textures("Replicator")
@@ -121,7 +139,7 @@ def test_depth_clipping_max(setup_camera, device):
     camera_cfg = TiledCameraCfg(
         prim_path="/World/Camera",
         offset=TiledCameraCfg.OffsetCfg(pos=(2.5, 2.5, 6.0), rot=(0.362, 0.873, -0.302, -0.125), convention="ros"),
-        spawn=sim_utils.PinholeCameraCfg().from_intrinsic_matrix(
+        spawn=PinholeCameraCfg().from_intrinsic_matrix(
             focal_length=38.0,
             intrinsic_matrix=[380.08, 0.0, 467.79, 0.0, 380.08, 262.05, 0.0, 0.0, 1.0],
             height=540,
@@ -161,7 +179,7 @@ def test_depth_clipping_none(setup_camera, device):
     camera_cfg = TiledCameraCfg(
         prim_path="/World/Camera",
         offset=TiledCameraCfg.OffsetCfg(pos=(2.5, 2.5, 6.0), rot=(0.362, 0.873, -0.302, -0.125), convention="ros"),
-        spawn=sim_utils.PinholeCameraCfg().from_intrinsic_matrix(
+        spawn=PinholeCameraCfg().from_intrinsic_matrix(
             focal_length=38.0,
             intrinsic_matrix=[380.08, 0.0, 467.79, 0.0, 380.08, 262.05, 0.0, 0.0, 1.0],
             height=540,
@@ -205,7 +223,7 @@ def test_depth_clipping_zero(setup_camera, device):
     camera_cfg = TiledCameraCfg(
         prim_path="/World/Camera",
         offset=TiledCameraCfg.OffsetCfg(pos=(2.5, 2.5, 6.0), rot=(0.362, 0.873, -0.302, -0.125), convention="ros"),
-        spawn=sim_utils.PinholeCameraCfg().from_intrinsic_matrix(
+        spawn=PinholeCameraCfg().from_intrinsic_matrix(
             focal_length=38.0,
             intrinsic_matrix=[380.08, 0.0, 467.79, 0.0, 380.08, 262.05, 0.0, 0.0, 1.0],
             height=540,
@@ -244,7 +262,7 @@ def test_multi_camera_init(setup_camera, device):
 
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -300,7 +318,7 @@ def test_rgb_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -402,7 +420,7 @@ def test_depth_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -456,7 +474,7 @@ def test_rgba_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -510,7 +528,7 @@ def test_albedo_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -568,7 +586,7 @@ def test_simple_shading_only_camera(setup_camera, device, data_type):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -622,7 +640,7 @@ def test_distance_to_camera_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -676,7 +694,7 @@ def test_distance_to_image_plane_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -730,7 +748,7 @@ def test_normals_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -787,7 +805,7 @@ def test_motion_vectors_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -841,7 +859,7 @@ def test_semantic_segmentation_colorize_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -896,7 +914,7 @@ def test_instance_segmentation_fast_colorize_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -951,7 +969,7 @@ def test_instance_id_segmentation_fast_colorize_only_camera(setup_camera, device
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -1006,7 +1024,7 @@ def test_semantic_segmentation_non_colorize_only_camera(setup_camera, device):
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -1063,7 +1081,7 @@ def test_instance_segmentation_fast_non_colorize_only_camera(setup_camera, devic
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -1118,7 +1136,7 @@ def test_instance_id_segmentation_fast_non_colorize_only_camera(setup_camera, de
     sim, camera_cfg, dt = setup_camera
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -1188,7 +1206,7 @@ def test_all_annotators_camera(setup_camera, device):
 
     num_cameras = 9
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -1291,7 +1309,7 @@ def test_all_annotators_low_resolution_camera(setup_camera, device):
 
     num_cameras = 2
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -1396,7 +1414,7 @@ def test_all_annotators_non_perfect_square_number_camera(setup_camera, device):
 
     num_cameras = 11
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform")
+        create_prim(f"/World/Origin_{i}", "Xform")
 
     # Create camera
     camera_cfg = copy.deepcopy(camera_cfg)
@@ -1499,15 +1517,15 @@ def test_all_annotators_instanceable(setup_camera, device):
 
     num_cameras = 10
     for i in range(num_cameras):
-        sim_utils.create_prim(f"/World/Origin_{i}", "Xform", translation=(0.0, i, 0.0))
+        create_prim(f"/World/Origin_{i}", "Xform", translation=(0.0, i, 0.0))
 
     # Create a stage with 10 instanceable cubes, where each camera points to one cube
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     for i in range(10):
         # Remove objects added to stage by default
         stage.RemovePrim(f"/World/Objects/Obj_{i:02d}")
         # Add instanceable cubes
-        sim_utils.create_prim(
+        create_prim(
             f"/World/Cube_{i}",
             "Xform",
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
@@ -1516,7 +1534,7 @@ def test_all_annotators_instanceable(setup_camera, device):
             scale=(1.0, 1.0, 1.0),
         )
         prim = stage.GetPrimAtPath(f"/World/Cube_{i}")
-        sim_utils.add_labels(prim, labels=["cube"], instance_name="class")
+        add_labels(prim, labels=["cube"], instance_name="class")
 
     # Disable gravity — we teleport cubes explicitly to get deterministic motion vectors
     physics_scene = UsdPhysics.Scene(stage.GetPrimAtPath(sim.cfg.physics_prim_path))
@@ -1688,7 +1706,7 @@ def test_output_equal_to_usd_camera_intrinsics(setup_camera, device):
     camera_tiled_cfg = TiledCameraCfg(
         prim_path="/World/Camera_tiled",
         offset=TiledCameraCfg.OffsetCfg(pos=offset_pos, rot=offset_rot, convention="ros"),
-        spawn=sim_utils.PinholeCameraCfg.from_intrinsic_matrix(
+        spawn=PinholeCameraCfg.from_intrinsic_matrix(
             intrinsic_matrix=intrinsics,
             height=540,
             width=960,
@@ -1700,7 +1718,7 @@ def test_output_equal_to_usd_camera_intrinsics(setup_camera, device):
     camera_usd_cfg = CameraCfg(
         prim_path="/World/Camera_usd",
         offset=CameraCfg.OffsetCfg(pos=offset_pos, rot=offset_rot, convention="ros"),
-        spawn=sim_utils.PinholeCameraCfg.from_intrinsic_matrix(
+        spawn=PinholeCameraCfg.from_intrinsic_matrix(
             intrinsic_matrix=intrinsics,
             height=540,
             width=960,
@@ -1794,7 +1812,7 @@ def test_frame_offset_small_resolution(setup_camera, device):
     # play sim
     sim.reset()
     # simulate some steps first to make sure objects are settled
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     for i in range(10):
         prim = stage.GetPrimAtPath(f"/World/Objects/Obj_{i:02d}")
         UsdGeom.Gprim(prim).GetOrderedXformOps()[2].Set(Gf.Vec3d(1.0, 1.0, 1.0))
@@ -1836,7 +1854,7 @@ def test_frame_offset_large_resolution(setup_camera, device):
     tiled_camera = TiledCamera(camera_cfg)
 
     # modify scene to be less stochastic
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     for i in range(10):
         prim = stage.GetPrimAtPath(f"/World/Objects/Obj_{i:02d}")
         color = Gf.Vec3f(1, 1, 1)
@@ -1879,10 +1897,10 @@ Helper functions.
 def _populate_scene():
     """Add prims to the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.SphereLightCfg()
+    cfg = SphereLightCfg()
     cfg.func("/World/Light/GreySphere", cfg, translation=(4.5, 3.5, 10.0))
     cfg.func("/World/Light/WhiteSphere", cfg, translation=(-4.5, 3.5, 10.0))
     # Random objects
@@ -1895,7 +1913,7 @@ def _populate_scene():
         position *= np.asarray([1.5, 1.5, 0.5])
         # create prim
         prim_type = random.choice(["Cube", "Sphere", "Cylinder"])
-        prim = sim_utils.create_prim(
+        prim = create_prim(
             f"/World/Objects/Obj_{i:02d}",
             prim_type,
             translation=position,
@@ -1910,6 +1928,6 @@ def _populate_scene():
         geom_prim.GetDisplayColorAttr().Set([color])
         # add rigid body and collision properties using Isaac Lab schemas
         prim_path = f"/World/Objects/Obj_{i:02d}"
-        sim_utils.define_rigid_body_properties(prim_path, sim_utils.RigidBodyPropertiesCfg())
-        sim_utils.define_mass_properties(prim_path, sim_utils.MassPropertiesCfg(mass=5.0))
-        sim_utils.define_collision_properties(prim_path, sim_utils.CollisionPropertiesCfg())
+        define_rigid_body_properties(prim_path, RigidBodyPropertiesCfg())
+        define_mass_properties(prim_path, MassPropertiesCfg(mass=5.0))
+        define_collision_properties(prim_path, CollisionPropertiesCfg())

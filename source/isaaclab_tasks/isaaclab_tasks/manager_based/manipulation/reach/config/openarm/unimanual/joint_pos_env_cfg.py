@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab.assets.articulation import ArticulationCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.utils.configclass import configclass
 
 import isaaclab_tasks.manager_based.manipulation.reach.mdp as mdp

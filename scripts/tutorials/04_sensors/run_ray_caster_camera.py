@@ -41,11 +41,17 @@ import torch
 
 import omni.replicator.core as rep
 
-import isaaclab.sim as sim_utils
-from isaaclab.sensors.ray_caster import RayCasterCamera, RayCasterCameraCfg, patterns
+from isaaclab.sensors.ray_caster.ray_caster_camera import RayCasterCamera
+from isaaclab.sensors.ray_caster.ray_caster_camera_cfg import RayCasterCameraCfg
+from isaaclab.sensors.ray_caster import patterns
 from isaaclab.utils.dict import convert_dict_to_backend
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import project_points, unproject_depth
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def define_sensor() -> RayCasterCamera:
@@ -53,8 +59,8 @@ def define_sensor() -> RayCasterCamera:
     # Camera base frames
     # In contras to the USD camera, we associate the sensor to the prims at these locations.
     # This means that parent prim of the sensor is the prim at this location.
-    sim_utils.create_prim("/World/Origin_00/CameraSensor", "Xform")
-    sim_utils.create_prim("/World/Origin_01/CameraSensor", "Xform")
+    create_prim("/World/Origin_00/CameraSensor", "Xform")
+    create_prim("/World/Origin_01/CameraSensor", "Xform")
 
     # Setup camera sensor
     camera_cfg = RayCasterCameraCfg(
@@ -80,10 +86,10 @@ def define_sensor() -> RayCasterCamera:
 def design_scene():
     # Populate scene
     # -- Rough terrain
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd")
     cfg.func("/World/ground", cfg)
     # -- Lights
-    cfg = sim_utils.DistantLightCfg(intensity=600.0, color=(0.75, 0.75, 0.75))
+    cfg = DistantLightCfg(intensity=600.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
     # -- Sensors
     camera = define_sensor()
@@ -93,7 +99,7 @@ def design_scene():
     return scene_entities
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
+def run_simulator(sim: SimulationContext, scene_entities: dict):
     """Run the simulator."""
     # extract entities for simplified notation
     camera: RayCasterCamera = scene_entities["camera"]
@@ -163,8 +169,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg()
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg()
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.5, 2.5, 3.5], [0.0, 0.0, 0.0])
     # Design scene

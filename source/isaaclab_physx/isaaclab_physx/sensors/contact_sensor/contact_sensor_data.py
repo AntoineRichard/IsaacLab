@@ -10,7 +10,7 @@ import math
 
 import warp as wp
 
-from isaaclab.sensors.contact_sensor import BaseContactSensorData
+from isaaclab.sensors.contact_sensor.base_contact_sensor_data import BaseContactSensorData
 
 from isaaclab_physx.sensors.kernels import concat_pos_and_quat_to_pose_kernel
 

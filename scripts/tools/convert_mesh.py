@@ -96,11 +96,12 @@ import os
 import carb
 import omni.kit.app
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim.converters import MeshConverter, MeshConverterCfg
+from isaaclab.sim.converters.mesh_converter import MeshConverter
+from isaaclab.sim.converters.mesh_converter_cfg import MeshConverterCfg
 from isaaclab.sim.schemas import schemas_cfg
 from isaaclab.utils.assets import check_file_path
 from isaaclab.utils.dict import print_dict
+from isaaclab.sim.utils.stage import open_stage
 
 collision_approximation_map = {
     "convexDecomposition": schemas_cfg.ConvexDecompositionPropertiesCfg,
@@ -188,7 +189,7 @@ def main():
     # Simulate scene (if not headless)
     if local_gui or livestream_gui:
         # Open the stage with USD
-        sim_utils.open_stage(mesh_converter.usd_path)
+        open_stage(mesh_converter.usd_path)
         # Reinitialize the simulation
         app = omni.kit.app.get_app_interface()
         # Run simulation

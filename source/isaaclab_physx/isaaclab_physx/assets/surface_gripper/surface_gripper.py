@@ -15,9 +15,9 @@ import warp as wp
 
 from isaacsim.core.utils.extensions import enable_extension
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBase
+from isaaclab.assets.asset_base import AssetBase
 from isaaclab.utils.version import get_isaac_sim_version, has_kit
+from isaaclab.sim.utils.queries import find_first_matching_prim, find_matching_prims, get_all_matching_child_prims
 
 if TYPE_CHECKING:
     from isaacsim.robot.surface_gripper import GripperView
@@ -446,13 +446,13 @@ class SurfaceGripper(AssetBase):
             )
 
         # obtain the first prim in the regex expression (all others are assumed to be a copy of this)
-        template_prim = sim_utils.find_first_matching_prim(self._cfg.prim_path)
+        template_prim = find_first_matching_prim(self._cfg.prim_path)
         if template_prim is None:
             raise RuntimeError(f"Failed to find prim for expression: '{self._cfg.prim_path}'.")
         template_prim_path = template_prim.GetPath().pathString
 
         # find surface gripper prims
-        gripper_prims = sim_utils.get_all_matching_child_prims(
+        gripper_prims = get_all_matching_child_prims(
             template_prim_path,
             predicate=lambda prim: prim.GetTypeName() == "IsaacSurfaceGripper",
             traverse_instance_prims=False,
@@ -476,7 +476,7 @@ class SurfaceGripper(AssetBase):
         # Count number of environments
         self._prim_expr = gripper_prim_path_expr
         env_prim_path_expr = self._prim_expr.rsplit("/", 1)[0]
-        self._parent_prims = sim_utils.find_matching_prims(env_prim_path_expr)
+        self._parent_prims = find_matching_prims(env_prim_path_expr)
         self._num_envs = len(self._parent_prims)
 
         # Create buffers

@@ -19,12 +19,12 @@ from flaky import flaky
 
 from isaacsim.core.cloner import GridCloner
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.controllers import OperationalSpaceController, OperationalSpaceControllerCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
-from isaaclab.sensors import ContactSensor, ContactSensorCfg
+from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
 from isaaclab.utils.math import (
     apply_delta_pose,
     combine_frame_transforms,
@@ -39,23 +39,31 @@ from isaaclab.utils.math import (
 # Pre-defined configs
 ##
 from isaaclab_assets import FRANKA_PANDA_CFG  # isort:skip
+from isaaclab.sim.schemas import CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture
 def sim():
     """Create a simulation context for testing."""
     # Wait for spawning
-    stage = sim_utils.create_new_stage()
+    stage = create_new_stage()
     # Constants
     num_envs = 16
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.01)
+    sim = SimulationContext(sim_cfg)
     # TODO: Remove this once we have a better way to handle this.
     sim._app_control_on_stop_handle = None
 
     # Create a ground plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/GroundPlane", cfg)
 
     # Markers
@@ -64,7 +72,7 @@ def sim():
     ee_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_current"))
     goal_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_goal"))
 
-    light_cfg = sim_utils.DistantLightCfg(intensity=5.0, exposure=10.0)
+    light_cfg = DistantLightCfg(intensity=5.0, exposure=10.0)
     light_cfg.func(
         "/Light",
         light_cfg,
@@ -550,11 +558,11 @@ def test_franka_wrench_abs_open_loop(sim):
 
     robot = Articulation(cfg=robot_cfg)
 
-    obstacle_spawn_cfg = sim_utils.CuboidCfg(
+    obstacle_spawn_cfg = CuboidCfg(
         size=(0.7, 0.7, 0.01),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
+        rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
         activate_contact_sensors=True,
     )
     obstacle_spawn_cfg.func(
@@ -631,11 +639,11 @@ def test_franka_wrench_abs_closed_loop(sim):
 
     robot = Articulation(cfg=robot_cfg)
 
-    obstacle_spawn_cfg = sim_utils.CuboidCfg(
+    obstacle_spawn_cfg = CuboidCfg(
         size=(0.7, 0.7, 0.01),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
+        rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
         activate_contact_sensors=True,
     )
     obstacle_spawn_cfg.func(
@@ -720,11 +728,11 @@ def test_franka_hybrid_decoupled_motion(sim):
 
     robot = Articulation(cfg=robot_cfg)
 
-    obstacle_spawn_cfg = sim_utils.CuboidCfg(
+    obstacle_spawn_cfg = CuboidCfg(
         size=(1.0, 1.0, 0.01),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
+        rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
         activate_contact_sensors=True,
     )
     obstacle_spawn_cfg.func(
@@ -797,11 +805,11 @@ def test_franka_hybrid_variable_kp_impedance(sim):
 
     robot = Articulation(cfg=robot_cfg)
 
-    obstacle_spawn_cfg = sim_utils.CuboidCfg(
+    obstacle_spawn_cfg = CuboidCfg(
         size=(1.0, 1.0, 0.01),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
+        rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
         activate_contact_sensors=True,
     )
     obstacle_spawn_cfg.func(
@@ -977,11 +985,11 @@ def test_franka_taskframe_hybrid(sim):
     robot = Articulation(cfg=robot_cfg)
     frame = "task"
 
-    obstacle_spawn_cfg = sim_utils.CuboidCfg(
+    obstacle_spawn_cfg = CuboidCfg(
         size=(2.0, 1.5, 0.01),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
+        rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
         activate_contact_sensors=True,
     )
     obstacle_spawn_cfg.func(
@@ -1206,11 +1214,11 @@ def test_franka_taskframe_hybrid_with_nullspace_centering(sim):
     robot = Articulation(cfg=robot_cfg)
     frame = "task"
 
-    obstacle_spawn_cfg = sim_utils.CuboidCfg(
+    obstacle_spawn_cfg = CuboidCfg(
         size=(2.0, 1.5, 0.01),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
+        rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
         activate_contact_sensors=True,
     )
     obstacle_spawn_cfg.func(
@@ -1264,7 +1272,7 @@ def _run_op_space_controller(
     ee_frame_name: str,
     arm_joint_names: list[str],
     target_set: torch.tensor,
-    sim: sim_utils.SimulationContext,
+    sim: SimulationContext,
     num_envs: int,
     ee_marker: VisualizationMarkers,
     goal_marker: VisualizationMarkers,
@@ -1280,7 +1288,7 @@ def _run_op_space_controller(
         ee_frame_name (str): The name of the end-effector frame.
         arm_joint_names (list[str]): The names of the arm joints.
         target_set (torch.tensor): The target set to track.
-        sim (sim_utils.SimulationContext): The simulation context.
+        sim (SimulationContext): The simulation context.
         num_envs (int): The number of environments.
         ee_marker (VisualizationMarkers): The end-effector marker.
         goal_marker (VisualizationMarkers): The goal marker.
@@ -1415,7 +1423,7 @@ def _update_states(
     robot: Articulation,
     ee_frame_idx: int,
     arm_joint_ids: list[int],
-    sim: sim_utils.SimulationContext,
+    sim: SimulationContext,
     contact_forces: ContactSensor | None,
     num_envs: int,
 ):
@@ -1425,7 +1433,7 @@ def _update_states(
         robot (Articulation): The robot to control.
         ee_frame_idx (int): The index of the end-effector frame.
         arm_joint_ids (list[int]): The indices of the arm joints.
-        sim (sim_utils.SimulationContext): The simulation context.
+        sim (SimulationContext): The simulation context.
         contact_forces (ContactSensor | None): The contact forces sensor.
         num_envs (int): Number of environments.
 

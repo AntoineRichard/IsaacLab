@@ -22,20 +22,24 @@ from typing import TYPE_CHECKING, Literal
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.actuators import ImplicitActuator
-from isaaclab.assets import Articulation, BaseArticulation, BaseRigidObject, RigidObject
-from isaaclab.managers import EventTermCfg, ManagerTermBase, SceneEntityCfg
+from isaaclab.actuators.actuator_pd import ImplicitActuator
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.articulation.base_articulation import BaseArticulation
+from isaaclab.assets.rigid_object.base_rigid_object import BaseRigidObject
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.manager_term_cfg import EventTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.version import compare_versions, get_isaac_sim_version
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.utils.queries import find_matching_prim_paths
 
 if TYPE_CHECKING:
     from isaaclab_physx.assets import DeformableObject
 
-    from isaaclab.envs import ManagerBasedEnv
-    from isaaclab.terrains import TerrainImporter
-
-# import logger
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
+    from isaaclab.terrains.terrain_importer import TerrainImporter
 logger = logging.getLogger(__name__)
 
 
@@ -98,7 +102,7 @@ def randomize_rigid_body_scale(
     # acquire stage
     stage = env.sim.stage
     # resolve prim paths for spawning and cloning
-    prim_paths = sim_utils.find_matching_prim_paths(asset.cfg.prim_path)
+    prim_paths = find_matching_prim_paths(asset.cfg.prim_path)
 
     # sample scale values
     if isinstance(scale_range, dict):
@@ -550,7 +554,7 @@ def randomize_physics_scene_gravity(
     import carb  # noqa: PLC0415
     import omni.physics.tensors.impl.api as physx  # noqa: PLC0415
 
-    physics_sim_view: physx.SimulationView = sim_utils.SimulationContext.instance().physics_sim_view
+    physics_sim_view: physx.SimulationView = SimulationContext.instance().physics_sim_view
     physics_sim_view.set_gravity(carb.Float3(*gravity))
 
 
@@ -1509,7 +1513,7 @@ class randomize_visual_texture_material(ManagerTermBase):
         asset_main_prim_path = asset.cfg.prim_path
         pattern_with_visuals = f"{asset_main_prim_path}/{body_names_regex}/visuals"
         # Use sim_utils to check if any prims currently match this pattern
-        matching_prims = sim_utils.find_matching_prim_paths(pattern_with_visuals)
+        matching_prims = find_matching_prim_paths(pattern_with_visuals)
         if matching_prims:
             # If matches are found, use the pattern with /visuals
             prim_path = pattern_with_visuals

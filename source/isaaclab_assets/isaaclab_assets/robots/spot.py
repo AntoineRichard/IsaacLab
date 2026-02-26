@@ -11,10 +11,11 @@ The following configuration parameters are available:
 * :obj:`SPOT_CFG`: The Spot robot with delay PD and remote PD actuators.
 """
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import DelayedPDActuatorCfg, RemotizedPDActuatorCfg
-from isaaclab.assets.articulation import ArticulationCfg
+from isaaclab.actuators.actuator_pd_cfg import DelayedPDActuatorCfg, RemotizedPDActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.schemas import ArticulationRootPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 # Note: This data was collected by the Boston Dynamics AI Institute.
 joint_parameter_lookup = [
@@ -132,10 +133,10 @@ and the output torque (N*m). It is used to interpolate the output torque based o
 
 
 SPOT_CFG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(
+    spawn=UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/BostonDynamics/spot/spot.usd",
         activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=0.0,
@@ -144,7 +145,7 @@ SPOT_CFG = ArticulationCfg(
             max_angular_velocity=1000.0,
             max_depenetration_velocity=1.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+        articulation_props=ArticulationRootPropertiesCfg(
             enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
         ),
     ),

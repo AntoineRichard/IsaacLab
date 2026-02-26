@@ -11,11 +11,11 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 def base_yaw_roll(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

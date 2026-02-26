@@ -128,8 +128,8 @@ def remove_camera_configs(env_cfg: Any) -> Any:
     # import logger
     logger = logging.getLogger(__name__)
 
-    from isaaclab.managers import SceneEntityCfg
-    from isaaclab.sensors import CameraCfg
+    from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+    from isaaclab.sensors.camera.camera_cfg import CameraCfg
 
     for attr_name in dir(env_cfg.scene):
         attr = getattr(env_cfg.scene, attr_name)

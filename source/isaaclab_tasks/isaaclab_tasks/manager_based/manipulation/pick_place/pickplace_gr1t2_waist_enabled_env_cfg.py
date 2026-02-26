@@ -15,7 +15,7 @@ except ImportError:
     logging.getLogger(__name__).warning("isaaclab_teleop is not installed. XR teleoperation features will be disabled.")
 
 import isaaclab.controllers.utils as ControllerUtils
-from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
 from isaaclab.utils.configclass import configclass
 
 from .pickplace_gr1t2_env_cfg import (

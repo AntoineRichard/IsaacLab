@@ -68,7 +68,9 @@ from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import IsaacAlgoObserver
 from rl_games.torch_runner import Runner
 
-from isaaclab.envs import DirectMARLEnvCfg, DirectRLEnvCfg, ManagerBasedRLEnvCfg
+from isaaclab.envs.direct_marl_env_cfg import DirectMARLEnvCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 

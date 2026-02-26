@@ -40,13 +40,13 @@ simulation_app = app_launcher.app
 
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, AssetBaseCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
 from isaaclab.controllers import OperationalSpaceController, OperationalSpaceControllerCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.math import (
     combine_frame_transforms,
@@ -60,6 +60,13 @@ from isaaclab.utils.math import (
 # Pre-defined configs
 ##
 from isaaclab_assets import FRANKA_PANDA_HIGH_PD_CFG  # isort:skip
+from isaaclab.sim.schemas import CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 
 
 @configclass
@@ -69,22 +76,22 @@ class SceneCfg(InteractiveSceneCfg):
     # ground plane
     ground = AssetBaseCfg(
         prim_path="/World/defaultGroundPlane",
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=GroundPlaneCfg(),
     )
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # Tilted wall
     tilted_wall = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/TiltedWall",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(2.0, 1.5, 0.01),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=CollisionPropertiesCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), opacity=0.1),
+            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
             activate_contact_sensors=True,
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
@@ -107,7 +114,7 @@ class SceneCfg(InteractiveSceneCfg):
     robot.spawn.rigid_props.disable_gravity = True
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Runs the simulation loop.
 
     Args:
@@ -281,7 +288,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
 
 # Update robot states
 def update_states(
-    sim: sim_utils.SimulationContext,
+    sim: SimulationContext,
     scene: InteractiveScene,
     robot: Articulation,
     ee_frame_idx: int,
@@ -377,7 +384,7 @@ def update_states(
 
 # Update the target commands
 def update_target(
-    sim: sim_utils.SimulationContext,
+    sim: SimulationContext,
     scene: InteractiveScene,
     osc: OperationalSpaceController,
     root_pose_w: torch.tensor,
@@ -468,8 +475,8 @@ def convert_to_task_frame(osc: OperationalSpaceController, command: torch.tensor
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.01, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.5, 2.5, 2.5], [0.0, 0.0, 0.0])
     # Design scene

@@ -16,14 +16,14 @@ import newton
 import torch
 import warp as wp
 
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.math import convert_camera_frame_orientation_convention
-from isaaclab.visualizers import VisualizerCfg
+from isaaclab.visualizers.visualizer_cfg import VisualizerCfg
 
 from .newton_warp_renderer_cfg import NewtonWarpRendererCfg
 
 if TYPE_CHECKING:
-    from isaaclab.sensors import SensorBase
+    from isaaclab.sensors.sensor_base import SensorBase
     from isaaclab.sim.scene_data_providers import SceneDataProvider
 
 logger = logging.getLogger(__name__)

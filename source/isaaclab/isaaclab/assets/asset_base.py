@@ -14,10 +14,11 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.physics import PhysicsEvent, PhysicsManager
 from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.sim.utils.stage import get_current_stage
+from isaaclab.sim.utils.prims import set_prim_visibility
+from isaaclab.sim.utils.queries import find_matching_prims
 
 if TYPE_CHECKING:
     from .asset_base_cfg import AssetBaseCfg
@@ -86,7 +87,7 @@ class AssetBase(ABC):
             check_path = self.cfg.prim_path
 
         # check that prims exist
-        matching_prims = sim_utils.find_matching_prims(check_path)
+        matching_prims = find_matching_prims(check_path)
         if len(matching_prims) == 0:
             raise RuntimeError(f"Could not find prim with path {check_path}.")
 
@@ -170,11 +171,11 @@ class AssetBase(ABC):
         # obtain the prims corresponding to the asset
         # note: we only want to find the prims once since this is a costly operation
         if not hasattr(self, "_prims"):
-            self._prims = sim_utils.find_matching_prims(self.cfg.prim_path)
+            self._prims = find_matching_prims(self.cfg.prim_path)
 
         # iterate over the environment ids
         for env_id in env_ids:
-            sim_utils.set_prim_visibility(self._prims[env_id], visible)
+            set_prim_visibility(self._prims[env_id], visible)
 
     def set_debug_vis(self, debug_vis: bool) -> bool:
         """Sets whether to visualize the asset data.

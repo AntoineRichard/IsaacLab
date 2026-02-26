@@ -18,7 +18,6 @@ import warp as wp
 import omni.physics.tensors.impl.api as physx
 from pxr import UsdPhysics
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.string as string_utils
 from isaaclab.assets.rigid_object_collection.base_rigid_object_collection import BaseRigidObjectCollection
 from isaaclab.utils.wrench_composer import WrenchComposer
@@ -28,6 +27,7 @@ from isaaclab_physx.physics import PhysxManager as SimulationManager
 
 from .kernels import resolve_view_ids
 from .rigid_object_collection_data import RigidObjectCollectionData
+from isaaclab.sim.utils.queries import find_first_matching_prim, find_matching_prims, get_all_matching_child_prims
 
 if TYPE_CHECKING:
     from isaaclab.assets.rigid_object_collection.rigid_object_collection_cfg import RigidObjectCollectionCfg
@@ -88,7 +88,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
                     orientation=rigid_body_cfg.init_state.rot,
                 )
             # check that spawn was successful
-            matching_prims = sim_utils.find_matching_prims(rigid_body_cfg.prim_path)
+            matching_prims = find_matching_prims(rigid_body_cfg.prim_path)
             if len(matching_prims) == 0:
                 raise RuntimeError(f"Could not find prim with path {rigid_body_cfg.prim_path}.")
         # stores object names
@@ -1192,13 +1192,13 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         root_prim_path_exprs = []
         for name, rigid_body_cfg in self.cfg.rigid_objects.items():
             # obtain the first prim in the regex expression (all others are assumed to be a copy of this)
-            template_prim = sim_utils.find_first_matching_prim(rigid_body_cfg.prim_path)
+            template_prim = find_first_matching_prim(rigid_body_cfg.prim_path)
             if template_prim is None:
                 raise RuntimeError(f"Failed to find prim for expression: '{rigid_body_cfg.prim_path}'.")
             template_prim_path = template_prim.GetPath().pathString
 
             # find rigid root prims
-            root_prims = sim_utils.get_all_matching_child_prims(
+            root_prims = get_all_matching_child_prims(
                 template_prim_path,
                 predicate=lambda prim: prim.HasAPI(UsdPhysics.RigidBodyAPI),
                 traverse_instance_prims=False,
@@ -1216,7 +1216,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
                 )
 
             # check that no rigid object has an articulation root API, which decreases simulation performance
-            articulation_prims = sim_utils.get_all_matching_child_prims(
+            articulation_prims = get_all_matching_child_prims(
                 template_prim_path,
                 predicate=lambda prim: prim.HasAPI(UsdPhysics.ArticulationRootAPI),
                 traverse_instance_prims=False,

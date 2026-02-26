@@ -38,30 +38,30 @@ simulation_app = app_launcher.app
 
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-from isaaclab.sim import SimulationContext
-
-##
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.sim.simulation_context import SimulationContext
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
 
 
 def main():
     """Main function."""
 
     # Load kit helper
-    sim = SimulationContext(sim_utils.SimulationCfg(dt=0.005))
+    sim = SimulationContext(SimulationCfg(dt=0.005))
     # Set main camera
     sim.set_camera_view(eye=[3.5, 3.5, 3.5], target=[0.0, 0.0, 0.0])
 
     # Spawn things into stage
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DistantLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
+    cfg = DistantLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light/greyLight", cfg)
 
     # Robots

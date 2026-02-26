@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-import isaaclab.sim as sim_utils
+from isaaclab.sim.simulation_context import SimulationContext
 
 # Module-level dedup stamp: tracks the last (sim instance, physics step) at
 # which Kit's ``app.update()`` was pumped.  Keyed on ``id(sim)`` so that a
@@ -38,7 +38,7 @@ def ensure_isaac_rtx_render_update() -> None:
     """
     global _last_render_update_key
 
-    sim = sim_utils.SimulationContext.instance()
+    sim = SimulationContext.instance()
     if sim is None:
         return
 

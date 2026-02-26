@@ -11,26 +11,27 @@ from typing import TYPE_CHECKING
 import torch
 from torchvision.utils import save_image
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
 from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import CameraCfg
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
 from isaaclab.utils.configclass import configclass
 
 from ... import mdp
 from . import stack_joint_pos_env_cfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
-    from isaaclab.sensors import Camera, RayCasterCamera, TiledCamera
-##
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
+    from isaaclab.sensors.camera.camera import Camera
+    from isaaclab.sensors.camera.tiled_camera import TiledCamera
+    from isaaclab.sensors.ray_caster.ray_caster_camera import RayCasterCamera
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG  # isort: skip
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
 
 
 def image(
@@ -257,7 +258,7 @@ class FrankaCubeStackBlueprintEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvC
             data_types=["rgb", "semantic_segmentation", "normals"],
             colorize_semantic_segmentation=True,
             semantic_segmentation_mapping=MAPPING,
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
             ),
             offset=CameraCfg.OffsetCfg(pos=(1.0, 0.0, 0.33), rot=(0.5963, 0.5963, -0.3799, -0.3799), convention="ros"),
@@ -272,7 +273,7 @@ class FrankaCubeStackBlueprintEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvC
             data_types=["rgb", "semantic_segmentation", "normals"],
             colorize_semantic_segmentation=True,
             semantic_segmentation_mapping=MAPPING,
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(1.5, 1.0e5)
             ),
             offset=CameraCfg.OffsetCfg(pos=(1.4, 1.8, 1.2), rot=(0.2025, 0.8185, -0.5192, -0.1393), convention="ros"),

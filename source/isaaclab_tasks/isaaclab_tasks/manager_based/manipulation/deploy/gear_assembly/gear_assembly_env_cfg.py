@@ -8,16 +8,17 @@ from dataclasses import MISSING
 
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import ActionTermCfg as ActionTerm
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+from isaaclab.managers.manager_term_cfg import ActionTermCfg as ActionTerm
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import RewardTermCfg as RewTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.utils.configclass import configclass
@@ -27,6 +28,9 @@ from isaaclab.utils.noise import UniformNoiseCfg
 import isaaclab_tasks.manager_based.manipulation.deploy.mdp as mdp
 import isaaclab_tasks.manager_based.manipulation.deploy.mdp.terminations as gear_assembly_terminations
 from isaaclab_tasks.manager_based.manipulation.deploy.mdp.noise_models import ResetSampledConstantNoiseModelCfg
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UsdFileCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 # Get the directory where this configuration file is located
 CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,17 +51,17 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
     # world
     ground = AssetBaseCfg(
         prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=GroundPlaneCfg(),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -1.05)),
     )
 
     factory_gear_base = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/FactoryGearBase",
         # TODO: change to common isaac sim directory
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Factory/gear_assets/factory_gear_base/factory_gear_base.usd",
             activate_contact_sensors=False,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 kinematic_enabled=True,
                 max_depenetration_velocity=5.0,
@@ -70,8 +74,8 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
                 solver_velocity_iteration_count=1,
                 max_contact_impulse=1e32,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=None),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
+            mass_props=MassPropertiesCfg(mass=None),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(-1.0200, 0.2100, -0.1), rot=(0.0, 0.0, 0.70711, 0.70711)),
     )
@@ -79,10 +83,10 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
     factory_gear_small = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/FactoryGearSmall",
         # TODO: change to common isaac sim directory
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Factory/gear_assets/factory_gear_small/factory_gear_small.usd",
             activate_contact_sensors=False,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 kinematic_enabled=False,
                 max_depenetration_velocity=5.0,
@@ -95,8 +99,8 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
                 solver_velocity_iteration_count=1,
                 max_contact_impulse=1e32,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=None),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
+            mass_props=MassPropertiesCfg(mass=None),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(-1.0200, 0.2100, -0.1), rot=(0.0, 0.0, 0.70711, 0.70711)),
     )
@@ -104,10 +108,10 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
     factory_gear_medium = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/FactoryGearMedium",
         # TODO: change to common isaac sim directory
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Factory/gear_assets/factory_gear_medium/factory_gear_medium.usd",
             activate_contact_sensors=False,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 kinematic_enabled=False,
                 max_depenetration_velocity=5.0,
@@ -120,8 +124,8 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
                 solver_velocity_iteration_count=1,
                 max_contact_impulse=1e32,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=None),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
+            mass_props=MassPropertiesCfg(mass=None),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(-1.0200, 0.2100, -0.1), rot=(0.0, 0.0, 0.70711, 0.70711)),
     )
@@ -129,10 +133,10 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
     factory_gear_large = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/FactoryGearLarge",
         # TODO: change to common isaac sim directory
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Factory/gear_assets/factory_gear_large/factory_gear_large.usd",
             activate_contact_sensors=False,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 kinematic_enabled=False,
                 max_depenetration_velocity=5.0,
@@ -145,8 +149,8 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
                 solver_velocity_iteration_count=1,
                 max_contact_impulse=1e32,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=None),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
+            mass_props=MassPropertiesCfg(mass=None),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(-1.0200, 0.2100, -0.1), rot=(0.0, 0.0, 0.70711, 0.70711)),
     )
@@ -157,12 +161,12 @@ class GearAssemblySceneCfg(InteractiveSceneCfg):
     # lights
     light = AssetBaseCfg(
         prim_path="/World/light",
-        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=2500.0),
+        spawn=DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=2500.0),
     )
 
     stand = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Stand",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/Stand/stand_instanceable.usd", scale=(2.0, 2.0, 2.0)
         ),
     )

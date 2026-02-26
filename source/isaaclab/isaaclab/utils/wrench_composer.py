@@ -22,7 +22,9 @@ from isaaclab.utils.warp.kernels import (
 )
 
 if TYPE_CHECKING:
-    from isaaclab.assets import BaseArticulation, BaseRigidObject, BaseRigidObjectCollection
+    from isaaclab.assets.articulation.base_articulation import BaseArticulation
+    from isaaclab.assets.rigid_object.base_rigid_object import BaseRigidObject
+    from isaaclab.assets.rigid_object_collection.base_rigid_object_collection import BaseRigidObjectCollection
 
 
 class WrenchComposer:

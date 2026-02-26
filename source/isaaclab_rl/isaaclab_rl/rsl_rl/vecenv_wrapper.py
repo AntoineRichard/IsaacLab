@@ -8,7 +8,8 @@ import torch
 from rsl_rl.env import VecEnv
 from tensordict import TensorDict
 
-from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
+from isaaclab.envs.direct_rl_env import DirectRLEnv
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 class RslRlVecEnvWrapper(VecEnv):

@@ -12,12 +12,12 @@ from typing import TYPE_CHECKING
 import torch
 
 import isaaclab.utils.string as string_utils
-from isaaclab.assets.articulation import Articulation
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.managers.action_manager import ActionTerm
 from isaaclab.utils.math import euler_xyz_from_quat
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
     from isaaclab.envs.utils.io_descriptors import GenericActionIODescriptor
 
     from . import actions_cfg

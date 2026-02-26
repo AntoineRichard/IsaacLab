@@ -18,7 +18,7 @@ from . import agents
 # State Observation
 gym.register(
     id="Isaac-Dexsuite-Kuka-Allegro-Reorient-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroReorientEnvCfg",
@@ -29,7 +29,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Dexsuite-Kuka-Allegro-Reorient-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroReorientEnvCfg_PLAY",
@@ -41,7 +41,7 @@ gym.register(
 # Dexsuite Lift Environments
 gym.register(
     id="Isaac-Dexsuite-Kuka-Allegro-Lift-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroLiftEnvCfg",
@@ -53,7 +53,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Dexsuite-Kuka-Allegro-Lift-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroLiftEnvCfg_PLAY",

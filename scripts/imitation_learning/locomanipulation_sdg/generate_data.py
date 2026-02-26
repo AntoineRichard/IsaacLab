@@ -150,7 +150,7 @@ import warp as wp
 import omni.kit
 import omni.usd
 
-from isaaclab.managers import DatasetExportMode
+from isaaclab.managers.recorder_manager import DatasetExportMode
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 from isaaclab.utils.math import convert_quat

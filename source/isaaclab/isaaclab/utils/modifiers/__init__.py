@@ -52,14 +52,3 @@ Usage with a class modifier:
     my_modified_tensor = my_modifier(my_tensor)
 
 """
-
-# isort: off
-from .modifier_cfg import ModifierCfg
-from .modifier_base import ModifierBase
-from .modifier import DigitalFilter
-from .modifier_cfg import DigitalFilterCfg
-from .modifier import Integrator
-from .modifier_cfg import IntegratorCfg
-
-# isort: on
-from .modifier import bias, clip, scale

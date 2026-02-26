@@ -5,13 +5,13 @@
 
 from dataclasses import MISSING
 
-import isaaclab.sim as sim_utils
-from isaaclab.managers import CommandTermCfg
+from isaaclab.managers.manager_term_cfg import CommandTermCfg
 from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from .orientation_command import InHandReOrientationCommand
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 
 @configclass
@@ -58,7 +58,7 @@ class InHandReOrientationCommandCfg(CommandTermCfg):
     goal_pose_visualizer_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/Command/goal_marker",
         markers={
-            "goal": sim_utils.UsdFileCfg(
+            "goal": UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
                 scale=(1.0, 1.0, 1.0),
             ),

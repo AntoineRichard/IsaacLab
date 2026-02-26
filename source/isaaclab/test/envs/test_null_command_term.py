@@ -16,7 +16,7 @@ from collections import namedtuple
 
 import pytest
 
-from isaaclab.envs.mdp import NullCommandCfg
+from isaaclab.envs.mdp.commands.commands_cfg import NullCommandCfg
 
 
 @pytest.fixture

@@ -17,12 +17,12 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-from isaaclab.assets import Articulation
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.math import sample_uniform
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 def reset_joints_around_default(

@@ -33,18 +33,24 @@ simulation_app = app_launcher.app
 import torch
 import warp as wp
 
-import isaaclab.envs.mdp as mdp
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg, RigidObject, RigidObjectCfg
-from isaaclab.envs import ManagerBasedEnv, ManagerBasedEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.envs.manager_based_env_cfg import ManagerBasedEnvCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.managers.action_manager import ActionTerm, ActionTermCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.envs.mdp.events import reset_root_state_uniform
+from isaaclab.sim.schemas import MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg, RigidBodyMaterialCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 
 ##
 # Scene definition
@@ -61,12 +67,12 @@ class MySceneCfg(InteractiveSceneCfg):
     # add cube
     cube: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/cube",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.2, 0.2, 0.2),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
+            rigid_props=RigidBodyPropertiesCfg(max_depenetration_velocity=1.0),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            physics_material=RigidBodyMaterialCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 5)),
     )
@@ -74,7 +80,7 @@ class MySceneCfg(InteractiveSceneCfg):
     # lights
     light = AssetBaseCfg(
         prim_path="/World/light",
-        spawn=sim_utils.DistantLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+        spawn=DistantLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )
 
 
@@ -191,7 +197,7 @@ class EventCfg:
     """Configuration for events."""
 
     reset_base = EventTerm(
-        func=mdp.reset_root_state_uniform,
+        func=reset_root_state_uniform,
         mode="reset",
         params={
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},

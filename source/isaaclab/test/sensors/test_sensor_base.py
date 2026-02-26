@@ -21,9 +21,15 @@ import pytest
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.sensors import SensorBase, SensorBaseCfg
+from isaaclab.sensors.sensor_base import SensorBase
+from isaaclab.sensors.sensor_base_cfg import SensorBaseCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import SphereLightCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 
 @dataclass
@@ -74,16 +80,16 @@ def _populate_scene():
     """"""
 
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.SphereLightCfg()
+    cfg = SphereLightCfg()
     cfg.func("/World/Light/GreySphere", cfg, translation=(4.5, 3.5, 10.0))
     cfg.func("/World/Light/WhiteSphere", cfg, translation=(-4.5, 3.5, 10.0))
 
     # create prims
     for i in range(5):
-        _ = sim_utils.create_prim(
+        _ = create_prim(
             f"/World/envs/env_{i:02d}/Cube",
             "Cube",
             translation=(i * 1.0, 0.0, 0.0),
@@ -94,20 +100,20 @@ def _populate_scene():
 @pytest.fixture
 def create_dummy_sensor(request, device):
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     # Simulation time-step
     dt = 0.01
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(device=device, dt=dt)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(device=device, dt=dt)
+    sim = SimulationContext(sim_cfg)
 
     # create sensor
     _populate_scene()
 
     sensor_cfg = DummySensorCfg()
 
-    sim_utils.update_stage()
+    update_stage()
 
     yield sensor_cfg, sim, dt
 

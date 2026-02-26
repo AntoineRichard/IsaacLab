@@ -24,16 +24,23 @@ simulation_app = app_launcher.app
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import FrameTransformerCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
 from isaaclab.utils.configclass import configclass
 
 ##
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort: skip
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg, RigidBodyMaterialCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 
 
 @configclass
@@ -41,11 +48,11 @@ class FrameTransformerSensorSceneCfg(InteractiveSceneCfg):
     """Design the scene with sensors on the robot."""
 
     # ground plane
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=GroundPlaneCfg())
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # robot
@@ -54,13 +61,13 @@ class FrameTransformerSensorSceneCfg(InteractiveSceneCfg):
     # Rigid Object
     cube = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Cube",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(1, 1, 1),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=100.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=1.0),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=100.0),
+            collision_props=CollisionPropertiesCfg(),
+            physics_material=RigidBodyMaterialCfg(static_friction=1.0),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(5, 0, 0.5)),
     )
@@ -87,7 +94,7 @@ class FrameTransformerSensorSceneCfg(InteractiveSceneCfg):
     )
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Run the simulator."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -149,8 +156,8 @@ def main():
     """Main function."""
 
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[3.5, 3.5, 3.5], target=[0.0, 0.0, 0.0])
     # design scene

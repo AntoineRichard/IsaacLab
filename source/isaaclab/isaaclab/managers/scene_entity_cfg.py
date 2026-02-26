@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING
 from isaaclab.utils.configclass import configclass
 
 if TYPE_CHECKING:
-    from isaaclab.assets import Articulation, RigidObject, RigidObjectCollection
+    from isaaclab.assets.articulation.articulation import Articulation
+    from isaaclab.assets.rigid_object.rigid_object import RigidObject
+    from isaaclab.assets.rigid_object_collection.rigid_object_collection import RigidObjectCollection
     from isaaclab.scene import InteractiveScene
 
 

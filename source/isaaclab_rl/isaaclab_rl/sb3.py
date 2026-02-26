@@ -29,9 +29,8 @@ from stable_baselines3.common.preprocessing import is_image_space, is_image_spac
 from stable_baselines3.common.utils import constant_fn
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvObs, VecEnvStepReturn
 
-from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
-
-# remove SB3 warnings because PPO with bigger net actually benefits from GPU
+from isaaclab.envs.direct_rl_env import DirectRLEnv
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 warnings.filterwarnings("ignore", message="You are trying to run PPO on the GPU")
 
 """

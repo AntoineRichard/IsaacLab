@@ -79,9 +79,11 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import TiledCameraCfg
+from isaaclab.sensors.camera.tiled_camera_cfg import TiledCameraCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.timer import Timer
@@ -91,6 +93,18 @@ from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_render import compute_ta
 from isaaclab_contrib.sensors.tacsl_sensor.visuotactile_sensor_data import VisuoTactileSensorData
 
 from isaaclab_assets.sensors import GELSIGHT_R15_CFG
+from isaaclab.sim.schemas import (
+    ArticulationRootPropertiesCfg,
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UsdFileCfg, UsdFileWithCompliantContactCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg, RigidBodyMaterialCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 
 
 @configclass
@@ -98,31 +112,31 @@ class TactileSensorsSceneCfg(InteractiveSceneCfg):
     """Design the scene with tactile sensors on the robot."""
 
     # Ground plane
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=GroundPlaneCfg())
 
     # Lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # Robot with tactile sensor
     robot = ArticulationCfg(
         prim_path="{ENV_REGEX_NS}/Robot",
-        spawn=sim_utils.UsdFileWithCompliantContactCfg(
+        spawn=UsdFileWithCompliantContactCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/TacSL/gelsight_r15_finger/gelsight_r15_finger.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=True,
                 max_depenetration_velocity=5.0,
             ),
             compliant_contact_stiffness=args_cli.tactile_compliance_stiffness,
             compliant_contact_damping=args_cli.tactile_compliant_damping,
             physics_material_prim_path="elastomer",
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_props=ArticulationRootPropertiesCfg(
                 enabled_self_collisions=False,
                 solver_position_iteration_count=12,
                 solver_velocity_iteration_count=1,
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.0005),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.001, rest_offset=-0.0005),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.5),
@@ -176,13 +190,13 @@ class CubeTactileSceneCfg(TactileSensorsSceneCfg):
     # Cube contact object
     contact_object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/contact_object",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.01, 0.01, 0.01),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.00327211),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            physics_material=sim_utils.RigidBodyMaterialCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.1, 0.1)),
+            rigid_props=RigidBodyPropertiesCfg(disable_gravity=True),
+            mass_props=MassPropertiesCfg(mass=0.00327211),
+            collision_props=CollisionPropertiesCfg(),
+            physics_material=RigidBodyMaterialCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.1, 0.1)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0 + 0.06776, 0.51), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -195,17 +209,17 @@ class NutTactileSceneCfg(TactileSensorsSceneCfg):
     # Nut contact object
     contact_object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/contact_object",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Factory/factory_nut_m16.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=True,
                 solver_position_iteration_count=12,
                 solver_velocity_iteration_count=1,
                 max_angular_velocity=180.0,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
+            mass_props=MassPropertiesCfg(mass=0.1),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0),
+            articulation_props=ArticulationRootPropertiesCfg(articulation_enabled=False),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(0.0, 0.0 + 0.06776, 0.498),
@@ -295,7 +309,7 @@ def save_viz_helper(
         cv2.imwrite(os.path.join(tactile_rgb_image_dir, f"{count:04d}.png"), tactile_rgb_tiled)
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Run the simulator."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -381,12 +395,12 @@ def main():
     """Main function."""
     # Initialize simulation
     # Note: We set the gpu_collision_stack_size to prevent buffer overflow in contact-rich environments.
-    sim_cfg = sim_utils.SimulationCfg(
+    sim_cfg = SimulationCfg(
         dt=0.005,
         device=args_cli.device,
         physx=sim_utils.PhysxCfg(gpu_collision_stack_size=2**30),
     )
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim = SimulationContext(sim_cfg)
 
     # Set main camera
     sim.set_camera_view(eye=[0.5, 0.6, 1.0], target=[-0.1, 0.1, 0.5])

@@ -6,7 +6,7 @@
 import math
 from dataclasses import MISSING
 
-from isaaclab.managers import CommandTermCfg
+from isaaclab.managers.manager_term_cfg import CommandTermCfg
 from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.markers.config import BLUE_ARROW_X_MARKER_CFG, FRAME_MARKER_CFG, GREEN_ARROW_X_MARKER_CFG
 from isaaclab.utils.configclass import configclass

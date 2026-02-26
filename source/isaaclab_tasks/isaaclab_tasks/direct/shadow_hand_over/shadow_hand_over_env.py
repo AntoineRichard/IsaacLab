@@ -12,14 +12,15 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.envs import DirectMARLEnv
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.envs.direct_marl_env import DirectMARLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
 from .shadow_hand_over_env_cfg import ShadowHandOverEnvCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 class ShadowHandOverEnv(DirectMARLEnv):
@@ -98,7 +99,7 @@ class ShadowHandOverEnv(DirectMARLEnv):
         self.scene.articulations["left_robot"] = self.left_hand
         self.scene.rigid_objects["object"] = self.object
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:

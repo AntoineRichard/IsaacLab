@@ -12,10 +12,11 @@ The following configuration parameters are available:
 
 """
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets.articulation import ArticulationCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+from isaaclab.sim.schemas import CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 ##
 # Configuration
@@ -23,14 +24,14 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 
 GALBOT_ONE_CHARLIE_CFG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(
+    spawn=UsdFileCfg(
         usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Galbot/galbot_one_charlie/galbot_one_charlie.usd",
         variants={"Physics": "PhysX"},
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=True,
             max_depenetration_velocity=5.0,
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+        collision_props=CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
         activate_contact_sensors=True,
     ),
     init_state=ArticulationCfg.InitialStateCfg(

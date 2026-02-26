@@ -29,7 +29,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from isaaclab.envs import DirectMARLEnv, DirectRLEnv, ManagerBasedRLEnv
+from isaaclab.envs.direct_marl_env import DirectMARLEnv
+from isaaclab.envs.direct_rl_env import DirectRLEnv
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 """
 Vectorized environment wrapper.

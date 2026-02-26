@@ -69,21 +69,25 @@ import random
 
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBase
+from isaaclab.assets.asset_base import AssetBase
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-from isaaclab.terrains import FlatPatchSamplingCfg, TerrainImporter, TerrainImporterCfg
-
-##
+from isaaclab.terrains.sub_terrain_cfg import FlatPatchSamplingCfg
+from isaaclab.terrains.terrain_importer import TerrainImporter
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 # Pre-defined configs
 ##
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import GlassMdlCfg
+from isaaclab.sim.spawners.shapes import CylinderCfg
 
 
 def design_scene() -> tuple[dict, torch.Tensor]:
     """Designs the scene."""
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+    cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # Parse terrain generation
@@ -120,10 +124,10 @@ def design_scene() -> tuple[dict, torch.Tensor]:
         # Configure the flat patches
         vis_cfg = VisualizationMarkersCfg(prim_path="/Visuals/TerrainFlatPatches", markers={})
         for name in terrain_importer.flat_patches:
-            vis_cfg.markers[name] = sim_utils.CylinderCfg(
+            vis_cfg.markers[name] = CylinderCfg(
                 radius=0.5,  # note: manually set to the patch radius for visualization
                 height=0.1,
-                visual_material=sim_utils.GlassMdlCfg(glass_color=(random.random(), random.random(), random.random())),
+                visual_material=GlassMdlCfg(glass_color=(random.random(), random.random(), random.random())),
             )
         flat_patches_visualizer = VisualizationMarkers(vis_cfg)
 
@@ -143,7 +147,7 @@ def design_scene() -> tuple[dict, torch.Tensor]:
     return scene_entities, terrain_importer.env_origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, AssetBase], origins: torch.Tensor):
+def run_simulator(sim: SimulationContext, entities: dict[str, AssetBase], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Simulate physics
     while simulation_app.is_running():
@@ -154,8 +158,8 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, AssetBas
 def main():
     """Main function."""
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.01, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[5.0, 5.0, 5.0], target=[0.0, 0.0, 0.0])
     # design scene

@@ -15,8 +15,9 @@ simulation_app = AppLauncher(headless=True).app
 import pytest
 import torch
 
-from isaaclab.managers import TerminationManager, TerminationTermCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg
+from isaaclab.managers.termination_manager import TerminationManager
+from isaaclab.sim.simulation_context import SimulationContext
 
 
 class DummyEnv:

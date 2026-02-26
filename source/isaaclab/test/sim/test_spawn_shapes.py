@@ -14,17 +14,23 @@ simulation_app = AppLauncher(headless=True).app
 
 import pytest
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners import materials
+from isaaclab.sim.spawners.shapes import CapsuleCfg, ConeCfg, CuboidCfg, CylinderCfg, SphereCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.queries import find_matching_prim_paths
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 
 @pytest.fixture
 def sim():
     """Create a simulation context."""
-    sim_utils.create_new_stage()
+    create_new_stage()
     dt = 0.1
     sim = SimulationContext(SimulationCfg(dt=dt))
-    sim_utils.update_stage()
+    update_stage()
     yield sim
     sim._disable_app_control_on_stop_handle = True  # prevent timeout
     sim.stop()
@@ -38,7 +44,7 @@ Basic spawning.
 
 def test_spawn_cone(sim):
     """Test spawning of UsdGeom.Cone prim."""
-    cfg = sim_utils.ConeCfg(radius=1.0, height=2.0, axis="Y")
+    cfg = ConeCfg(radius=1.0, height=2.0, axis="Y")
     prim = cfg.func("/World/Cone", cfg)
 
     # Check validity
@@ -54,7 +60,7 @@ def test_spawn_cone(sim):
 
 def test_spawn_capsule(sim):
     """Test spawning of UsdGeom.Capsule prim."""
-    cfg = sim_utils.CapsuleCfg(radius=1.0, height=2.0, axis="Y")
+    cfg = CapsuleCfg(radius=1.0, height=2.0, axis="Y")
     prim = cfg.func("/World/Capsule", cfg)
 
     # Check validity
@@ -71,7 +77,7 @@ def test_spawn_capsule(sim):
 
 def test_spawn_cylinder(sim):
     """Test spawning of UsdGeom.Cylinder prim."""
-    cfg = sim_utils.CylinderCfg(radius=1.0, height=2.0, axis="Y")
+    cfg = CylinderCfg(radius=1.0, height=2.0, axis="Y")
     prim = cfg.func("/World/Cylinder", cfg)
 
     # Check validity
@@ -88,7 +94,7 @@ def test_spawn_cylinder(sim):
 
 def test_spawn_cuboid(sim):
     """Test spawning of UsdGeom.Cube prim."""
-    cfg = sim_utils.CuboidCfg(size=(1.0, 2.0, 3.0))
+    cfg = CuboidCfg(size=(1.0, 2.0, 3.0))
     prim = cfg.func("/World/Cube", cfg)
 
     # Check validity
@@ -103,7 +109,7 @@ def test_spawn_cuboid(sim):
 
 def test_spawn_sphere(sim):
     """Test spawning of UsdGeom.Sphere prim."""
-    cfg = sim_utils.SphereCfg(radius=1.0)
+    cfg = SphereCfg(radius=1.0)
     prim = cfg.func("/World/Sphere", cfg)
 
     # Check validity
@@ -128,10 +134,10 @@ def test_spawn_cone_with_rigid_props(sim):
         Playing the simulation in this case will give a warning that no mass is specified!
         Need to also setup mass and colliders.
     """
-    cfg = sim_utils.ConeCfg(
+    cfg = ConeCfg(
         radius=1.0,
         height=2.0,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             rigid_body_enabled=True, solver_position_iteration_count=8, sleep_threshold=0.1
         ),
     )
@@ -152,13 +158,13 @@ def test_spawn_cone_with_rigid_props(sim):
 
 def test_spawn_cone_with_rigid_and_mass_props(sim):
     """Test spawning of UsdGeom.Cone prim with rigid body and mass API."""
-    cfg = sim_utils.ConeCfg(
+    cfg = ConeCfg(
         radius=1.0,
         height=2.0,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             rigid_body_enabled=True, solver_position_iteration_count=8, sleep_threshold=0.1
         ),
-        mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
+        mass_props=MassPropertiesCfg(mass=1.0),
     )
     prim = cfg.func("/World/Cone", cfg)
 
@@ -183,14 +189,14 @@ def test_spawn_cone_with_rigid_and_density_props(sim):
         the collision shape to compute the mass. Thus, we have to set the collider properties. In
         order to not have a collision shape, we disable the collision.
     """
-    cfg = sim_utils.ConeCfg(
+    cfg = ConeCfg(
         radius=1.0,
         height=2.0,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             rigid_body_enabled=True, solver_position_iteration_count=8, sleep_threshold=0.1
         ),
-        mass_props=sim_utils.MassPropertiesCfg(density=10.0),
-        collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+        mass_props=MassPropertiesCfg(density=10.0),
+        collision_props=CollisionPropertiesCfg(collision_enabled=False),
     )
     prim = cfg.func("/World/Cone", cfg)
 
@@ -209,14 +215,14 @@ def test_spawn_cone_with_rigid_and_density_props(sim):
 
 def test_spawn_cone_with_all_props(sim):
     """Test spawning of UsdGeom.Cone prim with all properties."""
-    cfg = sim_utils.ConeCfg(
+    cfg = ConeCfg(
         radius=1.0,
         height=2.0,
-        mass_props=sim_utils.MassPropertiesCfg(mass=5.0),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.materials.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.5)),
-        physics_material=sim_utils.materials.RigidBodyMaterialCfg(),
+        mass_props=MassPropertiesCfg(mass=5.0),
+        rigid_props=RigidBodyPropertiesCfg(),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=materials.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.5)),
+        physics_material=materials.RigidBodyMaterialCfg(),
     )
     prim = cfg.func("/World/Cone", cfg)
 
@@ -247,18 +253,18 @@ def test_spawn_cone_clones_invalid_paths(sim):
     """Test spawning of cone clones on invalid cloning paths."""
     num_clones = 10
     for i in range(num_clones):
-        sim_utils.create_prim(f"/World/env_{i}", "Xform", translation=(i, i, 0))
+        create_prim(f"/World/env_{i}", "Xform", translation=(i, i, 0))
     # Spawn cone on invalid cloning path -- should raise an error
-    cfg = sim_utils.ConeCfg(radius=1.0, height=2.0, copy_from_source=True)
+    cfg = ConeCfg(radius=1.0, height=2.0, copy_from_source=True)
     with pytest.raises(RuntimeError):
         cfg.func("/World/env/env_.*/Cone", cfg)
 
 
 def test_spawn_cone_clones(sim):
     """Test spawning of cone clones."""
-    sim_utils.create_prim("/World/env_0", "Xform", translation=(0, 0, 0))
+    create_prim("/World/env_0", "Xform", translation=(0, 0, 0))
     # Spawn cone on valid cloning path
-    cfg = sim_utils.ConeCfg(radius=1.0, height=2.0, copy_from_source=True)
+    cfg = ConeCfg(radius=1.0, height=2.0, copy_from_source=True)
     prim = cfg.func("/World/env_.*/Cone", cfg)
     # Check validity
     assert prim.IsValid()
@@ -267,16 +273,16 @@ def test_spawn_cone_clones(sim):
 
 def test_spawn_cone_clone_with_all_props_global_material(sim):
     """Test spawning of cone clones with global material reference."""
-    sim_utils.create_prim("/World/env_0", "Xform", translation=(0, 0, 0))
+    create_prim("/World/env_0", "Xform", translation=(0, 0, 0))
     # Spawn cone on valid cloning path
-    cfg = sim_utils.ConeCfg(
+    cfg = ConeCfg(
         radius=1.0,
         height=2.0,
-        mass_props=sim_utils.MassPropertiesCfg(mass=5.0),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.materials.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.5)),
-        physics_material=sim_utils.materials.RigidBodyMaterialCfg(),
+        mass_props=MassPropertiesCfg(mass=5.0),
+        rigid_props=RigidBodyPropertiesCfg(),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=materials.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.5)),
+        physics_material=materials.RigidBodyMaterialCfg(),
         visual_material_path="/Looks/visualMaterial",
         physics_material_path="/Looks/physicsMaterial",
     )
@@ -286,5 +292,5 @@ def test_spawn_cone_clone_with_all_props_global_material(sim):
     assert prim.IsValid()
     assert str(prim.GetPath()) == "/World/env_0/Cone"
     # find matching material prims
-    prims = sim_utils.find_matching_prim_paths("/Looks/visualMaterial.*")
+    prims = find_matching_prim_paths("/Looks/visualMaterial.*")
     assert len(prims) == 1

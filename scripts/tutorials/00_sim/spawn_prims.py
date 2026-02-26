@@ -31,58 +31,71 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.schemas import (
+    CollisionPropertiesCfg,
+    DeformableBodyPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UsdFileCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import DeformableBodyMaterialCfg, PreviewSurfaceCfg
+from isaaclab.sim.spawners.meshes import MeshCuboidCfg
+from isaaclab.sim.spawners.shapes import ConeCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def design_scene():
     """Designs the scene by spawning ground plane, light, objects and meshes from usd files."""
     # Ground-plane
-    cfg_ground = sim_utils.GroundPlaneCfg()
+    cfg_ground = GroundPlaneCfg()
     cfg_ground.func("/World/defaultGroundPlane", cfg_ground)
 
     # spawn distant light
-    cfg_light_distant = sim_utils.DistantLightCfg(
+    cfg_light_distant = DistantLightCfg(
         intensity=3000.0,
         color=(0.75, 0.75, 0.75),
     )
     cfg_light_distant.func("/World/lightDistant", cfg_light_distant, translation=(1, 0, 10))
 
     # create a new xform prim for all objects to be spawned under
-    sim_utils.create_prim("/World/Objects", "Xform")
+    create_prim("/World/Objects", "Xform")
     # spawn a red cone
-    cfg_cone = sim_utils.ConeCfg(
+    cfg_cone = ConeCfg(
         radius=0.15,
         height=0.5,
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
     )
     cfg_cone.func("/World/Objects/Cone1", cfg_cone, translation=(-1.0, 1.0, 1.0))
     cfg_cone.func("/World/Objects/Cone2", cfg_cone, translation=(-1.0, -1.0, 1.0))
 
     # spawn a green cone with colliders and rigid body
-    cfg_cone_rigid = sim_utils.ConeCfg(
+    cfg_cone_rigid = ConeCfg(
         radius=0.15,
         height=0.5,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-        mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+        rigid_props=RigidBodyPropertiesCfg(),
+        mass_props=MassPropertiesCfg(mass=1.0),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
     )
     cfg_cone_rigid.func(
         "/World/Objects/ConeRigid", cfg_cone_rigid, translation=(-0.2, 0.0, 2.0), orientation=(0.5, 0.0, 0.5, 0.0)
     )
 
     # spawn a blue cuboid with deformable body
-    cfg_cuboid_deformable = sim_utils.MeshCuboidCfg(
+    cfg_cuboid_deformable = MeshCuboidCfg(
         size=(0.2, 0.5, 0.2),
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
-        physics_material=sim_utils.DeformableBodyMaterialCfg(),
+        deformable_props=DeformableBodyPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+        physics_material=DeformableBodyMaterialCfg(),
     )
     cfg_cuboid_deformable.func("/World/Objects/CuboidDeformable", cfg_cuboid_deformable, translation=(0.15, 0.0, 2.0))
 
     # spawn a usd file of a table into the scene
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
     cfg.func("/World/Objects/Table", cfg, translation=(0.0, 0.0, 1.05))
 
 
@@ -90,8 +103,8 @@ def main():
     """Main function."""
 
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.01, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 0.0, 2.5], [-0.5, 0.0, 0.5])
     # Design scene

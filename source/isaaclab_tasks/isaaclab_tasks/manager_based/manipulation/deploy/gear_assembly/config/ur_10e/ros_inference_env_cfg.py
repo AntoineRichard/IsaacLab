@@ -5,7 +5,7 @@
 
 import math
 
-from isaaclab.assets import RigidObjectCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.utils.configclass import configclass
 
 from .joint_pos_env_cfg import UR10e2F85GearAssemblyEnvCfg, UR10e2F140GearAssemblyEnvCfg

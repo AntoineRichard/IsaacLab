@@ -81,10 +81,12 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg, Se3SpaceMouse, Se3SpaceMouseCfg
-from isaaclab.envs import ManagerBasedRLMimicEnv
+from isaaclab.devices.keyboard import Se3Keyboard, Se3KeyboardCfg
+from isaaclab.devices.spacemouse import Se3SpaceMouse, Se3SpaceMouseCfg
+from isaaclab.envs.manager_based_rl_mimic_env import ManagerBasedRLMimicEnv
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
-from isaaclab.managers import DatasetExportMode, RecorderTerm, RecorderTermCfg
+from isaaclab.managers.manager_term_cfg import RecorderTermCfg
+from isaaclab.managers.recorder_manager import DatasetExportMode, RecorderTerm
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.datasets import HDF5DatasetFileHandler
 

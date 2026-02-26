@@ -14,11 +14,12 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 if TYPE_CHECKING:
-    from isaaclab.assets import Articulation, AssetBase
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.assets.articulation.articulation import Articulation
+    from isaaclab.assets.asset_base import AssetBase
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 def set_default_joint_pose(

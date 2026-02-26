@@ -21,17 +21,19 @@ import torch
 import warp as wp
 from isaaclab_physx.assets import SurfaceGripper, SurfaceGripperCfg
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import (
-    Articulation,
-    ArticulationCfg,
-    RigidObject,
-    RigidObjectCfg,
-)
-from isaaclab.sim import build_simulation_context
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.sim.simulation_context import build_simulation_context
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.version import get_isaac_sim_version, has_kit
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
+from isaaclab.sim.utils.prims import create_prim
 
 # from isaacsim.robot.surface_gripper import GripperView
 
@@ -57,9 +59,9 @@ def generate_surface_gripper_cfgs(
         A tuple containing the surface gripper cfg and the articulation cfg.
     """
     articulation_cfg = ArticulationCfg(
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Tests/SurfaceGripper/test_gripper.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
+            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.5),
@@ -110,7 +112,7 @@ def generate_surface_gripper(
 
     # Create Top-level Xforms, one for each articulation
     for i in range(num_surface_grippers):
-        sim_utils.create_prim(f"/World/Env_{i}", "Xform", translation=translations[i][:3])
+        create_prim(f"/World/Env_{i}", "Xform", translation=translations[i][:3])
     articulation = Articulation(articulation_cfg.replace(prim_path="/World/Env_.*/Robot"))
     surface_gripper_cfg = surface_gripper_cfg.replace(prim_path="/World/Env_.*/Robot/Gripper/SurfaceGripper")
     surface_gripper = SurfaceGripper(surface_gripper_cfg)
@@ -121,12 +123,12 @@ def generate_surface_gripper(
 def generate_grippable_object(sim, num_grippable_objects: int):
     object_cfg = RigidObjectCfg(
         prim_path="/World/Env_.*/Object",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(1.0, 1.0, 1.0),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            collision_props=CollisionPropertiesCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.5)),
     )

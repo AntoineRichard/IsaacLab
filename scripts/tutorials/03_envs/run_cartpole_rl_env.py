@@ -35,7 +35,7 @@ simulation_app = app_launcher.app
 
 import torch
 
-from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 from isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg import CartpoleEnvCfg
 

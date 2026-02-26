@@ -19,18 +19,22 @@ import scipy.spatial.transform as tf
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import RigidObjectCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import FrameTransformerCfg, OffsetCfg
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg, OffsetCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 
 ##
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort:skip
+from isaaclab.sim.schemas import MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import build_simulation_context
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg, RigidBodyMaterialCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 
 
 def quat_from_euler_rpy(roll, pitch, yaw, degrees=False):
@@ -61,12 +65,12 @@ class MySceneCfg(InteractiveSceneCfg):
     # block
     cube: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/cube",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.2, 0.2, 0.2),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
+            rigid_props=RigidBodyPropertiesCfg(max_depenetration_velocity=1.0),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            physics_material=RigidBodyMaterialCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 5)),
     )
@@ -75,8 +79,8 @@ class MySceneCfg(InteractiveSceneCfg):
 @pytest.fixture
 def sim():
     """Create a simulation context."""
-    sim_cfg = sim_utils.SimulationCfg(device="cpu", dt=0.005)
-    with sim_utils.build_simulation_context(sim_cfg=sim_cfg) as sim:
+    sim_cfg = SimulationCfg(device="cpu", dt=0.005)
+    with build_simulation_context(sim_cfg=sim_cfg) as sim:
         sim._app_control_on_stop_handle = None
         # Set main camera
         sim.set_camera_view(eye=(5.0, 5.0, 5.0), target=(0.0, 0.0, 0.0))

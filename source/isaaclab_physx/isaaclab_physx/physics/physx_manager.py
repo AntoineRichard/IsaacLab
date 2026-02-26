@@ -30,9 +30,10 @@ import omni.timeline
 import omni.usd
 from pxr import Sdf
 
-import isaaclab.sim as sim_utils
 from isaaclab.physics import CallbackHandle, PhysicsEvent, PhysicsManager
 from isaaclab.utils.string import to_camel_case
+from isaaclab.sim.utils.prims import bind_physics_material, safe_set_attribute_on_usd_prim
+from isaaclab.sim.utils.stage import save_stage
 
 if TYPE_CHECKING:
     from isaaclab.sim.simulation_context import SimulationContext
@@ -118,7 +119,7 @@ class AnimationRecorder:
         physx.detach_stage()
 
         stage_path = os.path.join(self._output_dir, "stage_simulation.usdc")
-        sim_utils.save_stage(stage_path, save_and_reload_in_place=False)
+        save_stage(stage_path, save_and_reload_in_place=False)
 
         ovd_files = [f for f in glob.glob(os.path.join(self._output_dir, "*.ovd")) if not f.endswith("tmp.ovd")]
         if ovd_files and self._physx_pvd:
@@ -468,26 +469,26 @@ class PhysxManager(PhysicsManager):
 
         # timestep and frame rate
         steps_per_sec = int(1.0 / sim_cfg.dt)
-        sim_utils.safe_set_attribute_on_usd_prim(
+        safe_set_attribute_on_usd_prim(
             scene_prim, "physxScene:timeStepsPerSecond", steps_per_sec, camel_case=False
         )
         render_interval = max(sim_cfg.render_interval, 1)
         sim.set_setting("/persistent/simulation/minFrameRate", steps_per_sec // render_interval)  # type: ignore[union-attr]
 
         # gpu dynamics
-        sim_utils.safe_set_attribute_on_usd_prim(
+        safe_set_attribute_on_usd_prim(
             scene_prim, "physxScene:broadphaseType", "GPU" if is_gpu else "MBP", camel_case=False
         )
-        sim_utils.safe_set_attribute_on_usd_prim(scene_prim, "physxScene:enableGPUDynamics", is_gpu, camel_case=False)
+        safe_set_attribute_on_usd_prim(scene_prim, "physxScene:enableGPUDynamics", is_gpu, camel_case=False)
 
         # ccd (not supported on gpu)
         enable_ccd = cfg.enable_ccd and not is_gpu
         if cfg.enable_ccd and is_gpu:
             logger.warning("CCD disabled when GPU dynamics is enabled.")
-        sim_utils.safe_set_attribute_on_usd_prim(scene_prim, "physxScene:enableCCD", enable_ccd, camel_case=False)
+        safe_set_attribute_on_usd_prim(scene_prim, "physxScene:enableCCD", enable_ccd, camel_case=False)
 
         # solver
-        sim_utils.safe_set_attribute_on_usd_prim(
+        safe_set_attribute_on_usd_prim(
             scene_prim, "physxScene:solverType", "TGS" if cfg.solver_type == 1 else "PGS", camel_case=False
         )
         scene_prim.CreateAttribute("physxScene:solveArticulationContactLast", Sdf.ValueTypeNames.Bool).Set(
@@ -511,7 +512,7 @@ class PhysxManager(PhysicsManager):
         for key, value in cfg.to_dict().items():  # type: ignore
             if key not in skip:
                 attr_name = "bounce_threshold" if key == "bounce_threshold_velocity" else key
-                sim_utils.safe_set_attribute_on_usd_prim(
+                safe_set_attribute_on_usd_prim(
                     scene_prim,
                     f"physxScene:{to_camel_case(attr_name, 'cC')}",
                     value,
@@ -526,7 +527,7 @@ class PhysxManager(PhysicsManager):
             physics_material = RigidBodyMaterialCfg()
         mat_path = f"{sim_cfg.physics_prim_path}/defaultMaterial"
         physics_material.func(mat_path, physics_material)
-        sim_utils.bind_physics_material(sim_cfg.physics_prim_path, mat_path)
+        bind_physics_material(sim_cfg.physics_prim_path, mat_path)
 
         # warnings
         if cfg.solver_type == 1 and not cfg.enable_external_forces_every_iteration:

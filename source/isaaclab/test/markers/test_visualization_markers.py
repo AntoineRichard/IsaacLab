@@ -15,12 +15,15 @@ simulation_app = AppLauncher(headless=True).app
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.markers.config import FRAME_MARKER_CFG, POSITION_GOAL_MARKER_CFG
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.math import random_orientation
 from isaaclab.utils.timer import Timer
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
+from isaaclab.sim.utils.stage import close_stage, create_new_stage
 
 
 @pytest.fixture
@@ -29,7 +32,7 @@ def sim():
     # Simulation time-step
     dt = 0.01
     # Open a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Load kit helper
     sim_context = SimulationContext(SimulationCfg(dt=dt))
     yield sim_context
@@ -37,7 +40,7 @@ def sim():
     sim_context._disable_app_control_on_stop_handle = True  # prevent timeout
     sim_context.stop()
     sim_context.clear_instance()
-    sim_utils.close_stage()
+    close_stage()
 
 
 def test_instantiation(sim):
@@ -45,7 +48,7 @@ def test_instantiation(sim):
     config = VisualizationMarkersCfg(
         prim_path="/World/Visuals/test",
         markers={
-            "test": sim_utils.SphereCfg(radius=1.0),
+            "test": SphereCfg(radius=1.0),
         },
     )
     test_marker = VisualizationMarkers(config)
@@ -85,7 +88,7 @@ def test_usd_marker_color(sim):
     # create a marker
     config = FRAME_MARKER_CFG.copy()
     config.prim_path = "/World/Visuals/test_frames"
-    config.markers["frame"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0))
+    config.markers["frame"].visual_material = PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0))
     test_marker = VisualizationMarkers(config)
 
     # play the simulation

@@ -6,12 +6,11 @@
 import numpy as np
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
 from isaaclab.envs.common import ViewerCfg
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import CameraCfg
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR, retrieve_file_path
@@ -30,6 +29,8 @@ from isaaclab_tasks.manager_based.locomanipulation.pick_place.locomanipulation_g
 
 from .locomanipulation_sdg_env import LocomanipulationSDGEnv
 from .locomanipulation_sdg_env_cfg import LocomanipulationSDGEnvCfg, LocomanipulationSDGRecorderManagerCfg
+from isaaclab.sim.schemas import RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
 
 NUM_FORKLIFTS = 6
 NUM_BOXES = 12
@@ -46,7 +47,7 @@ class G1LocomanipulationSDGSceneCfg(LocomanipulationG1SceneCfg):
         ),
         spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/PackingTable/packing_table.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
 
@@ -57,7 +58,7 @@ class G1LocomanipulationSDGSceneCfg(LocomanipulationG1SceneCfg):
             height=height,
             width=width,
             data_types=["rgb"],
-            spawn=sim_utils.PinholeCameraCfg(focal_length=8.0, clipping_range=(0.1, 20.0)),
+            spawn=PinholeCameraCfg(focal_length=8.0, clipping_range=(0.1, 20.0)),
             offset=CameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, -0.1736482, 0.0, 0.9848078), convention="world"),
         )
         setattr(self, "robot_pov_cam", robot_pov_cam)
@@ -71,7 +72,7 @@ class G1LocomanipulationSDGSceneCfg(LocomanipulationG1SceneCfg):
             ),
             spawn=UsdFileCfg(
                 usd_path=background_usd_path,
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
             ),
         )
 
@@ -84,7 +85,7 @@ class G1LocomanipulationSDGSceneCfg(LocomanipulationG1SceneCfg):
                 init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.0, 0.0], rot=[0.0, 0.0, 0.0, 1.0]),
                 spawn=UsdFileCfg(
                     usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Forklift/forklift.usd",
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                    rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
                 ),
             )
             setattr(self, f"forklift_{i}", forklift)

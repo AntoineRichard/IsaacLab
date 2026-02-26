@@ -14,7 +14,8 @@ import re
 import gymnasium as gym
 import yaml
 
-from isaaclab.envs import DirectRLEnvCfg, ManagerBasedRLEnvCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
 
 
 def load_cfg_from_registry(task_name: str, entry_point_key: str) -> dict | object:

@@ -3,15 +3,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import isaaclab.envs.mdp as base_mdp
 from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
 from isaaclab.managers.recorder_manager import RecorderTerm, RecorderTermCfg
 from isaaclab.utils.configclass import configclass
 
 from .locomanipulation_sdg_env import LocomanipulationSDGOutputDataRecorder
+from isaaclab.envs.mdp.events import reset_scene_to_default
+from isaaclab.envs.mdp.terminations import time_out
 
 
 @configclass
@@ -30,14 +31,14 @@ class LocomanipulationSDGRecorderManagerCfg(ActionStateRecorderManagerCfg):
 class LocomanipulationSDGTerminationsCfg:
     """Termination terms for the MDP."""
 
-    time_out = DoneTerm(func=base_mdp.time_out, time_out=True)
+    time_out = DoneTerm(func=time_out, time_out=True)
 
 
 @configclass
 class LocomanipulationSDGEventCfg:
     """Configuration for events."""
 
-    reset_all = EventTerm(func=base_mdp.reset_scene_to_default, mode="reset")
+    reset_all = EventTerm(func=reset_scene_to_default, mode="reset")
 
 
 @configclass

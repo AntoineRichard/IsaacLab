@@ -36,15 +36,17 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-
-##
+from isaaclab.assets.articulation.articulation import Articulation
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_B_CFG, ANYMAL_C_CFG, ANYMAL_D_CFG  # isort:skip
 from isaaclab_assets.robots.spot import SPOT_CFG  # isort:skip
 from isaaclab_assets.robots.unitree import UNITREE_A1_CFG, UNITREE_GO1_CFG, UNITREE_GO2_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def define_origins(num_origins: int, spacing: float) -> list[list[float]]:
@@ -65,10 +67,10 @@ def define_origins(num_origins: int, spacing: float) -> list[list[float]]:
 def design_scene() -> tuple[dict, list[list[float]]]:
     """Designs the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+    cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # Create separate groups called "Origin1", "Origin2", "Origin3"
@@ -76,37 +78,37 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     origins = define_origins(num_origins=7, spacing=1.25)
 
     # Origin 1 with Anymal B
-    sim_utils.create_prim("/World/Origin1", "Xform", translation=origins[0])
+    create_prim("/World/Origin1", "Xform", translation=origins[0])
     # -- Robot
     anymal_b = Articulation(ANYMAL_B_CFG.replace(prim_path="/World/Origin1/Robot"))
 
     # Origin 2 with Anymal C
-    sim_utils.create_prim("/World/Origin2", "Xform", translation=origins[1])
+    create_prim("/World/Origin2", "Xform", translation=origins[1])
     # -- Robot
     anymal_c = Articulation(ANYMAL_C_CFG.replace(prim_path="/World/Origin2/Robot"))
 
     # Origin 3 with Anymal D
-    sim_utils.create_prim("/World/Origin3", "Xform", translation=origins[2])
+    create_prim("/World/Origin3", "Xform", translation=origins[2])
     # -- Robot
     anymal_d = Articulation(ANYMAL_D_CFG.replace(prim_path="/World/Origin3/Robot"))
 
     # Origin 4 with Unitree A1
-    sim_utils.create_prim("/World/Origin4", "Xform", translation=origins[3])
+    create_prim("/World/Origin4", "Xform", translation=origins[3])
     # -- Robot
     unitree_a1 = Articulation(UNITREE_A1_CFG.replace(prim_path="/World/Origin4/Robot"))
 
     # Origin 5 with Unitree Go1
-    sim_utils.create_prim("/World/Origin5", "Xform", translation=origins[4])
+    create_prim("/World/Origin5", "Xform", translation=origins[4])
     # -- Robot
     unitree_go1 = Articulation(UNITREE_GO1_CFG.replace(prim_path="/World/Origin5/Robot"))
 
     # Origin 6 with Unitree Go2
-    sim_utils.create_prim("/World/Origin6", "Xform", translation=origins[5])
+    create_prim("/World/Origin6", "Xform", translation=origins[5])
     # -- Robot
     unitree_go2 = Articulation(UNITREE_GO2_CFG.replace(prim_path="/World/Origin6/Robot"))
 
     # Origin 7 with Boston Dynamics Spot
-    sim_utils.create_prim("/World/Origin7", "Xform", translation=origins[6])
+    create_prim("/World/Origin7", "Xform", translation=origins[6])
     # -- Robot
     spot = Articulation(SPOT_CFG.replace(prim_path="/World/Origin7/Robot"))
 
@@ -123,7 +125,7 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     return scene_entities, origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articulation], origins: torch.Tensor):
+def run_simulator(sim: SimulationContext, entities: dict[str, Articulation], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -173,7 +175,7 @@ def main():
     """Main function."""
 
     # Initialize the simulation context
-    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01))
+    sim = SimulationContext(SimulationCfg(dt=0.01))
     # Set main camera
     sim.set_camera_view(eye=[2.5, 2.5, 2.5], target=[0.0, 0.0, 0.0])
     # design scene

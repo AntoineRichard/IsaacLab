@@ -20,12 +20,13 @@ simulation_app = AppLauncher(headless=True).app
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.envs import ManagerBasedEnv, ManagerBasedEnvCfg
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.envs.manager_based_env_cfg import ManagerBasedEnvCfg
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @configclass
@@ -114,7 +115,7 @@ def get_empty_base_env_cfg_with_history(device: str = "cuda:0", num_envs: int = 
 def test_initialization(device):
     """Test initialization of ManagerBasedEnv."""
     # create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # create environment
     env = ManagerBasedEnv(cfg=get_empty_base_env_cfg(device=device))
     # check size of action manager terms
@@ -142,7 +143,7 @@ def test_observation_history_changes_only_after_step(device):
     The history buffer should only change after a step is taken.
     """
     # create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # create environment with history length of 5
     env = ManagerBasedEnv(cfg=get_empty_base_env_cfg_with_history(device=device))
 

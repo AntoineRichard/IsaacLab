@@ -38,16 +38,19 @@ import torch
 
 from isaacsim.core.cloner import GridCloner
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-from isaaclab.sensors.contact_sensor import ContactSensor, ContactSensorCfg
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.timer import Timer
 
 ##
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort:skip
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 """
@@ -58,10 +61,10 @@ Helpers
 def design_scene():
     """Add prims to the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=2000)
+    cfg = DomeLightCfg(intensity=2000)
     cfg.func("/World/Light/DomeLight", cfg, translation=(-4.5, 3.5, 10.0))
 
 

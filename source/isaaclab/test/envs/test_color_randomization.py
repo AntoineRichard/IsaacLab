@@ -22,24 +22,27 @@ import math
 import pytest
 import torch
 
-import isaaclab.envs.mdp as mdp
-import isaaclab.sim as sim_utils
-from isaaclab.envs import ManagerBasedEnv, ManagerBasedEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.envs.manager_based_env_cfg import ManagerBasedEnvCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.version import get_isaac_sim_version
 
 from isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg import CartpoleSceneCfg
+from isaaclab.envs.mdp.actions.actions_cfg import JointEffortActionCfg
+from isaaclab.envs.mdp.events import randomize_visual_color, reset_joints_by_offset
+from isaaclab.envs.mdp.observations import joint_pos_rel, joint_vel_rel
+from isaaclab.sim.utils.stage import close_stage, create_new_stage
 
 
 @configclass
 class ActionsCfg:
     """Action specifications for the environment."""
 
-    joint_efforts = mdp.JointEffortActionCfg(asset_name="robot", joint_names=["slider_to_cart"], scale=5.0)
+    joint_efforts = JointEffortActionCfg(asset_name="robot", joint_names=["slider_to_cart"], scale=5.0)
 
 
 @configclass
@@ -51,8 +54,8 @@ class ObservationsCfg:
         """Observations for policy group."""
 
         # observation terms (order preserved)
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
+        joint_pos_rel = ObsTerm(func=joint_pos_rel)
+        joint_vel_rel = ObsTerm(func=joint_vel_rel)
 
         def __post_init__(self) -> None:
             self.enable_corruption = False
@@ -70,7 +73,7 @@ class EventCfg:
     # note from @mayank: Changed from 'reset' to 'prestartup' to make test pass.
     #   The error happens otherwise on Kit thread which is not the main thread.
     cart_texture_randomizer = EventTerm(
-        func=mdp.randomize_visual_color,
+        func=randomize_visual_color,
         mode="prestartup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["cart"]),
@@ -81,7 +84,7 @@ class EventCfg:
 
     # on reset apply a new set of textures
     pole_texture_randomizer = EventTerm(
-        func=mdp.randomize_visual_color,
+        func=randomize_visual_color,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["pole"]),
@@ -91,7 +94,7 @@ class EventCfg:
     )
 
     reset_cart_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
+        func=reset_joints_by_offset,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]),
@@ -101,7 +104,7 @@ class EventCfg:
     )
 
     reset_pole_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
+        func=reset_joints_by_offset,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]),
@@ -142,7 +145,7 @@ def test_color_randomization(device):
         pytest.skip("Color randomization test hangs in this version of Isaac Sim")
 
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     try:
         # Set the arguments
@@ -169,4 +172,4 @@ def test_color_randomization(device):
             env.close()
     finally:
         # Clean up stage
-        sim_utils.close_stage()
+        close_stage()

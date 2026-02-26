@@ -35,25 +35,26 @@ simulation_app = app_launcher.app
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-from isaaclab.sim import SimulationContext
-
-##
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.sim.simulation_context import SimulationContext
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.cassie import CASSIE_CFG  # isort:skip
 from isaaclab_assets import H1_CFG  # isort:skip
 from isaaclab_assets import G1_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
-def design_scene(sim: sim_utils.SimulationContext) -> tuple[list, torch.Tensor]:
+def design_scene(sim: SimulationContext) -> tuple[list, torch.Tensor]:
     """Designs the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+    cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # Define origins
@@ -74,7 +75,7 @@ def design_scene(sim: sim_utils.SimulationContext) -> tuple[list, torch.Tensor]:
     return robots, origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, robots: list[Articulation], origins: torch.Tensor):
+def run_simulator(sim: SimulationContext, robots: list[Articulation], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -118,7 +119,7 @@ def run_simulator(sim: sim_utils.SimulationContext, robots: list[Articulation], 
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[3.0, 0.0, 2.25], target=[0.0, 0.0, 1.0])

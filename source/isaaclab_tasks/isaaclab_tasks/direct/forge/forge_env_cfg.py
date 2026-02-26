@@ -3,15 +3,15 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import isaaclab.envs.mdp as mdp
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_tasks.direct.factory.factory_env_cfg import OBS_DIM_CFG, STATE_DIM_CFG, CtrlCfg, FactoryEnvCfg, ObsRandCfg
 
 from .forge_events import randomize_dead_zone
 from .forge_tasks_cfg import ForgeGearMesh, ForgeNutThread, ForgePegInsert, ForgeTask
+from isaaclab.envs.mdp.events import randomize_rigid_body_mass, randomize_rigid_body_material
 
 OBS_DIM_CFG.update({"force_threshold": 1, "ft_force": 3})
 
@@ -38,7 +38,7 @@ class ForgeObsRandCfg(ObsRandCfg):
 @configclass
 class EventCfg:
     object_scale_mass = EventTerm(
-        func=mdp.randomize_rigid_body_mass,
+        func=randomize_rigid_body_mass,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("held_asset"),
@@ -49,7 +49,7 @@ class EventCfg:
     )
 
     held_physics_material = EventTerm(
-        func=mdp.randomize_rigid_body_material,
+        func=randomize_rigid_body_material,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("held_asset"),
@@ -61,7 +61,7 @@ class EventCfg:
     )
 
     fixed_physics_material = EventTerm(
-        func=mdp.randomize_rigid_body_material,
+        func=randomize_rigid_body_material,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("fixed_asset"),
@@ -73,7 +73,7 @@ class EventCfg:
     )
 
     robot_physics_material = EventTerm(
-        func=mdp.randomize_rigid_body_material,
+        func=randomize_rigid_body_material,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),

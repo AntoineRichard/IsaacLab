@@ -36,37 +36,45 @@ simulation_app = app_launcher.app
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import RigidObject, RigidObjectCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import ConeCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def design_scene():
     """Designs the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
+    cfg = DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
     cfg.func("/World/Light", cfg)
 
     # Create separate groups called "Origin1", "Origin2", "Origin3"
     # Each group will have a robot in it
     origins = [[0.25, 0.25, 0.0], [-0.25, 0.25, 0.0], [0.25, -0.25, 0.0], [-0.25, -0.25, 0.0]]
     for i, origin in enumerate(origins):
-        sim_utils.create_prim(f"/World/Origin{i}", "Xform", translation=origin)
+        create_prim(f"/World/Origin{i}", "Xform", translation=origin)
 
     # Rigid Object
     cone_cfg = RigidObjectCfg(
         prim_path="/World/Origin.*/Cone",
-        spawn=sim_utils.ConeCfg(
+        spawn=ConeCfg(
             radius=0.1,
             height=0.2,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            collision_props=CollisionPropertiesCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(),
     )
@@ -77,7 +85,7 @@ def design_scene():
     return scene_entities, origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, RigidObject], origins: torch.Tensor):
+def run_simulator(sim: SimulationContext, entities: dict[str, RigidObject], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Extract scene entities
     # note: we only do this here for readability. In general, it is better to access the entities directly from
@@ -125,7 +133,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, RigidObj
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
+    sim_cfg = SimulationCfg(device=args_cli.device)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[1.5, 0.0, 1.0], target=[0.0, 0.0, 0.0])

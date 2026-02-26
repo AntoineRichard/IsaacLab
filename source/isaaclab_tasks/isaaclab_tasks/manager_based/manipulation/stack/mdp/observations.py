@@ -11,12 +11,14 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation, RigidObject, RigidObjectCollection
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import FrameTransformer
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object_collection.rigid_object_collection import RigidObjectCollection
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sensors.frame_transformer.frame_transformer import FrameTransformer
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def cube_positions_in_world_frame(

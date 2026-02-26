@@ -17,8 +17,9 @@ from collections import namedtuple
 import pytest
 import torch
 
-from isaaclab.managers import RewardManager, RewardTermCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.managers.manager_term_cfg import RewardTermCfg
+from isaaclab.managers.reward_manager import RewardManager
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.configclass import configclass
 
 

@@ -70,8 +70,14 @@ import time
 
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.sim.views import XformPrimView
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import ConeCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage, get_current_stage
 
 
 @torch.no_grad()
@@ -93,27 +99,27 @@ def benchmark_view(view_type: str, num_iterations: int) -> tuple[dict[str, float
     # Setup scene
     print("  Setting up scene")
     # Clear stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Create simulation context
     start_time = time.perf_counter()
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device, use_fabric=(view_type == "xform_fabric"))
-    sim = sim_utils.SimulationContext(sim_cfg)
-    stage = sim_utils.get_current_stage()
+    sim_cfg = SimulationCfg(dt=0.01, device=args_cli.device, use_fabric=(view_type == "xform_fabric"))
+    sim = SimulationContext(sim_cfg)
+    stage = get_current_stage()
 
     print(f"  Time taken to create simulation context: {time.perf_counter() - start_time:.4f} seconds")
 
     # create a rigid object
-    object_cfg = sim_utils.ConeCfg(
+    object_cfg = ConeCfg(
         radius=0.15,
         height=0.5,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-        mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+        rigid_props=RigidBodyPropertiesCfg(),
+        mass_props=MassPropertiesCfg(mass=1.0),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
     )
     # Create prims
     for i in range(args_cli.num_envs):
-        sim_utils.create_prim(f"/World/Env_{i}", "Xform", stage=stage, translation=(i * 2.0, 0.0, 0.0))
+        create_prim(f"/World/Env_{i}", "Xform", stage=stage, translation=(i * 2.0, 0.0, 0.0))
         object_cfg.func(f"/World/Env_{i}/Object", object_cfg, translation=(0.0, 0.0, 1.0))
 
     # Play simulation
@@ -496,7 +502,7 @@ def main():
         print()
 
     # Clean up
-    sim_utils.SimulationContext.clear_instance()
+    SimulationContext.clear_instance()
 
 
 if __name__ == "__main__":

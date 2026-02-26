@@ -14,19 +14,19 @@ from __future__ import annotations
 from dataclasses import MISSING, field
 from typing import TYPE_CHECKING
 
-import isaaclab.envs.mdp as mdp
 from isaaclab.devices.device_base import DevicesCfg
 
 if TYPE_CHECKING:
     from isaaclab.devices.openxr import XrCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import RecorderManagerBaseCfg as DefaultEmptyRecorderManagerCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg as DefaultEmptyRecorderManagerCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.utils.configclass import configclass
 
 from .common import ViewerCfg
 from .ui import BaseEnvWindow
+from isaaclab.envs.mdp.events import reset_scene_to_default
 
 
 @configclass
@@ -37,7 +37,7 @@ class DefaultEventManagerCfg:
     by the scene configuration.
     """
 
-    reset_scene_to_default = EventTerm(func=mdp.reset_scene_to_default, mode="reset")
+    reset_scene_to_default = EventTerm(func=reset_scene_to_default, mode="reset")
 
 
 @configclass

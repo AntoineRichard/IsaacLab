@@ -17,14 +17,20 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.managers.manager_term_cfg import ObservationTermCfg
 
 if TYPE_CHECKING:
-    from isaaclab.assets import Articulation, RigidObject
-    from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
-    from isaaclab.sensors import Camera, Imu, RayCaster, RayCasterCamera, TiledCamera
+    from isaaclab.assets.articulation.articulation import Articulation
+    from isaaclab.assets.rigid_object.rigid_object import RigidObject
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
+    from isaaclab.sensors.camera.camera import Camera
+    from isaaclab.sensors.camera.tiled_camera import TiledCamera
+    from isaaclab.sensors.imu.imu import Imu
+    from isaaclab.sensors.ray_caster.ray_caster import RayCaster
+    from isaaclab.sensors.ray_caster.ray_caster_camera import RayCasterCamera
 
 from isaaclab.envs.utils.io_descriptors import (
     generic_io_descriptor,

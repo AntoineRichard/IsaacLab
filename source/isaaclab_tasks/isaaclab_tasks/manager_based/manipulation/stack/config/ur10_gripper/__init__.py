@@ -16,7 +16,7 @@ import gymnasium as gym
 
 gym.register(
     id="Isaac-Stack-Cube-UR10-Long-Suction-IK-Rel-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     kwargs={
         "env_cfg_entry_point": f"{__name__}.stack_ik_rel_env_cfg:UR10LongSuctionCubeStackEnvCfg",
     },
@@ -25,7 +25,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     kwargs={
         "env_cfg_entry_point": f"{__name__}.stack_ik_rel_env_cfg:UR10ShortSuctionCubeStackEnvCfg",
     },

@@ -17,11 +17,12 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def object_placed_upright(

@@ -23,9 +23,11 @@ from collections import namedtuple
 import pytest
 import torch
 
-from isaaclab.envs import ManagerBasedEnv
-from isaaclab.managers import EventManager, EventTermCfg, ManagerTermBase, ManagerTermBaseCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.managers.event_manager import EventManager
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.manager_term_cfg import EventTermCfg, ManagerTermBaseCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.configclass import configclass
 
 DummyEnv = namedtuple("ManagerBasedRLEnv", ["num_envs", "dt", "device", "sim", "dummy1", "dummy2"])

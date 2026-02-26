@@ -37,32 +37,34 @@ import torch
 import warp as wp
 from isaaclab_physx.assets import SurfaceGripper, SurfaceGripperCfg
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-from isaaclab.sim import SimulationContext
-
-##
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.sim.simulation_context import SimulationContext
 # Pre-defined configs
 ##
 from isaaclab_assets import PICK_AND_PLACE_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def design_scene():
     """Designs the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+    cfg = DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # Create separate groups called "Origin1", "Origin2"
     # Each group will have a robot in it
     origins = [[2.75, 0.0, 0.0], [-2.75, 0.0, 0.0]]
     # Origin 1
-    sim_utils.create_prim("/World/Origin1", "Xform", translation=origins[0])
+    create_prim("/World/Origin1", "Xform", translation=origins[0])
     # Origin 2
-    sim_utils.create_prim("/World/Origin2", "Xform", translation=origins[1])
+    create_prim("/World/Origin2", "Xform", translation=origins[1])
 
     # Articulation: First we define the robot config
     pick_and_place_robot_cfg = PICK_AND_PLACE_CFG.copy()
@@ -88,7 +90,7 @@ def design_scene():
 
 
 def run_simulator(
-    sim: sim_utils.SimulationContext, entities: dict[str, Articulation | SurfaceGripper], origins: torch.Tensor
+    sim: SimulationContext, entities: dict[str, Articulation | SurfaceGripper], origins: torch.Tensor
 ):
     """Runs the simulation loop."""
     # Extract scene entities
@@ -165,7 +167,7 @@ def run_simulator(
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
+    sim_cfg = SimulationCfg(device=args_cli.device)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.75, 7.5, 10.0], [2.75, 0.0, 0.0])

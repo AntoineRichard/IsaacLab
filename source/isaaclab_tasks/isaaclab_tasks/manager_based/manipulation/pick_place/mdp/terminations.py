@@ -16,11 +16,11 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-from isaaclab.assets import RigidObject
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def task_done_pick_place(

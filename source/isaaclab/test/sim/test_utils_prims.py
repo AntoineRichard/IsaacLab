@@ -21,23 +21,32 @@ import torch
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-import isaaclab.sim as sim_utils
 from isaaclab.sim.utils.prims import _to_tuple  # type: ignore[reportPrivateUsage]
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
+from isaaclab.sim.utils.prims import (
+    change_prim_property,
+    create_prim,
+    delete_prim,
+    get_usd_references,
+    select_usd_variants,
+)
+from isaaclab.sim.utils.semantics import get_labels
+from isaaclab.sim.utils.stage import clear_stage, create_new_stage, get_current_stage, update_stage
+from isaaclab.sim.utils.transforms import resolve_prim_pose
 
 
 @pytest.fixture(autouse=True)
 def test_setup_teardown():
     """Create a blank new stage for each test."""
     # Setup: Create a new stage
-    sim_utils.create_new_stage()
-    sim_utils.update_stage()
+    create_new_stage()
+    update_stage()
 
     # Yield for the test
     yield
 
     # Teardown: Clear stage after each test
-    sim_utils.clear_stage()
+    clear_stage()
 
 
 def assert_quat_close(
@@ -61,9 +70,9 @@ General Utils
 def test_create_prim():
     """Test create_prim() function."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # create scene
-    prim = sim_utils.create_prim(prim_path="/World/Test", prim_type="Xform", stage=stage)
+    prim = create_prim(prim_path="/World/Test", prim_type="Xform", stage=stage)
     # check prim created
     assert prim.IsValid()
     assert prim.GetPrimPath() == "/World/Test"
@@ -71,10 +80,10 @@ def test_create_prim():
 
     # check recreation of prim
     with pytest.raises(ValueError, match="already exists"):
-        sim_utils.create_prim(prim_path="/World/Test", prim_type="Xform", stage=stage)
+        create_prim(prim_path="/World/Test", prim_type="Xform", stage=stage)
 
     # check attribute setting
-    prim = sim_utils.create_prim(prim_path="/World/Test/Cube", prim_type="Cube", stage=stage, attributes={"size": 100})
+    prim = create_prim(prim_path="/World/Test/Cube", prim_type="Cube", stage=stage, attributes={"size": 100})
     # check attribute set
     assert prim.IsValid()
     assert prim.GetPrimPath() == "/World/Test/Cube"
@@ -83,7 +92,7 @@ def test_create_prim():
 
     # check adding USD reference
     franka_usd = f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda_instanceable.usd"
-    prim = sim_utils.create_prim("/World/Test/USDReference", usd_path=franka_usd, stage=stage)
+    prim = create_prim("/World/Test/USDReference", usd_path=franka_usd, stage=stage)
     # check USD reference set
     assert prim.IsValid()
     assert prim.GetPrimPath() == "/World/Test/USDReference"
@@ -96,7 +105,7 @@ def test_create_prim():
     assert str(references[0].assetPath) == franka_usd
 
     # check adding semantic label
-    prim = sim_utils.create_prim(
+    prim = create_prim(
         "/World/Test/Sphere", "Sphere", stage=stage, semantic_label="sphere", attributes={"radius": 10.0}
     )
     # check semantic label set
@@ -104,13 +113,13 @@ def test_create_prim():
     assert prim.GetPrimPath() == "/World/Test/Sphere"
     assert prim.GetTypeName() == "Sphere"
     assert prim.GetAttribute("radius").Get() == 10.0
-    assert sim_utils.get_labels(prim)["class"] == ["sphere"]
+    assert get_labels(prim)["class"] == ["sphere"]
 
     # check setting transform
     pos = (1.0, 2.0, 3.0)
     quat = (0.0, 0.0, 1.0, 0.0)
     scale = (1.0, 0.5, 0.5)
-    prim = sim_utils.create_prim(
+    prim = create_prim(
         "/World/Test/Xform", "Xform", stage=stage, translation=pos, orientation=quat, scale=scale
     )
     # check transform set
@@ -133,7 +142,7 @@ def test_create_prim():
 def test_create_prim_with_different_input_types(input_type: str):
     """Test create_prim() with different input types (list, tuple, numpy array, torch tensor)."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Define test values
     translation_vals = [1.0, 2.0, 3.0]
@@ -165,7 +174,7 @@ def test_create_prim_with_different_input_types(input_type: str):
         scale = torch.tensor(scale_vals, device="cuda")
 
     # Create prim with translation (local space)
-    prim = sim_utils.create_prim(
+    prim = create_prim(
         f"/World/Test/Xform_{input_type}",
         "Xform",
         stage=stage,
@@ -196,10 +205,10 @@ def test_create_prim_with_different_input_types(input_type: str):
 def test_create_prim_with_world_position_different_types(input_type: str):
     """Test create_prim() with world position using different input types."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create a parent prim
-    _ = sim_utils.create_prim(
+    _ = create_prim(
         "/World/Parent",
         "Xform",
         stage=stage,
@@ -231,7 +240,7 @@ def test_create_prim_with_world_position_different_types(input_type: str):
         world_orient = torch.tensor(world_orient_vals, device="cuda")
 
     # Create child prim with world position
-    child = sim_utils.create_prim(
+    child = create_prim(
         f"/World/Parent/Child_{input_type}",
         "Xform",
         stage=stage,
@@ -243,7 +252,7 @@ def test_create_prim_with_world_position_different_types(input_type: str):
     assert child.IsValid()
 
     # Verify world pose matches what we specified
-    world_pose = sim_utils.resolve_prim_pose(child)
+    world_pose = resolve_prim_pose(child)
     pos_result, quat_result = world_pose
 
     # Check position (should be close to world_pos_vals)
@@ -264,10 +273,10 @@ def test_create_prim_non_xformable():
     This is expected behavior as documented in the create_prim function.
     """
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Test with Material prim (not Xformable)
-    material_prim = sim_utils.create_prim(
+    material_prim = create_prim(
         "/World/TestMaterial",
         "Material",
         stage=stage,
@@ -290,7 +299,7 @@ def test_create_prim_non_xformable():
     assert not material_prim.HasAttribute("xformOp:scale")
 
     # Test with Scope prim (not Xformable)
-    scope_prim = sim_utils.create_prim(
+    scope_prim = create_prim(
         "/World/TestScope",
         "Scope",
         stage=stage,
@@ -314,29 +323,29 @@ def test_create_prim_non_xformable():
 def test_delete_prim():
     """Test delete_prim() function."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # create scene
-    prim = sim_utils.create_prim("/World/Test/Xform", "Xform", stage=stage)
+    prim = create_prim("/World/Test/Xform", "Xform", stage=stage)
     # delete prim
-    sim_utils.delete_prim("/World/Test/Xform")
+    delete_prim("/World/Test/Xform")
     # check prim deleted
     assert not prim.IsValid()
 
     # check for usd reference
-    prim = sim_utils.create_prim(
+    prim = create_prim(
         "/World/Test/USDReference",
         usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda_instanceable.usd",
         stage=stage,
     )
     # delete prim
-    sim_utils.delete_prim("/World/Test/USDReference", stage=stage)
+    delete_prim("/World/Test/USDReference", stage=stage)
     # check prim deleted
     assert not prim.IsValid()
 
     # check deleting multiple prims
-    prim1 = sim_utils.create_prim("/World/Test/Xform1", "Xform", stage=stage)
-    prim2 = sim_utils.create_prim("/World/Test/Xform2", "Xform", stage=stage)
-    sim_utils.delete_prim(("/World/Test/Xform1", "/World/Test/Xform2"), stage=stage)
+    prim1 = create_prim("/World/Test/Xform1", "Xform", stage=stage)
+    prim2 = create_prim("/World/Test/Xform2", "Xform", stage=stage)
+    delete_prim(("/World/Test/Xform1", "/World/Test/Xform2"), stage=stage)
     # check prims deleted
     assert not prim1.IsValid()
     assert not prim2.IsValid()
@@ -350,30 +359,30 @@ USD references and variants.
 def test_get_usd_references():
     """Test get_usd_references() function."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create a prim without USD reference
-    sim_utils.create_prim("/World/NoReference", "Xform", stage=stage)
+    create_prim("/World/NoReference", "Xform", stage=stage)
     # Check that it has no references
-    refs = sim_utils.get_usd_references("/World/NoReference", stage=stage)
+    refs = get_usd_references("/World/NoReference", stage=stage)
     assert len(refs) == 0
 
     # Create a prim with a USD reference
     franka_usd = f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda_instanceable.usd"
-    sim_utils.create_prim("/World/WithReference", usd_path=franka_usd, stage=stage)
+    create_prim("/World/WithReference", usd_path=franka_usd, stage=stage)
     # Check that it has the expected reference
-    refs = sim_utils.get_usd_references("/World/WithReference", stage=stage)
+    refs = get_usd_references("/World/WithReference", stage=stage)
     assert len(refs) == 1
     assert refs == [franka_usd]
 
     # Test with invalid prim path
     with pytest.raises(ValueError, match="not valid"):
-        sim_utils.get_usd_references("/World/NonExistent", stage=stage)
+        get_usd_references("/World/NonExistent", stage=stage)
 
 
 def test_select_usd_variants():
     """Test select_usd_variants() function."""
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create a dummy prim
     prim: Usd.Prim = UsdGeom.Xform.Define(stage, Sdf.Path("/World")).GetPrim()
@@ -386,7 +395,7 @@ def test_select_usd_variants():
         variant_set.AddVariant(variant)
 
     # Set the variant selection
-    sim_utils.utils.select_usd_variants("/World", {"colors": "red"}, stage)
+    select_usd_variants("/World", {"colors": "red"}, stage)
 
     # Check if the variant selection is correct
     assert variant_set.GetVariantSelection() == "red"
@@ -394,9 +403,9 @@ def test_select_usd_variants():
 
 def test_select_usd_variants_in_usd_file():
     """Test select_usd_variants() function in USD file."""
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
-    prim = sim_utils.create_prim(
+    prim = create_prim(
         "/World/Test", "Xform", usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/UniversalRobots/ur10e/ur10e.usd", stage=stage
     )
 
@@ -429,7 +438,7 @@ def test_select_usd_variants_in_usd_file():
     # Uncomment the following once resolved
 
     # Set the variant selection
-    # sim_utils.select_usd_variants(prim.GetPath(), {"Gripper": "Robotiq_2f_140"}, stage)
+    # select_usd_variants(prim.GetPath(), {"Gripper": "Robotiq_2f_140"}, stage)
 
     # Obtain variant set
     # variant_set = prim.GetVariantSet("Gripper")
@@ -445,15 +454,15 @@ Property Management.
 def test_change_prim_property_basic():
     """Test change_prim_property() with existing property."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # create a cube prim
-    prim = sim_utils.create_prim("/World/Cube", "Cube", stage=stage, attributes={"size": 1.0})
+    prim = create_prim("/World/Cube", "Cube", stage=stage, attributes={"size": 1.0})
 
     # check initial value
     assert prim.GetAttribute("size").Get() == 1.0
 
     # change the property
-    result = sim_utils.change_prim_property(
+    result = change_prim_property(
         prop_path="/World/Cube.size",
         value=2.0,
         stage=stage,
@@ -467,15 +476,15 @@ def test_change_prim_property_basic():
 def test_change_prim_property_create_new():
     """Test change_prim_property() creates new property when it doesn't exist."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # create a prim
-    prim = sim_utils.create_prim("/World/Test", "Xform", stage=stage)
+    prim = create_prim("/World/Test", "Xform", stage=stage)
 
     # check that the property doesn't exist
     assert prim.GetAttribute("customValue").Get() is None
 
     # create a new property
-    result = sim_utils.change_prim_property(
+    result = change_prim_property(
         prop_path="/World/Test.customValue",
         value=42,
         stage=stage,
@@ -491,15 +500,15 @@ def test_change_prim_property_create_new():
 def test_change_prim_property_clear_value():
     """Test change_prim_property() clears property value when value is None."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # create a cube with an attribute
-    prim = sim_utils.create_prim("/World/Cube", "Cube", stage=stage, attributes={"size": 1.0})
+    prim = create_prim("/World/Cube", "Cube", stage=stage, attributes={"size": 1.0})
 
     # check initial value
     assert prim.GetAttribute("size").Get() == 1.0
 
     # clear the property value
-    result = sim_utils.change_prim_property(
+    result = change_prim_property(
         prop_path="/World/Cube.size",
         value=None,
         stage=stage,
@@ -526,12 +535,12 @@ def test_change_prim_property_clear_value():
 def test_change_prim_property_different_types(attr_name: str, value, value_type, expected):
     """Test change_prim_property() with different value types."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # create a prim
-    prim = sim_utils.create_prim("/World/Test", "Xform", stage=stage)
+    prim = create_prim("/World/Test", "Xform", stage=stage)
 
     # change the property
-    result = sim_utils.change_prim_property(
+    result = change_prim_property(
         prop_path=f"/World/Test.{attr_name}",
         value=value,
         stage=stage,
@@ -558,12 +567,12 @@ def test_change_prim_property_different_types(attr_name: str, value, value_type,
 def test_change_prim_property_path_types(prop_path_input):
     """Test change_prim_property() with different path input types."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # create a cube prim
-    prim = sim_utils.create_prim("/World/Cube", "Cube", stage=stage, attributes={"size": 1.0})
+    prim = create_prim("/World/Cube", "Cube", stage=stage, attributes={"size": 1.0})
 
     # change property using different path types
-    result = sim_utils.change_prim_property(
+    result = change_prim_property(
         prop_path=prop_path_input,
         value=3.0,
         stage=stage,
@@ -577,11 +586,11 @@ def test_change_prim_property_path_types(prop_path_input):
 def test_change_prim_property_error_invalid_prim():
     """Test change_prim_property() raises error for invalid prim path."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # try to change property on non-existent prim
     with pytest.raises(ValueError, match="Prim does not exist"):
-        sim_utils.change_prim_property(
+        change_prim_property(
             prop_path="/World/NonExistent.property",
             value=1.0,
             stage=stage,
@@ -591,12 +600,12 @@ def test_change_prim_property_error_invalid_prim():
 def test_change_prim_property_error_missing_type():
     """Test change_prim_property() returns False when property doesn't exist and type not provided."""
     # obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # create a prim
-    prim = sim_utils.create_prim("/World/Test", "Xform", stage=stage)
+    prim = create_prim("/World/Test", "Xform", stage=stage)
 
     # try to create property without providing type
-    result = sim_utils.change_prim_property(
+    result = change_prim_property(
         prop_path="/World/Test.nonExistentProperty",
         value=42,
         stage=stage,

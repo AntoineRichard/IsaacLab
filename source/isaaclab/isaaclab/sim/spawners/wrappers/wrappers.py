@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING
 
 from pxr import Usd
 
-import isaaclab.sim as sim_utils
 from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.utils.queries import find_first_matching_prim
 
 if TYPE_CHECKING:
     from . import wrappers_cfg
@@ -86,7 +86,7 @@ def spawn_multi_asset(
         # append to proto prim paths
         proto_prim_paths.append(proto_prim_path)
 
-    return sim_utils.find_first_matching_prim(proto_prim_paths[0])
+    return find_first_matching_prim(proto_prim_paths[0])
 
 
 def spawn_multi_usd_file(

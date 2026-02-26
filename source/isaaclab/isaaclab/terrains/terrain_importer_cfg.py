@@ -8,10 +8,10 @@ from __future__ import annotations
 from dataclasses import MISSING
 from typing import TYPE_CHECKING, Literal
 
-import isaaclab.sim as sim_utils
 from isaaclab.utils.configclass import configclass
 
 from .terrain_importer import TerrainImporter
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg, RigidBodyMaterialCfg, VisualMaterialCfg
 
 if TYPE_CHECKING:
     from .terrain_generator_cfg import TerrainGeneratorCfg
@@ -77,7 +77,7 @@ class TerrainImporterCfg:
       This parameter is used only when the :attr:`terrain type` is "generator".
     """
 
-    visual_material: sim_utils.VisualMaterialCfg | None = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0))
+    visual_material: VisualMaterialCfg | None = PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0))
     """The visual material of the terrain. Defaults to a dark gray color material.
 
     This parameter is used for both the "generator" and "plane" terrains.
@@ -88,7 +88,7 @@ class TerrainImporterCfg:
       to the grid color of the imported ground plane.
     """
 
-    physics_material: sim_utils.RigidBodyMaterialCfg = sim_utils.RigidBodyMaterialCfg()
+    physics_material: RigidBodyMaterialCfg = RigidBodyMaterialCfg()
     """The physics material of the terrain. Defaults to a default physics material.
 
     The material is created at the path: ``{prim_path}/physicsMaterial``.

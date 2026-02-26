@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from isaaclab.assets import Articulation
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.math import wrap_to_pi
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def joint_pos_target_l2(env: ManagerBasedRLEnv, target: float, asset_cfg: SceneEntityCfg) -> torch.Tensor:

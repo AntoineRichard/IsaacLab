@@ -13,7 +13,7 @@ from . import agents
 
 gym.register(
     id="Isaac-TrackPositionNoObstacles-ARL-Robot-1-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.no_obstacle_env_cfg:NoObstacleEnvCfg",
@@ -25,7 +25,7 @@ gym.register(
 
 gym.register(
     id="Isaac-TrackPositionNoObstacles-ARL-Robot-1-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.no_obstacle_env_cfg:NoObstacleEnvCfg_PLAY",

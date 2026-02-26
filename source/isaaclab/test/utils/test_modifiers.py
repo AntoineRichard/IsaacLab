@@ -19,13 +19,15 @@ import torch
 
 import isaaclab.utils.modifiers as modifiers
 from isaaclab.utils.configclass import configclass
+from isaaclab.utils.modifiers.modifier import bias, clip, scale
+from isaaclab.utils.modifiers.modifier_cfg import DigitalFilterCfg, IntegratorCfg, ModifierCfg
 
 
 @configclass
 class ModifierTestCfg:
     """Configuration for testing modifiers."""
 
-    cfg: modifiers.ModifierCfg = MISSING
+    cfg: ModifierCfg = MISSING
     init_data: torch.Tensor = MISSING
     result: torch.Tensor = MISSING
     num_iter: int = 10
@@ -40,7 +42,7 @@ def test_scale_modifier():
 
     # create test config
     test_cfg = ModifierTestCfg(
-        cfg=modifiers.ModifierCfg(func=modifiers.scale, params={"multiplier": scale}),
+        cfg=ModifierCfg(func=scale, params={"multiplier": scale}),
         init_data=init_data,
         result=result,
     )
@@ -60,7 +62,7 @@ def test_bias_modifier():
 
     # create test config
     test_cfg = ModifierTestCfg(
-        cfg=modifiers.ModifierCfg(func=modifiers.bias, params={"value": bias}),
+        cfg=ModifierCfg(func=bias, params={"value": bias}),
         init_data=init_data,
         result=result,
     )
@@ -81,7 +83,7 @@ def test_clip_modifier():
 
     # create test config
     test_cfg = ModifierTestCfg(
-        cfg=modifiers.ModifierCfg(func=modifiers.clip, params={"bounds": (min_val, max_val)}),
+        cfg=ModifierCfg(func=clip, params={"bounds": (min_val, max_val)}),
         init_data=init_data,
         result=result,
     )
@@ -101,7 +103,7 @@ def test_clip_no_upper_bound_modifier():
 
     # create test config
     test_cfg = ModifierTestCfg(
-        cfg=modifiers.ModifierCfg(func=modifiers.clip, params={"bounds": (min_val, None)}),
+        cfg=ModifierCfg(func=clip, params={"bounds": (min_val, None)}),
         init_data=init_data,
         result=result,
     )
@@ -121,7 +123,7 @@ def test_clip_no_lower_bound_modifier():
 
     # create test config
     test_cfg = ModifierTestCfg(
-        cfg=modifiers.ModifierCfg(func=modifiers.clip, params={"bounds": (None, max_val)}),
+        cfg=ModifierCfg(func=clip, params={"bounds": (None, max_val)}),
         init_data=init_data,
         result=result,
     )
@@ -140,7 +142,7 @@ def test_torch_relu_modifier():
 
     # create test config
     test_cfg = ModifierTestCfg(
-        cfg=modifiers.ModifierCfg(func=torch.nn.functional.relu),
+        cfg=ModifierCfg(func=torch.nn.functional.relu),
         init_data=init_data,
         result=result,
     )
@@ -162,7 +164,7 @@ def test_digital_filter(device):
 
     # create test config
     test_cfg = ModifierTestCfg(
-        cfg=modifiers.DigitalFilterCfg(A=A, B=B), init_data=init_data, result=result, num_iter=16
+        cfg=DigitalFilterCfg(A=A, B=B), init_data=init_data, result=result, num_iter=16
     )
 
     # create a modifier instance
@@ -197,7 +199,7 @@ def test_integral(device):
 
     # create test config
     test_cfg = ModifierTestCfg(
-        cfg=modifiers.IntegratorCfg(dt=dt),
+        cfg=IntegratorCfg(dt=dt),
         init_data=init_data,
         result=result,
         num_iter=6,

@@ -17,18 +17,22 @@ import pytest
 
 from pxr import UsdPhysics, UsdShade
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.assets import NVIDIA_NUCLEUS_DIR
+from isaaclab.sim.spawners import materials
+from isaaclab.sim.spawners.materials import GlassMdlCfg, RigidBodyMaterialCfg
+from isaaclab.sim.utils.prims import bind_physics_material, bind_visual_material, create_prim
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 
 @pytest.fixture
 def sim():
     """Create a simulation context."""
-    sim_utils.create_new_stage()
+    create_new_stage()
     dt = 0.1
     sim = SimulationContext(SimulationCfg(dt=dt))
-    sim_utils.update_stage()
+    update_stage()
     yield sim
     sim.stop()
     sim.clear_instance()
@@ -36,7 +40,7 @@ def sim():
 
 def test_spawn_preview_surface(sim):
     """Test spawning preview surface."""
-    cfg = sim_utils.materials.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
+    cfg = materials.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
     prim = cfg.func("/Looks/PreviewSurface", cfg)
     # Check validity
     assert prim.IsValid()
@@ -48,7 +52,7 @@ def test_spawn_preview_surface(sim):
 
 def test_spawn_mdl_material(sim):
     """Test spawning mdl material."""
-    cfg = sim_utils.materials.MdlFileCfg(
+    cfg = materials.MdlFileCfg(
         mdl_path=f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Metals/Aluminum_Anodized.mdl",
         project_uvw=True,
         albedo_brightness=0.5,
@@ -65,7 +69,7 @@ def test_spawn_mdl_material(sim):
 
 def test_spawn_glass_mdl_material(sim):
     """Test spawning a glass mdl material."""
-    cfg = sim_utils.materials.GlassMdlCfg(thin_walled=False, glass_ior=1.0, glass_color=(0.0, 1.0, 0.0))
+    cfg = materials.GlassMdlCfg(thin_walled=False, glass_ior=1.0, glass_color=(0.0, 1.0, 0.0))
     prim = cfg.func("/Looks/GlassMaterial", cfg)
     # Check validity
     assert prim.IsValid()
@@ -79,7 +83,7 @@ def test_spawn_glass_mdl_material(sim):
 
 def test_spawn_rigid_body_material(sim):
     """Test spawning a rigid body material."""
-    cfg = sim_utils.materials.RigidBodyMaterialCfg(
+    cfg = materials.RigidBodyMaterialCfg(
         dynamic_friction=1.5,
         restitution=1.5,
         static_friction=0.5,
@@ -100,7 +104,7 @@ def test_spawn_rigid_body_material(sim):
 
 def test_spawn_deformable_body_material(sim):
     """Test spawning a deformable body material."""
-    cfg = sim_utils.materials.DeformableBodyMaterialCfg(
+    cfg = materials.DeformableBodyMaterialCfg(
         density=1.0,
         dynamic_friction=0.25,
         youngs_modulus=50000000.0,
@@ -125,9 +129,9 @@ def test_spawn_deformable_body_material(sim):
 
 def test_apply_rigid_body_material_on_visual_material(sim):
     """Test applying a rigid body material on a visual material."""
-    cfg = sim_utils.materials.GlassMdlCfg(thin_walled=False, glass_ior=1.0, glass_color=(0.0, 1.0, 0.0))
+    cfg = materials.GlassMdlCfg(thin_walled=False, glass_ior=1.0, glass_color=(0.0, 1.0, 0.0))
     prim = cfg.func("/Looks/Material", cfg)
-    cfg = sim_utils.materials.RigidBodyMaterialCfg(
+    cfg = materials.RigidBodyMaterialCfg(
         dynamic_friction=1.5,
         restitution=1.5,
         static_friction=0.5,
@@ -150,17 +154,17 @@ def test_bind_prim_to_material(sim):
     """Test binding a rigid body material on a mesh prim."""
 
     # create a mesh prim
-    object_prim = sim_utils.create_prim("/World/Geometry/box", "Cube")
+    object_prim = create_prim("/World/Geometry/box", "Cube")
     UsdPhysics.CollisionAPI.Apply(object_prim)
 
     # create a visual material
-    visual_material_cfg = sim_utils.GlassMdlCfg(glass_ior=1.0, thin_walled=True)
+    visual_material_cfg = GlassMdlCfg(glass_ior=1.0, thin_walled=True)
     visual_material_cfg.func("/World/Looks/glassMaterial", visual_material_cfg)
     # create a physics material
-    physics_material_cfg = sim_utils.RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=1.5, restitution=1.5)
+    physics_material_cfg = RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=1.5, restitution=1.5)
     physics_material_cfg.func("/World/Physics/rubberMaterial", physics_material_cfg)
-    sim_utils.bind_visual_material("/World/Geometry/box", "/World/Looks/glassMaterial")
-    sim_utils.bind_physics_material("/World/Geometry/box", "/World/Physics/rubberMaterial")
+    bind_visual_material("/World/Geometry/box", "/World/Looks/glassMaterial")
+    bind_physics_material("/World/Geometry/box", "/World/Physics/rubberMaterial")
 
     # check the material binding
     material_binding_api = UsdShade.MaterialBindingAPI(object_prim)

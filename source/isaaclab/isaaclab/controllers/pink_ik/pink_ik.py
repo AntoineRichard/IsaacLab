@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from pink import solve_ik
 
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.utils.string import resolve_matching_names_values
 
 from .null_space_posture_task import NullSpacePostureTask

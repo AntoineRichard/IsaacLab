@@ -97,20 +97,22 @@ import torch
 
 import omni.ui as ui
 
-import isaaclab.sim as sim_utils
-from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg, Se3SpaceMouse, Se3SpaceMouseCfg
+from isaaclab.devices.keyboard import Se3Keyboard, Se3KeyboardCfg
+from isaaclab.devices.spacemouse import Se3SpaceMouse, Se3SpaceMouseCfg
 from isaaclab.devices.openxr import remove_camera_configs
 from isaaclab.devices.teleop_device_factory import create_teleop_device
-from isaaclab.envs import DirectRLEnvCfg, ManagerBasedRLEnvCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
 from isaaclab.envs.ui import EmptyWindow
-from isaaclab.managers import DatasetExportMode
+from isaaclab.managers.recorder_manager import DatasetExportMode
 
 import isaaclab_mimic.envs  # noqa: F401
 from isaaclab_mimic.ui.instruction_display import InstructionDisplay, show_subtask_instructions
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import close_stage
 
 # import logger
 logger = logging.getLogger(__name__)
@@ -593,7 +595,7 @@ if __name__ == "__main__":
     main()
     # Close the USD stage and pump the event loop so the viewport widget
     # processes the closure before the app teardown destroys it.
-    sim_utils.close_stage()
+    close_stage()
     simulation_app.update()
     # close sim app
     simulation_app.close()

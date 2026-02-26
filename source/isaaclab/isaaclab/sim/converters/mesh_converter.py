@@ -15,9 +15,7 @@ from pxr import Gf, Tf, Usd, UsdGeom, UsdPhysics, UsdUtils
 from isaaclab.sim.converters.asset_converter_base import AssetConverterBase
 from isaaclab.sim.converters.mesh_converter_cfg import MeshConverterCfg
 from isaaclab.sim.schemas import schemas
-from isaaclab.sim.utils import delete_prim, export_prim_to_file
-
-# import logger
+from isaaclab.sim.utils.prims import delete_prim, export_prim_to_file
 logger = logging.getLogger(__name__)
 
 

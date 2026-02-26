@@ -52,7 +52,7 @@ from omni.kit.viewport.utility import get_viewport_from_window_name
 from omni.kit.viewport.utility.camera_state import ViewportCameraState
 from pxr import Gf, Sdf
 
-from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.math import quat_apply
 

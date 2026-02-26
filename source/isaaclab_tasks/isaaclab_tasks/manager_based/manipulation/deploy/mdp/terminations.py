@@ -14,13 +14,15 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation
-from isaaclab.managers import ManagerTermBase, SceneEntityCfg, TerminationTermCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
     from .events import randomize_gear_type
 

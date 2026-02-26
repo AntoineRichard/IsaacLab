@@ -21,17 +21,20 @@ from packaging.version import Version
 import omni.kit.app
 from isaacsim.core.prims import Articulation
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
-from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.converters.urdf_converter import UrdfConverter
+from isaaclab.sim.converters.urdf_converter_cfg import UrdfConverterCfg
 from isaaclab.utils.version import get_isaac_sim_version
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 # Create a fixture for setup and teardown
 @pytest.fixture
 def sim_config():
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # pin the urdf importer extension to the older version
     manager = omni.kit.app.get_app().get_extension_manager()
     if get_isaac_sim_version() == Version("5.1"):
@@ -104,7 +107,7 @@ def test_create_prim_from_usd(sim_config):
     urdf_converter = UrdfConverter(config)
 
     prim_path = "/World/Robot"
-    sim_utils.create_prim(prim_path, usd_path=urdf_converter.usd_path)
+    create_prim(prim_path, usd_path=urdf_converter.usd_path)
 
     assert sim.stage.GetPrimAtPath(prim_path).IsValid()
 
@@ -128,7 +131,7 @@ def test_config_drive_type(sim_config):
     urdf_converter = UrdfConverter(config)
     # check the drive type of the robot
     prim_path = "/World/Robot"
-    sim_utils.create_prim(prim_path, usd_path=urdf_converter.usd_path)
+    create_prim(prim_path, usd_path=urdf_converter.usd_path)
 
     # access the robot
     robot = Articulation(prim_path, reset_xform_properties=False)

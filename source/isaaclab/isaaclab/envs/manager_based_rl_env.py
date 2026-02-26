@@ -14,7 +14,10 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from isaaclab.managers import CommandManager, CurriculumManager, RewardManager, TerminationManager
+from isaaclab.managers.command_manager import CommandManager
+from isaaclab.managers.curriculum_manager import CurriculumManager
+from isaaclab.managers.reward_manager import RewardManager
+from isaaclab.managers.termination_manager import TerminationManager
 from isaaclab.ui.widgets import ManagerLiveVisualizer
 
 from .common import VecEnvStepReturn

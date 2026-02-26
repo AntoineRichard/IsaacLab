@@ -15,14 +15,14 @@ except ImportError:
     _TELEOP_AVAILABLE = False
     logging.getLogger(__name__).warning("isaaclab_teleop is not installed. XR teleoperation features will be disabled.")
 
-import isaaclab.envs.mdp as base_mdp
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils.configclass import configclass
@@ -36,6 +36,10 @@ from isaaclab_assets.robots.unitree import G1_29DOF_CFG
 from isaaclab_tasks.manager_based.locomanipulation.pick_place.configs.pink_controller_cfg import (  # isort: skip
     G1_UPPER_BODY_IK_ACTION_CFG,
 )
+from isaaclab.envs.mdp.observations import joint_pos, root_pos_w, root_quat_w
+from isaaclab.envs.mdp.terminations import root_height_below_minimum
+from isaaclab.sim.schemas import RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 def _build_g1_upper_body_pipeline():
@@ -251,7 +255,7 @@ class FixedBaseUpperBodyIKG1SceneCfg(InteractiveSceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.55, -0.3], rot=[0.0, 0.0, 0.0, 1.0]),
         spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/PackingTable/packing_table.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
 
@@ -261,7 +265,7 @@ class FixedBaseUpperBodyIKG1SceneCfg(InteractiveSceneCfg):
         spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/pick_place_task/pick_place_assets/steering_wheel.usd",
             scale=(0.75, 0.75, 0.75),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=RigidBodyPropertiesCfg(),
         ),
     )
 
@@ -277,7 +281,7 @@ class FixedBaseUpperBodyIKG1SceneCfg(InteractiveSceneCfg):
     # Lights
     light = AssetBaseCfg(
         prim_path="/World/light",
-        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+        spawn=DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )
 
     def __post_init__(self):
@@ -305,13 +309,13 @@ class ObservationsCfg:
 
         actions = ObsTerm(func=manip_mdp.last_action)
         robot_joint_pos = ObsTerm(
-            func=base_mdp.joint_pos,
+            func=joint_pos,
             params={"asset_cfg": SceneEntityCfg("robot")},
         )
-        robot_root_pos = ObsTerm(func=base_mdp.root_pos_w, params={"asset_cfg": SceneEntityCfg("robot")})
-        robot_root_rot = ObsTerm(func=base_mdp.root_quat_w, params={"asset_cfg": SceneEntityCfg("robot")})
-        object_pos = ObsTerm(func=base_mdp.root_pos_w, params={"asset_cfg": SceneEntityCfg("object")})
-        object_rot = ObsTerm(func=base_mdp.root_quat_w, params={"asset_cfg": SceneEntityCfg("object")})
+        robot_root_pos = ObsTerm(func=root_pos_w, params={"asset_cfg": SceneEntityCfg("robot")})
+        robot_root_rot = ObsTerm(func=root_quat_w, params={"asset_cfg": SceneEntityCfg("robot")})
+        object_pos = ObsTerm(func=root_pos_w, params={"asset_cfg": SceneEntityCfg("object")})
+        object_rot = ObsTerm(func=root_quat_w, params={"asset_cfg": SceneEntityCfg("object")})
         robot_links_state = ObsTerm(func=manip_mdp.get_all_robot_link_state)
 
         left_eef_pos = ObsTerm(func=manip_mdp.get_eef_pos, params={"link_name": "left_wrist_yaw_link"})
@@ -342,7 +346,7 @@ class TerminationsCfg:
     time_out = DoneTerm(func=locomanip_mdp.time_out, time_out=True)
 
     object_dropping = DoneTerm(
-        func=base_mdp.root_height_below_minimum, params={"minimum_height": 0.5, "asset_cfg": SceneEntityCfg("object")}
+        func=root_height_below_minimum, params={"minimum_height": 0.5, "asset_cfg": SceneEntityCfg("object")}
     )
 
     success = DoneTerm(

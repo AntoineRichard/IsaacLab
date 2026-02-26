@@ -8,7 +8,7 @@ from collections.abc import Sequence
 import torch
 
 import isaaclab.utils.math as PoseUtils
-from isaaclab.envs import ManagerBasedRLMimicEnv
+from isaaclab.envs.manager_based_rl_mimic_env import ManagerBasedRLMimicEnv
 
 
 class FrankaCubeStackIKAbsMimicEnv(ManagerBasedRLMimicEnv):

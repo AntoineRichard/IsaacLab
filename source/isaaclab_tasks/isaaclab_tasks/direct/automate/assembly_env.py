@@ -10,9 +10,9 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.envs import DirectRLEnv
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.envs.direct_rl_env import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, retrieve_file_path
 from isaaclab.utils.math import (
@@ -31,6 +31,9 @@ from . import factory_control as fc
 from . import industreal_algo_utils as industreal_algo
 from .assembly_env_cfg import OBS_DIM_CFG, STATE_DIM_CFG, AssemblyEnvCfg
 from .soft_dtw_cuda import SoftDTW
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 class AssemblyEnv(DirectRLEnv):
@@ -253,7 +256,7 @@ class AssemblyEnv(DirectRLEnv):
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(), translation=(0.0, 0.0, -0.4))
 
         # spawn a usd file of a table into the scene
-        cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
+        cfg = UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
         cfg.func(
             "/World/envs/env_.*/Table", cfg, translation=(0.55, 0.0, 0.0), orientation=(0.0, 0.0, 0.70711, 0.70711)
         )
@@ -270,7 +273,7 @@ class AssemblyEnv(DirectRLEnv):
         self.scene.rigid_objects["held_asset"] = self._held_asset
 
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _compute_intermediate_values(self, dt):
@@ -843,7 +846,7 @@ class AssemblyEnv(DirectRLEnv):
         import carb
 
         # Disable gravity.
-        physics_sim_view = sim_utils.SimulationContext.instance().physics_sim_view
+        physics_sim_view = SimulationContext.instance().physics_sim_view
         physics_sim_view.set_gravity(carb.Float3(0.0, 0.0, 0.0))
 
         self.randomize_fixed_initial_state(env_ids)

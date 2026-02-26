@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from isaaclab.sensors.frame_transformer import BaseFrameTransformerData
+from isaaclab.sensors.frame_transformer.base_frame_transformer_data import BaseFrameTransformerData
 
 from isaaclab_physx.sensors.kernels import concat_pos_and_quat_to_pose_1d_kernel, concat_pos_and_quat_to_pose_kernel
 

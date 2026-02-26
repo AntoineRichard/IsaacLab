@@ -9,7 +9,7 @@ from collections.abc import Sequence
 import torch
 
 import isaaclab.utils.math as PoseUtils
-from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def optional_method(func):

@@ -84,7 +84,10 @@ simulation_app = app_launcher.app
 
 import os
 
-from isaaclab.sim.converters import MeshConverter, MeshConverterCfg, UrdfConverter, UrdfConverterCfg
+from isaaclab.sim.converters.mesh_converter import MeshConverter
+from isaaclab.sim.converters.mesh_converter_cfg import MeshConverterCfg
+from isaaclab.sim.converters.urdf_converter import UrdfConverter
+from isaaclab.sim.converters.urdf_converter_cfg import UrdfConverterCfg
 from isaaclab.sim.schemas import schemas_cfg
 
 

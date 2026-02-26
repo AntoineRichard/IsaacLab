@@ -23,11 +23,8 @@ from isaaclab_teleop.deprecated.openxr.retargeters import GripperRetargeterCfg, 
 from isaaclab_teleop.deprecated.teleop_device_factory import create_teleop_device
 
 # Import device classes to test
-from isaaclab.devices import (
-    DeviceCfg,
-    Se3Keyboard,
-    Se3KeyboardCfg,
-)
+from isaaclab.devices.device_base import DeviceCfg
+from isaaclab.devices.keyboard import Se3Keyboard, Se3KeyboardCfg
 
 
 @pytest.fixture
@@ -119,9 +116,8 @@ def test_openxr_constructors(mock_environment, mocker):
     mock_prim = mocker.MagicMock()
     mock_prim.IsValid.return_value = False
     mock_stage.GetPrimAtPath.return_value = mock_prim
-    mocker.patch.object(device_mod, "sim_utils", mocker.MagicMock())
-    device_mod.sim_utils.get_current_stage.return_value = mock_stage
-    device_mod.sim_utils.create_prim.return_value = None
+    mocker.patch.object(device_mod, "get_current_stage", return_value=mock_stage)
+    mocker.patch.object(device_mod, "create_prim", return_value=None)
 
     device = OpenXRDevice(config)
     assert device._xr_cfg == xr_cfg
@@ -184,9 +180,8 @@ def test_create_teleop_device_with_callbacks(mock_environment, mocker):
     mock_prim = mocker.MagicMock()
     mock_prim.IsValid.return_value = False
     mock_stage.GetPrimAtPath.return_value = mock_prim
-    mocker.patch.object(device_mod, "sim_utils", mocker.MagicMock())
-    device_mod.sim_utils.get_current_stage.return_value = mock_stage
-    device_mod.sim_utils.create_prim.return_value = None
+    mocker.patch.object(device_mod, "get_current_stage", return_value=mock_stage)
+    mocker.patch.object(device_mod, "create_prim", return_value=None)
 
     device = create_teleop_device("test_xr", devices_cfg, callbacks)
 
@@ -219,9 +214,8 @@ def test_create_teleop_device_with_retargeters(mock_environment, mocker):
     mock_prim = mocker.MagicMock()
     mock_prim.IsValid.return_value = False
     mock_stage.GetPrimAtPath.return_value = mock_prim
-    mocker.patch.object(device_mod, "sim_utils", mocker.MagicMock())
-    device_mod.sim_utils.get_current_stage.return_value = mock_stage
-    device_mod.sim_utils.create_prim.return_value = None
+    mocker.patch.object(device_mod, "get_current_stage", return_value=mock_stage)
+    mocker.patch.object(device_mod, "create_prim", return_value=None)
 
     device = create_teleop_device("test_xr", devices_cfg)
 

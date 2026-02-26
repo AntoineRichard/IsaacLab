@@ -42,7 +42,9 @@ import torch
 from rl_games.common import env_configurations
 from rl_games.common.vecenv import IVecEnv
 
-from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv, VecEnvObs
+from isaaclab.envs.common import VecEnvObs
+from isaaclab.envs.direct_rl_env import DirectRLEnv
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 """
 Vectorized environment wrapper.

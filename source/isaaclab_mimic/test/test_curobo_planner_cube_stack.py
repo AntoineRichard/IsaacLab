@@ -30,7 +30,8 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
 from isaaclab.envs.manager_based_env import ManagerBasedEnv
 from isaaclab.markers import FRAME_MARKER_CFG, VisualizationMarkers
 

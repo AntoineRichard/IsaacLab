@@ -17,23 +17,27 @@ from packaging.version import Version
 
 import omni.kit.app
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.version import get_isaac_sim_version
+from isaaclab.sim.converters.urdf_converter_cfg import UrdfConverterCfg
+from isaaclab.sim.schemas import RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UrdfFileCfg, UsdFileCfg, UsdFileWithCompliantContactCfg
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 
 @pytest.fixture
 def sim():
     """Create a blank new stage for each test."""
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Simulation time-step
     dt = 0.1
     # Load kit helper
     sim = SimulationContext(SimulationCfg(dt=dt))
     # Wait for spawning
-    sim_utils.update_stage()
+    update_stage()
 
     yield sim
 
@@ -46,7 +50,7 @@ def sim():
 def test_spawn_usd(sim):
     """Test loading prim from Usd file."""
     # Spawn cone
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda_instanceable.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda_instanceable.usd")
     prim = cfg.func("/World/Franka", cfg)
     # Check validity
     assert prim.IsValid()
@@ -58,7 +62,7 @@ def test_spawn_usd(sim):
 def test_spawn_usd_fails(sim):
     """Test loading prim from Usd file fails when asset usd path is invalid."""
     # Spawn cone
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda2_instanceable.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda2_instanceable.usd")
 
     with pytest.raises(FileNotFoundError):
         cfg.func("/World/Franka", cfg)
@@ -78,11 +82,11 @@ def test_spawn_urdf(sim):
     extension_id = manager.get_enabled_extension_id(pinned_urdf_extension_name)
     extension_path = manager.get_extension_path(extension_id)
     # Spawn franka from URDF
-    cfg = sim_utils.UrdfFileCfg(
+    cfg = UrdfFileCfg(
         asset_path=f"{extension_path}/data/urdf/robots/franka_description/robots/panda_arm_hand.urdf",
         fix_base=True,
-        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=None, damping=None)
+        joint_drive=UrdfConverterCfg.JointDriveCfg(
+            gains=UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=None, damping=None)
         ),
     )
     prim = cfg.func("/World/Franka", cfg)
@@ -96,7 +100,7 @@ def test_spawn_urdf(sim):
 def test_spawn_ground_plane(sim):
     """Test loading prim for the ground plane from grid world USD."""
     # Spawn ground plane
-    cfg = sim_utils.GroundPlaneCfg(color=(0.1, 0.1, 0.1), size=(10.0, 10.0))
+    cfg = GroundPlaneCfg(color=(0.1, 0.1, 0.1), size=(10.0, 10.0))
     prim = cfg.func("/World/ground_plane", cfg)
     # Check validity
     assert prim.IsValid()
@@ -111,9 +115,9 @@ def test_spawn_usd_with_compliant_contact_material(sim):
     usd_file_path = f"{ISAACLAB_NUCLEUS_DIR}/TacSL/gelsight_r15_finger/gelsight_r15_finger.usd"
 
     # Create spawn configuration
-    spawn_cfg = sim_utils.UsdFileWithCompliantContactCfg(
+    spawn_cfg = UsdFileWithCompliantContactCfg(
         usd_path=usd_file_path,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
+        rigid_props=RigidBodyPropertiesCfg(disable_gravity=True),
         compliant_contact_stiffness=1000.0,
         compliant_contact_damping=100.0,
         physics_material_prim_path="elastomer",
@@ -145,9 +149,9 @@ def test_spawn_usd_with_compliant_contact_material_on_multiple_prims(sim):
     usd_file_path = f"{ISAACLAB_NUCLEUS_DIR}/TacSL/gelsight_r15_finger/gelsight_r15_finger.usd"
 
     # Create spawn configuration
-    spawn_cfg = sim_utils.UsdFileWithCompliantContactCfg(
+    spawn_cfg = UsdFileWithCompliantContactCfg(
         usd_path=usd_file_path,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
+        rigid_props=RigidBodyPropertiesCfg(disable_gravity=True),
         compliant_contact_stiffness=1000.0,
         compliant_contact_damping=100.0,
         physics_material_prim_path=["elastomer", "gelsight_finger"],
@@ -181,9 +185,9 @@ def test_spawn_usd_with_compliant_contact_material_no_prim_path(sim):
     usd_file_path = f"{ISAACLAB_NUCLEUS_DIR}/TacSL/gelsight_r15_finger/gelsight_r15_finger.usd"
 
     # Create spawn configuration without physics material prim path
-    spawn_cfg = sim_utils.UsdFileWithCompliantContactCfg(
+    spawn_cfg = UsdFileWithCompliantContactCfg(
         usd_path=usd_file_path,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
+        rigid_props=RigidBodyPropertiesCfg(disable_gravity=True),
         compliant_contact_stiffness=1000.0,
         compliant_contact_damping=100.0,
         physics_material_prim_path=None,

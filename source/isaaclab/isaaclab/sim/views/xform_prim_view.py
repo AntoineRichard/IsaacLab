@@ -15,8 +15,10 @@ import warp as wp
 import carb
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
-import isaaclab.sim as sim_utils
 from isaaclab.utils.warp import fabric as fabric_utils
+from isaaclab.sim.utils.queries import find_matching_prims
+from isaaclab.sim.utils.stage import get_current_stage, get_current_stage_id
+from isaaclab.sim.utils.transforms import standardize_xform_ops, validate_standard_xform_ops
 
 logger = logging.getLogger(__name__)
 
@@ -122,18 +124,18 @@ class XformPrimView:
         self._device = device
 
         # Find and validate matching prims
-        stage = sim_utils.get_current_stage() if stage is None else stage
-        self._prims: list[Usd.Prim] = sim_utils.find_matching_prims(prim_path, stage=stage)
+        stage = get_current_stage() if stage is None else stage
+        self._prims: list[Usd.Prim] = find_matching_prims(prim_path, stage=stage)
 
         # Validate all prims have standard xform operations
         if validate_xform_ops:
             for prim in self._prims:
-                sim_utils.standardize_xform_ops(prim)
-                if not sim_utils.validate_standard_xform_ops(prim):
+                standardize_xform_ops(prim)
+                if not validate_standard_xform_ops(prim):
                     raise ValueError(
                         f"Prim at path '{prim.GetPath().pathString}' is not a xformable prim with standard transform"
                         f" operations [translate, orient, scale]. Received type: '{prim.GetTypeName()}'."
-                        " Use sim_utils.standardize_xform_ops() to prepare the prim."
+                        " Use standardize_xform_ops() to prepare the prim."
                     )
 
         # Determine if Fabric is supported on the device
@@ -977,7 +979,7 @@ class XformPrimView:
         from usdrt import Rt
 
         # Get USDRT (Fabric) stage
-        stage_id = sim_utils.get_current_stage_id()
+        stage_id = get_current_stage_id()
         fabric_stage = usdrt.Usd.Stage.Attach(stage_id)
 
         # Step 1: Ensure all prims have Fabric hierarchy attributes

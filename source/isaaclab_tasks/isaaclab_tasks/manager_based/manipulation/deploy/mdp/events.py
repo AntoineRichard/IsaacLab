@@ -14,13 +14,16 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.managers import EventTermCfg, ManagerTermBase, SceneEntityCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.manager_term_cfg import EventTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 from isaaclab_tasks.direct.automate import factory_control as fc
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 class randomize_gear_type(ManagerTermBase):

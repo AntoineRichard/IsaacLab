@@ -6,17 +6,19 @@
 
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
-from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
 from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from isaaclab_assets.robots.allegro import ALLEGRO_HAND_CFG
+from isaaclab.sim.schemas import MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 
 @configclass
@@ -72,9 +74,9 @@ class AllegroHandEnvCfg(DirectRLEnvCfg):
     # in-hand object
     object_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/object",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
                 disable_gravity=False,
                 enable_gyroscopic_forces=True,
@@ -84,7 +86,7 @@ class AllegroHandEnvCfg(DirectRLEnvCfg):
                 stabilization_threshold=0.0025,
                 max_depenetration_velocity=1000.0,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(density=400.0),
+            mass_props=MassPropertiesCfg(density=400.0),
             scale=(1.2, 1.2, 1.2),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.17, 0.56), rot=(0.0, 0.0, 0.0, 1.0)),
@@ -93,7 +95,7 @@ class AllegroHandEnvCfg(DirectRLEnvCfg):
     goal_object_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/goal_marker",
         markers={
-            "goal": sim_utils.UsdFileCfg(
+            "goal": UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
                 scale=(1.2, 1.2, 1.2),
             )

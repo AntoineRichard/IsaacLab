@@ -17,28 +17,30 @@ import warp as wp
 
 from pxr import Sdf
 
-import isaaclab.sim as sim_utils
-from isaaclab import cloner
-from isaaclab.assets import (
-    Articulation,
-    ArticulationCfg,
-    AssetBaseCfg,
-    RigidObject,
-    RigidObjectCfg,
-    RigidObjectCollection,
-    RigidObjectCollectionCfg,
-)
-from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg, SensorBase, SensorBaseCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.assets.rigid_object_collection.rigid_object_collection import RigidObjectCollection
+from isaaclab.assets.rigid_object_collection.rigid_object_collection_cfg import RigidObjectCollectionCfg
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
+from isaaclab.sensors.sensor_base import SensorBase
+from isaaclab.sensors.sensor_base_cfg import SensorBaseCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.sim.utils.stage import get_current_stage, get_current_stage_id
 from isaaclab.sim.views import XformPrimView
-from isaaclab.terrains import TerrainImporter, TerrainImporterCfg
-
-# Note: This is a temporary import for the VisuoTactileSensorCfg class.
+from isaaclab.terrains.terrain_importer import TerrainImporter
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 # It will be removed once the VisuoTactileSensor class is added to the core Isaac Lab framework.
 from isaaclab_contrib.sensors.tacsl_sensor import VisuoTactileSensorCfg
 
 from .interactive_scene_cfg import InteractiveSceneCfg
+from isaaclab.cloner.cloner_cfg import TemplateCloneCfg
+from isaaclab.cloner.cloner_utils import clone_from_template, filter_collisions, grid_transforms, usd_replicate
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.utils.queries import find_matching_prim_paths
 
 # import logger
 logger = logging.getLogger(__name__)
@@ -154,7 +156,7 @@ class InteractiveScene:
         # prepare cloner for environment replication
         self.env_prim_paths = [f"{self.env_ns}/env_{i}" for i in range(self.cfg.num_envs)]
 
-        self.cloner_cfg = cloner.TemplateCloneCfg(
+        self.cloner_cfg = TemplateCloneCfg(
             clone_regex=self.env_regex_ns,
             clone_in_fabric=self.cfg.clone_in_fabric,
             device=self.device,
@@ -167,9 +169,9 @@ class InteractiveScene:
         self.env_fmt = self.env_regex_ns.replace(".*", "{}")
         # allocate env indices
         self._ALL_INDICES = torch.arange(self.cfg.num_envs, dtype=torch.long, device=self.device)
-        self._default_env_origins, _ = cloner.grid_transforms(self.num_envs, self.cfg.env_spacing, device=self.device)
+        self._default_env_origins, _ = grid_transforms(self.num_envs, self.cfg.env_spacing, device=self.device)
         # copy empty prim of env_0 to env_1, env_2, ..., env_{num_envs-1} with correct location.
-        cloner.usd_replicate(
+        usd_replicate(
             self.stage, [self.env_fmt.format(0)], [self.env_fmt], self._ALL_INDICES, positions=self._default_env_origins
         )
 
@@ -196,7 +198,7 @@ class InteractiveScene:
 
         if self._is_scene_setup_from_cfg():
             self.cloner_cfg.clone_physics = not copy_from_source
-            cloner.clone_from_template(self.stage, num_clones=self.num_envs, template_clone_cfg=self.cloner_cfg)
+            clone_from_template(self.stage, num_clones=self.num_envs, template_clone_cfg=self.cloner_cfg)
         else:
             mapping = torch.ones((1, self.num_envs), device=self.device, dtype=torch.bool)
             replicate_args = [self.env_fmt.format(0)], [self.env_fmt], self._ALL_INDICES, mapping
@@ -204,7 +206,7 @@ class InteractiveScene:
             if not copy_from_source:
                 # skip physx cloning, this means physx will walk and parse the stage one by one faithfully
                 self.cloner_cfg.physics_clone_fn(self.stage, *replicate_args, device=self.cloner_cfg.device)
-            cloner.usd_replicate(self.stage, *replicate_args, positions=self._default_env_origins)
+            usd_replicate(self.stage, *replicate_args, positions=self._default_env_origins)
 
     def filter_collisions(self, global_prim_paths: list[str] | None = None):
         """Filter environments collisions.
@@ -232,7 +234,7 @@ class InteractiveScene:
             self._global_prim_paths += global_prim_paths
 
         # filter collisions within each environment instance
-        cloner.filter_collisions(
+        filter_collisions(
             self.stage,
             self.physics_scene_path,
             "/World/collisions",
@@ -270,12 +272,12 @@ class InteractiveScene:
     @property
     def physics_dt(self) -> float:
         """The physics timestep of the scene."""
-        return sim_utils.SimulationContext.instance().get_physics_dt()  # pyright: ignore [reportOptionalMemberAccess]
+        return SimulationContext.instance().get_physics_dt()  # pyright: ignore [reportOptionalMemberAccess]
 
     @property
     def device(self) -> str:
         """The device on which the scene is created."""
-        return sim_utils.SimulationContext.instance().device  # pyright: ignore [reportOptionalMemberAccess]
+        return SimulationContext.instance().device  # pyright: ignore [reportOptionalMemberAccess]
 
     @property
     def env_ns(self) -> str:
@@ -719,7 +721,7 @@ class InteractiveScene:
                 self._rigid_object_collections[asset_name] = asset_cfg.class_type(asset_cfg)
                 for rigid_object_cfg in asset_cfg.rigid_objects.values():
                     if hasattr(rigid_object_cfg, "collision_group") and rigid_object_cfg.collision_group == -1:
-                        asset_paths = sim_utils.find_matching_prim_paths(rigid_object_cfg.prim_path)
+                        asset_paths = find_matching_prim_paths(rigid_object_cfg.prim_path)
                         self._global_prim_paths += asset_paths
             elif isinstance(asset_cfg, SurfaceGripperCfg):
                 # add surface grippers to scene
@@ -767,7 +769,7 @@ class InteractiveScene:
 
             # store global collision paths
             if hasattr(asset_cfg, "collision_group") and asset_cfg.collision_group == -1:
-                asset_paths = sim_utils.find_matching_prim_paths(asset_cfg.prim_path)
+                asset_paths = find_matching_prim_paths(asset_cfg.prim_path)
                 self._global_prim_paths += asset_paths
 
     def _resolve_sensor_template_spawn_path(self, template_base: str, proto_id: str) -> str:
@@ -803,5 +805,5 @@ class InteractiveScene:
         search = (
             f"{template_root}/{asset}/{proto_id}_.*/{parent}" if parent else f"{template_root}/{asset}/{proto_id}_.*"
         )
-        found = sim_utils.find_matching_prim_paths(search)
+        found = find_matching_prim_paths(search)
         return f"{found[0]}/{leaf}" if found else f"{template_base}/{proto_id}_.*"

@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.manager_term_cfg import RewardTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.sensors.frame_transformer.frame_transformer import FrameTransformer
 from isaaclab.utils.math import combine_frame_transforms
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
     from .events import randomize_gear_type
 

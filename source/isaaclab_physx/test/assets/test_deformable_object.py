@@ -24,9 +24,12 @@ import warp as wp
 from flaky import flaky
 from isaaclab_physx.assets import DeformableObject, DeformableObjectCfg
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.sim import build_simulation_context
+from isaaclab.sim.simulation_context import build_simulation_context
+from isaaclab.sim.schemas import CollisionPropertiesCfg, DeformableBodyPropertiesCfg
+from isaaclab.sim.spawners.materials import DeformableBodyMaterialCfg
+from isaaclab.sim.spawners.meshes import MeshCuboidCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def generate_cubes_scene(
@@ -57,25 +60,25 @@ def generate_cubes_scene(
     origins = torch.tensor([(i * 1.0, 0, height) for i in range(num_cubes)]).to(device)
     # Create Top-level Xforms, one for each cube
     for i, origin in enumerate(origins):
-        sim_utils.create_prim(f"/World/Table_{i}", "Xform", translation=origin)
+        create_prim(f"/World/Table_{i}", "Xform", translation=origin)
 
     # Resolve spawn configuration
     if has_api:
-        spawn_cfg = sim_utils.MeshCuboidCfg(
+        spawn_cfg = MeshCuboidCfg(
             size=(0.2, 0.2, 0.2),
-            deformable_props=sim_utils.DeformableBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
+            deformable_props=DeformableBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
         )
         # Add physics material if provided
         if material_path is not None:
-            spawn_cfg.physics_material = sim_utils.DeformableBodyMaterialCfg()
+            spawn_cfg.physics_material = DeformableBodyMaterialCfg()
             spawn_cfg.physics_material_path = material_path
         else:
             spawn_cfg.physics_material = None
     else:
         # since no deformable body properties defined, this is just a static collider
-        spawn_cfg = sim_utils.MeshCuboidCfg(
+        spawn_cfg = MeshCuboidCfg(
             size=(0.2, 0.2, 0.2),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            collision_props=CollisionPropertiesCfg(),
         )
     # Create deformable object
     cube_object_cfg = DeformableObjectCfg(

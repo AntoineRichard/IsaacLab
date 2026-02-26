@@ -18,10 +18,11 @@ enable_extension("isaacsim.robot_motion.motion_generation")
 from isaacsim.robot_motion.motion_generation import ArticulationMotionPolicy
 from isaacsim.robot_motion.motion_generation.lula.motion_policies import RmpFlow, RmpFlowSmoothed
 
-import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import retrieve_file_path
 
 from .rmp_flow_cfg import RmpFlowControllerCfg  # noqa: F401
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.utils.queries import find_matching_prim_paths
 
 _RMPFLOW_EXT_PREFIX = "rmpflow_ext:"
 _RMPFLOW_EXT_NAME = "isaacsim.robot_motion.motion_generation"
@@ -78,9 +79,9 @@ class RmpFlowController:
             prim_paths_expr: The expression to find the articulation prim paths.
         """
         # obtain the simulation time
-        physics_dt = sim_utils.SimulationContext.instance().get_physics_dt()
+        physics_dt = SimulationContext.instance().get_physics_dt()
         # find all prims
-        self._prim_paths = sim_utils.find_matching_prim_paths(prim_paths_expr)
+        self._prim_paths = find_matching_prim_paths(prim_paths_expr)
         self.num_robots = len(self._prim_paths)
         # resolve controller
         if self.cfg.name == "rmp_flow":

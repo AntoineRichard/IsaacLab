@@ -47,10 +47,10 @@ import gymnasium as gym
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 # Test environment - use Cartpole as it's simple and fast
 TEST_ENV = "Isaac-Cartpole-v0"
@@ -67,7 +67,7 @@ def _create_env(sim_device: str):
         Initialized gym environment
     """
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Reset the rtx sensors setting to False
     from isaaclab.app.settings_manager import get_settings_manager
 

@@ -17,12 +17,12 @@ import warp as wp
 
 from pxr import Usd, UsdGeom, UsdPhysics
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.sensors.camera import Camera, TiledCamera
+from isaaclab.sensors.camera.camera import Camera
+from isaaclab.sensors.camera.tiled_camera import TiledCamera
 from isaaclab.sensors.sensor_base import SensorBase
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.math import quat_apply, quat_inv
 
 from .visuotactile_render import GelsightRender
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from .visuotactile_sensor_cfg import VisuoTactileSensorCfg
 
 import trimesh
+from isaaclab.sim.utils.queries import find_first_matching_prim, get_first_matching_child_prim
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +361,7 @@ class VisuoTactileSensor(SensorBase):
             If no SDF mesh is found, the method will log a warning and return None.
         """
         # Find the contact object prim using the configured pattern
-        contact_object_prim = sim_utils.find_first_matching_prim(self.cfg.contact_object_prim_path_expr)
+        contact_object_prim = find_first_matching_prim(self.cfg.contact_object_prim_path_expr)
         if contact_object_prim is None:
             raise RuntimeError(
                 f"No contact object prim found matching pattern: {self.cfg.contact_object_prim_path_expr}"
@@ -374,7 +375,7 @@ class VisuoTactileSensor(SensorBase):
             )
 
         # Find the SDF mesh within the contact object
-        contact_object_mesh = sim_utils.get_first_matching_child_prim(
+        contact_object_mesh = get_first_matching_child_prim(
             contact_object_prim.GetPath(), predicate=is_sdf_mesh
         )
         if contact_object_mesh is None:
@@ -422,7 +423,7 @@ class VisuoTactileSensor(SensorBase):
             """Check if a mesh prim has visual properties (visual mesh, not collision mesh)."""
             return prim.IsA(UsdGeom.Mesh) and not prim.HasAPI(UsdPhysics.CollisionAPI)
 
-        elastomer_mesh_prim = sim_utils.get_first_matching_child_prim(elastomer_prim_path, predicate=is_visual_mesh)
+        elastomer_mesh_prim = get_first_matching_child_prim(elastomer_prim_path, predicate=is_visual_mesh)
         if elastomer_mesh_prim is None:
             raise RuntimeError(f"No visual mesh found under elastomer at path: {elastomer_prim_path}")
 

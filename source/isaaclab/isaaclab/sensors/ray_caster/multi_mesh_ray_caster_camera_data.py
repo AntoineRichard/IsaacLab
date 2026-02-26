@@ -7,7 +7,7 @@
 
 import torch
 
-from isaaclab.sensors.camera import CameraData
+from isaaclab.sensors.camera.camera_data import CameraData
 
 from .ray_caster_data import RayCasterData
 

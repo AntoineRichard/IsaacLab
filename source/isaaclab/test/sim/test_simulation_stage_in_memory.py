@@ -23,10 +23,22 @@ import omni.usd
 import usdrt
 from isaacsim.core.cloner import GridCloner
 
-import isaaclab.sim as sim_utils
 from isaaclab.sim.simulation_context import SimulationCfg, SimulationContext
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.version import get_isaac_sim_version
+from isaaclab.sim.schemas import (
+    ArticulationRootPropertiesCfg,
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.spawners.materials import MdlFileCfg, PreviewSurfaceCfg, RigidBodyMaterialCfg
+from isaaclab.sim.spawners.meshes import MeshCuboidCfg
+from isaaclab.sim.spawners.shapes import ConeCfg, SphereCfg
+from isaaclab.sim.spawners.wrappers import MultiAssetSpawnerCfg, MultiUsdFileCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.queries import find_matching_prim_paths
+from isaaclab.sim.utils.stage import get_current_stage_id, is_current_stage_in_memory, update_stage, use_stage
 
 
 @pytest.fixture
@@ -34,7 +46,7 @@ def sim():
     """Create a simulation context."""
     cfg = SimulationCfg(create_stage_in_memory=True)
     sim = SimulationContext(cfg=cfg)
-    sim_utils.update_stage()
+    update_stage()
     yield sim
     omni.physx.get_physx_simulation_interface().detach_stage()
     sim.stop()
@@ -55,40 +67,40 @@ def test_stage_in_memory_with_shapes(sim):
 
     # grab stage in memory and set as current stage via the with statement
     stage_in_memory = sim.stage
-    with sim_utils.use_stage(stage_in_memory):
+    with use_stage(stage_in_memory):
         # create parent prim for shape prototypes
-        sim_utils.create_prim("/World/Cone", "Xform")
+        create_prim("/World/Cone", "Xform")
         num_shape_prototypes = 3
 
-        cfg = sim_utils.MultiAssetSpawnerCfg(
+        cfg = MultiAssetSpawnerCfg(
             assets_cfg=[
-                sim_utils.ConeCfg(
+                ConeCfg(
                     radius=0.3,
                     height=0.6,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
-                    physics_material=sim_utils.RigidBodyMaterialCfg(
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+                    physics_material=RigidBodyMaterialCfg(
                         friction_combine_mode="multiply",
                         restitution_combine_mode="multiply",
                         static_friction=1.0,
                         dynamic_friction=1.0,
                     ),
                 ),
-                sim_utils.MeshCuboidCfg(
+                MeshCuboidCfg(
                     size=(0.3, 0.3, 0.3),
-                    visual_material=sim_utils.MdlFileCfg(
+                    visual_material=MdlFileCfg(
                         mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
                         project_uvw=True,
                         texture_scale=(0.25, 0.25),
                     ),
                 ),
-                sim_utils.SphereCfg(
+                SphereCfg(
                     radius=0.3,
-                    visual_material=sim_utils.MdlFileCfg(
+                    visual_material=MdlFileCfg(
                         mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
                         project_uvw=True,
                         texture_scale=(0.25, 0.25),
                     ),
-                    physics_material=sim_utils.RigidBodyMaterialCfg(
+                    physics_material=RigidBodyMaterialCfg(
                         friction_combine_mode="multiply",
                         restitution_combine_mode="multiply",
                         static_friction=1.0,
@@ -97,24 +109,24 @@ def test_stage_in_memory_with_shapes(sim):
                 ),
             ],
             random_choice=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            collision_props=CollisionPropertiesCfg(),
         )
         prim_path_regex = "/World/Cone/asset_.*"
         cfg.func(prim_path_regex, cfg)
 
         # verify prims exist in stage
-        prims = sim_utils.find_matching_prim_paths(prim_path_regex)
+        prims = find_matching_prim_paths(prim_path_regex)
         assert len(prims) == num_shape_prototypes
 
     # verify stage is no longer in memory
-    assert not sim_utils.is_current_stage_in_memory()
+    assert not is_current_stage_in_memory()
 
     # verify prims now exist in context stage
-    prims = sim_utils.find_matching_prim_paths(prim_path_regex)
+    prims = find_matching_prim_paths(prim_path_regex)
     assert len(prims) == num_shape_prototypes
 
 
@@ -133,18 +145,18 @@ def test_stage_in_memory_with_usds(sim):
     ]
 
     # verify stage is attached to USD context (happens automatically now with create_stage_in_memory)
-    assert not sim_utils.is_current_stage_in_memory()
+    assert not is_current_stage_in_memory()
 
     # grab stage and set as current stage via the with statement
     stage_in_memory = sim.stage
-    with sim_utils.use_stage(stage_in_memory):
+    with use_stage(stage_in_memory):
         # create parent prim for robot prototypes
-        sim_utils.create_prim("/World/Robot", "Xform")
+        create_prim("/World/Robot", "Xform")
 
-        cfg = sim_utils.MultiUsdFileCfg(
+        cfg = MultiUsdFileCfg(
             usd_path=usd_paths,
             random_choice=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 retain_accelerations=False,
                 linear_damping=0.0,
@@ -153,7 +165,7 @@ def test_stage_in_memory_with_usds(sim):
                 max_angular_velocity=1000.0,
                 max_depenetration_velocity=1.0,
             ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_props=ArticulationRootPropertiesCfg(
                 enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
             activate_contact_sensors=True,
@@ -162,14 +174,14 @@ def test_stage_in_memory_with_usds(sim):
         cfg.func(prim_path_regex, cfg)
 
         # verify prims exist in stage
-        prims = sim_utils.find_matching_prim_paths(prim_path_regex)
+        prims = find_matching_prim_paths(prim_path_regex)
         assert len(prims) == num_robot_prototypes
 
     # verify stage is no longer in memory
-    assert not sim_utils.is_current_stage_in_memory()
+    assert not is_current_stage_in_memory()
 
     # verify prims now exist in context stage
-    prims = sim_utils.find_matching_prim_paths(prim_path_regex)
+    prims = find_matching_prim_paths(prim_path_regex)
     assert len(prims) == num_robot_prototypes
 
 
@@ -185,11 +197,11 @@ def test_stage_in_memory_with_clone_in_fabric(sim):
     num_clones = 100
 
     # verify stage is attached to USD context (happens automatically now with create_stage_in_memory)
-    assert not sim_utils.is_current_stage_in_memory()
+    assert not is_current_stage_in_memory()
 
     # grab stage and set as current stage via the with statement
     stage_in_memory = sim.stage
-    with sim_utils.use_stage(stage_in_memory):
+    with use_stage(stage_in_memory):
         # set up paths
         base_env_path = "/World/envs"
         source_prim_path = f"{base_env_path}/env_0"
@@ -199,7 +211,7 @@ def test_stage_in_memory_with_clone_in_fabric(sim):
         cloner.define_base_env(base_env_path)
 
         # create source prim
-        sim_utils.create_prim(f"{source_prim_path}/Robot", "Xform", usd_path=usd_path)
+        create_prim(f"{source_prim_path}/Robot", "Xform", usd_path=usd_path)
 
         # generate target paths
         target_paths = cloner.generate_paths("/World/envs/env", num_clones)
@@ -213,7 +225,7 @@ def test_stage_in_memory_with_clone_in_fabric(sim):
         )
 
     # verify prims exist in fabric stage using usdrt apis
-    stage_id = sim_utils.get_current_stage_id()
+    stage_id = get_current_stage_id()
     usdrt_stage = usdrt.Usd.Stage.Attach(stage_id)
     for i in range(num_clones):
         prim = usdrt_stage.GetPrimAtPath(f"/World/envs/env_{i}/Robot")

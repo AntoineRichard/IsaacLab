@@ -34,11 +34,21 @@ simulation_app = app_launcher.app
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObject, RigidObjectCfg
-from isaaclab.sensors.ray_caster import RayCaster, RayCasterCfg, patterns
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.sensors.ray_caster.ray_caster import RayCaster
+from isaaclab.sensors.ray_caster.ray_caster_cfg import RayCasterCfg
+from isaaclab.sensors.ray_caster import patterns
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.timer import Timer
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def define_sensor() -> RayCaster:
@@ -60,26 +70,26 @@ def design_scene() -> dict:
     """Design the scene."""
     # Populate scene
     # -- Rough terrain
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd")
     cfg.func("/World/ground", cfg)
     # -- Light
-    cfg = sim_utils.DistantLightCfg(intensity=2000)
+    cfg = DistantLightCfg(intensity=2000)
     cfg.func("/World/light", cfg)
 
     # Create separate groups called "Origin1", "Origin2", "Origin3"
     # Each group will have a robot in it
     origins = [[0.25, 0.25, 0.0], [-0.25, 0.25, 0.0], [0.25, -0.25, 0.0], [-0.25, -0.25, 0.0]]
     for i, origin in enumerate(origins):
-        sim_utils.create_prim(f"/World/Origin{i}", "Xform", translation=origin)
+        create_prim(f"/World/Origin{i}", "Xform", translation=origin)
     # -- Balls
     cfg = RigidObjectCfg(
         prim_path="/World/Origin.*/ball",
-        spawn=sim_utils.SphereCfg(
+        spawn=SphereCfg(
             radius=0.25,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=0.5),
+            collision_props=CollisionPropertiesCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
         ),
     )
     balls = RigidObject(cfg)
@@ -91,7 +101,7 @@ def design_scene() -> dict:
     return scene_entities
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
+def run_simulator(sim: SimulationContext, scene_entities: dict):
     """Run the simulator."""
     # Extract scene_entities for simplified notation
     ray_caster: RayCaster = scene_entities["ray_caster"]
@@ -129,8 +139,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
 def main():
     """Main function."""
     # Load simulation context
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([0.0, 15.0, 15.0], [0.0, 0.0, -2.5])
     # Design scene

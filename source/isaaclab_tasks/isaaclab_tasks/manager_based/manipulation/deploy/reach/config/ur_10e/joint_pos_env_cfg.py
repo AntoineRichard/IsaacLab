@@ -5,7 +5,7 @@
 
 import math
 
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg, OffsetCfg
 from isaaclab.utils.configclass import configclass

@@ -26,12 +26,14 @@ import h5py
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.envs import ManagerBasedEnv, ManagerBasedEnvCfg
-from isaaclab.managers import DatasetExportMode, RecorderManager, RecorderManagerBaseCfg, RecorderTerm, RecorderTermCfg
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.envs.manager_based_env_cfg import ManagerBasedEnvCfg
+from isaaclab.managers.manager_term_cfg import RecorderTermCfg
+from isaaclab.managers.recorder_manager import DatasetExportMode, RecorderManager, RecorderManagerBaseCfg, RecorderTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.configclass import configclass
+from isaaclab.sim.utils.stage import create_new_stage
 
 if TYPE_CHECKING:
     import numpy as np
@@ -267,7 +269,7 @@ def test_close(device, dataset_dir):
     """Test whether data is correctly exported in the close function when fully integrated with ManagerBasedEnv and
     `export_in_close` is True."""
     # create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # create environment
     env_cfg = get_empty_base_env_cfg(device=device, num_envs=2)
     cfg = DummyRecorderManagerCfg()

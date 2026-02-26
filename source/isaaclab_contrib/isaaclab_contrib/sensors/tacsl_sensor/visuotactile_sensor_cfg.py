@@ -11,7 +11,8 @@ from dataclasses import MISSING
 
 from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.markers.config import VISUO_TACTILE_SENSOR_MARKER_CFG
-from isaaclab.sensors import SensorBaseCfg, TiledCameraCfg
+from isaaclab.sensors.camera.tiled_camera_cfg import TiledCameraCfg
+from isaaclab.sensors.sensor_base_cfg import SensorBaseCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 

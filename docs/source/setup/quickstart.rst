@@ -189,7 +189,7 @@ by calling the ``list_envs.py`` script, which can be found in ``isaaclab/scripts
     .
     .
     +--------+----------------------+--------------------------------------------+---------------------------------------------------------------+
-    |   48   | Isaac-Ant-v0         | isaaclab.envs:ManagerBasedRLEnv            |   isaaclab_tasks.manager_based.classic.ant.ant_env_cfg:AntEnvCfg
+    |   48   | Isaac-Ant-v0         | isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv            |   isaaclab_tasks.manager_based.classic.ant.ant_env_cfg:AntEnvCfg
     +--------+----------------------+--------------------------------------------+---------------------------------------------------------------+
 
 Notice that there are two different ``Ant`` tasks, one for a ``Direct`` environment and one for a ``ManagerBased`` environment.

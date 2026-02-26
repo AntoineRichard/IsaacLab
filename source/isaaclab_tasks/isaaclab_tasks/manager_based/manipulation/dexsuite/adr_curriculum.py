@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers.manager_term_cfg import CurriculumTermCfg as CurrTerm
 from isaaclab.utils.configclass import configclass
 
 from . import mdp

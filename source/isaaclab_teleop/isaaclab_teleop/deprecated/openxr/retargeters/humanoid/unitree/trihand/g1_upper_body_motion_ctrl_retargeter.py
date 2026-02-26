@@ -10,11 +10,12 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as PoseUtils
 from isaaclab.devices.device_base import DeviceBase
 from isaaclab.devices.retargeter_base import RetargeterBase, RetargeterCfg
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
 
 
 class G1TriHandUpperBodyMotionControllerRetargeter(RetargeterBase):
@@ -41,9 +42,9 @@ class G1TriHandUpperBodyMotionControllerRetargeter(RetargeterBase):
             marker_cfg = VisualizationMarkersCfg(
                 prim_path="/Visuals/g1_controller_markers",
                 markers={
-                    "joint": sim_utils.SphereCfg(
+                    "joint": SphereCfg(
                         radius=0.01,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+                        visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
                     ),
                 },
             )

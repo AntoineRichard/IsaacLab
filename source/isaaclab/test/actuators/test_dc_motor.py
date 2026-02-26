@@ -15,7 +15,7 @@ simulation_app = AppLauncher(headless=HEADLESS).app
 import pytest
 import torch
 
-from isaaclab.actuators import DCMotorCfg
+from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg
 
 
 @pytest.mark.parametrize("num_envs", [1, 2])

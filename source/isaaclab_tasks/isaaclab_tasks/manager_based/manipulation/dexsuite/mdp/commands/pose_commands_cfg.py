@@ -5,27 +5,29 @@
 
 from dataclasses import MISSING
 
-import isaaclab.sim as sim_utils
-from isaaclab.managers import CommandTermCfg
+from isaaclab.managers.manager_term_cfg import CommandTermCfg
 from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from . import pose_commands as dex_cmd
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
 
 ALIGN_MARKER_CFG = VisualizationMarkersCfg(
     markers={
-        "frame": sim_utils.UsdFileCfg(
+        "frame": UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd",
             scale=(0.1, 0.1, 0.1),
         ),
-        "position_far": sim_utils.SphereCfg(
+        "position_far": SphereCfg(
             radius=0.01,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
         ),
-        "position_near": sim_utils.SphereCfg(
+        "position_near": SphereCfg(
             radius=0.01,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
         ),
     }
 )

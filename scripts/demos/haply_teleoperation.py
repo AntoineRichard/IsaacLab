@@ -60,16 +60,26 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, AssetBaseCfg, RigidObject, RigidObjectCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
-from isaaclab.devices import HaplyDevice, HaplyDeviceCfg
+from isaaclab.devices.haply import HaplyDevice, HaplyDeviceCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import ContactSensor, ContactSensorCfg
+from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from isaaclab_assets import FRANKA_PANDA_HIGH_PD_CFG  # isort: skip
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UsdFileCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg, RigidBodyMaterialCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
 
 # Workspace mapping constants
 HAPLY_Z_OFFSET = 0.35
@@ -124,17 +134,17 @@ class FrankaHaplySceneCfg(InteractiveSceneCfg):
 
     ground = AssetBaseCfg(
         prim_path="/World/defaultGroundPlane",
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=GroundPlaneCfg(),
     )
 
     dome_light = AssetBaseCfg(
         prim_path="/World/Light",
-        spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75)),
+        spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75)),
     )
 
     table = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd",
             scale=(1.0, 1.0, 1.0),
         ),
@@ -147,13 +157,13 @@ class FrankaHaplySceneCfg(InteractiveSceneCfg):
 
     cube = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Cube",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.06, 0.06, 0.06),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=0.5),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.8, 0.2), metallic=0.2),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=0.5),
+            collision_props=CollisionPropertiesCfg(),
+            physics_material=RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=0.5),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.2, 0.8, 0.2), metallic=0.2),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.60, 0.00, 1.15)),
     )
@@ -176,7 +186,7 @@ class FrankaHaplySceneCfg(InteractiveSceneCfg):
 
 
 def run_simulator(
-    sim: sim_utils.SimulationContext,
+    sim: SimulationContext,
     scene: InteractiveScene,
     haply_device: HaplyDevice,
 ):
@@ -333,8 +343,8 @@ def run_simulator(
 
 def main():
     """Main function to set up and run the Haply teleoperation demo."""
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device, dt=1 / 200)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(device=args_cli.device, dt=1 / 200)
+    sim = SimulationContext(sim_cfg)
 
     # set the simulation view
     sim.set_camera_view([1.6, 1.0, 1.70], [0.4, 0.0, 1.0])

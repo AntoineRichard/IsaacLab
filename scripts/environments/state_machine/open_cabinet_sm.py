@@ -44,7 +44,7 @@ import gymnasium as gym
 import torch
 import warp as wp
 
-from isaaclab.sensors import FrameTransformer
+from isaaclab.sensors.frame_transformer.frame_transformer import FrameTransformer
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.manager_based.manipulation.cabinet.cabinet_env_cfg import CabinetEnvCfg

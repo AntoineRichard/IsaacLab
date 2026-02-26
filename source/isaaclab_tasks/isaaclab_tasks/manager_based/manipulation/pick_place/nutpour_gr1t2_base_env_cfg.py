@@ -17,19 +17,18 @@ except ImportError:
     _TELEOP_AVAILABLE = False
     logging.getLogger(__name__).warning("isaaclab_teleop is not installed. XR teleoperation features will be disabled.")
 
-import isaaclab.envs.mdp as base_mdp
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import ActionTermCfg, SceneEntityCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+from isaaclab.managers.manager_term_cfg import ActionTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import CameraCfg
-
-# from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
@@ -37,6 +36,10 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from . import mdp
 
 from isaaclab_assets.robots.fourier import GR1T2_CFG  # isort: skip
+from isaaclab.envs.mdp.observations import joint_pos
+from isaaclab.sim.schemas import CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
 
 
 ##
@@ -53,7 +56,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/table.usd",
             scale=(1.0, 1.0, 1.3),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=RigidBodyPropertiesCfg(),
         ),
     )
 
@@ -63,7 +66,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/sorting_scale.usd",
             scale=(1.0, 1.0, 1.0),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=RigidBodyPropertiesCfg(),
         ),
     )
 
@@ -73,8 +76,8 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/sorting_bowl_yellow.usd",
             scale=(1.0, 1.0, 1.5),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005),
+            rigid_props=RigidBodyPropertiesCfg(),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.005),
         ),
     )
 
@@ -84,7 +87,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/sorting_beaker_red.usd",
             scale=(0.45, 0.45, 1.3),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=RigidBodyPropertiesCfg(),
         ),
     )
 
@@ -94,8 +97,8 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/factory_m16_nut_green.usd",
             scale=(0.5, 0.5, 0.5),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005),
+            rigid_props=RigidBodyPropertiesCfg(),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.005),
         ),
     )
 
@@ -105,7 +108,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/sorting_bin_blue.usd",
             scale=(0.75, 1.0, 1.0),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=RigidBodyPropertiesCfg(),
         ),
     )
 
@@ -173,7 +176,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         height=160,
         width=256,
         data_types=["rgb"],
-        spawn=sim_utils.PinholeCameraCfg(focal_length=18.15, clipping_range=(0.1, 2)),
+        spawn=PinholeCameraCfg(focal_length=18.15, clipping_range=(0.1, 2)),
         offset=CameraCfg.OffsetCfg(pos=(0.0, 0.12, 1.67675), rot=(0.9801, 0.0, 0.0, -0.19848), convention="ros"),
     )
 
@@ -186,7 +189,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
     # Lights
     light = AssetBaseCfg(
         prim_path="/World/light",
-        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+        spawn=DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )
 
 
@@ -210,7 +213,7 @@ class ObservationsCfg:
 
         actions = ObsTerm(func=mdp.last_action)
         robot_joint_pos = ObsTerm(
-            func=base_mdp.joint_pos,
+            func=joint_pos,
             params={"asset_cfg": SceneEntityCfg("robot")},
         )
 

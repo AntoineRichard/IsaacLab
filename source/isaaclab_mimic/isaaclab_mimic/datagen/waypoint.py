@@ -14,8 +14,8 @@ from copy import deepcopy
 import torch
 
 import isaaclab.utils.math as PoseUtils
-from isaaclab.envs import ManagerBasedRLMimicEnv
-from isaaclab.managers import TerminationTermCfg
+from isaaclab.envs.manager_based_rl_mimic_env import ManagerBasedRLMimicEnv
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg
 
 
 class Waypoint:

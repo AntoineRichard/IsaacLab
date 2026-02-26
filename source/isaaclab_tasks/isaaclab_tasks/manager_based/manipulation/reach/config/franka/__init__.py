@@ -17,7 +17,7 @@ from . import agents
 
 gym.register(
     id="Isaac-Reach-Franka-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:FrankaReachEnvCfg",
@@ -29,7 +29,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Reach-Franka-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:FrankaReachEnvCfg_PLAY",
@@ -46,7 +46,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Reach-Franka-IK-Abs-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     kwargs={
         "env_cfg_entry_point": f"{__name__}.ik_abs_env_cfg:FrankaReachEnvCfg",
     },
@@ -59,7 +59,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Reach-Franka-IK-Rel-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     kwargs={
         "env_cfg_entry_point": f"{__name__}.ik_rel_env_cfg:FrankaReachEnvCfg",
     },
@@ -72,7 +72,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Reach-Franka-OSC-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.osc_env_cfg:FrankaReachEnvCfg",
@@ -82,7 +82,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Reach-Franka-OSC-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.osc_env_cfg:FrankaReachEnvCfg_PLAY",

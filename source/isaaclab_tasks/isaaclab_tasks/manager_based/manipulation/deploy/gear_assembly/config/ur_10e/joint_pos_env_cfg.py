@@ -7,11 +7,10 @@ import math
 
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.configclass import configclass
 
 import isaaclab_tasks.manager_based.manipulation.deploy.mdp as mdp
@@ -22,6 +21,7 @@ from isaaclab_tasks.manager_based.manipulation.deploy.gear_assembly.gear_assembl
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.universal_robots import UR10e_ROBOTIQ_GRIPPER_CFG, UR10e_ROBOTIQ_2F_85_CFG  # isort: skip
+from isaaclab.sim.schemas import ArticulationRootPropertiesCfg, CollisionPropertiesCfg, RigidBodyPropertiesCfg
 
 
 ##
@@ -317,7 +317,7 @@ class UR10e2F140GearAssemblyEnvCfg(UR10eGearAssemblyEnvCfg):
         self.scene.robot = UR10e_ROBOTIQ_GRIPPER_CFG.replace(
             prim_path="{ENV_REGEX_NS}/Robot",
             spawn=UR10e_ROBOTIQ_GRIPPER_CFG.spawn.replace(
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                rigid_props=RigidBodyPropertiesCfg(
                     disable_gravity=True,
                     max_depenetration_velocity=5.0,
                     linear_damping=0.0,
@@ -329,10 +329,10 @@ class UR10e2F140GearAssemblyEnvCfg(UR10eGearAssemblyEnvCfg):
                     solver_velocity_iteration_count=1,
                     max_contact_impulse=1e32,
                 ),
-                articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                articulation_props=ArticulationRootPropertiesCfg(
                     enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=1
                 ),
-                collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+                collision_props=CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
             ),
             # Joint positions based on IK from center of distribution for randomized gear positions
             # This is done so that the start for the differential IK search after randomizing
@@ -406,7 +406,7 @@ class UR10e2F85GearAssemblyEnvCfg(UR10eGearAssemblyEnvCfg):
         self.scene.robot = UR10e_ROBOTIQ_2F_85_CFG.replace(
             prim_path="{ENV_REGEX_NS}/Robot",
             spawn=UR10e_ROBOTIQ_2F_85_CFG.spawn.replace(
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                rigid_props=RigidBodyPropertiesCfg(
                     disable_gravity=True,
                     max_depenetration_velocity=5.0,
                     linear_damping=0.0,
@@ -418,10 +418,10 @@ class UR10e2F85GearAssemblyEnvCfg(UR10eGearAssemblyEnvCfg):
                     solver_velocity_iteration_count=1,
                     max_contact_impulse=1e32,
                 ),
-                articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                articulation_props=ArticulationRootPropertiesCfg(
                     enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=1
                 ),
-                collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+                collision_props=CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
             ),
             # Joint positions based on IK from center of distribution for randomized gear positions
             # This is done so that the start for the differential IK search after randomizing

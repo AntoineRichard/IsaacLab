@@ -13,7 +13,7 @@ from . import agents
 
 gym.register(
     id="Isaac-Velocity-Flat-Anymal-C-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.flat_env_cfg:AnymalCFlatEnvCfg",
@@ -26,7 +26,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Velocity-Flat-Anymal-C-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.flat_env_cfg:AnymalCFlatEnvCfg_PLAY",
@@ -39,7 +39,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Velocity-Rough-Anymal-C-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.rough_env_cfg:AnymalCRoughEnvCfg",
@@ -54,7 +54,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Velocity-Rough-Anymal-C-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.rough_env_cfg:AnymalCRoughEnvCfg_PLAY",

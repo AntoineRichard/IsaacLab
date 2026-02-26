@@ -18,16 +18,19 @@ import pytest
 
 from isaacsim.core.utils.extensions import enable_extension, get_extension_path_from_name
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
-from isaaclab.sim.converters import MjcfConverter, MjcfConverterCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.converters.mjcf_converter import MjcfConverter
+from isaaclab.sim.converters.mjcf_converter_cfg import MjcfConverterCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture(autouse=True)
 def test_setup_teardown():
     """Setup and teardown for each test."""
     # Setup: Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     # Setup: Create simulation context
     dt = 0.01
@@ -95,6 +98,6 @@ def test_create_prim_from_usd(test_setup_teardown):
     mjcf_converter = MjcfConverter(mjcf_config)
 
     prim_path = "/World/Robot"
-    sim_utils.create_prim(prim_path, usd_path=mjcf_converter.usd_path)
+    create_prim(prim_path, usd_path=mjcf_converter.usd_path)
 
     assert sim.stage.GetPrimAtPath(prim_path).IsValid()

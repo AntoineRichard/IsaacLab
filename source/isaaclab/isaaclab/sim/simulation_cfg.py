@@ -16,7 +16,7 @@ from typing import Any, Literal  # Literal used by RenderCfg
 from isaaclab.physics import PhysicsCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
 from isaaclab.utils.configclass import configclass
-from isaaclab.visualizers import VisualizerCfg
+from isaaclab.visualizers.visualizer_cfg import VisualizerCfg
 
 
 @configclass

@@ -24,7 +24,8 @@ import warp as wp
 
 import isaaclab.utils.assets as _al_assets
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation, RigidObjectCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.envs.manager_based_env import ManagerBasedEnv
 from isaaclab.markers import FRAME_MARKER_CFG, VisualizationMarkers
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg

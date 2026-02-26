@@ -13,8 +13,8 @@ from isaaclab.utils.configclass import configclass
 if TYPE_CHECKING:
     import torch
 
-    from isaaclab.assets.articulation import Articulation
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.assets.articulation.articulation import Articulation
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 import dataclasses
 import functools

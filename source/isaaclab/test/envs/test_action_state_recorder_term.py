@@ -20,12 +20,12 @@ import gymnasium as gym
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -88,7 +88,7 @@ def check_initial_state_recorder_term(env):
 @pytest.mark.parametrize("num_envs", [1, 2])
 def test_action_state_recorder_terms(task_name, device, num_envs, temp_dir):
     """Check action state recorder terms."""
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     dummy_dataset_filename = f"{uuid.uuid4()}.hdf5"
 

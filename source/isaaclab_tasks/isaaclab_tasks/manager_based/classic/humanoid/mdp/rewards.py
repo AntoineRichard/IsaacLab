@@ -12,13 +12,15 @@ import warp as wp
 
 import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
-from isaaclab.assets import Articulation
-from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.manager_term_cfg import RewardTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 from . import observations as obs
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
 
 def upright_posture_bonus(

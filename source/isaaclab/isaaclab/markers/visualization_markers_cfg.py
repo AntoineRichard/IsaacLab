@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import MISSING
 
-from isaaclab.sim.spawners import SpawnerCfg
+from isaaclab.sim.spawners.spawner_cfg import SpawnerCfg
 from isaaclab.utils.configclass import configclass
 
 

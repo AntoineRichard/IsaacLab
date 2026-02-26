@@ -17,13 +17,8 @@ from pxr import Usd, UsdPhysics
 from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.string import to_camel_case
 
-from ..utils import (
-    apply_nested,
-    find_global_fixed_joint_prim,
-    get_all_matching_child_prims,
-    safe_set_attribute_on_usd_prim,
-    safe_set_attribute_on_usd_schema,
-)
+from ..utils.prims import apply_nested, safe_set_attribute_on_usd_prim, safe_set_attribute_on_usd_schema
+from ..utils.queries import find_global_fixed_joint_prim, get_all_matching_child_prims
 from . import schemas_cfg
 
 # import logger

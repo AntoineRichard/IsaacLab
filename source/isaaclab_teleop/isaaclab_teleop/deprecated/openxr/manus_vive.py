@@ -35,9 +35,9 @@ XRCore = None
 with contextlib.suppress(ModuleNotFoundError):
     from omni.kit.xr.core import XRCore
 
-import isaaclab.sim as sim_utils
 
 from .manus_vive_utils import HAND_JOINT_MAP, ManusViveIntegration
+from isaaclab.sim.utils.prims import create_prim
 
 
 class ManusVive(DeviceBase):
@@ -104,7 +104,7 @@ class ManusVive(DeviceBase):
         self._previous_headpose = default_pose.copy()
 
         xr_anchor_prim_path = "/XRAnchor"
-        sim_utils.create_prim(
+        create_prim(
             xr_anchor_prim_path,
             prim_type="Xform",
             position=self._xr_cfg.anchor_pos,

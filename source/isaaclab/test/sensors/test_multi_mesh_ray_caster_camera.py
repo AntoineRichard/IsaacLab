@@ -25,14 +25,20 @@ import torch
 import omni.replicator.core as rep
 from pxr import Gf
 
-import isaaclab.sim as sim_utils
-from isaaclab.sensors.camera import Camera, CameraCfg
-from isaaclab.sensors.ray_caster import MultiMeshRayCasterCamera, MultiMeshRayCasterCameraCfg, patterns
-from isaaclab.sim import PinholeCameraCfg
+from isaaclab.sensors.camera.camera import Camera
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
+from isaaclab.sensors.ray_caster.multi_mesh_ray_caster_camera import MultiMeshRayCasterCamera
+from isaaclab.sensors.ray_caster.multi_mesh_ray_caster_camera_cfg import MultiMeshRayCasterCameraCfg
+from isaaclab.sensors.ray_caster import patterns
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
 from isaaclab.terrains.trimesh.utils import make_plane
 from isaaclab.terrains.utils import create_prim_from_mesh
 from isaaclab.utils.dict import convert_dict_to_backend
 from isaaclab.utils.timer import Timer
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 # sample camera poses (quaternions in xyzw format)
 POSITION = [2.5, 2.5, 2.5]
@@ -45,17 +51,17 @@ QUAT_WORLD = [-0.27984815, -0.1159169, 0.88047623, -0.3647052]
 def setup_simulation():
     """Fixture to set up and tear down the simulation environment."""
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Simulation time-step
     dt = 0.01
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=dt)
-    sim: sim_utils.SimulationContext = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=dt)
+    sim: SimulationContext = SimulationContext(sim_cfg)
     # Ground-plane
     mesh = make_plane(size=(100, 100), height=0.0, center_zero=True)
     create_prim_from_mesh("/World/defaultGroundPlane", mesh)
     # load stage
-    sim_utils.update_stage()
+    update_stage()
 
     camera_cfg = MultiMeshRayCasterCameraCfg(
         prim_path="/World/Camera",
@@ -73,7 +79,7 @@ def setup_simulation():
     )
 
     # create xform because placement of camera directly under world is not supported
-    sim_utils.create_prim("/World/Camera", "Xform")
+    create_prim("/World/Camera", "Xform")
 
     yield sim, dt, camera_cfg
 
@@ -106,7 +112,7 @@ def test_camera_init_offset(setup_simulation, convention, quat):
         rot=quat,
         convention=convention,
     )
-    sim_utils.create_prim(f"/World/CameraOffset{convention.capitalize()}", "Xform")
+    create_prim(f"/World/CameraOffset{convention.capitalize()}", "Xform")
     cam_cfg_offset.prim_path = f"/World/CameraOffset{convention.capitalize()}"
 
     camera = MultiMeshRayCasterCamera(cam_cfg_offset)
@@ -240,14 +246,14 @@ def test_multi_camera_init(setup_simulation):
     # -- camera 1
     cam_cfg_1 = copy.deepcopy(camera_cfg)
     cam_cfg_1.prim_path = "/World/Camera_0"
-    sim_utils.create_prim("/World/Camera_0", "Xform")
+    create_prim("/World/Camera_0", "Xform")
     # Create camera
     cam_1 = MultiMeshRayCasterCamera(cam_cfg_1)
 
     # -- camera 2
     cam_cfg_2 = copy.deepcopy(camera_cfg)
     cam_cfg_2.prim_path = "/World/Camera_1"
-    sim_utils.create_prim("/World/Camera_1", "Xform")
+    create_prim("/World/Camera_1", "Xform")
     # Create camera
     cam_2 = MultiMeshRayCasterCamera(cam_cfg_2)
 
@@ -430,7 +436,7 @@ def test_output_equal_to_usdcamera(setup_simulation, data_types):
         height=240,
         width=320,
     )
-    sim_utils.create_prim("/World/Camera_warp", "Xform")
+    create_prim("/World/Camera_warp", "Xform")
     camera_cfg_warp = MultiMeshRayCasterCameraCfg(
         prim_path="/World/Camera_warp",
         mesh_prim_paths=["/World/defaultGroundPlane"],
@@ -526,7 +532,7 @@ def test_output_equal_to_usdcamera_offset(setup_simulation):
         height=240,
         width=320,
     )
-    sim_utils.create_prim("/World/Camera_warp", "Xform")
+    create_prim("/World/Camera_warp", "Xform")
     camera_cfg_warp = MultiMeshRayCasterCameraCfg(
         prim_path="/World/Camera_warp",
         mesh_prim_paths=["/World/defaultGroundPlane"],
@@ -609,7 +615,7 @@ def test_output_equal_to_usdcamera_prim_offset(setup_simulation):
         height=240,
         width=320,
     )
-    prim_raycast_cam = sim_utils.create_prim("/World/Camera_warp", "Xform")
+    prim_raycast_cam = create_prim("/World/Camera_warp", "Xform")
     prim_raycast_cam.GetAttribute("xformOp:translate").Set(tuple(POSITION))
     prim_raycast_cam.GetAttribute("xformOp:orient").Set(gf_quatf)
 
@@ -638,7 +644,7 @@ def test_output_equal_to_usdcamera_prim_offset(setup_simulation):
         offset=CameraCfg.OffsetCfg(pos=(0, 0, 2.0), rot=offset_rot, convention="ros"),
         update_latest_camera_pose=True,
     )
-    prim_usd = sim_utils.create_prim("/World/Camera_usd", "Xform")
+    prim_usd = create_prim("/World/Camera_usd", "Xform")
     prim_usd.GetAttribute("xformOp:translate").Set(tuple(POSITION))
     prim_usd.GetAttribute("xformOp:orient").Set(gf_quatf)
 
@@ -697,7 +703,7 @@ def test_output_equal_to_usd_camera_intrinsics(setup_simulation, height, width):
     offset_rot = [0.3617, 0.8731, -0.3020, -0.1251]
     offset_pos = (2.5, 2.5, 4.0)
     intrinsics = [380.0831, 0.0, width / 2, 0.0, 380.0831, height / 2, 0.0, 0.0, 1.0]
-    sim_utils.create_prim("/World/Camera_warp", "Xform")
+    create_prim("/World/Camera_warp", "Xform")
     # get camera cfgs
     camera_warp_cfg = MultiMeshRayCasterCameraCfg(
         prim_path="/World/Camera_warp",

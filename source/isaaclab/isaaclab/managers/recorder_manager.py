@@ -22,7 +22,7 @@ from .manager_base import ManagerBase, ManagerTermBase
 from .manager_term_cfg import RecorderTermCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 class DatasetExportMode(enum.IntEnum):

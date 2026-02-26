@@ -51,11 +51,13 @@ import warp as wp
 
 from pxr import Gf, Sdf
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, AssetBaseCfg, RigidObjectCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.markers.config import VisualizationMarkersCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors.ray_caster import MultiMeshRayCasterCfg, patterns
+from isaaclab.sensors.ray_caster.multi_mesh_ray_caster_cfg import MultiMeshRayCasterCfg
+from isaaclab.sensors.ray_caster import patterns
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
@@ -64,12 +66,22 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 ##
 from isaaclab_assets.robots.allegro import ALLEGRO_HAND_CFG
 from isaaclab_assets.robots.anymal import ANYMAL_D_CFG
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import CapsuleCfg, ConeCfg, CuboidCfg, CylinderCfg, SphereCfg
+from isaaclab.sim.spawners.wrappers import MultiAssetSpawnerCfg
+from isaaclab.sim.utils.queries import find_matching_prim_paths
+from isaaclab.sim.utils.stage import get_current_stage
 
 RAY_CASTER_MARKER_CFG = VisualizationMarkersCfg(
     markers={
-        "hit": sim_utils.SphereCfg(
+        "hit": SphereCfg(
             radius=0.01,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
         ),
     },
 )
@@ -119,41 +131,41 @@ elif args_cli.asset_type == "anymal_d":
 elif args_cli.asset_type == "objects":
     asset_cfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
-        spawn=sim_utils.MultiAssetSpawnerCfg(
+        spawn=MultiAssetSpawnerCfg(
             assets_cfg=[
-                sim_utils.CuboidCfg(
+                CuboidCfg(
                     size=(0.3, 0.3, 0.3),
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
                 ),
-                sim_utils.SphereCfg(
+                SphereCfg(
                     radius=0.3,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.2),
                 ),
-                sim_utils.CylinderCfg(
+                CylinderCfg(
                     radius=0.2,
                     height=0.5,
                     axis="Y",
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
                 ),
-                sim_utils.CapsuleCfg(
+                CapsuleCfg(
                     radius=0.15,
                     height=0.5,
                     axis="Z",
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0), metallic=0.2),
                 ),
-                sim_utils.ConeCfg(
+                ConeCfg(
                     radius=0.2,
                     height=0.5,
                     axis="Z",
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 1.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 1.0), metallic=0.2),
                 ),
             ],
             random_choice=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            collision_props=CollisionPropertiesCfg(),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 2.0)),
     )
@@ -181,7 +193,7 @@ class RaycasterSensorSceneCfg(InteractiveSceneCfg):
     # ground plane
     ground = AssetBaseCfg(
         prim_path="/World/Ground",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd",
             scale=(1, 1, 1),
         ),
@@ -189,7 +201,7 @@ class RaycasterSensorSceneCfg(InteractiveSceneCfg):
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # asset
@@ -201,9 +213,9 @@ class RaycasterSensorSceneCfg(InteractiveSceneCfg):
 def randomize_shape_color(prim_path_expr: str):
     """Randomize the color of the geometry."""
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # resolve prim paths for spawning and cloning
-    prim_paths = sim_utils.find_matching_prim_paths(prim_path_expr)
+    prim_paths = find_matching_prim_paths(prim_path_expr)
     # manually clone prims if the source prim path is a regex expression
 
     with Sdf.ChangeBlock():
@@ -223,7 +235,7 @@ def randomize_shape_color(prim_path_expr: str):
             scale_spec.default = Gf.Vec3f(random.uniform(0.5, 1.5), random.uniform(0.5, 1.5), random.uniform(0.5, 1.5))
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Run the simulator."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -275,8 +287,8 @@ def main():
     """Main function."""
 
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[3.5, 3.5, 3.5], target=[0.0, 0.0, 0.0])
     # design scene

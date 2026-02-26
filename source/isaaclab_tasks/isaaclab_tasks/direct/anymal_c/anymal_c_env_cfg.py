@@ -3,16 +3,16 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import isaaclab.envs.mdp as mdp
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg
-from isaaclab.envs import DirectRLEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
-from isaaclab.sim import SimulationCfg
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
+from isaaclab.sensors.ray_caster.ray_caster_cfg import RayCasterCfg
+from isaaclab.sensors.ray_caster import patterns
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 
 ##
@@ -20,6 +20,8 @@ from isaaclab.utils.configclass import configclass
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort: skip
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
+from isaaclab.envs.mdp.events import randomize_rigid_body_mass, randomize_rigid_body_material
+from isaaclab.sim.spawners.materials import MdlFileCfg, RigidBodyMaterialCfg
 
 
 @configclass
@@ -27,7 +29,7 @@ class EventCfg:
     """Configuration for randomization."""
 
     physics_material = EventTerm(
-        func=mdp.randomize_rigid_body_material,
+        func=randomize_rigid_body_material,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
@@ -39,7 +41,7 @@ class EventCfg:
     )
 
     add_base_mass = EventTerm(
-        func=mdp.randomize_rigid_body_mass,
+        func=randomize_rigid_body_mass,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base"),
@@ -63,7 +65,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200,
         render_interval=decimation,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
+        physics_material=RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
@@ -75,7 +77,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
         prim_path="/World/ground",
         terrain_type="plane",
         collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
+        physics_material=RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
@@ -121,13 +123,13 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
         terrain_generator=ROUGH_TERRAINS_CFG,
         max_init_terrain_level=9,
         collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
+        physics_material=RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
             dynamic_friction=1.0,
         ),
-        visual_material=sim_utils.MdlFileCfg(
+        visual_material=MdlFileCfg(
             mdl_path="{NVIDIA_NUCLEUS_DIR}/Materials/Base/Architecture/Shingles_01.mdl",
             project_uvw=True,
         ),

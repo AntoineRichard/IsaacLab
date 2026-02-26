@@ -5,15 +5,17 @@
 
 from __future__ import annotations
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg
-from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
+from isaaclab.sim.schemas import ArticulationRootPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 
 @configclass
@@ -29,7 +31,7 @@ class FrankaCabinetEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 120,
         render_interval=decimation,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
+        physics_material=RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
@@ -46,14 +48,14 @@ class FrankaCabinetEnvCfg(DirectRLEnvCfg):
     # robot
     robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/FrankaEmika/panda_instanceable.usd",
             activate_contact_sensors=False,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 max_depenetration_velocity=5.0,
             ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_props=ArticulationRootPropertiesCfg(
                 enabled_self_collisions=False, solver_position_iteration_count=12, solver_velocity_iteration_count=1
             ),
         ),
@@ -96,7 +98,7 @@ class FrankaCabinetEnvCfg(DirectRLEnvCfg):
     # cabinet
     cabinet = ArticulationCfg(
         prim_path="/World/envs/env_.*/Cabinet",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd",
             activate_contact_sensors=False,
         ),
@@ -131,7 +133,7 @@ class FrankaCabinetEnvCfg(DirectRLEnvCfg):
         prim_path="/World/ground",
         terrain_type="plane",
         collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
+        physics_material=RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,

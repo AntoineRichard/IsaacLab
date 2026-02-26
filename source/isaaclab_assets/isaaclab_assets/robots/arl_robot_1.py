@@ -10,11 +10,12 @@ The following configuration parameters are available:
 * :obj:`ARL_ROBOT_1_CFG`: The ARL_Robot_1 with (TODO add motor propeller combination)
 """
 
-import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from isaaclab_contrib.actuators import ThrusterCfg
 from isaaclab_contrib.assets import MultirotorCfg
+from isaaclab.sim.schemas import ArticulationRootPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 ##
 # Configuration - Actuators.
@@ -34,10 +35,10 @@ ARL_ROBOT_1_THRUSTER = ThrusterCfg(
 ##
 
 ARL_ROBOT_1_CFG = MultirotorCfg(
-    spawn=sim_utils.UsdFileCfg(
+    spawn=UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/NTNU/ARL-Robot-1/arl_robot_1.usd",
         activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=0.0,
@@ -46,7 +47,7 @@ ARL_ROBOT_1_CFG = MultirotorCfg(
             max_angular_velocity=1000.0,
             max_depenetration_velocity=1.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+        articulation_props=ArticulationRootPropertiesCfg(
             enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
         ),
     ),

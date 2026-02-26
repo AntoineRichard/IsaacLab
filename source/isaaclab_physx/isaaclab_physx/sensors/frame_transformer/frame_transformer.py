@@ -16,20 +16,18 @@ import warp as wp
 
 from pxr import UsdPhysics
 
-import isaaclab.sim as sim_utils
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.sensors.frame_transformer import BaseFrameTransformer
+from isaaclab.sensors.frame_transformer.base_frame_transformer import BaseFrameTransformer
 from isaaclab.utils.math import is_identity_pose, normalize, quat_from_angle_axis
 
 from isaaclab_physx.physics import PhysxManager as SimulationManager
 
 from .frame_transformer_data import FrameTransformerData
 from .kernels import frame_transformer_update_kernel
+from isaaclab.sim.utils.queries import find_matching_prims
 
 if TYPE_CHECKING:
-    from isaaclab.sensors.frame_transformer import FrameTransformerCfg
-
-# import logger
+    from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
 logger = logging.getLogger(__name__)
 
 
@@ -183,7 +181,7 @@ class FrameTransformer(BaseFrameTransformer):
         frame_types = ["source"] + ["target"] * len(self.cfg.target_frames)
         for frame, prim_path, offset, frame_type in zip(frames, frame_prim_paths, frame_offsets, frame_types):
             # Find correct prim
-            matching_prims = sim_utils.find_matching_prims(prim_path)
+            matching_prims = find_matching_prims(prim_path)
             if len(matching_prims) == 0:
                 raise ValueError(
                     f"Failed to create frame transformer for frame '{frame}' with path '{prim_path}'."

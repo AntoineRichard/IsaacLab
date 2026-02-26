@@ -15,21 +15,30 @@ simulation_app = AppLauncher(headless=True).app
 
 import pytest
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners import materials
+from isaaclab.sim.schemas import (
+    CollisionPropertiesCfg,
+    DeformableBodyPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.spawners.meshes import MeshCapsuleCfg, MeshConeCfg, MeshCuboidCfg, MeshCylinderCfg, MeshSphereCfg
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 
 @pytest.fixture
 def sim():
     """Create a simulation context for testing."""
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Simulation time-step
     dt = 0.1
     # Load kit helper
     sim = SimulationContext(SimulationCfg(dt=dt))
     # Wait for spawning
-    sim_utils.update_stage()
+    update_stage()
     yield sim
     # Cleanup
     sim._disable_app_control_on_stop_handle = True  # prevent timeout
@@ -45,7 +54,7 @@ Basic spawning.
 def test_spawn_cone(sim):
     """Test spawning of UsdGeomMesh as a cone prim."""
     # Spawn cone
-    cfg = sim_utils.MeshConeCfg(radius=1.0, height=2.0, axis="Y")
+    cfg = MeshConeCfg(radius=1.0, height=2.0, axis="Y")
     prim = cfg.func("/World/Cone", cfg)
 
     # Check validity
@@ -60,7 +69,7 @@ def test_spawn_cone(sim):
 def test_spawn_capsule(sim):
     """Test spawning of UsdGeomMesh as a capsule prim."""
     # Spawn capsule
-    cfg = sim_utils.MeshCapsuleCfg(radius=1.0, height=2.0, axis="Y")
+    cfg = MeshCapsuleCfg(radius=1.0, height=2.0, axis="Y")
     prim = cfg.func("/World/Capsule", cfg)
 
     # Check validity
@@ -75,7 +84,7 @@ def test_spawn_capsule(sim):
 def test_spawn_cylinder(sim):
     """Test spawning of UsdGeomMesh as a cylinder prim."""
     # Spawn cylinder
-    cfg = sim_utils.MeshCylinderCfg(radius=1.0, height=2.0, axis="Y")
+    cfg = MeshCylinderCfg(radius=1.0, height=2.0, axis="Y")
     prim = cfg.func("/World/Cylinder", cfg)
 
     # Check validity
@@ -90,7 +99,7 @@ def test_spawn_cylinder(sim):
 def test_spawn_cuboid(sim):
     """Test spawning of UsdGeomMesh as a cuboid prim."""
     # Spawn cuboid
-    cfg = sim_utils.MeshCuboidCfg(size=(1.0, 2.0, 3.0))
+    cfg = MeshCuboidCfg(size=(1.0, 2.0, 3.0))
     prim = cfg.func("/World/Cube", cfg)
 
     # Check validity
@@ -105,7 +114,7 @@ def test_spawn_cuboid(sim):
 def test_spawn_sphere(sim):
     """Test spawning of UsdGeomMesh as a sphere prim."""
     # Spawn sphere
-    cfg = sim_utils.MeshSphereCfg(radius=1.0)
+    cfg = MeshSphereCfg(radius=1.0)
     prim = cfg.func("/World/Sphere", cfg)
 
     # Check validity
@@ -125,10 +134,10 @@ Physics properties.
 def test_spawn_cone_with_deformable_props(sim):
     """Test spawning of UsdGeomMesh prim for a cone with deformable body API."""
     # Spawn cone
-    cfg = sim_utils.MeshConeCfg(
+    cfg = MeshConeCfg(
         radius=1.0,
         height=2.0,
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(deformable_enabled=True),
+        deformable_props=DeformableBodyPropertiesCfg(deformable_enabled=True),
     )
     prim = cfg.func("/World/Cone", cfg)
 
@@ -145,11 +154,11 @@ def test_spawn_cone_with_deformable_props(sim):
 def test_spawn_cone_with_deformable_and_mass_props(sim):
     """Test spawning of UsdGeomMesh prim for a cone with deformable body and mass API."""
     # Spawn cone
-    cfg = sim_utils.MeshConeCfg(
+    cfg = MeshConeCfg(
         radius=1.0,
         height=2.0,
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(deformable_enabled=True),
-        mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
+        deformable_props=DeformableBodyPropertiesCfg(deformable_enabled=True),
+        mass_props=MassPropertiesCfg(mass=1.0),
     )
     prim = cfg.func("/World/Cone", cfg)
 
@@ -175,11 +184,11 @@ def test_spawn_cone_with_deformable_and_density_props(sim):
         order to not have a collision shape, we disable the collision.
     """
     # Spawn cone
-    cfg = sim_utils.MeshConeCfg(
+    cfg = MeshConeCfg(
         radius=1.0,
         height=2.0,
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(deformable_enabled=True),
-        mass_props=sim_utils.MassPropertiesCfg(density=10.0),
+        deformable_props=DeformableBodyPropertiesCfg(deformable_enabled=True),
+        mass_props=MassPropertiesCfg(density=10.0),
     )
     prim = cfg.func("/World/Cone", cfg)
 
@@ -198,13 +207,13 @@ def test_spawn_cone_with_deformable_and_density_props(sim):
 def test_spawn_cone_with_all_deformable_props(sim):
     """Test spawning of UsdGeomMesh prim for a cone with all deformable properties."""
     # Spawn cone
-    cfg = sim_utils.MeshConeCfg(
+    cfg = MeshConeCfg(
         radius=1.0,
         height=2.0,
-        mass_props=sim_utils.MassPropertiesCfg(mass=5.0),
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(),
-        visual_material=sim_utils.materials.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.5)),
-        physics_material=sim_utils.materials.DeformableBodyMaterialCfg(),
+        mass_props=MassPropertiesCfg(mass=5.0),
+        deformable_props=DeformableBodyPropertiesCfg(),
+        visual_material=materials.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.5)),
+        physics_material=materials.DeformableBodyMaterialCfg(),
     )
     prim = cfg.func("/World/Cone", cfg)
 
@@ -226,16 +235,16 @@ def test_spawn_cone_with_all_deformable_props(sim):
 def test_spawn_cone_with_all_rigid_props(sim):
     """Test spawning of UsdGeomMesh prim for a cone with all rigid properties."""
     # Spawn cone
-    cfg = sim_utils.MeshConeCfg(
+    cfg = MeshConeCfg(
         radius=1.0,
         height=2.0,
-        mass_props=sim_utils.MassPropertiesCfg(mass=5.0),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        mass_props=MassPropertiesCfg(mass=5.0),
+        rigid_props=RigidBodyPropertiesCfg(
             rigid_body_enabled=True, solver_position_iteration_count=8, sleep_threshold=0.1
         ),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.materials.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.5)),
-        physics_material=sim_utils.materials.RigidBodyMaterialCfg(),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=materials.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.5)),
+        physics_material=materials.RigidBodyMaterialCfg(),
     )
     prim = cfg.func("/World/Cone", cfg)
 

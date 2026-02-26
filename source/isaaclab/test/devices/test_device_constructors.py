@@ -19,22 +19,10 @@ import pytest
 import torch
 
 # Import device classes to test
-from isaaclab.devices import (
-    HaplyDevice,
-    HaplyDeviceCfg,
-    Se2Gamepad,
-    Se2GamepadCfg,
-    Se2Keyboard,
-    Se2KeyboardCfg,
-    Se2SpaceMouse,
-    Se2SpaceMouseCfg,
-    Se3Gamepad,
-    Se3GamepadCfg,
-    Se3Keyboard,
-    Se3KeyboardCfg,
-    Se3SpaceMouse,
-    Se3SpaceMouseCfg,
-)
+from isaaclab.devices.gamepad import Se2Gamepad, Se2GamepadCfg, Se3Gamepad, Se3GamepadCfg
+from isaaclab.devices.haply import HaplyDevice, HaplyDeviceCfg
+from isaaclab.devices.keyboard import Se2Keyboard, Se2KeyboardCfg, Se3Keyboard, Se3KeyboardCfg
+from isaaclab.devices.spacemouse import Se2SpaceMouse, Se2SpaceMouseCfg, Se3SpaceMouse, Se3SpaceMouseCfg
 
 
 @pytest.fixture

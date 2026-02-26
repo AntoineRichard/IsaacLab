@@ -25,11 +25,11 @@ import warp as wp
 from pink.configuration import Configuration
 from pink.tasks import FrameTask
 
-import isaaclab.sim as sim_utils
 from isaaclab.utils.math import axis_angle_from_quat, matrix_from_quat, quat_from_matrix, quat_inv
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 def load_test_config(env_name):
@@ -62,7 +62,7 @@ def create_test_env(env_name, num_envs):
     """Create a test environment with the Pink IK controller."""
     device = "cuda:0"
 
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     try:
         env_cfg = parse_env_cfg(env_name, device=device, num_envs=num_envs)

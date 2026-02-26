@@ -14,8 +14,8 @@ import numpy
 
 import omni.kit.app
 
-from isaaclab.managers import ManagerBase
-from isaaclab.sim import SimulationContext
+from isaaclab.managers.manager_base import ManagerBase
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.configclass import configclass
 
 from .image_plot import ImagePlot

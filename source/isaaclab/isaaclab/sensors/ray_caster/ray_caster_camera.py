@@ -15,7 +15,7 @@ import warp as wp
 from pxr import UsdGeom
 
 import isaaclab.utils.math as math_utils
-from isaaclab.sensors.camera import CameraData
+from isaaclab.sensors.camera.camera_data import CameraData
 from isaaclab.utils.warp import raycast_mesh
 
 from .ray_cast_utils import obtain_world_pose_from_view

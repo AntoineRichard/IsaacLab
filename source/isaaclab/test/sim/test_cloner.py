@@ -21,9 +21,17 @@ from isaaclab_physx.cloner import physx_replicate
 
 from pxr import UsdGeom
 
-import isaaclab.sim as sim_utils
-from isaaclab.cloner import TemplateCloneCfg, clone_from_template, sequential, usd_replicate
-from isaaclab.sim import build_simulation_context
+from isaaclab.cloner.cloner_cfg import TemplateCloneCfg
+from isaaclab.cloner.cloner_strategies import sequential
+from isaaclab.cloner.cloner_utils import clone_from_template, usd_replicate
+from isaaclab.sim.simulation_context import build_simulation_context
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import ConeCfg, CuboidCfg, SphereCfg
+from isaaclab.sim.spawners.wrappers import MultiAssetSpawnerCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.queries import get_all_matching_child_prims
+from isaaclab.sim.utils.stage import get_current_stage
 
 
 @pytest.fixture(params=["cpu", "cuda"])
@@ -36,16 +44,16 @@ def sim(request):
 def test_usd_replicate_with_positions_and_mask(sim):
     """Replicate sources to selected envs and author translate ops from positions."""
     # Prepare sources under /World/template
-    sim_utils.create_prim("/World/template", "Xform")
-    sim_utils.create_prim("/World/template/A", "Xform")
-    sim_utils.create_prim("/World/template/B", "Xform")
+    create_prim("/World/template", "Xform")
+    create_prim("/World/template/A", "Xform")
+    create_prim("/World/template/B", "Xform")
 
     # Prepare destination env namespaces
     num_envs = 3
     env_ids = torch.arange(num_envs, dtype=torch.long)
-    sim_utils.create_prim("/World/envs", "Xform")
+    create_prim("/World/envs", "Xform")
     for i in range(num_envs):
-        sim_utils.create_prim(f"/World/envs/env_{i}", "Xform")
+        create_prim(f"/World/envs/env_{i}", "Xform")
 
     # Map A -> env 0 and 2; B -> env 1 only
     mask = torch.zeros((2, num_envs), dtype=torch.bool)
@@ -53,7 +61,7 @@ def test_usd_replicate_with_positions_and_mask(sim):
     mask[1, [1]] = True
 
     usd_replicate(
-        sim_utils.get_current_stage(),
+        get_current_stage(),
         sources=["/World/template/A", "/World/template/B"],
         destinations=["/World/envs/env_{}/Object/A", "/World/envs/env_{}/Object/B"],
         env_ids=env_ids,
@@ -61,7 +69,7 @@ def test_usd_replicate_with_positions_and_mask(sim):
     )
 
     # Validate replication and translate op
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     assert stage.GetPrimAtPath("/World/envs/env_0/Object/A").IsValid()
     assert not stage.GetPrimAtPath("/World/envs/env_0/Object/B").IsValid()
     assert stage.GetPrimAtPath("/World/envs/env_1/Object/B").IsValid()
@@ -78,25 +86,25 @@ def test_usd_replicate_with_positions_and_mask(sim):
 def test_usd_replicate_depth_order_parent_child(sim):
     """Replicate parent and child when provided out of order; parent should exist before child."""
     # Prepare sources
-    sim_utils.create_prim("/World/template", "Xform")
-    sim_utils.create_prim("/World/template/Parent", "Xform")
-    sim_utils.create_prim("/World/template/Parent/Child", "Xform")
+    create_prim("/World/template", "Xform")
+    create_prim("/World/template/Parent", "Xform")
+    create_prim("/World/template/Parent/Child", "Xform")
 
     # Destinations (single env)
     env_ids = torch.tensor([0, 1], dtype=torch.long)
-    sim_utils.create_prim("/World/envs", "Xform")
-    sim_utils.create_prim("/World/envs/env_0", "Xform")
-    sim_utils.create_prim("/World/envs/env_1", "Xform")
+    create_prim("/World/envs", "Xform")
+    create_prim("/World/envs/env_0", "Xform")
+    create_prim("/World/envs/env_1", "Xform")
 
     # Provide child first, then parent; depth sort should handle this
     usd_replicate(
-        sim_utils.get_current_stage(),
+        get_current_stage(),
         sources=["/World/template/Parent/Child", "/World/template/Parent"],
         destinations=["/World/envs/env_{}/Parent/Child", "/World/envs/env_{}/Parent"],
         env_ids=env_ids,
     )
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     for i in range(2):
         assert stage.GetPrimAtPath(f"/World/envs/env_{i}/Parent").IsValid()
         assert stage.GetPrimAtPath(f"/World/envs/env_{i}/Parent/Child").IsValid()
@@ -105,20 +113,20 @@ def test_usd_replicate_depth_order_parent_child(sim):
 def test_physx_replicate_no_error(sim):
     """PhysX replicator call runs without raising exceptions for simple mapping."""
     # Prepare sources and envs
-    sim_utils.create_prim("/World/envs", "Xform")
-    sim_utils.create_prim("/World/template", "Xform")
-    sim_utils.create_prim("/World/template/A", "Xform")
+    create_prim("/World/envs", "Xform")
+    create_prim("/World/template", "Xform")
+    create_prim("/World/template/A", "Xform")
 
     num_envs = 2
     env_ids = torch.arange(num_envs, dtype=torch.long)
     for i in range(num_envs):
-        sim_utils.create_prim(f"/World/envs/env_{i}", "Xform")
+        create_prim(f"/World/envs/env_{i}", "Xform")
 
     mapping = torch.ones((1, num_envs), dtype=torch.bool)
 
     # Should not raise
     physx_replicate(
-        sim_utils.get_current_stage(),
+        get_current_stage(),
         sources=["/World/template/A"],
         destinations=["/World/envs/env_{}/A"],
         env_ids=env_ids,
@@ -137,43 +145,43 @@ def test_clone_from_template(sim):
     """
     num_clones = 32
     clone_cfg = TemplateCloneCfg(device=sim.cfg.device, clone_strategy=sequential)
-    sim_utils.create_prim(clone_cfg.template_root, "Xform")
-    sim_utils.create_prim(f"{clone_cfg.template_root}/Object", "Xform")  # Parent for prototypes
-    sim_utils.create_prim("/World/envs", "Xform")
+    create_prim(clone_cfg.template_root, "Xform")
+    create_prim(f"{clone_cfg.template_root}/Object", "Xform")  # Parent for prototypes
+    create_prim("/World/envs", "Xform")
     for i in range(num_clones):
-        sim_utils.create_prim(f"/World/envs/env_{i}", "Xform", translation=(0, 0, 0))
+        create_prim(f"/World/envs/env_{i}", "Xform", translation=(0, 0, 0))
 
     # Spawn prototypes under template
-    cfg = sim_utils.MultiAssetSpawnerCfg(
+    cfg = MultiAssetSpawnerCfg(
         assets_cfg=[
-            sim_utils.ConeCfg(
+            ConeCfg(
                 radius=0.3,
                 height=0.6,
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
-                mass_props=sim_utils.MassPropertiesCfg(mass=100.0),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
+                mass_props=MassPropertiesCfg(mass=100.0),
             ),
-            sim_utils.CuboidCfg(
+            CuboidCfg(
                 size=(0.3, 0.3, 0.3),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
             ),
-            sim_utils.SphereCfg(
+            SphereCfg(
                 radius=0.3,
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.2),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.2),
             ),
         ],
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             solver_position_iteration_count=4, solver_velocity_iteration_count=0
         ),
-        mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
+        mass_props=MassPropertiesCfg(mass=1.0),
+        collision_props=CollisionPropertiesCfg(),
     )
     prim = cfg.func(f"{clone_cfg.template_root}/Object/{clone_cfg.template_prototype_identifier}_.*", cfg)
     assert prim.IsValid()
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     clone_from_template(stage, num_clones=num_clones, template_clone_cfg=clone_cfg)
 
-    primitive_prims = sim_utils.get_all_matching_child_prims(
+    primitive_prims = get_all_matching_child_prims(
         "/World/envs", predicate=lambda prim: prim.GetTypeName() in ["Cone", "Cube", "Sphere"]
     )
 
@@ -198,20 +206,20 @@ def _run_colocation_collision_filter(sim, asset_cfg, expected_types, assert_coun
     """Shared harness for colocated collision filter checks across devices."""
     num_clones = 32
     clone_cfg = TemplateCloneCfg(device=sim.cfg.device, clone_strategy=sequential)
-    sim_utils.create_prim(clone_cfg.template_root, "Xform")
-    sim_utils.create_prim(f"{clone_cfg.template_root}/Object", "Xform")  # Parent for prototypes
-    sim_utils.create_prim("/World/envs", "Xform")
+    create_prim(clone_cfg.template_root, "Xform")
+    create_prim(f"{clone_cfg.template_root}/Object", "Xform")  # Parent for prototypes
+    create_prim("/World/envs", "Xform")
     for i in range(num_clones):
-        sim_utils.create_prim(f"/World/envs/env_{i}", "Xform", translation=(0, 0, 0))
+        create_prim(f"/World/envs/env_{i}", "Xform", translation=(0, 0, 0))
 
     # Use _.*  pattern - the @clone decorator replaces .* with 0 for single-asset spawners
     prim = asset_cfg.func(f"{clone_cfg.template_root}/Object/{clone_cfg.template_prototype_identifier}_.*", asset_cfg)
     assert prim.IsValid()
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     clone_from_template(stage, num_clones=num_clones, template_clone_cfg=clone_cfg)
 
-    primitive_prims = sim_utils.get_all_matching_child_prims(
+    primitive_prims = get_all_matching_child_prims(
         "/World/envs", predicate=lambda prim: prim.GetTypeName() in expected_types
     )
 
@@ -241,15 +249,15 @@ def test_colocation_collision_filter_homogeneous(sim):
     """
     _run_colocation_collision_filter(
         sim,
-        sim_utils.ConeCfg(
+        ConeCfg(
             radius=0.3,
             height=0.6,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
-            mass_props=sim_utils.MassPropertiesCfg(mass=100.0),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
+            mass_props=MassPropertiesCfg(mass=100.0),
+            rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            collision_props=CollisionPropertiesCfg(),
         ),
         expected_types=["Cone"],
         assert_count=True,
@@ -266,28 +274,28 @@ def test_colocation_collision_filter_heterogeneous(sim):
     """
     _run_colocation_collision_filter(
         sim,
-        sim_utils.MultiAssetSpawnerCfg(
+        MultiAssetSpawnerCfg(
             assets_cfg=[
-                sim_utils.ConeCfg(
+                ConeCfg(
                     radius=0.3,
                     height=0.6,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
-                    mass_props=sim_utils.MassPropertiesCfg(mass=100.0),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
+                    mass_props=MassPropertiesCfg(mass=100.0),
                 ),
-                sim_utils.CuboidCfg(
+                CuboidCfg(
                     size=(0.3, 0.3, 0.3),
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
                 ),
-                sim_utils.SphereCfg(
+                SphereCfg(
                     radius=0.3,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.2),
                 ),
             ],
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            collision_props=CollisionPropertiesCfg(),
         ),
         expected_types=["Cone", "Cube", "Sphere"],
     )

@@ -17,19 +17,21 @@ import pytest
 
 from pxr import Usd
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.sim.spawners.sensors.sensors import CUSTOM_FISHEYE_CAMERA_ATTRIBUTES, CUSTOM_PINHOLE_CAMERA_ATTRIBUTES
 from isaaclab.utils.string import to_camel_case
+from isaaclab.sim.spawners.sensors import FisheyeCameraCfg, PinholeCameraCfg
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 
 @pytest.fixture
 def sim():
     """Create a simulation context."""
-    sim_utils.create_new_stage()
+    create_new_stage()
     dt = 0.1
     sim = SimulationContext(SimulationCfg(dt=dt))
-    sim_utils.update_stage()
+    update_stage()
     yield sim
     sim.stop()
     sim.clear_instance()
@@ -42,7 +44,7 @@ Basic spawning.
 
 def test_spawn_pinhole_camera(sim):
     """Test spawning a pinhole camera."""
-    cfg = sim_utils.PinholeCameraCfg(
+    cfg = PinholeCameraCfg(
         focal_length=5.0, f_stop=10.0, clipping_range=(0.1, 1000.0), horizontal_aperture=10.0
     )
     prim = cfg.func("/World/pinhole_camera", cfg)
@@ -56,7 +58,7 @@ def test_spawn_pinhole_camera(sim):
 
 def test_spawn_fisheye_camera(sim):
     """Test spawning a fisheye camera."""
-    cfg = sim_utils.FisheyeCameraCfg(
+    cfg = FisheyeCameraCfg(
         projection_type="fisheyePolynomial",
         focal_length=5.0,
         f_stop=10.0,

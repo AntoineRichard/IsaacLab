@@ -15,8 +15,8 @@ simulation_app = AppLauncher(headless=HEADLESS).app
 import pytest
 import torch
 
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.sim import build_simulation_context
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.sim.simulation_context import build_simulation_context
 
 
 @pytest.fixture

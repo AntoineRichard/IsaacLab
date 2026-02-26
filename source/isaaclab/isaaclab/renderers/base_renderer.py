@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import torch
 
-    from isaaclab.sensors import SensorBase
+    from isaaclab.sensors.sensor_base import SensorBase
 
 
 class BaseRenderer(ABC):

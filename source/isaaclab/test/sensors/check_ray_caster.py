@@ -43,15 +43,22 @@ import torch
 
 from isaacsim.core.cloner import GridCloner
 
-import isaaclab.sim as sim_utils
-import isaaclab.terrains as terrain_gen
-from isaaclab.assets import RigidObject, RigidObjectCfg
-from isaaclab.sensors.ray_caster import RayCaster, RayCasterCfg, patterns
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.sensors.ray_caster.ray_caster import RayCaster
+from isaaclab.sensors.ray_caster.ray_caster_cfg import RayCasterCfg
+from isaaclab.sensors.ray_caster import patterns
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
 from isaaclab.terrains.terrain_importer import TerrainImporter
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.timer import Timer
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 
 
 def design_scene(sim: SimulationContext, num_envs: int = 2048):
@@ -63,15 +70,15 @@ def design_scene(sim: SimulationContext, num_envs: int = 2048):
     sim.stage.DefinePrim("/World/envs/env_0", "Xform")
     # Define the scene
     # -- Light
-    cfg = sim_utils.DistantLightCfg(intensity=2000)
+    cfg = DistantLightCfg(intensity=2000)
     cfg.func("/World/light", cfg)
     # -- Balls
-    cfg = sim_utils.SphereCfg(
+    cfg = SphereCfg(
         radius=0.25,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-        mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+        rigid_props=RigidBodyPropertiesCfg(),
+        mass_props=MassPropertiesCfg(mass=0.5),
+        collision_props=CollisionPropertiesCfg(),
+        visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
     )
     cfg.func("/World/envs/env_0/ball", cfg, translation=(0.0, 0.0, 5.0))
     # Clone the scene
@@ -96,7 +103,7 @@ def main():
     # Design the scene
     design_scene(sim=sim, num_envs=num_envs)
     # Handler for terrains importing
-    terrain_importer_cfg = terrain_gen.TerrainImporterCfg(
+    terrain_importer_cfg = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type=args_cli.terrain_type,
         terrain_generator=ROUGH_TERRAINS_CFG,

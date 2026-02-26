@@ -14,11 +14,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .kit_visualizer_cfg import KitVisualizerCfg
-from .newton_visualizer_cfg import NewtonVisualizerCfg
-from .rerun_visualizer_cfg import RerunVisualizerCfg
-from .visualizer import Visualizer
-from .visualizer_cfg import VisualizerCfg
 
 if TYPE_CHECKING:
     from .kit_visualizer import KitVisualizer
@@ -28,11 +23,6 @@ if TYPE_CHECKING:
 _VISUALIZER_REGISTRY: dict[str, Any] = {}
 
 __all__ = [
-    "Visualizer",
-    "VisualizerCfg",
-    "NewtonVisualizerCfg",
-    "KitVisualizerCfg",
-    "RerunVisualizerCfg",
     "get_visualizer_class",
 ]
 

@@ -16,7 +16,6 @@ import warp as wp
 
 import omni.physics.tensors.impl.api as physx
 
-import isaaclab.sim as sim_utils
 from isaaclab.sim.views import XformPrimView
 from isaaclab.utils.math import matrix_from_quat, quat_mul
 from isaaclab.utils.mesh import PRIMITIVE_MESH_TYPES, create_trimesh_from_geom_mesh, create_trimesh_from_geom_shape
@@ -25,6 +24,8 @@ from isaaclab.utils.warp import convert_to_warp_mesh, raycast_dynamic_meshes
 from .multi_mesh_ray_caster_data import MultiMeshRayCasterData
 from .ray_cast_utils import obtain_world_pose_from_view
 from .ray_caster import RayCaster
+from isaaclab.sim.utils.queries import find_matching_prims, get_all_matching_child_prims
+from isaaclab.sim.utils.transforms import resolve_prim_pose, resolve_prim_scale
 
 if TYPE_CHECKING:
     from .multi_mesh_ray_caster_cfg import MultiMeshRayCasterCfg
@@ -174,7 +175,7 @@ class MultiMeshRayCaster(RayCaster):
                 continue
 
             # find all matching prim paths to provided expression of the target
-            target_prims = sim_utils.find_matching_prims(target_prim_path)
+            target_prims = find_matching_prims(target_prim_path)
             if len(target_prims) == 0:
                 raise RuntimeError(f"Failed to find a prim at path expression: {target_prim_path}")
 
@@ -202,7 +203,7 @@ class MultiMeshRayCaster(RayCaster):
                     loaded_vertices.append(None)
                     continue
 
-                mesh_prims = sim_utils.get_all_matching_child_prims(
+                mesh_prims = get_all_matching_child_prims(
                     target_prim.GetPath(), lambda prim: prim.GetTypeName() in PRIMITIVE_MESH_TYPES + ["Mesh"]
                 )
                 if len(mesh_prims) == 0:
@@ -211,7 +212,7 @@ class MultiMeshRayCaster(RayCaster):
                         f" {PRIMITIVE_MESH_TYPES + ['Mesh']}"
                         " Skipping this target."
                     )
-                    for prim in sim_utils.get_all_matching_child_prims(target_prim.GetPath(), lambda prim: True):
+                    for prim in get_all_matching_child_prims(target_prim.GetPath(), lambda prim: True):
                         warn_msg += f"\n - Available prim '{prim.GetPath()}' of type '{prim.GetTypeName()}'"
                     logger.warning(warn_msg)
                     continue
@@ -227,10 +228,10 @@ class MultiMeshRayCaster(RayCaster):
                         mesh = create_trimesh_from_geom_mesh(mesh_prim)
                     else:
                         mesh = create_trimesh_from_geom_shape(mesh_prim)
-                    scale = sim_utils.resolve_prim_scale(mesh_prim)
+                    scale = resolve_prim_scale(mesh_prim)
                     mesh.apply_scale(scale)
 
-                    relative_pos, relative_quat = sim_utils.resolve_prim_pose(mesh_prim, target_prim)
+                    relative_pos, relative_quat = resolve_prim_pose(mesh_prim, target_prim)
                     relative_pos = torch.tensor(relative_pos, dtype=torch.float32)
                     relative_quat = torch.tensor(relative_quat, dtype=torch.float32)
 
@@ -313,8 +314,8 @@ class MultiMeshRayCaster(RayCaster):
 
             # update position of the target meshes
             pos_w, ori_w = [], []
-            for prim in sim_utils.find_matching_prims(target_cfg.prim_expr):
-                translation, quat = sim_utils.resolve_prim_pose(prim)
+            for prim in find_matching_prims(target_cfg.prim_expr):
+                translation, quat = resolve_prim_pose(prim)
                 pos_w.append(translation)
                 ori_w.append(quat)
             pos_w = torch.tensor(pos_w, device=self.device, dtype=torch.float32).view(-1, n_meshes, 3)

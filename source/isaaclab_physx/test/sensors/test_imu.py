@@ -20,14 +20,15 @@ import torch
 import warp as wp
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.markers.config import GREEN_ARROW_X_MARKER_CFG, RED_ARROW_X_MARKER_CFG
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors.imu import Imu, ImuCfg
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sensors.imu.imu import Imu
+from isaaclab.sensors.imu.imu_cfg import ImuCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 
 ##
@@ -35,6 +36,18 @@ from isaaclab.utils.configclass import configclass
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort: skip
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR  # isort: skip
+from isaaclab.sim.converters.urdf_converter_cfg import UrdfConverterCfg
+from isaaclab.sim.schemas import (
+    ArticulationRootPropertiesCfg,
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import build_simulation_context
+from isaaclab.sim.spawners.from_files import UrdfFileCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg, SphereCfg
 
 # offset of imu_link from base_link on anymal_c
 POS_OFFSET = (0.2488, 0.00835, 0.04628)
@@ -60,24 +73,24 @@ class MySceneCfg(InteractiveSceneCfg):
     balls = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/ball",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.5)),
-        spawn=sim_utils.SphereCfg(
+        spawn=SphereCfg(
             radius=0.25,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=0.5),
+            collision_props=CollisionPropertiesCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
         ),
     )
 
     cube = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/cube",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -2.0, 0.5)),
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.25, 0.25, 0.25),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=0.5),
+            collision_props=CollisionPropertiesCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
         ),
     )
 
@@ -86,16 +99,16 @@ class MySceneCfg(InteractiveSceneCfg):
     # pendulum1
     pendulum = ArticulationCfg(
         prim_path="{ENV_REGEX_NS}/pendulum",
-        spawn=sim_utils.UrdfFileCfg(
+        spawn=UrdfFileCfg(
             fix_base=True,
             merge_fixed_joints=False,
             make_instanceable=False,
             asset_path=f"{pathlib.Path(__file__).parent.resolve()}/urdfs/simple_2_link.urdf",
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_props=ArticulationRootPropertiesCfg(
                 enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
-            joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-                gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=None, damping=None)
+            joint_drive=UrdfConverterCfg.JointDriveCfg(
+                gains=UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=None, damping=None)
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(),
@@ -106,16 +119,16 @@ class MySceneCfg(InteractiveSceneCfg):
     # pendulum2
     pendulum2 = ArticulationCfg(
         prim_path="{ENV_REGEX_NS}/pendulum2",
-        spawn=sim_utils.UrdfFileCfg(
+        spawn=UrdfFileCfg(
             fix_base=True,
             merge_fixed_joints=True,
             make_instanceable=False,
             asset_path=f"{pathlib.Path(__file__).parent.resolve()}/urdfs/simple_2_link.urdf",
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_props=ArticulationRootPropertiesCfg(
                 enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
-            joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-                gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=None, damping=None)
+            joint_drive=UrdfConverterCfg.JointDriveCfg(
+                gains=UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=None, damping=None)
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(),
@@ -203,10 +216,10 @@ class MySceneCfg(InteractiveSceneCfg):
 @pytest.fixture
 def setup_sim():
     """Create a simulation context and scene."""
-    sim_cfg = sim_utils.SimulationCfg(
+    sim_cfg = SimulationCfg(
         dt=0.001, physics=PhysxCfg(solver_type=0)
     )  # 0: PGS, 1: TGS --> use PGS for more accurate results
-    with sim_utils.build_simulation_context(sim_cfg=sim_cfg) as sim:
+    with build_simulation_context(sim_cfg=sim_cfg) as sim:
         sim._app_control_on_stop_handle = None
         # construct scene
         scene_cfg = MySceneCfg(num_envs=2, env_spacing=5.0, lazy_sensor_update=False)

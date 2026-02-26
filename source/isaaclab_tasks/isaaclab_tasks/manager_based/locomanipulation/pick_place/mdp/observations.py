@@ -6,8 +6,8 @@
 import torch
 import warp as wp
 
-from isaaclab.envs import ManagerBasedRLEnv
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 
 def upper_body_last_action(

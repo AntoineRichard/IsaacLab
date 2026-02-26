@@ -91,7 +91,7 @@ and difficult to read.
 
 The ``entry_point`` argument is the entry point to the environment class. The entry point is a string
 of the form ``<module>:<class>``. In the case of the cartpole environment, the entry point is
-``isaaclab.envs:ManagerBasedRLEnv``. The entry point is used to import the environment class
+``isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv``. The entry point is used to import the environment class
 when creating the environment instance.
 
 The ``env_cfg_entry_point`` argument specifies the default configuration for the environment. The default

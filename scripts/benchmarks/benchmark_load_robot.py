@@ -59,10 +59,10 @@ imports_time_begin = time.perf_counter_ns()
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.test.benchmark import BaseIsaacLabBenchmark, SingleMeasurement
 from isaaclab.utils.configclass import configclass
 
@@ -70,6 +70,10 @@ from isaaclab.utils.configclass import configclass
 # Pre-defined configs
 ##
 from isaaclab_assets import ANYMAL_D_CFG, G1_MINIMAL_CFG, H1_MINIMAL_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 # Stop the timer for imports
@@ -96,11 +100,11 @@ class RobotSceneCfg(InteractiveSceneCfg):
     """Configuration for a simple scene with a robot."""
 
     # ground plane
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=GroundPlaneCfg())
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # articulation
@@ -114,7 +118,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
         raise ValueError(f"Unsupported robot type: {args_cli.robot}.")
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Runs the simulation loop."""
     # Extract scene entities
     # note: we only do this here for readability.
@@ -172,7 +176,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(device="cuda:0")
+    sim_cfg = SimulationCfg(device="cuda:0")
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.5, 0.0, 4.0], [0.0, 0.0, 2.0])

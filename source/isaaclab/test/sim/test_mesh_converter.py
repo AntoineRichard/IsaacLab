@@ -21,11 +21,14 @@ import pytest
 
 from pxr import UsdGeom, UsdPhysics
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
-from isaaclab.sim.converters import MeshConverter, MeshConverterCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.converters.mesh_converter import MeshConverter
+from isaaclab.sim.converters.mesh_converter_cfg import MeshConverterCfg
 from isaaclab.sim.schemas import MESH_APPROXIMATION_TOKENS, schemas_cfg
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR, retrieve_file_path
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage, get_current_stage
 
 
 def random_quaternion():
@@ -61,7 +64,7 @@ def assets():
 def sim():
     """Create a blank new stage for each test."""
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Simulation time-step
     dt = 0.01
     # Load kit helper
@@ -76,20 +79,20 @@ def sim():
 def check_mesh_conversion(mesh_converter: MeshConverter):
     """Check that mesh is loadable and stage is valid."""
     # Obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Load the mesh
     prim_path = "/World/Object"
-    sim_utils.create_prim(prim_path, usd_path=mesh_converter.usd_path)
+    create_prim(prim_path, usd_path=mesh_converter.usd_path)
     # Check prim can be properly spawned
     assert stage.GetPrimAtPath(prim_path).IsValid()
     # Load a second time
     prim_path = "/World/Object2"
-    sim_utils.create_prim(prim_path, usd_path=mesh_converter.usd_path)
+    create_prim(prim_path, usd_path=mesh_converter.usd_path)
     # Check prim can be properly spawned
     assert stage.GetPrimAtPath(prim_path).IsValid()
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # Check axis is z-up
     axis = UsdGeom.GetStageUpAxis(stage)
     assert axis == "Z"
@@ -112,11 +115,11 @@ def check_mesh_conversion(mesh_converter: MeshConverter):
 def check_mesh_collider_settings(mesh_converter: MeshConverter):
     """Check that mesh collider settings are correct."""
     # Obtain stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Check prim can be properly spawned
     prim_path = "/World/Object"
-    sim_utils.create_prim(prim_path, usd_path=mesh_converter.usd_path)
+    create_prim(prim_path, usd_path=mesh_converter.usd_path)
     assert stage.GetPrimAtPath(prim_path).IsValid()
 
     # Make uninstanceable to check collision settings

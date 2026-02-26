@@ -45,14 +45,20 @@ import math
 
 import torch
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import AssetBaseCfg, RigidObjectCfg, RigidObjectCollection, RigidObjectCollectionCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.assets.rigid_object_collection.rigid_object_collection import RigidObjectCollection
+from isaaclab.assets.rigid_object_collection.rigid_object_collection_cfg import RigidObjectCollectionCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.timer import Timer
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.schemas import MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UsdFileCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 ##
 # Scene Configuration
@@ -80,21 +86,21 @@ VELOCITY_RANGE = {"roll": (-0.2, 1.0), "pitch": (-0.2, 1.0), "yaw": (-0.2, 1.0)}
 # Object layout configuration
 
 GROCERIES = {
-    "OBJECT_A": sim_utils.UsdFileCfg(
+    "OBJECT_A": UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned_Physics/004_sugar_box.usd",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(solver_position_iteration_count=4),
+        rigid_props=RigidBodyPropertiesCfg(solver_position_iteration_count=4),
     ),
-    "OBJECT_B": sim_utils.UsdFileCfg(
+    "OBJECT_B": UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(solver_position_iteration_count=4),
+        rigid_props=RigidBodyPropertiesCfg(solver_position_iteration_count=4),
     ),
-    "OBJECT_C": sim_utils.UsdFileCfg(
+    "OBJECT_C": UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned_Physics/005_tomato_soup_can.usd",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(solver_position_iteration_count=4),
+        rigid_props=RigidBodyPropertiesCfg(solver_position_iteration_count=4),
     ),
-    "OBJECT_D": sim_utils.UsdFileCfg(
+    "OBJECT_D": UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned_Physics/006_mustard_bottle.usd",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(solver_position_iteration_count=4),
+        rigid_props=RigidBodyPropertiesCfg(solver_position_iteration_count=4),
     ),
 }
 
@@ -104,23 +110,23 @@ class MultiObjectSceneCfg(InteractiveSceneCfg):
     """Configuration for a multi-object scene."""
 
     # ground plane
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=GroundPlaneCfg())
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # rigid object
     object: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Object",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/KLT_Bin/small_KLT.usd",
             scale=(2.0, 2.0, 2.0),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4, solver_velocity_iteration_count=0, kinematic_enabled=True
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
+            mass_props=MassPropertiesCfg(mass=1.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.15)),
     )
@@ -328,7 +334,7 @@ def main() -> None:
         None: The function drives the simulation for its side-effects.
     """
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view((2.5, 0.0, 4.0), (0.0, 0.0, 2.0))

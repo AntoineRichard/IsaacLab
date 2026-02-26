@@ -16,7 +16,6 @@ import warp as wp
 
 from pxr import UsdPhysics
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.string as string_utils
 from isaaclab.assets.rigid_object.base_rigid_object import BaseRigidObject
 from isaaclab.utils.wrench_composer import WrenchComposer
@@ -25,6 +24,7 @@ from isaaclab_physx.assets import kernels as shared_kernels
 from isaaclab_physx.physics import PhysxManager as SimulationManager
 
 from .rigid_object_data import RigidObjectData
+from isaaclab.sim.utils.queries import find_first_matching_prim, get_all_matching_child_prims
 
 if TYPE_CHECKING:
     import omni.physics.tensors.impl.api as physx
@@ -910,13 +910,13 @@ class RigidObject(BaseRigidObject):
         # obtain global simulation view
         self._physics_sim_view = SimulationManager.get_physics_sim_view()
         # obtain the first prim in the regex expression (all others are assumed to be a copy of this)
-        template_prim = sim_utils.find_first_matching_prim(self.cfg.prim_path)
+        template_prim = find_first_matching_prim(self.cfg.prim_path)
         if template_prim is None:
             raise RuntimeError(f"Failed to find prim for expression: '{self.cfg.prim_path}'.")
         template_prim_path = template_prim.GetPath().pathString
 
         # find rigid root prims
-        root_prims = sim_utils.get_all_matching_child_prims(
+        root_prims = get_all_matching_child_prims(
             template_prim_path,
             predicate=lambda prim: prim.HasAPI(UsdPhysics.RigidBodyAPI),
             traverse_instance_prims=False,
@@ -933,7 +933,7 @@ class RigidObject(BaseRigidObject):
                 " Please ensure that there is only one rigid body in the prim path tree."
             )
 
-        articulation_prims = sim_utils.get_all_matching_child_prims(
+        articulation_prims = get_all_matching_child_prims(
             template_prim_path,
             predicate=lambda prim: prim.HasAPI(UsdPhysics.ArticulationRootAPI),
             traverse_instance_prims=False,

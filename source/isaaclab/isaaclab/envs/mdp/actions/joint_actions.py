@@ -13,11 +13,11 @@ import torch
 import warp as wp
 
 import isaaclab.utils.string as string_utils
-from isaaclab.assets.articulation import Articulation
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.managers.action_manager import ActionTerm
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
     from isaaclab.envs.utils.io_descriptors import GenericActionIODescriptor
 
     from . import actions_cfg

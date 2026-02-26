@@ -33,8 +33,10 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.simulation_cfg import RenderCfg, SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 
 def main():
@@ -49,21 +51,21 @@ def main():
     carb_settings = {"rtx.reflections.enabled": True}
 
     # Initialize render config
-    render_cfg = sim_utils.RenderCfg(
+    render_cfg = RenderCfg(
         rendering_mode=rendering_mode,
         carb_settings=carb_settings,
     )
 
     # Initialize the simulation context with render coofig
-    sim_cfg = sim_utils.SimulationCfg(render=render_cfg)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(render=render_cfg)
+    sim = SimulationContext(sim_cfg)
 
     # Pose camera in the hospital lobby area
     sim.set_camera_view([-11, -0.5, 2], [0, 0, 0.5])
 
     # Load hospital scene
     hospital_usd_path = f"{ISAAC_NUCLEUS_DIR}/Environments/Hospital/hospital.usd"
-    cfg = sim_utils.UsdFileCfg(usd_path=hospital_usd_path)
+    cfg = UsdFileCfg(usd_path=hospital_usd_path)
     cfg.func("/Scene", cfg)
 
     # Play the simulator

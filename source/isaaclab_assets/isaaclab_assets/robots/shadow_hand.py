@@ -15,34 +15,41 @@ Reference:
 
 """
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets.articulation import ArticulationCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.schemas import (
+    ArticulationRootPropertiesCfg,
+    CollisionPropertiesCfg,
+    FixedTendonPropertiesCfg,
+    JointDrivePropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 ##
 # Configuration
 ##
 
 SHADOW_HAND_CFG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(
+    spawn=UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/ShadowRobot/ShadowHand/shadow_hand_instanceable.usd",
         activate_contact_sensors=False,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=RigidBodyPropertiesCfg(
             disable_gravity=True,
             retain_accelerations=True,
             max_depenetration_velocity=1000.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+        articulation_props=ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=0,
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),
-        # collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
-        joint_drive_props=sim_utils.JointDrivePropertiesCfg(drive_type="force"),
-        fixed_tendons_props=sim_utils.FixedTendonPropertiesCfg(limit_stiffness=30.0, damping=0.1),
+        # collision_props=CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+        joint_drive_props=JointDrivePropertiesCfg(drive_type="force"),
+        fixed_tendons_props=FixedTendonPropertiesCfg(limit_stiffness=30.0, damping=0.1),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.5),

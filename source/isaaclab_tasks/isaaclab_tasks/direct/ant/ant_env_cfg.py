@@ -5,15 +5,15 @@
 
 from __future__ import annotations
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg
-from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_assets.robots.ant import ANT_CFG
+from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 
 @configclass
@@ -32,7 +32,7 @@ class AntEnvCfg(DirectRLEnvCfg):
         prim_path="/World/ground",
         terrain_type="plane",
         collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
+        physics_material=RigidBodyMaterialCfg(
             friction_combine_mode="average",
             restitution_combine_mode="average",
             static_friction=1.0,

@@ -43,15 +43,22 @@ import torch
 from isaacsim.core.cloner import GridCloner
 from isaacsim.core.utils.viewports import set_camera_view
 
-import isaaclab.sim as sim_utils
-import isaaclab.terrains as terrain_gen
-from isaaclab.assets import RigidObject, RigidObjectCfg
-from isaaclab.sensors.imu import Imu, ImuCfg
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.sensors.imu.imu import Imu
+from isaaclab.sensors.imu.imu_cfg import ImuCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
 from isaaclab.terrains.terrain_importer import TerrainImporter
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.timer import Timer
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
+from isaaclab.sim.utils.stage import get_current_stage
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 
 # import logger
 logger = logging.getLogger(__name__)
@@ -60,7 +67,7 @@ logger = logging.getLogger(__name__)
 def design_scene(sim: SimulationContext, num_envs: int = 2048) -> RigidObject:
     """Design the scene."""
     # Handler for terrains importing
-    terrain_importer_cfg = terrain_gen.TerrainImporterCfg(
+    terrain_importer_cfg = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
         terrain_generator=ROUGH_TERRAINS_CFG,
@@ -70,7 +77,7 @@ def design_scene(sim: SimulationContext, num_envs: int = 2048) -> RigidObject:
     )
     _ = TerrainImporter(terrain_importer_cfg)
     # obtain the current stage
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     # Create interface to clone the scene
     cloner = GridCloner(spacing=2.0, stage=stage)
     cloner.define_base_env("/World/envs")
@@ -81,16 +88,16 @@ def design_scene(sim: SimulationContext, num_envs: int = 2048) -> RigidObject:
     cloner.clone(source_prim_path="/World/envs/env_0", prim_paths=envs_prim_paths, replicate_physics=True)
     # Define the scene
     # -- Light
-    cfg = sim_utils.DistantLightCfg(intensity=2000)
+    cfg = DistantLightCfg(intensity=2000)
     cfg.func("/World/light", cfg)
     # -- Balls
     cfg = RigidObjectCfg(
-        spawn=sim_utils.SphereCfg(
+        spawn=SphereCfg(
             radius=0.25,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+            rigid_props=RigidBodyPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=0.5),
+            collision_props=CollisionPropertiesCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
         ),
         prim_path="/World/envs/env_.*/ball",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0)),

@@ -26,17 +26,27 @@ import warp as wp
 
 from pxr import Sdf
 
-import isaaclab.envs.mdp as mdp
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg, RigidObject, RigidObjectCfg
-from isaaclab.envs import ManagerBasedEnv, ManagerBasedEnvCfg
-from isaaclab.managers import ActionTerm, ActionTermCfg, SceneEntityCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.envs.manager_based_env_cfg import ManagerBasedEnvCfg
+from isaaclab.managers.action_manager import ActionTerm
+from isaaclab.managers.manager_term_cfg import ActionTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.envs.mdp.events import randomize_rigid_body_scale, reset_root_state_uniform
+from isaaclab.sim.schemas import MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg, RigidBodyMaterialCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
+from isaaclab.sim.utils.queries import find_matching_prim_paths
+from isaaclab.sim.utils.stage import create_new_stage, get_current_stage
 
 ##
 # Custom action term
@@ -152,12 +162,12 @@ class MySceneCfg(InteractiveSceneCfg):
     # add cube for scale randomization
     cube1: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/cube1",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.2, 0.2, 0.2),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0)),
+            rigid_props=RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            physics_material=RigidBodyMaterialCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 5)),
     )
@@ -165,12 +175,12 @@ class MySceneCfg(InteractiveSceneCfg):
     # add cube for static scale values
     cube2: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/cube2",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.2, 0.2, 0.2),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0)),
+            rigid_props=RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            physics_material=RigidBodyMaterialCfg(),
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 5)),
     )
@@ -178,7 +188,7 @@ class MySceneCfg(InteractiveSceneCfg):
     # lights
     light = AssetBaseCfg(
         prim_path="/World/light",
-        spawn=sim_utils.DistantLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+        spawn=DistantLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )
 
 
@@ -218,7 +228,7 @@ class EventCfg:
     """Configuration for events."""
 
     reset_base = EventTerm(
-        func=mdp.reset_root_state_uniform,
+        func=reset_root_state_uniform,
         mode="reset",
         params={
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
@@ -233,7 +243,7 @@ class EventCfg:
 
     # Scale randomization as intended
     randomize_cube1__scale = EventTerm(
-        func=mdp.randomize_rigid_body_scale,
+        func=randomize_rigid_body_scale,
         mode="prestartup",
         params={
             "scale_range": {"x": (0.5, 1.5), "y": (0.5, 1.5), "z": (0.5, 1.5)},
@@ -243,7 +253,7 @@ class EventCfg:
 
     # Static scale values
     randomize_cube2__scale = EventTerm(
-        func=mdp.randomize_rigid_body_scale,
+        func=randomize_rigid_body_scale,
         mode="prestartup",
         params={
             "scale_range": {"x": (1.0, 1.0), "y": (1.0, 1.0), "z": (1.0, 1.0)},
@@ -283,7 +293,7 @@ class CubeEnvCfg(ManagerBasedEnvCfg):
 def test_scale_randomization(device):
     """Test scale randomization for cube environment."""
     # create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     # set the device
     env_cfg = CubeEnvCfg()
@@ -298,15 +308,15 @@ def test_scale_randomization(device):
     target_position -= env.scene.env_origins
 
     # test to make sure all assets in the scene are created
-    all_prim_paths = sim_utils.find_matching_prim_paths("/World/envs/env_.*/cube.*/.*")
+    all_prim_paths = find_matching_prim_paths("/World/envs/env_.*/cube.*/.*")
     assert len(all_prim_paths) == (env.num_envs * 2)
 
     # test to make sure randomized values are truly random
     applied_scaling_randomization = set()
-    prim_paths = sim_utils.find_matching_prim_paths("/World/envs/env_.*/cube1")
+    prim_paths = find_matching_prim_paths("/World/envs/env_.*/cube1")
 
     # get the stage
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # check if the scale values are truly random
     for i in range(3):
@@ -319,7 +329,7 @@ def test_scale_randomization(device):
         applied_scaling_randomization.add(scale_spec.default)
 
     # test to make sure that fixed values are assigned correctly
-    prim_paths = sim_utils.find_matching_prim_paths("/World/envs/env_.*/cube2")
+    prim_paths = find_matching_prim_paths("/World/envs/env_.*/cube2")
     for i in range(3):
         prim_spec = Sdf.CreatePrimInLayer(stage.GetRootLayer(), prim_paths[i])
         scale_spec = prim_spec.GetAttributeAtPath(prim_paths[i] + ".xformOp:scale")
@@ -340,7 +350,7 @@ def test_scale_randomization(device):
 def test_scale_randomization_failure_replicate_physics():
     """Test scale randomization failure when replicate physics is set to True."""
     # create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # set the arguments
     cfg_failure = CubeEnvCfg()
     cfg_failure.scene.replicate_physics = True

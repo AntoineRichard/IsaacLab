@@ -12,11 +12,12 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-from isaaclab.envs import DirectRLEnv
-from isaaclab.sensors import TiledCamera, save_images_to_file
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.envs.direct_rl_env import DirectRLEnv
+from isaaclab.sensors.camera.tiled_camera import TiledCamera
+from isaaclab.sensors.camera.utils import save_images_to_file
 from isaaclab.utils.math import sample_uniform
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 if TYPE_CHECKING:
     from .cartpole_camera_env_cfg import (
@@ -84,7 +85,7 @@ class CartpoleCameraEnv(DirectRLEnv):
         self.scene.articulations["cartpole"] = self._cartpole
         self.scene.sensors["tiled_camera"] = self._tiled_camera
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:

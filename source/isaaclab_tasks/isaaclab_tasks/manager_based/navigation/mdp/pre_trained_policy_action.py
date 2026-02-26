@@ -11,14 +11,15 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.managers import ActionTerm, ObservationManager
+from isaaclab.managers.action_manager import ActionTerm
+from isaaclab.managers.observation_manager import ObservationManager
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import BLUE_ARROW_X_MARKER_CFG, GREEN_ARROW_X_MARKER_CFG
 from isaaclab.utils.assets import check_file_path, read_file
 
 if TYPE_CHECKING:
-    from isaaclab.assets import Articulation
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.assets.articulation.articulation import Articulation
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
     from .pre_trained_policy_action_cfg import PreTrainedPolicyActionCfg
 

@@ -20,9 +20,9 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from isaaclab.managers import EventManager
+from isaaclab.managers.event_manager import EventManager
 from isaaclab.scene import InteractiveScene
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.sim.utils.stage import use_stage
 from isaaclab.utils.noise import NoiseModel
 from isaaclab.utils.seed import configure_seed

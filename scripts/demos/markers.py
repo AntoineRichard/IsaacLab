@@ -33,11 +33,15 @@ simulation_app = app_launcher.app
 
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.math import quat_from_angle_axis
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import GlassMdlCfg, PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import ConeCfg, CuboidCfg, CylinderCfg, SphereCfg
 
 
 def define_markers() -> VisualizationMarkers:
@@ -45,46 +49,46 @@ def define_markers() -> VisualizationMarkers:
     marker_cfg = VisualizationMarkersCfg(
         prim_path="/Visuals/myMarkers",
         markers={
-            "frame": sim_utils.UsdFileCfg(
+            "frame": UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd",
                 scale=(0.5, 0.5, 0.5),
             ),
-            "arrow_x": sim_utils.UsdFileCfg(
+            "arrow_x": UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/arrow_x.usd",
                 scale=(1.0, 0.5, 0.5),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 1.0)),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 1.0)),
             ),
-            "cube": sim_utils.CuboidCfg(
+            "cube": CuboidCfg(
                 size=(1.0, 1.0, 1.0),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
             ),
-            "sphere": sim_utils.SphereCfg(
+            "sphere": SphereCfg(
                 radius=0.5,
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
             ),
-            "cylinder": sim_utils.CylinderCfg(
-                radius=0.5,
-                height=1.0,
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
-            ),
-            "cone": sim_utils.ConeCfg(
+            "cylinder": CylinderCfg(
                 radius=0.5,
                 height=1.0,
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
             ),
-            "mesh": sim_utils.UsdFileCfg(
+            "cone": ConeCfg(
+                radius=0.5,
+                height=1.0,
+                visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
+            ),
+            "mesh": UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
                 scale=(10.0, 10.0, 10.0),
             ),
-            "mesh_recolored": sim_utils.UsdFileCfg(
+            "mesh_recolored": UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
                 scale=(10.0, 10.0, 10.0),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.25, 0.0)),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.25, 0.0)),
             ),
-            "robot_mesh": sim_utils.UsdFileCfg(
+            "robot_mesh": UsdFileCfg(
                 usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/ANYbotics/ANYmal-C/anymal_c.usd",
                 scale=(2.0, 2.0, 2.0),
-                visual_material=sim_utils.GlassMdlCfg(glass_color=(0.0, 0.1, 0.0)),
+                visual_material=GlassMdlCfg(glass_color=(0.0, 0.1, 0.0)),
             ),
         },
     )
@@ -94,14 +98,14 @@ def define_markers() -> VisualizationMarkers:
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
+    sim_cfg = SimulationCfg(dt=0.01, device=args_cli.device)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([0.0, 18.0, 12.0], [0.0, 3.0, 0.0])
 
     # Spawn things into stage
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+    cfg = DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # create markers

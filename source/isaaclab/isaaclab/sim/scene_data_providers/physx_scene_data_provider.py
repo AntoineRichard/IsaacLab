@@ -13,6 +13,7 @@ from collections import deque
 from typing import Any
 
 from pxr import UsdGeom
+from isaaclab.sim.utils.transforms import resolve_prim_pose
 
 logger = logging.getLogger(__name__)
 
@@ -705,7 +706,6 @@ class PhysxSceneDataProvider:
         if self._stage is None:
             return None
 
-        import isaaclab.sim as isaaclab_sim
 
         env_pattern = re.compile(r"(?P<root>/World/envs/env_)(?P<id>\d+)(?P<path>/.*)")
         shared_paths: list[str] = []
@@ -759,7 +759,7 @@ class PhysxSceneDataProvider:
                 prim = self._stage.GetPrimAtPath(prim_path)
                 if not prim.IsValid():
                     continue
-                pos, ori = isaaclab_sim.resolve_prim_pose(prim)
+                pos, ori = resolve_prim_pose(prim)
                 per_world_pos[world_id] = [float(pos[0]), float(pos[1]), float(pos[2])]
                 per_world_ori[world_id] = [float(ori[0]), float(ori[1]), float(ori[2]), float(ori[3])]
             positions.append(per_world_pos)

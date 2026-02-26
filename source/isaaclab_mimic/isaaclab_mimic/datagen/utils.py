@@ -11,8 +11,8 @@ from typing import Any
 from IPython.display import display
 from ipywidgets import widgets
 
-from isaaclab.envs import ManagerBasedEnv
-from isaaclab.managers import EventTermCfg
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.managers.manager_term_cfg import EventTermCfg
 from isaaclab.utils.datasets import HDF5DatasetFileHandler
 
 

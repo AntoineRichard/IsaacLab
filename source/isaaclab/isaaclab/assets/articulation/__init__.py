@@ -4,17 +4,3 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 """Sub-module for rigid articulated assets."""
-
-from .base_articulation import BaseArticulation
-from .base_articulation_data import BaseArticulationData
-from .articulation import Articulation
-from .articulation_cfg import ArticulationCfg
-from .articulation_data import ArticulationData
-
-__all__ = [
-    "BaseArticulation",
-    "BaseArticulationData",
-    "Articulation",
-    "ArticulationCfg",
-    "ArticulationData",
-]

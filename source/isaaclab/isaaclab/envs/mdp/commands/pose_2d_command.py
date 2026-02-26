@@ -13,14 +13,14 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-from isaaclab.assets import Articulation
-from isaaclab.managers import CommandTerm
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.managers.command_manager import CommandTerm
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.terrains import TerrainImporter
+from isaaclab.terrains.terrain_importer import TerrainImporter
 from isaaclab.utils.math import quat_apply_inverse, quat_from_euler_xyz, wrap_to_pi, yaw_quat
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
     from .commands_cfg import TerrainBasedPose2dCommandCfg, UniformPose2dCommandCfg
 

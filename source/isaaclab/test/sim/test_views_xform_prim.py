@@ -24,21 +24,26 @@ except (ModuleNotFoundError, ImportError):
 import isaaclab.sim as sim_utils  # noqa: E402
 from isaaclab.sim.views import XformPrimView as XformPrimView  # noqa: E402
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR  # noqa: E402
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import clear_stage, create_new_stage, get_current_stage, update_stage
+from isaaclab.sim.utils.transforms import validate_standard_xform_ops
 
 
 @pytest.fixture(autouse=True)
 def test_setup_teardown():
     """Create a blank new stage for each test."""
     # Setup: Create a new stage
-    sim_utils.create_new_stage()
-    sim_utils.update_stage()
+    create_new_stage()
+    update_stage()
 
     # Yield for the test
     yield
 
     # Teardown: Clear stage after each test
-    sim_utils.clear_stage()
-    sim_utils.SimulationContext.clear_instance()
+    clear_stage()
+    SimulationContext.clear_instance()
 
 
 """
@@ -74,7 +79,7 @@ def _prim_type_for_backend(backend: str) -> str:
 def _create_view(pattern: str, device: str, backend: str) -> XformPrimView:
     """Create an XformPrimView for the requested backend."""
     if backend == "fabric":
-        sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01, device=device, use_fabric=True))
+        SimulationContext(SimulationCfg(dt=0.01, device=device, use_fabric=True))
     return XformPrimView(pattern, device=device)
 
 
@@ -91,8 +96,8 @@ def test_xform_prim_view_initialization_single_prim(device):
         pytest.skip("CUDA not available")
 
     # Create a single xform prim
-    stage = sim_utils.get_current_stage()
-    sim_utils.create_prim("/World/Object", "Xform", translation=(1.0, 2.0, 3.0), stage=stage)
+    stage = get_current_stage()
+    create_prim("/World/Object", "Xform", translation=(1.0, 2.0, 3.0), stage=stage)
 
     # Create view
     view = XformPrimView("/World/Object", device=device)
@@ -113,9 +118,9 @@ def test_xform_prim_view_initialization_multiple_prims(device):
 
     # Create multiple prims
     num_prims = 10
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Env_{i}/Object", "Xform", translation=(i * 2.0, 0.0, 1.0), stage=stage)
+        create_prim(f"/World/Env_{i}/Object", "Xform", translation=(i * 2.0, 0.0, 1.0), stage=stage)
 
     # Create view with pattern
     view = XformPrimView("/World/Env_.*/Object", device=device)
@@ -144,7 +149,7 @@ def test_xform_prim_view_initialization_multiple_prims_order(device):
 
     # Create multiple prims
     num_prims = 10
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # NOTE: Prims are created in a specific order to test that XformPrimView respects
     # USD stage traversal order (DFS based on creation order), NOT alphabetical/lexical order.
@@ -154,15 +159,15 @@ def test_xform_prim_view_initialization_multiple_prims_order(device):
     # First batch: Create Object_1, Object_0, Object_A for each environment
     # (intentionally non-alphabetical: 1, 0, A instead of 0, 1, A)
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Env_{i}/Object_1", "Xform", translation=(i * 2.0, -2.0, 1.0), stage=stage)
-        sim_utils.create_prim(f"/World/Env_{i}/Object_0", "Xform", translation=(i * 2.0, 2.0, 1.0), stage=stage)
-        sim_utils.create_prim(f"/World/Env_{i}/Object_A", "Xform", translation=(i * 2.0, 0.0, -1.0), stage=stage)
+        create_prim(f"/World/Env_{i}/Object_1", "Xform", translation=(i * 2.0, -2.0, 1.0), stage=stage)
+        create_prim(f"/World/Env_{i}/Object_0", "Xform", translation=(i * 2.0, 2.0, 1.0), stage=stage)
+        create_prim(f"/World/Env_{i}/Object_A", "Xform", translation=(i * 2.0, 0.0, -1.0), stage=stage)
 
     # Second batch: Create Object_a, Object_2 for each environment
     # (created after the first batch to verify traversal is depth-first per environment)
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Env_{i}/Object_a", "Xform", translation=(i * 2.0, 2.0, -1.0), stage=stage)
-        sim_utils.create_prim(f"/World/Env_{i}/Object_2", "Xform", translation=(i * 2.0, 2.0, 1.0), stage=stage)
+        create_prim(f"/World/Env_{i}/Object_a", "Xform", translation=(i * 2.0, 2.0, -1.0), stage=stage)
+        create_prim(f"/World/Env_{i}/Object_2", "Xform", translation=(i * 2.0, 2.0, 1.0), stage=stage)
 
     # Create view with pattern
     view = XformPrimView("/World/Env_.*/Object_.*", device=device)
@@ -212,14 +217,14 @@ def test_xform_prim_view_standardizes_transform_op(device):
     matrix = Gf.Matrix4d(1.0)
     matrix.SetTranslateOnly(Gf.Vec3d(*expected_pos))
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim = stage.DefinePrim("/World/TransformPrim", "Xform")
     UsdGeom.Xformable(prim).AddTransformOp().Set(matrix)
 
     view = XformPrimView("/World/TransformPrim", device=device)
 
     assert view.count == 1
-    assert sim_utils.validate_standard_xform_ops(view.prims[0])
+    assert validate_standard_xform_ops(view.prims[0])
 
     xformable = UsdGeom.Xformable(view.prims[0])
     ordered_ops = xformable.GetOrderedXformOps()
@@ -238,7 +243,7 @@ def test_xform_prim_view_initialization_empty_pattern(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     # Create view with pattern that matches nothing
     view = XformPrimView("/World/NonExistent_.*", device=device)
@@ -259,7 +264,7 @@ def test_get_world_poses(device, backend):
     """Test getting world poses from XformPrimView."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims with known world poses
@@ -267,7 +272,7 @@ def test_get_world_poses(device, backend):
     expected_orientations = [(0.0, 0.0, 0.0, 1.0), (0.0, 0.0, 0.7071068, 0.7071068), (0.7071068, 0.0, 0.0, 0.7071068)]
 
     for i, (pos, quat) in enumerate(zip(expected_positions, expected_orientations)):
-        sim_utils.create_prim(f"/World/Object_{i}", prim_type, translation=pos, orientation=quat, stage=stage)
+        create_prim(f"/World/Object_{i}", prim_type, translation=pos, orientation=quat, stage=stage)
 
     # Create view
     view = _create_view("/World/Object_.*", device=device, backend=backend)
@@ -299,11 +304,11 @@ def test_get_local_poses(device, backend):
     """Test getting local poses from XformPrimView."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create parent and child prims
-    sim_utils.create_prim("/World/Parent", "Xform", translation=(10.0, 0.0, 0.0), stage=stage)
+    create_prim("/World/Parent", "Xform", translation=(10.0, 0.0, 0.0), stage=stage)
 
     # Children with different local poses
     expected_local_positions = [(1.0, 0.0, 0.0), (0.0, 2.0, 0.0), (0.0, 0.0, 3.0)]
@@ -314,7 +319,7 @@ def test_get_local_poses(device, backend):
     ]
 
     for i, (pos, quat) in enumerate(zip(expected_local_positions, expected_local_orientations)):
-        sim_utils.create_prim(f"/World/Parent/Child_{i}", prim_type, translation=pos, orientation=quat, stage=stage)
+        create_prim(f"/World/Parent/Child_{i}", prim_type, translation=pos, orientation=quat, stage=stage)
 
     # Create view
     view = _create_view("/World/Parent/Child_.*", device=device, backend=backend)
@@ -346,14 +351,14 @@ def test_get_scales(device, backend):
     """Test getting scales from XformPrimView."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims with different scales
     expected_scales = [(1.0, 1.0, 1.0), (2.0, 2.0, 2.0), (1.0, 2.0, 3.0)]
 
     for i, scale in enumerate(expected_scales):
-        sim_utils.create_prim(f"/World/Object_{i}", prim_type, scale=scale, stage=stage)
+        create_prim(f"/World/Object_{i}", prim_type, scale=scale, stage=stage)
 
     # Create view
     view = _create_view("/World/Object_.*", device=device, backend=backend)
@@ -374,12 +379,12 @@ def test_get_visibility(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create prims (default is visible)
     num_prims = 5
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Object_{i}", "Xform", translation=(float(i), 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Object_{i}", "Xform", translation=(float(i), 0.0, 0.0), stage=stage)
 
     # Create view
     view = XformPrimView("/World/Object_.*", device=device)
@@ -404,13 +409,13 @@ def test_set_world_poses(device, backend):
     """Test setting world poses in XformPrimView."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims
     num_prims = 5
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Object_{i}", prim_type, translation=(0.0, 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Object_{i}", prim_type, translation=(0.0, 0.0, 0.0), stage=stage)
 
     # Create view
     view = _create_view("/World/Object_.*", device=device, backend=backend)
@@ -450,13 +455,13 @@ def test_set_world_poses_only_positions(device, backend):
     """Test setting only positions, leaving orientations unchanged."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims with specific orientations
     initial_quat = (0.0, 0.0, 0.7071068, 0.7071068)  # 90 deg around Z
     for i in range(3):
-        sim_utils.create_prim(
+        create_prim(
             f"/World/Object_{i}", prim_type, translation=(0.0, 0.0, 0.0), orientation=initial_quat, stage=stage
         )
 
@@ -489,12 +494,12 @@ def test_set_world_poses_only_orientations(device, backend):
     """Test setting only orientations, leaving positions unchanged."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims with specific positions
     for i in range(3):
-        sim_utils.create_prim(f"/World/Object_{i}", prim_type, translation=(float(i), 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Object_{i}", prim_type, translation=(float(i), 0.0, 0.0), stage=stage)
 
     # Create view
     view = _create_view("/World/Object_.*", device=device, backend=backend)
@@ -528,18 +533,18 @@ def test_set_world_poses_with_hierarchy(device, backend):
     """Test setting world poses correctly handles parent transformations."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     child_prim_type = _prim_type_for_backend(backend)
 
     # Create parent prims
     for i in range(3):
         parent_pos = (i * 10.0, 0.0, 0.0)
         parent_quat = (0.0, 0.0, 0.7071068, 0.7071068)  # 90 deg around Z
-        sim_utils.create_prim(
+        create_prim(
             f"/World/Parent_{i}", "Xform", translation=parent_pos, orientation=parent_quat, stage=stage
         )
         # Create child prims
-        sim_utils.create_prim(f"/World/Parent_{i}/Child", child_prim_type, translation=(0.0, 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Parent_{i}/Child", child_prim_type, translation=(0.0, 0.0, 0.0), stage=stage)
 
     # Create view for children
     view = _create_view("/World/Parent_.*/Child", device=device, backend=backend)
@@ -569,16 +574,16 @@ def test_set_local_poses(device, backend):
     """Test setting local poses in XformPrimView."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create parent
-    sim_utils.create_prim("/World/Parent", "Xform", translation=(5.0, 5.0, 5.0), stage=stage)
+    create_prim("/World/Parent", "Xform", translation=(5.0, 5.0, 5.0), stage=stage)
 
     # Create children
     num_prims = 4
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Parent/Child_{i}", prim_type, translation=(0.0, 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Parent/Child_{i}", prim_type, translation=(0.0, 0.0, 0.0), stage=stage)
 
     # Create view
     view = _create_view("/World/Parent/Child_.*", device=device, backend=backend)
@@ -614,15 +619,15 @@ def test_set_local_poses_only_translations(device, backend):
     """Test setting only local translations."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create parent and children with specific orientations
-    sim_utils.create_prim("/World/Parent", "Xform", translation=(0.0, 0.0, 0.0), stage=stage)
+    create_prim("/World/Parent", "Xform", translation=(0.0, 0.0, 0.0), stage=stage)
     initial_quat = (0.0, 0.0, 0.7071068, 0.7071068)
 
     for i in range(3):
-        sim_utils.create_prim(
+        create_prim(
             f"/World/Parent/Child_{i}",
             prim_type,
             translation=(0.0, 0.0, 0.0),
@@ -659,13 +664,13 @@ def test_set_scales(device, backend):
     """Test setting scales in XformPrimView."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims
     num_prims = 5
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Object_{i}", prim_type, scale=(1.0, 1.0, 1.0), stage=stage)
+        create_prim(f"/World/Object_{i}", prim_type, scale=(1.0, 1.0, 1.0), stage=stage)
 
     # Create view
     view = _create_view("/World/Object_.*", device=device, backend=backend)
@@ -690,12 +695,12 @@ def test_set_visibility(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create prims
     num_prims = 3
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Object_{i}", "Xform", stage=stage)
+        create_prim(f"/World/Object_{i}", "Xform", stage=stage)
 
     # Create view
     view = XformPrimView("/World/Object_.*", device=device)
@@ -733,15 +738,15 @@ def test_index_types_get_methods(device, index_type, method):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create prims based on method type
     num_prims = 10
     if method == "local_poses":
         # Create parent and children for local poses
-        sim_utils.create_prim("/World/Parent", "Xform", translation=(10.0, 0.0, 0.0), stage=stage)
+        create_prim("/World/Parent", "Xform", translation=(10.0, 0.0, 0.0), stage=stage)
         for i in range(num_prims):
-            sim_utils.create_prim(
+            create_prim(
                 f"/World/Parent/Child_{i}", "Xform", translation=(float(i), float(i) * 0.5, 0.0), stage=stage
             )
         view = XformPrimView("/World/Parent/Child_.*", device=device)
@@ -749,12 +754,12 @@ def test_index_types_get_methods(device, index_type, method):
         # Create prims with different scales
         for i in range(num_prims):
             scale = (1.0 + i * 0.5, 1.0 + i * 0.3, 1.0 + i * 0.2)
-            sim_utils.create_prim(f"/World/Object_{i}", "Xform", scale=scale, stage=stage)
+            create_prim(f"/World/Object_{i}", "Xform", scale=scale, stage=stage)
         view = XformPrimView("/World/Object_.*", device=device)
     else:  # world_poses
         # Create prims with different positions
         for i in range(num_prims):
-            sim_utils.create_prim(f"/World/Object_{i}", "Xform", translation=(float(i), 0.0, 0.0), stage=stage)
+            create_prim(f"/World/Object_{i}", "Xform", translation=(float(i), 0.0, 0.0), stage=stage)
         view = XformPrimView("/World/Object_.*", device=device)
 
     # Get all data as reference
@@ -809,19 +814,19 @@ def test_index_types_set_methods(device, index_type, method):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create prims based on method type
     num_prims = 10
     if method == "local_poses":
         # Create parent and children for local poses
-        sim_utils.create_prim("/World/Parent", "Xform", translation=(5.0, 5.0, 0.0), stage=stage)
+        create_prim("/World/Parent", "Xform", translation=(5.0, 5.0, 0.0), stage=stage)
         for i in range(num_prims):
-            sim_utils.create_prim(f"/World/Parent/Child_{i}", "Xform", translation=(float(i), 0.0, 0.0), stage=stage)
+            create_prim(f"/World/Parent/Child_{i}", "Xform", translation=(float(i), 0.0, 0.0), stage=stage)
         view = XformPrimView("/World/Parent/Child_.*", device=device)
     else:  # world_poses or scales
         for i in range(num_prims):
-            sim_utils.create_prim(f"/World/Object_{i}", "Xform", translation=(0.0, 0.0, 0.0), stage=stage)
+            create_prim(f"/World/Object_{i}", "Xform", translation=(0.0, 0.0, 0.0), stage=stage)
         view = XformPrimView("/World/Object_.*", device=device)
 
     # Get initial data
@@ -904,13 +909,13 @@ def test_indices_single_element(device, backend):
     """Test with a single index."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims
     num_prims = 5
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Object_{i}", prim_type, translation=(float(i), 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Object_{i}", prim_type, translation=(float(i), 0.0, 0.0), stage=stage)
 
     # Create view
     view = _create_view("/World/Object_.*", device=device, backend=backend)
@@ -938,13 +943,13 @@ def test_indices_out_of_order(device, backend):
     """Test with indices provided in non-sequential order."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims
     num_prims = 10
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Object_{i}", prim_type, translation=(0.0, 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Object_{i}", prim_type, translation=(0.0, 0.0, 0.0), stage=stage)
 
     # Create view
     view = _create_view("/World/Object_.*", device=device, backend=backend)
@@ -973,13 +978,13 @@ def test_indices_with_only_positions_or_orientations(device, backend):
     """Test indices work correctly when setting only positions or only orientations."""
     _skip_if_backend_unavailable(backend, device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     prim_type = _prim_type_for_backend(backend)
 
     # Create prims
     num_prims = 5
     for i in range(num_prims):
-        sim_utils.create_prim(
+        create_prim(
             f"/World/Object_{i}",
             prim_type,
             translation=(0.0, 0.0, 0.0),
@@ -1039,12 +1044,12 @@ def test_index_type_none_equivalent_to_all(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create prims
     num_prims = 6
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Object_{i}", "Xform", translation=(float(i), 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Object_{i}", "Xform", translation=(float(i), 0.0, 0.0), stage=stage)
 
     # Create view
     view = XformPrimView("/World/Object_.*", device=device)
@@ -1099,14 +1104,14 @@ def test_with_franka_robots(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Load Franka robot assets
     franka_usd_path = f"{ISAAC_NUCLEUS_DIR}/Robots/FrankaRobotics/FrankaPanda/franka.usd"
 
     # Add two Franka robots to the stage
-    sim_utils.create_prim("/World/Franka_1", "Xform", usd_path=franka_usd_path, stage=stage)
-    sim_utils.create_prim("/World/Franka_2", "Xform", usd_path=franka_usd_path, stage=stage)
+    create_prim("/World/Franka_1", "Xform", usd_path=franka_usd_path, stage=stage)
+    create_prim("/World/Franka_2", "Xform", usd_path=franka_usd_path, stage=stage)
 
     # Create view for both Frankas
     frankas_view = XformPrimView("/World/Franka_.*", device=device)
@@ -1153,12 +1158,12 @@ def test_with_nested_targets(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create frames and targets
     for i in range(1, 4):
-        sim_utils.create_prim(f"/World/Frame_{i}", "Xform", stage=stage)
-        sim_utils.create_prim(f"/World/Frame_{i}/Target", "Xform", stage=stage)
+        create_prim(f"/World/Frame_{i}", "Xform", stage=stage)
+        create_prim(f"/World/Frame_{i}/Target", "Xform", stage=stage)
 
     # Create views
     frames_view = XformPrimView("/World/Frame_.*", device=device)
@@ -1190,14 +1195,14 @@ def test_visibility_with_hierarchy(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create parent and children
-    sim_utils.create_prim("/World/Parent", "Xform", stage=stage)
+    create_prim("/World/Parent", "Xform", stage=stage)
 
     num_children = 4
     for i in range(num_children):
-        sim_utils.create_prim(f"/World/Parent/Child_{i}", "Xform", stage=stage)
+        create_prim(f"/World/Parent/Child_{i}", "Xform", stage=stage)
 
     # Create views for both parent and children
     parent_view = XformPrimView("/World/Parent", device=device)
@@ -1253,7 +1258,7 @@ Tests - Comparison with Isaac Sim Implementation.
 
 def test_compare_get_world_poses_with_isaacsim():
     """Compare get_world_poses with Isaac Sim's implementation."""
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Check if Isaac Sim is available
     if _IsaacSimXformPrimView is None:
@@ -1270,7 +1275,7 @@ def test_compare_get_world_poses_with_isaacsim():
             quat = (0.0, 0.0, 0.7071068, 0.7071068)  # 90 deg around Z
         else:
             quat = (0.7071068, 0.0, 0.0, 0.7071068)  # 90 deg around X
-        sim_utils.create_prim(f"/World/Env_{i}/Object", "Xform", translation=pos, orientation=quat, stage=stage)
+        create_prim(f"/World/Env_{i}/Object", "Xform", translation=pos, orientation=quat, stage=stage)
 
     pattern = "/World/Env_.*/Object"
 
@@ -1300,7 +1305,7 @@ def test_compare_get_world_poses_with_isaacsim():
 
 def test_compare_set_world_poses_with_isaacsim():
     """Compare set_world_poses with Isaac Sim's implementation."""
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Check if Isaac Sim is available
     if _IsaacSimXformPrimView is None:
@@ -1309,7 +1314,7 @@ def test_compare_set_world_poses_with_isaacsim():
     # Create prims
     num_prims = 8
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Env_{i}/Object", "Xform", translation=(0.0, 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Env_{i}/Object", "Xform", translation=(0.0, 0.0, 0.0), stage=stage)
 
     pattern = "/World/Env_.*/Object"
 
@@ -1345,7 +1350,7 @@ def test_compare_set_world_poses_with_isaacsim():
 
 def test_compare_get_local_poses_with_isaacsim():
     """Compare get_local_poses with Isaac Sim's implementation."""
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Check if Isaac Sim is available
     if _IsaacSimXformPrimView is None:
@@ -1355,11 +1360,11 @@ def test_compare_get_local_poses_with_isaacsim():
     num_prims = 5
     for i in range(num_prims):
         # Create parent
-        sim_utils.create_prim(f"/World/Env_{i}", "Xform", translation=(i * 5.0, 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Env_{i}", "Xform", translation=(i * 5.0, 0.0, 0.0), stage=stage)
         # Create child with local pose
         local_pos = (1.0, float(i), 0.0)
         local_quat = (0.0, 0.0, 0.0, 1.0) if i % 2 == 0 else (0.0, 0.0, 0.7071068, 0.7071068)
-        sim_utils.create_prim(
+        create_prim(
             f"/World/Env_{i}/Object", "Xform", translation=local_pos, orientation=local_quat, stage=stage
         )
 
@@ -1389,7 +1394,7 @@ def test_compare_get_local_poses_with_isaacsim():
 
 def test_compare_set_local_poses_with_isaacsim():
     """Compare set_local_poses with Isaac Sim's implementation."""
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Check if Isaac Sim is available
     if _IsaacSimXformPrimView is None:
@@ -1398,8 +1403,8 @@ def test_compare_set_local_poses_with_isaacsim():
     # Create hierarchical prims
     num_prims = 6
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Env_{i}", "Xform", translation=(i * 3.0, 0.0, 0.0), stage=stage)
-        sim_utils.create_prim(f"/World/Env_{i}/Object", "Xform", translation=(0.0, 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Env_{i}", "Xform", translation=(i * 3.0, 0.0, 0.0), stage=stage)
+        create_prim(f"/World/Env_{i}/Object", "Xform", translation=(0.0, 0.0, 0.0), stage=stage)
 
     pattern = "/World/Env_.*/Object"
 
@@ -1445,12 +1450,12 @@ def test_fabric_initialization(device):
     """Test XformPrimView initialization with Fabric enabled."""
     _skip_if_backend_unavailable("fabric", device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create camera prims (Boundable prims that support Fabric)
     num_prims = 5
     for i in range(num_prims):
-        sim_utils.create_prim(f"/World/Cam_{i}", "Camera", translation=(i * 1.0, 0.0, 1.0), stage=stage)
+        create_prim(f"/World/Cam_{i}", "Camera", translation=(i * 1.0, 0.0, 1.0), stage=stage)
 
     # Create view with Fabric enabled
     view = _create_view("/World/Cam_.*", device=device, backend="fabric")
@@ -1472,12 +1477,12 @@ def test_fabric_usd_consistency(device):
     """
     _skip_if_backend_unavailable("fabric", device)
 
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # Create prims
     num_prims = 5
     for i in range(num_prims):
-        sim_utils.create_prim(
+        create_prim(
             f"/World/Cam_{i}",
             "Camera",
             translation=(i * 1.0, 2.0, 3.0),

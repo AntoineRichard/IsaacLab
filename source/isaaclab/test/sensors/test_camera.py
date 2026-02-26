@@ -27,10 +27,25 @@ import torch
 import omni.replicator.core as rep
 from pxr import Gf, Usd, UsdGeom
 
-import isaaclab.sim as sim_utils
-from isaaclab.sensors.camera import Camera, CameraCfg
+from isaaclab.sensors.camera.camera import Camera
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
 from isaaclab.utils.dict import convert_dict_to_backend
 from isaaclab.utils.timer import Timer
+from isaaclab.sim.schemas import (
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+    define_collision_properties,
+    define_mass_properties,
+    define_rigid_body_properties,
+)
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import SphereLightCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 # sample camera poses
 POSITION = (2.5, 2.5, 2.5)
@@ -46,32 +61,32 @@ HEIGHT = 240
 WIDTH = 320
 
 
-def setup() -> tuple[sim_utils.SimulationContext, CameraCfg, float]:
+def setup() -> tuple[SimulationContext, CameraCfg, float]:
     camera_cfg = CameraCfg(
         height=HEIGHT,
         width=WIDTH,
         prim_path="/World/Camera",
         update_period=0,
         data_types=["distance_to_image_plane"],
-        spawn=sim_utils.PinholeCameraCfg(
+        spawn=PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
     )
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Simulation time-step
     dt = 0.01
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=dt)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=dt)
+    sim = SimulationContext(sim_cfg)
     # populate scene
     _populate_scene()
     # load stage
-    sim_utils.update_stage()
+    update_stage()
     return sim, camera_cfg, dt
 
 
-def teardown(sim: sim_utils.SimulationContext):
+def teardown(sim: SimulationContext):
     # Cleanup
     # close all the opened viewport from before.
     rep.vp_manager.destroy_hydra_textures("Replicator")
@@ -298,7 +313,7 @@ def test_camera_init_intrinsic_matrix(setup_sim_camera):
         prim_path="/World/Camera_2",
         update_period=0,
         data_types=["distance_to_image_plane"],
-        spawn=sim_utils.PinholeCameraCfg.from_intrinsic_matrix(
+        spawn=PinholeCameraCfg.from_intrinsic_matrix(
             intrinsic_matrix=intrinsic_matrix,
             width=WIDTH,
             height=HEIGHT,
@@ -433,7 +448,7 @@ def test_depth_clipping(setup_sim_camera):
     camera_cfg_zero = CameraCfg(
         prim_path="/World/CameraZero",
         offset=CameraCfg.OffsetCfg(pos=(2.5, 2.5, 6.0), rot=(0.362, 0.873, -0.302, -0.125), convention="ros"),
-        spawn=sim_utils.PinholeCameraCfg().from_intrinsic_matrix(
+        spawn=PinholeCameraCfg().from_intrinsic_matrix(
             focal_length=38.0,
             intrinsic_matrix=[380.08, 0.0, 467.79, 0.0, 380.08, 262.05, 0.0, 0.0, 1.0],
             height=540,
@@ -941,10 +956,10 @@ def test_sensor_print(setup_sim_camera):
 def _populate_scene():
     """Add prims to the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.SphereLightCfg()
+    cfg = SphereLightCfg()
     cfg.func("/World/Light/GreySphere", cfg, translation=(4.5, 3.5, 10.0))
     cfg.func("/World/Light/WhiteSphere", cfg, translation=(-4.5, 3.5, 10.0))
     # Random objects
@@ -955,7 +970,7 @@ def _populate_scene():
         position *= np.asarray([1.5, 1.5, 0.5])
         # create prim
         prim_type = random.choice(["Cube", "Sphere", "Cylinder"])
-        prim = sim_utils.create_prim(
+        prim = create_prim(
             f"/World/Objects/Obj_{i:02d}",
             prim_type,
             translation=position,
@@ -970,6 +985,6 @@ def _populate_scene():
         geom_prim.GetDisplayColorAttr().Set([color])
         # add rigid body and collision properties using Isaac Lab schemas
         prim_path = f"/World/Objects/Obj_{i:02d}"
-        sim_utils.define_rigid_body_properties(prim_path, sim_utils.RigidBodyPropertiesCfg())
-        sim_utils.define_mass_properties(prim_path, sim_utils.MassPropertiesCfg(mass=5.0))
-        sim_utils.define_collision_properties(prim_path, sim_utils.CollisionPropertiesCfg())
+        define_rigid_body_properties(prim_path, RigidBodyPropertiesCfg())
+        define_mass_properties(prim_path, MassPropertiesCfg(mass=5.0))
+        define_collision_properties(prim_path, CollisionPropertiesCfg())

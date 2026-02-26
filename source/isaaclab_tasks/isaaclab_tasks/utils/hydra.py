@@ -15,7 +15,8 @@ try:
 except ImportError:
     raise ImportError("Hydra is not installed. Please install it by running 'pip install hydra-core'.")
 
-from isaaclab.envs import DirectRLEnvCfg, ManagerBasedRLEnvCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
 from isaaclab.envs.utils.spaces import replace_env_cfg_spaces_with_strings, replace_strings_with_env_cfg_spaces
 from isaaclab.utils.dict import replace_slices_with_strings, replace_strings_with_slices
 

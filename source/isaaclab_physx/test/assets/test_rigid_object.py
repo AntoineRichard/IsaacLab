@@ -25,9 +25,8 @@ import warp as wp
 from flaky import flaky
 from isaaclab_physx.assets import RigidObject
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObjectCfg
-from isaaclab.sim import build_simulation_context
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.sim.simulation_context import build_simulation_context
 from isaaclab.sim.spawners import materials
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.math import (
@@ -39,6 +38,10 @@ from isaaclab.utils.math import (
     quat_rotate,
     random_orientation,
 )
+from isaaclab.sim.schemas import CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UsdFileCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def generate_cubes_scene(
@@ -64,24 +67,24 @@ def generate_cubes_scene(
     origins = torch.tensor([(i * 1.0, 0, height) for i in range(num_cubes)]).to(device)
     # Create Top-level Xforms, one for each cube
     for i, origin in enumerate(origins):
-        sim_utils.create_prim(f"/World/Table_{i}", "Xform", translation=origin)
+        create_prim(f"/World/Table_{i}", "Xform", translation=origin)
 
     # Resolve spawn configuration
     if api == "none":
         # since no rigid body properties defined, this is just a static collider
-        spawn_cfg = sim_utils.CuboidCfg(
+        spawn_cfg = CuboidCfg(
             size=(0.1, 0.1, 0.1),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            collision_props=CollisionPropertiesCfg(),
         )
     elif api == "rigid_body":
-        spawn_cfg = sim_utils.UsdFileCfg(
+        spawn_cfg = UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
+            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
         )
     elif api == "articulation_root":
-        spawn_cfg = sim_utils.UsdFileCfg(
+        spawn_cfg = UsdFileCfg(
             usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Tests/RigidObject/Cube/dex_cube_instanceable_with_articulation_root.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
+            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
         )
     else:
         raise ValueError(f"Unknown api: {api}")
@@ -615,7 +618,7 @@ def test_rigid_body_no_friction(num_cubes, device):
         cube_object, _ = generate_cubes_scene(num_cubes=num_cubes, height=0.0, device=device)
 
         # Create ground plane with no friction
-        cfg = sim_utils.GroundPlaneCfg(
+        cfg = GroundPlaneCfg(
             physics_material=materials.RigidBodyMaterialCfg(
                 static_friction=0.0,
                 dynamic_friction=0.0,
@@ -681,7 +684,7 @@ def test_rigid_body_with_static_friction(num_cubes, device):
 
         # Create ground plane
         static_friction_coefficient = 0.5
-        cfg = sim_utils.GroundPlaneCfg(
+        cfg = GroundPlaneCfg(
             physics_material=materials.RigidBodyMaterialCfg(
                 static_friction=static_friction_coefficient,
                 dynamic_friction=static_friction_coefficient,  # This shouldn't be required but is due to a bug in PhysX
@@ -773,7 +776,7 @@ def test_rigid_body_with_restitution(num_cubes, device):
                 restitution_coefficient = 0.5
 
             # Create ground plane such that has a restitution of 1.0 (perfectly elastic collision)
-            cfg = sim_utils.GroundPlaneCfg(
+            cfg = GroundPlaneCfg(
                 physics_material=materials.RigidBodyMaterialCfg(
                     restitution=restitution_coefficient,
                 )

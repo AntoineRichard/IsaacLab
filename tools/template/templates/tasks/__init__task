@@ -17,7 +17,7 @@ gym.register(
 {% if task.workflow.name == "direct" %}
     entry_point=f"{__name__}.{{ task.filename }}_env:{{ task.classname }}Env",
 {% else %}
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="isaaclab.envs.manager_based_rl_env:ManagerBasedRLEnv",
 {% endif %}
     disable_env_checker=True,
     kwargs={

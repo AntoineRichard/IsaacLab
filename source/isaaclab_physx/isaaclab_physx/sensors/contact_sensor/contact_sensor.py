@@ -16,10 +16,9 @@ import warp as wp
 
 import omni.physics.tensors.impl.api as physx
 
-import isaaclab.sim as sim_utils
 from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.sensors.contact_sensor import BaseContactSensor
+from isaaclab.sensors.contact_sensor.base_contact_sensor import BaseContactSensor
 
 from isaaclab_physx.physics import PhysxManager as SimulationManager
 
@@ -31,9 +30,10 @@ from .kernels import (
     unpack_contact_buffer_data,
     update_net_forces_kernel,
 )
+from isaaclab.sim.utils.queries import find_matching_prims
 
 if TYPE_CHECKING:
-    from isaaclab.sensors.contact_sensor import ContactSensorCfg
+    from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
 
 
 class ContactSensor(BaseContactSensor):
@@ -291,7 +291,7 @@ class ContactSensor(BaseContactSensor):
         leaf_pattern = self.cfg.prim_path.rsplit("/", 1)[-1]
         template_prim_path = self._parent_prims[0].GetPath().pathString
         body_names = list()
-        for prim in sim_utils.find_matching_prims(template_prim_path + "/" + leaf_pattern):
+        for prim in find_matching_prims(template_prim_path + "/" + leaf_pattern):
             # check if prim has contact reporter API
             if "PhysxContactReportAPI" in prim.GetAppliedSchemas():
                 prim_path = prim.GetPath().pathString

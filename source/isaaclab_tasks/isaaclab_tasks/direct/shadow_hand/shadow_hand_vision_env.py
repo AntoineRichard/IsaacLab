@@ -11,14 +11,15 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
-from isaaclab.sensors import TiledCamera
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.sensors.camera.tiled_camera import TiledCamera
 from isaaclab.utils.math import quat_apply
 
 from isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env import InHandManipulationEnv, unscale
 
 from .feature_extractor import FeatureExtractor
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 if TYPE_CHECKING:
     from .shadow_hand_vision_env_cfg import ShadowHandVisionEnvCfg
@@ -49,7 +50,7 @@ class ShadowHandVisionEnv(InHandManipulationEnv):
         self.scene.rigid_objects["object"] = self.object
         self.scene.sensors["tiled_camera"] = self._tiled_camera
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _compute_image_observations(self):

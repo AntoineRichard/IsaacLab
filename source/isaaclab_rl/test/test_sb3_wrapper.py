@@ -19,14 +19,15 @@ import numpy as np
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.app.settings_manager import get_settings_manager
-from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
+from isaaclab.envs.direct_marl_env import DirectMARLEnv
+from isaaclab.envs.utils.marl import multi_agent_to_single_agent
 
 from isaaclab_rl.sb3 import Sb3VecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture(scope="module")
@@ -60,7 +61,7 @@ def test_random_actions(registered_tasks):
         # Use pytest's subtests
         print(f">>> Running test for environment: {task_name}")
         # create a new stage
-        sim_utils.create_new_stage()
+        create_new_stage()
         # reset the rtx sensors carb setting to False
         get_settings_manager().set_bool("/isaaclab/render/rtx_sensors", False)
         try:

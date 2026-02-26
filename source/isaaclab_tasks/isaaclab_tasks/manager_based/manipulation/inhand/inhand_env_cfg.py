@@ -9,15 +9,16 @@ from dataclasses import MISSING
 
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import RewardTermCfg as RewTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
@@ -26,6 +27,9 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
 
 import isaaclab_tasks.manager_based.manipulation.inhand.mdp as mdp
+from isaaclab.sim.schemas import MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg, DomeLightCfg
 
 ##
 # Scene definition
@@ -42,9 +46,9 @@ class InHandObjectSceneCfg(InteractiveSceneCfg):
     # objects
     object: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/object",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
                 disable_gravity=False,
                 enable_gyroscopic_forces=True,
@@ -54,7 +58,7 @@ class InHandObjectSceneCfg(InteractiveSceneCfg):
                 stabilization_threshold=0.0025,
                 max_depenetration_velocity=1000.0,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(density=400.0),
+            mass_props=MassPropertiesCfg(density=400.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.19, 0.56), rot=(0.0, 0.0, 0.0, 1.0)),
     )
@@ -62,12 +66,12 @@ class InHandObjectSceneCfg(InteractiveSceneCfg):
     # lights
     light = AssetBaseCfg(
         prim_path="/World/light",
-        spawn=sim_utils.DistantLightCfg(color=(0.95, 0.95, 0.95), intensity=1000.0),
+        spawn=DistantLightCfg(color=(0.95, 0.95, 0.95), intensity=1000.0),
     )
 
     dome_light = AssetBaseCfg(
         prim_path="/World/domeLight",
-        spawn=sim_utils.DomeLightCfg(color=(0.02, 0.02, 0.02), intensity=1000.0),
+        spawn=DomeLightCfg(color=(0.02, 0.02, 0.02), intensity=1000.0),
     )
 
 

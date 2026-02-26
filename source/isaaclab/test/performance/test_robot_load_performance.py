@@ -17,13 +17,13 @@ import pytest
 import torch
 from isaaclab_physx.cloner import physx_replicate
 
-import isaaclab.sim.utils as sim_utils
-from isaaclab import cloner
-from isaaclab.assets import Articulation
-from isaaclab.sim import build_simulation_context
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.sim.simulation_context import build_simulation_context
 from isaaclab.utils.timer import Timer
 
 from isaaclab_assets import ANYMAL_D_CFG, CARTPOLE_CFG
+from isaaclab.cloner.cloner_utils import grid_transforms, usd_replicate
+from isaaclab.sim.utils.stage import get_current_stage
 
 NUM_ENVS = 4096
 SPACING = 2.0
@@ -43,15 +43,15 @@ def test_robot_load_performance(test_config, device):
     """Test robot load time."""
     with build_simulation_context(device=device) as sim:
         sim._app_control_on_stop_handle = None
-        stage = sim_utils.get_current_stage()
+        stage = get_current_stage()
 
         # Generate grid positions for environments
-        positions, _ = cloner.grid_transforms(NUM_ENVS, SPACING, device=device)
+        positions, _ = grid_transforms(NUM_ENVS, SPACING, device=device)
 
         # Create environment prims using USD replicate
         env_paths = [f"/World/Robots_{i}" for i in range(NUM_ENVS)]
         stage.DefinePrim(env_paths[0], "Xform")
-        cloner.usd_replicate(
+        usd_replicate(
             stage=stage,
             sources=[env_paths[0]],
             destinations=["/World/Robots_{}"],

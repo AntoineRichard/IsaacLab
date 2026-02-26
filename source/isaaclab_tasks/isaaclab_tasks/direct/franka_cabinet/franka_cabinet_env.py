@@ -10,13 +10,13 @@ import warp as wp
 
 from pxr import UsdGeom
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-from isaaclab.envs import DirectRLEnv
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.envs.direct_rl_env import DirectRLEnv
 from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.math import combine_frame_transforms, quat_apply, quat_conjugate, sample_uniform
 
 from .franka_cabinet_env_cfg import FrankaCabinetEnvCfg  # noqa: F401
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 class FrankaCabinetEnv(DirectRLEnv):
@@ -143,7 +143,7 @@ class FrankaCabinetEnv(DirectRLEnv):
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
 
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     # pre-physics step calls

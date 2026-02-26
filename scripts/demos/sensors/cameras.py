@@ -44,12 +44,14 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import CameraCfg, RayCasterCameraCfg, TiledCameraCfg
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
+from isaaclab.sensors.camera.tiled_camera_cfg import TiledCameraCfg
+from isaaclab.sensors.ray_caster.ray_caster_camera_cfg import RayCasterCameraCfg
 from isaaclab.sensors.ray_caster import patterns
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 
 ##
@@ -57,6 +59,10 @@ from isaaclab.utils.configclass import configclass
 ##
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort:skip
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort: skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
 
 
 @configclass
@@ -75,7 +81,7 @@ class SensorsSceneCfg(InteractiveSceneCfg):
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
     )
 
     # robot
@@ -88,7 +94,7 @@ class SensorsSceneCfg(InteractiveSceneCfg):
         height=480,
         width=640,
         data_types=["rgb", "distance_to_image_plane"],
-        spawn=sim_utils.PinholeCameraCfg(
+        spawn=PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
         offset=CameraCfg.OffsetCfg(pos=(0.510, 0.0, 0.015), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"),
@@ -169,7 +175,7 @@ def save_images_grid(
     plt.close()
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: SimulationContext, scene: InteractiveScene):
     """Run the simulator."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -281,8 +287,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
 def main():
     """Main function."""
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device, use_fabric=not args_cli.disable_fabric)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device, use_fabric=not args_cli.disable_fabric)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[3.5, 3.5, 3.5], target=[0.0, 0.0, 0.0])
     # design scene

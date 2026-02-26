@@ -39,11 +39,15 @@ from typing import Any
 
 from pxr import Gf
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.ui.xr_widgets import DataCollector, TriggerType, VisualizationManager, XRVisualization, update_instruction
 from isaaclab.utils.configclass import configclass
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.utils.stage import get_current_stage
 
 ##
 # Pre-defined configs
@@ -55,11 +59,11 @@ class SimpleSceneCfg(InteractiveSceneCfg):
     """Design the scene with sensors on the robot."""
 
     # ground plane
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=GroundPlaneCfg())
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
 
@@ -72,7 +76,7 @@ def get_camera_position():
     try:
         from pxr import UsdGeom
 
-        stage = sim_utils.get_current_stage()
+        stage = get_current_stage()
         if stage is not None:
             # Get the viewport camera prim
             camera_prim_path = "/OmniverseKit_Persp"
@@ -216,7 +220,7 @@ def apply_sample_visualization():
 
 
 def run_simulator(
-    sim: sim_utils.SimulationContext,
+    sim: SimulationContext,
     scene: InteractiveScene,
 ):
     """Run the simulator."""
@@ -241,8 +245,8 @@ def main():
     """Main function."""
 
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.005)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=(8, 0, 4), target=(0.0, 0.0, 0.0))
     # design scene

@@ -7,9 +7,9 @@ from isaaclab_physx.assets import DeformableObjectCfg
 
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
 from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sim.spawners import UsdFileCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 

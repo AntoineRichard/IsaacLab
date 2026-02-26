@@ -4,11 +4,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObjectCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import FrameTransformerCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
@@ -24,6 +23,7 @@ from isaaclab_tasks.manager_based.manipulation.stack.stack_env_cfg import StackE
 ##
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG  # isort: skip
+from isaaclab.sim.schemas import RigidBodyPropertiesCfg
 
 
 @configclass
@@ -136,7 +136,7 @@ class FrankaBinStackEnvCfg(StackEnvCfg):
             spawn=UsdFileCfg(
                 usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/sorting_bin_blue.usd",
                 scale=(1.1, 1.6, 3.3),
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+                rigid_props=RigidBodyPropertiesCfg(),
             ),
         )
 

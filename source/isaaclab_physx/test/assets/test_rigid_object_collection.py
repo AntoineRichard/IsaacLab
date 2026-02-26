@@ -23,9 +23,9 @@ import torch
 import warp as wp
 from isaaclab_physx.assets import RigidObjectCollection
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObjectCfg, RigidObjectCollectionCfg
-from isaaclab.sim import build_simulation_context
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.assets.rigid_object_collection.rigid_object_collection_cfg import RigidObjectCollectionCfg
+from isaaclab.sim.simulation_context import build_simulation_context
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import (
     combine_frame_transforms,
@@ -37,6 +37,10 @@ from isaaclab.utils.math import (
     random_orientation,
     subtract_frame_transforms,
 )
+from isaaclab.sim.schemas import CollisionPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def generate_cubes_scene(
@@ -64,19 +68,19 @@ def generate_cubes_scene(
     origins = torch.tensor([(i * 3.0, 0, height) for i in range(num_envs)]).to(device)
     # Create Top-level Xforms, one for each cube
     for i, origin in enumerate(origins):
-        sim_utils.create_prim(f"/World/Table_{i}", "Xform", translation=origin)
+        create_prim(f"/World/Table_{i}", "Xform", translation=origin)
 
     # Resolve spawn configuration
     if has_api:
-        spawn_cfg = sim_utils.UsdFileCfg(
+        spawn_cfg = UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
+            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=kinematic_enabled),
         )
     else:
         # since no rigid body properties defined, this is just a static collider
-        spawn_cfg = sim_utils.CuboidCfg(
+        spawn_cfg = CuboidCfg(
             size=(0.1, 0.1, 0.1),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            collision_props=CollisionPropertiesCfg(),
         )
 
     # create the rigid object configs

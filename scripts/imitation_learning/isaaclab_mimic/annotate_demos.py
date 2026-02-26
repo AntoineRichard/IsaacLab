@@ -56,11 +56,12 @@ import isaaclab_mimic.envs  # noqa: F401
 
 # Only enables inputs if this script is NOT headless mode
 if not args_cli.headless and not os.environ.get("HEADLESS", 0):
-    from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
+    from isaaclab.devices.keyboard import Se3Keyboard, Se3KeyboardCfg
 
-from isaaclab.envs import ManagerBasedRLMimicEnv
+from isaaclab.envs.manager_based_rl_mimic_env import ManagerBasedRLMimicEnv
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
-from isaaclab.managers import RecorderTerm, RecorderTermCfg, TerminationTermCfg
+from isaaclab.managers.manager_term_cfg import RecorderTermCfg, TerminationTermCfg
+from isaaclab.managers.recorder_manager import RecorderTerm
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 

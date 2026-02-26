@@ -24,9 +24,8 @@ import warnings
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
 import isaaclab.sim.utils.prims as prim_utils
-from isaaclab.sim import build_simulation_context
+from isaaclab.sim.simulation_context import build_simulation_context
 
 from isaaclab_contrib.assets import Multirotor, MultirotorCfg
 
@@ -40,6 +39,7 @@ warnings.filterwarnings("ignore", category=pytest.PytestUnraisableExceptionWarni
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.arl_robot_1 import ARL_ROBOT_1_CFG
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 
 def generate_multirotor_cfg(usd_path: str | None = None) -> MultirotorCfg:
@@ -55,7 +55,7 @@ def generate_multirotor_cfg(usd_path: str | None = None) -> MultirotorCfg:
     if usd_path is None:
         return MultirotorCfg()
 
-    return MultirotorCfg(spawn=sim_utils.UsdFileCfg(usd_path=usd_path))
+    return MultirotorCfg(spawn=UsdFileCfg(usd_path=usd_path))
 
 
 # -----------------------

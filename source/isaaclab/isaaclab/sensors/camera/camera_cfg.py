@@ -11,7 +11,7 @@ from typing import Literal
 from isaaclab_physx.renderers import IsaacRtxRendererCfg
 
 from isaaclab.renderers import RendererCfg
-from isaaclab.sim import FisheyeCameraCfg, PinholeCameraCfg
+from isaaclab.sim.spawners.sensors import FisheyeCameraCfg, PinholeCameraCfg
 from isaaclab.utils.configclass import configclass
 
 from ..sensor_base_cfg import SensorBaseCfg

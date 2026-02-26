@@ -7,23 +7,32 @@ from dataclasses import MISSING
 
 from isaaclab_physx.physics import PhysxCfg
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
-from isaaclab.envs import ManagerBasedEnvCfg, ViewerCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.envs.common import ViewerCfg
+from isaaclab.envs.manager_based_env_cfg import ManagerBasedEnvCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import RewardTermCfg as RewTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import CapsuleCfg, ConeCfg, CuboidCfg, RigidBodyMaterialCfg, SphereCfg
+from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
+from isaaclab.sim.spawners.shapes import CapsuleCfg, ConeCfg, CuboidCfg, SphereCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from . import mdp
 from .adr_curriculum import CurriculumCfg
+from isaaclab.sim.schemas import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import CuboidCfg
+from isaaclab.sim.spawners.wrappers import MultiAssetSpawnerCfg
 
 
 @configclass
@@ -36,7 +45,7 @@ class SceneCfg(InteractiveSceneCfg):
     # object
     object: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
-        spawn=sim_utils.MultiAssetSpawnerCfg(
+        spawn=MultiAssetSpawnerCfg(
             assets_cfg=[
                 CuboidCfg(size=(0.05, 0.1, 0.1), physics_material=RigidBodyMaterialCfg(static_friction=0.5)),
                 CuboidCfg(size=(0.05, 0.05, 0.1), physics_material=RigidBodyMaterialCfg(static_friction=0.5)),
@@ -55,13 +64,13 @@ class SceneCfg(InteractiveSceneCfg):
                 ConeCfg(radius=0.05, height=0.1, physics_material=RigidBodyMaterialCfg(static_friction=0.5)),
                 ConeCfg(radius=0.025, height=0.1, physics_material=RigidBodyMaterialCfg(static_friction=0.5)),
             ],
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=0,
                 disable_gravity=False,
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.2),
+            collision_props=CollisionPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=0.2),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(-0.55, 0.1, 0.35)),
     )
@@ -69,10 +78,10 @@ class SceneCfg(InteractiveSceneCfg):
     # table
     table: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/table",
-        spawn=sim_utils.CuboidCfg(
+        spawn=CuboidCfg(
             size=(0.8, 1.5, 0.04),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=CollisionPropertiesCfg(),
             # trick: we let visualizer's color to show the table with success coloring
             visible=False,
         ),
@@ -83,14 +92,14 @@ class SceneCfg(InteractiveSceneCfg):
     plane = AssetBaseCfg(
         prim_path="/World/GroundPlane",
         init_state=AssetBaseCfg.InitialStateCfg(),
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=GroundPlaneCfg(),
         collision_group=-1,
     )
 
     # lights
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
-        spawn=sim_utils.DomeLightCfg(
+        spawn=DomeLightCfg(
             intensity=750.0,
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
         ),
@@ -408,10 +417,10 @@ class DexsuiteReorientEnvCfg(ManagerBasedEnvCfg):
         self.commands.object_pose.resampling_time_range = (10.0, 10.0)
         self.commands.object_pose.position_only = False
         self.commands.object_pose.success_visualizer_cfg.markers["failure"] = self.scene.table.spawn.replace(
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.25, 0.15, 0.15), roughness=0.25), visible=True
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.25, 0.15, 0.15), roughness=0.25), visible=True
         )
         self.commands.object_pose.success_visualizer_cfg.markers["success"] = self.scene.table.spawn.replace(
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.25, 0.15), roughness=0.25), visible=True
+            visual_material=PreviewSurfaceCfg(diffuse_color=(0.15, 0.25, 0.15), roughness=0.25), visible=True
         )
 
         self.episode_length_s = 4.0

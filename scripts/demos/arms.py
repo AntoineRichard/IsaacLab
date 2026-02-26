@@ -36,8 +36,7 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 ##
@@ -52,6 +51,11 @@ from isaaclab_assets import (
     KINOVA_GEN3_N7_CFG,
     SAWYER_CFG,
 )
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, UsdFileCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.utils.prims import create_prim
 
 # isort: on
 
@@ -74,10 +78,10 @@ def define_origins(num_origins: int, spacing: float) -> list[list[float]]:
 def design_scene() -> tuple[dict, list[list[float]]]:
     """Designs the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+    cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # Create separate groups called "Origin1", "Origin2", "Origin3"
@@ -85,9 +89,9 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     origins = define_origins(num_origins=6, spacing=2.0)
 
     # Origin 1 with Franka Panda
-    sim_utils.create_prim("/World/Origin1", "Xform", translation=origins[0])
+    create_prim("/World/Origin1", "Xform", translation=origins[0])
     # -- Table
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
     cfg.func("/World/Origin1/Table", cfg, translation=(0.55, 0.0, 1.05))
     # -- Robot
     franka_arm_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/Origin1/Robot")
@@ -95,9 +99,9 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     franka_panda = Articulation(cfg=franka_arm_cfg)
 
     # Origin 2 with UR10
-    sim_utils.create_prim("/World/Origin2", "Xform", translation=origins[1])
+    create_prim("/World/Origin2", "Xform", translation=origins[1])
     # -- Table
-    cfg = sim_utils.UsdFileCfg(
+    cfg = UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/Stand/stand_instanceable.usd", scale=(2.0, 2.0, 2.0)
     )
     cfg.func("/World/Origin2/Table", cfg, translation=(0.0, 0.0, 1.03))
@@ -107,9 +111,9 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     ur10 = Articulation(cfg=ur10_cfg)
 
     # Origin 3 with Kinova JACO2 (7-Dof) arm
-    sim_utils.create_prim("/World/Origin3", "Xform", translation=origins[2])
+    create_prim("/World/Origin3", "Xform", translation=origins[2])
     # -- Table
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ThorlabsTable/table_instanceable.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ThorlabsTable/table_instanceable.usd")
     cfg.func("/World/Origin3/Table", cfg, translation=(0.0, 0.0, 0.8))
     # -- Robot
     kinova_arm_cfg = KINOVA_JACO2_N7S300_CFG.replace(prim_path="/World/Origin3/Robot")
@@ -117,9 +121,9 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     kinova_j2n7s300 = Articulation(cfg=kinova_arm_cfg)
 
     # Origin 4 with Kinova JACO2 (6-Dof) arm
-    sim_utils.create_prim("/World/Origin4", "Xform", translation=origins[3])
+    create_prim("/World/Origin4", "Xform", translation=origins[3])
     # -- Table
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ThorlabsTable/table_instanceable.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ThorlabsTable/table_instanceable.usd")
     cfg.func("/World/Origin4/Table", cfg, translation=(0.0, 0.0, 0.8))
     # -- Robot
     kinova_arm_cfg = KINOVA_JACO2_N6S300_CFG.replace(prim_path="/World/Origin4/Robot")
@@ -127,9 +131,9 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     kinova_j2n6s300 = Articulation(cfg=kinova_arm_cfg)
 
     # Origin 5 with Sawyer
-    sim_utils.create_prim("/World/Origin5", "Xform", translation=origins[4])
+    create_prim("/World/Origin5", "Xform", translation=origins[4])
     # -- Table
-    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
+    cfg = UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
     cfg.func("/World/Origin5/Table", cfg, translation=(0.55, 0.0, 1.05))
     # -- Robot
     kinova_arm_cfg = KINOVA_GEN3_N7_CFG.replace(prim_path="/World/Origin5/Robot")
@@ -137,9 +141,9 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     kinova_gen3n7 = Articulation(cfg=kinova_arm_cfg)
 
     # Origin 6 with Kinova Gen3 (7-Dof) arm
-    sim_utils.create_prim("/World/Origin6", "Xform", translation=origins[5])
+    create_prim("/World/Origin6", "Xform", translation=origins[5])
     # -- Table
-    cfg = sim_utils.UsdFileCfg(
+    cfg = UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/Stand/stand_instanceable.usd", scale=(2.0, 2.0, 2.0)
     )
     cfg.func("/World/Origin6/Table", cfg, translation=(0.0, 0.0, 1.03))
@@ -160,7 +164,7 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     return scene_entities, origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articulation], origins: torch.Tensor):
+def run_simulator(sim: SimulationContext, entities: dict[str, Articulation], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -211,8 +215,8 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articula
 def main():
     """Main function."""
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([3.5, 0.0, 3.2], [0.0, 0.0, 0.5])
     # design scene

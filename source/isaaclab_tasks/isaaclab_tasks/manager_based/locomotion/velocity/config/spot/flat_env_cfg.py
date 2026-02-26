@@ -3,15 +3,14 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import isaaclab.sim as sim_utils
-import isaaclab.terrains as terrain_gen
-from isaaclab.envs import ViewerCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg, SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.envs.common import ViewerCfg
+from isaaclab.managers.manager_term_cfg import EventTermCfg as EventTerm
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import RewardTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg as DoneTerm
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
@@ -24,9 +23,13 @@ from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import Lo
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.spot import SPOT_CFG  # isort: skip
+from isaaclab.sim.spawners.materials import MdlFileCfg, RigidBodyMaterialCfg
+from isaaclab.terrains.height_field import HfRandomUniformTerrainCfg
+from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
+from isaaclab.terrains.trimesh import MeshPlaneTerrainCfg
 
 
-COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
+COBBLESTONE_ROAD_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
     num_rows=9,
@@ -37,8 +40,8 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     difficulty_range=(0.0, 1.0),
     use_cache=False,
     sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.2),
-        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+        "flat": MeshPlaneTerrainCfg(proportion=0.2),
+        "random_rough": HfRandomUniformTerrainCfg(
             proportion=0.2, noise_range=(0.02, 0.05), noise_step=0.02, border_width=0.25
         ),
     },
@@ -338,13 +341,13 @@ class SpotFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
             terrain_generator=COBBLESTONE_ROAD_CFG,
             max_init_terrain_level=COBBLESTONE_ROAD_CFG.num_rows - 1,
             collision_group=-1,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
+            physics_material=RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
                 restitution_combine_mode="multiply",
                 static_friction=1.0,
                 dynamic_friction=1.0,
             ),
-            visual_material=sim_utils.MdlFileCfg(
+            visual_material=MdlFileCfg(
                 mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
                 project_uvw=True,
                 texture_scale=(0.25, 0.25),

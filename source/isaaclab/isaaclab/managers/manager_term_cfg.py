@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from isaaclab.utils.configclass import configclass
-from isaaclab.utils.modifiers import ModifierCfg
+from isaaclab.utils.modifiers.modifier_cfg import ModifierCfg
 from isaaclab.utils.noise import NoiseCfg, NoiseModelCfg
 
 from .scene_entity_cfg import SceneEntityCfg

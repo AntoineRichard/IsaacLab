@@ -11,20 +11,22 @@ from typing import TYPE_CHECKING
 import omni.kit.commands
 from pxr import Gf, Sdf, Usd
 
-from isaaclab.sim import converters, schemas
+from isaaclab.sim import schemas
+from isaaclab.sim.converters.mjcf_converter import MjcfConverter
+from isaaclab.sim.converters.urdf_converter import UrdfConverter
 from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
-from isaaclab.sim.utils import (
-    add_labels,
+from isaaclab.sim.utils.prims import (
     bind_physics_material,
     bind_visual_material,
     change_prim_property,
     clone,
     create_prim,
-    get_current_stage,
-    get_first_matching_child_prim,
     select_usd_variants,
     set_prim_visibility,
 )
+from isaaclab.sim.utils.queries import get_first_matching_child_prim
+from isaaclab.sim.utils.semantics import add_labels
+from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.assets import check_usd_path_with_timeout
 
 if TYPE_CHECKING:
@@ -115,7 +117,7 @@ def spawn_from_urdf(
         FileNotFoundError: If the URDF file does not exist at the given path.
     """
     # urdf loader to convert urdf to usd
-    urdf_loader = converters.UrdfConverter(cfg)
+    urdf_loader = UrdfConverter(cfg)
     # spawn asset from the generated usd file
     return _spawn_from_usd_file(prim_path, urdf_loader.usd_path, cfg, translation, orientation)
 
@@ -157,7 +159,7 @@ def spawn_from_mjcf(
         FileNotFoundError: If the MJCF file does not exist at the given path.
     """
     # mjcf loader to convert mjcf to usd
-    mjcf_loader = converters.MjcfConverter(cfg)
+    mjcf_loader = MjcfConverter(cfg)
     # spawn asset from the generated usd file
     return _spawn_from_usd_file(prim_path, mjcf_loader.usd_path, cfg, translation, orientation)
 

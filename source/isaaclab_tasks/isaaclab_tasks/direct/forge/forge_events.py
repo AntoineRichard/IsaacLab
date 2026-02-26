@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from isaaclab.envs import DirectRLEnv
+    from isaaclab.envs.direct_rl_env import DirectRLEnv
 
 
 def randomize_dead_zone(env: DirectRLEnv, env_ids: torch.Tensor | None):

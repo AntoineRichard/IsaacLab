@@ -17,22 +17,31 @@ import pytest
 
 from pxr import Usd, UsdLux
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.string import to_camel_case
+from isaaclab.sim.spawners.lights import (
+    CylinderLightCfg,
+    DiskLightCfg,
+    DistantLightCfg,
+    DomeLightCfg,
+    LightCfg,
+    SphereLightCfg,
+)
+from isaaclab.sim.utils.stage import create_new_stage, update_stage
 
 
 @pytest.fixture(autouse=True)
 def sim():
     """Setup and teardown for each test."""
     # Setup: Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Simulation time-step
     dt = 0.1
     # Load kit helper
     sim = SimulationContext(SimulationCfg(dt=dt))
     # Wait for spawning
-    sim_utils.update_stage()
+    update_stage()
 
     # Yield the simulation context for the test
     yield sim
@@ -44,7 +53,7 @@ def sim():
 
 def test_spawn_disk_light(sim):
     """Test spawning a disk light source."""
-    cfg = sim_utils.DiskLightCfg(
+    cfg = DiskLightCfg(
         color=(0.1, 0.1, 0.1), enable_color_temperature=True, color_temperature=5500, intensity=100, radius=20.0
     )
     prim = cfg.func("/World/disk_light", cfg)
@@ -59,7 +68,7 @@ def test_spawn_disk_light(sim):
 
 def test_spawn_distant_light(sim):
     """Test spawning a distant light."""
-    cfg = sim_utils.DistantLightCfg(
+    cfg = DistantLightCfg(
         color=(0.1, 0.1, 0.1), enable_color_temperature=True, color_temperature=5500, intensity=100, angle=20
     )
     prim = cfg.func("/World/distant_light", cfg)
@@ -74,7 +83,7 @@ def test_spawn_distant_light(sim):
 
 def test_spawn_dome_light(sim):
     """Test spawning a dome light source."""
-    cfg = sim_utils.DomeLightCfg(
+    cfg = DomeLightCfg(
         color=(0.1, 0.1, 0.1), enable_color_temperature=True, color_temperature=5500, intensity=100
     )
     prim = cfg.func("/World/dome_light", cfg)
@@ -89,7 +98,7 @@ def test_spawn_dome_light(sim):
 
 def test_spawn_cylinder_light(sim):
     """Test spawning a cylinder light source."""
-    cfg = sim_utils.CylinderLightCfg(
+    cfg = CylinderLightCfg(
         color=(0.1, 0.1, 0.1), enable_color_temperature=True, color_temperature=5500, intensity=100, radius=20.0
     )
     prim = cfg.func("/World/cylinder_light", cfg)
@@ -104,7 +113,7 @@ def test_spawn_cylinder_light(sim):
 
 def test_spawn_sphere_light(sim):
     """Test spawning a sphere light source."""
-    cfg = sim_utils.SphereLightCfg(
+    cfg = SphereLightCfg(
         color=(0.1, 0.1, 0.1), enable_color_temperature=True, color_temperature=5500, intensity=100, radius=20.0
     )
     prim = cfg.func("/World/sphere_light", cfg)
@@ -122,7 +131,7 @@ Helper functions.
 """
 
 
-def _validate_properties_on_prim(prim: Usd.Prim, cfg: sim_utils.LightCfg):
+def _validate_properties_on_prim(prim: Usd.Prim, cfg: LightCfg):
     """Validate the properties on the prim.
 
     Args:

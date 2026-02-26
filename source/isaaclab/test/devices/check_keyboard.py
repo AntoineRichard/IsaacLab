@@ -23,8 +23,9 @@ simulation_app = app_launcher.app
 
 import ctypes
 
-from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.devices.keyboard import Se3Keyboard, Se3KeyboardCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 
 
 def print_cb():

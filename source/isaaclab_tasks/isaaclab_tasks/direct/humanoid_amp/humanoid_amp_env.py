@@ -10,14 +10,15 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-from isaaclab.envs import DirectRLEnv
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.envs.direct_rl_env import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply
 
 from .humanoid_amp_env_cfg import HumanoidAmpEnvCfg
 from .motions import MotionLoader
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 
 class HumanoidAmpEnv(DirectRLEnv):
@@ -57,7 +58,7 @@ class HumanoidAmpEnv(DirectRLEnv):
         spawn_ground_plane(
             prim_path="/World/ground",
             cfg=GroundPlaneCfg(
-                physics_material=sim_utils.RigidBodyMaterialCfg(
+                physics_material=RigidBodyMaterialCfg(
                     static_friction=1.0,
                     dynamic_friction=1.0,
                     restitution=0.0,
@@ -73,7 +74,7 @@ class HumanoidAmpEnv(DirectRLEnv):
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):

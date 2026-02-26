@@ -14,12 +14,12 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import RigidObject
-from isaaclab.managers import CommandTerm
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.managers.command_manager import CommandTerm
 from isaaclab.markers import VisualizationMarkers
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
     from .commands_cfg import InHandReOrientationCommandCfg
 

@@ -11,11 +11,12 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as PoseUtils
 from isaaclab.devices.device_base import DeviceBase
 from isaaclab.devices.retargeter_base import RetargeterBase, RetargeterCfg
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import SphereCfg
 
 # This import exception is suppressed because gr1_t2_dex_retargeting_utils depends
 # on pinocchio which is not available on Windows.
@@ -56,9 +57,9 @@ class GR1T2Retargeter(RetargeterBase):
             marker_cfg = VisualizationMarkersCfg(
                 prim_path="/Visuals/markers",
                 markers={
-                    "joint": sim_utils.SphereCfg(
+                    "joint": SphereCfg(
                         radius=0.005,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                        visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                     ),
                 },
             )

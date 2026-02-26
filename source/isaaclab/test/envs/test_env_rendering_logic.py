@@ -17,20 +17,19 @@ import pytest
 import torch
 from isaaclab_physx.physics import IsaacEvents
 
-import isaaclab.sim as sim_utils
-from isaaclab.envs import (
-    DirectRLEnv,
-    DirectRLEnvCfg,
-    ManagerBasedEnv,
-    ManagerBasedEnvCfg,
-    ManagerBasedRLEnv,
-    ManagerBasedRLEnvCfg,
-)
+from isaaclab.envs.direct_rl_env import DirectRLEnv
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.envs.manager_based_env_cfg import ManagerBasedEnvCfg
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.configclass import configclass
 from isaaclab.visualizers.kit_visualizer import KitVisualizer
 from isaaclab.visualizers.kit_visualizer_cfg import KitVisualizerCfg
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @configclass
@@ -159,7 +158,7 @@ def test_env_rendering_logic(env_type, render_interval, physics_callback, render
 
     try:
         # create a new stage
-        sim_utils.create_new_stage()
+        create_new_stage()
 
         # create environment
         if env_type == "manager_based_env":

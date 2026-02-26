@@ -18,13 +18,9 @@ import isaaclab.utils.math as PoseUtils
 
 logger = logging.getLogger(__name__)
 
-from isaaclab.envs import (
-    ManagerBasedRLMimicEnv,
-    MimicEnvCfg,
-    SubTaskConstraintCoordinationScheme,
-    SubTaskConstraintType,
-)
-from isaaclab.managers import TerminationTermCfg
+from isaaclab.envs.manager_based_rl_mimic_env import ManagerBasedRLMimicEnv
+from isaaclab.envs.mimic_env_cfg import MimicEnvCfg, SubTaskConstraintCoordinationScheme, SubTaskConstraintType
+from isaaclab.managers.manager_term_cfg import TerminationTermCfg
 
 from isaaclab_mimic.datagen.datagen_info import DatagenInfo
 from isaaclab_mimic.datagen.selection_strategy import make_selection_strategy

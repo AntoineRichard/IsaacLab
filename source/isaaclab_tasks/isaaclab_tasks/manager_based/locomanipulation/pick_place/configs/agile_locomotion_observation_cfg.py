@@ -3,11 +3,18 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab.envs import mdp
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.envs.mdp.observations import (
+    base_ang_vel,
+    base_lin_vel,
+    joint_pos_rel,
+    joint_vel_rel,
+    last_action,
+    projected_gravity,
+)
 
 
 @configclass
@@ -20,22 +27,22 @@ class AgileTeacherPolicyObservationsCfg(ObsGroup):
     """
 
     base_lin_vel = ObsTerm(
-        func=mdp.base_lin_vel,
+        func=base_lin_vel,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
     base_ang_vel = ObsTerm(
-        func=mdp.base_ang_vel,
+        func=base_ang_vel,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
     projected_gravity = ObsTerm(
-        func=mdp.projected_gravity,
+        func=projected_gravity,
         scale=1.0,
     )
 
     joint_pos = ObsTerm(
-        func=mdp.joint_pos_rel,
+        func=joint_pos_rel,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -53,7 +60,7 @@ class AgileTeacherPolicyObservationsCfg(ObsGroup):
     )
 
     joint_vel = ObsTerm(
-        func=mdp.joint_vel_rel,
+        func=joint_vel_rel,
         scale=0.1,
         params={
             "asset_cfg": SceneEntityCfg(
@@ -72,7 +79,7 @@ class AgileTeacherPolicyObservationsCfg(ObsGroup):
     )
 
     actions = ObsTerm(
-        func=mdp.last_action,
+        func=last_action,
         scale=1.0,
         params={
             "action_name": "lower_body_joint_pos",

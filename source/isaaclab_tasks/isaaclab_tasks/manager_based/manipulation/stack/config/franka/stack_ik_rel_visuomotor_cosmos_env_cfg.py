@@ -3,16 +3,16 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import isaaclab.sim as sim_utils
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import CameraCfg
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.sensors.camera.camera_cfg import CameraCfg
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_tasks.manager_based.manipulation.stack import mdp
 
 from . import stack_ik_rel_visuomotor_env_cfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
 
 
 @configclass
@@ -127,7 +127,7 @@ class FrankaCubeStackVisuomotorCosmosEnvCfg(stack_ik_rel_visuomotor_env_cfg.Fran
             height=200,
             width=200,
             data_types=["rgb", "distance_to_image_plane"],
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 2)
             ),
             offset=CameraCfg.OffsetCfg(
@@ -144,7 +144,7 @@ class FrankaCubeStackVisuomotorCosmosEnvCfg(stack_ik_rel_visuomotor_env_cfg.Fran
             data_types=["rgb", "semantic_segmentation", "normals", "distance_to_image_plane"],
             colorize_semantic_segmentation=True,
             semantic_segmentation_mapping=SEMANTIC_MAPPING,
-            spawn=sim_utils.PinholeCameraCfg(
+            spawn=PinholeCameraCfg(
                 focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 2)
             ),
             offset=CameraCfg.OffsetCfg(

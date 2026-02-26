@@ -21,19 +21,18 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.managers import (
-    ManagerTermBase,
-    ObservationGroupCfg,
-    ObservationManager,
-    ObservationTermCfg,
-    RewardTermCfg,
-)
+from isaaclab.managers.manager_base import ManagerTermBase
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg, ObservationTermCfg, RewardTermCfg
+from isaaclab.managers.observation_manager import ObservationManager
 from isaaclab.utils import modifiers
 from isaaclab.utils.configclass import configclass
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.utils.modifiers.modifier import bias, clip, scale
+from isaaclab.utils.modifiers.modifier_cfg import IntegratorCfg, ModifierCfg
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 def grilled_chicken(env):
@@ -108,8 +107,8 @@ def setup_env():
     num_envs = 20
     device = "cuda:0"
     # set up sim
-    sim_cfg = sim_utils.SimulationCfg(dt=dt, device=device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=dt, device=device)
+    sim = SimulationContext(sim_cfg)
     # create dummy environment
     env = namedtuple("ManagerBasedEnv", ["num_envs", "device", "data", "dt", "sim"])(
         num_envs, device, MyDataClass(num_envs, device), dt, sim
@@ -618,10 +617,10 @@ def test_modifier_compute(setup_env):
     env = setup_env
     """Test the observation computation with modifiers."""
 
-    modifier_1 = modifiers.ModifierCfg(func=modifiers.bias, params={"value": 1.0})
-    modifier_2 = modifiers.ModifierCfg(func=modifiers.scale, params={"multiplier": 2.0})
-    modifier_3 = modifiers.ModifierCfg(func=modifiers.clip, params={"bounds": (-0.5, 0.5)})
-    modifier_4 = modifiers.IntegratorCfg(dt=env.dt)
+    modifier_1 = ModifierCfg(func=bias, params={"value": 1.0})
+    modifier_2 = ModifierCfg(func=scale, params={"multiplier": 2.0})
+    modifier_3 = ModifierCfg(func=clip, params={"bounds": (-0.5, 0.5)})
+    modifier_4 = IntegratorCfg(dt=env.dt)
 
     @configclass
     class MyObservationManagerCfg:
@@ -708,7 +707,7 @@ def test_modifier_invalid_config(setup_env):
     env = setup_env
     """Test modifier initialization with invalid config."""
 
-    modifier = modifiers.ModifierCfg(func=modifiers.clip, params={"min": -0.5, "max": 0.5})
+    modifier = ModifierCfg(func=clip, params={"min": -0.5, "max": 0.5})
 
     @configclass
     class MyObservationManagerCfg:

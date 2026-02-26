@@ -27,12 +27,12 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors.ray_caster import RayCasterCfg, patterns
-from isaaclab.sim import SimulationContext
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sensors.ray_caster.ray_caster_cfg import RayCasterCfg
+from isaaclab.sensors.ray_caster import patterns
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.terrains.terrain_importer_cfg import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.timer import Timer
 
@@ -40,6 +40,8 @@ from isaaclab.utils.timer import Timer
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort: skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
 
 
 @configclass
@@ -71,7 +73,7 @@ class MySceneCfg(InteractiveSceneCfg):
     # extras - light
     light = AssetBaseCfg(
         prim_path="/World/light",
-        spawn=sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75)),
+        spawn=DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75)),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 500.0)),
     )
 
@@ -80,7 +82,7 @@ def main():
     """Main function."""
 
     # Load kit helper
-    sim = SimulationContext(sim_utils.SimulationCfg(dt=0.005))
+    sim = SimulationContext(SimulationCfg(dt=0.005))
     # Set main camera
     sim.set_camera_view(eye=[5, 5, 5], target=[0.0, 0.0, 0.0])
 

@@ -3,10 +3,17 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+from isaaclab.sim.schemas import (
+    ArticulationRootPropertiesCfg,
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 ASSET_DIR = f"{ISAACLAB_NUCLEUS_DIR}/AutoMate"
 
@@ -157,10 +164,10 @@ class Extraction(DisassemblyTask):
     fixed_asset: ArticulationCfg = ArticulationCfg(
         # fixed_asset: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/FixedAsset",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{assembly_dir}{fixed_asset_cfg.usd_path}",
             activate_contact_sensors=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 max_depenetration_velocity=5.0,
                 linear_damping=0.0,
@@ -172,12 +179,12 @@ class Extraction(DisassemblyTask):
                 solver_velocity_iteration_count=1,
                 max_contact_impulse=1e32,
             ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_props=ArticulationRootPropertiesCfg(
                 enabled_self_collisions=True,
                 fix_root_link=True,  # add this so the fixed asset is set to have a fixed base
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=fixed_asset_cfg.mass),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+            mass_props=MassPropertiesCfg(mass=fixed_asset_cfg.mass),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             # init_state=RigidObjectCfg.InitialStateCfg(
@@ -191,10 +198,10 @@ class Extraction(DisassemblyTask):
     # held_asset: ArticulationCfg = ArticulationCfg(
     held_asset: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/HeldAsset",
-        spawn=sim_utils.UsdFileCfg(
+        spawn=UsdFileCfg(
             usd_path=f"{assembly_dir}{held_asset_cfg.usd_path}",
             activate_contact_sensors=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=True,
                 max_depenetration_velocity=5.0,
                 linear_damping=0.0,
@@ -206,8 +213,8 @@ class Extraction(DisassemblyTask):
                 solver_velocity_iteration_count=1,
                 max_contact_impulse=1e32,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=held_asset_cfg.mass),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+            mass_props=MassPropertiesCfg(mass=held_asset_cfg.mass),
+            collision_props=CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
         ),
         # init_state=ArticulationCfg.InitialStateCfg(
         init_state=RigidObjectCfg.InitialStateCfg(

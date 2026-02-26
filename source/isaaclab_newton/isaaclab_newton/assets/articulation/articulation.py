@@ -23,7 +23,9 @@ from prettytable import PrettyTable
 
 from pxr import UsdPhysics
 
-from isaaclab.actuators import ActuatorBase, ActuatorBaseCfg, ImplicitActuator
+from isaaclab.actuators.actuator_base import ActuatorBase
+from isaaclab.actuators.actuator_base_cfg import ActuatorBaseCfg
+from isaaclab.actuators.actuator_pd import ImplicitActuator
 from isaaclab.assets.articulation.base_articulation import BaseArticulation
 from isaaclab.sim.utils.queries import find_first_matching_prim, get_all_matching_child_prims
 from isaaclab.utils.string import resolve_matching_names, resolve_matching_names_values

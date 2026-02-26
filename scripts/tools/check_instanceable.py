@@ -66,10 +66,12 @@ simulation_app = app_launcher.app
 
 from isaacsim.core.cloner import GridCloner
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.utils.timer import Timer
 from isaaclab.utils.assets import check_file_path
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import get_current_stage
 
 
 def main():
@@ -81,7 +83,7 @@ def main():
     sim = SimulationContext(SimulationCfg(dt=0.01))
 
     # get stage handle
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
 
     # enable fabric which avoids passing data over to USD structure
     # this speeds up the read-write operation of GPU buffers
@@ -99,10 +101,10 @@ def main():
     cloner.define_base_env("/World/envs")
     stage.DefinePrim("/World/envs/env_0", "Xform")
     # Spawn things into stage
-    sim_utils.create_prim("/World/Light", "DistantLight")
+    create_prim("/World/Light", "DistantLight")
 
     # Everything under the namespace "/World/envs/env_0" will be cloned
-    sim_utils.create_prim("/World/envs/env_0/Asset", "Xform", usd_path=os.path.abspath(args_cli.input))
+    create_prim("/World/envs/env_0/Asset", "Xform", usd_path=os.path.abspath(args_cli.input))
     # Clone the scene
     num_clones = args_cli.num_clones
 

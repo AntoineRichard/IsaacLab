@@ -19,7 +19,9 @@ import omni.timeline
 from isaaclab.assets.articulation.articulation import Articulation
 
 if TYPE_CHECKING:
-    from isaaclab.envs import DirectRLEnv, ManagerBasedEnv, ViewerCfg
+    from isaaclab.envs.common import ViewerCfg
+    from isaaclab.envs.direct_rl_env import DirectRLEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
 
 class ViewportCameraController:

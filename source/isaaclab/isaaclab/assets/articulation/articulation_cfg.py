@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import MISSING
 
-from isaaclab.actuators import ActuatorBaseCfg
+from isaaclab.actuators.actuator_base_cfg import ActuatorBaseCfg
 from isaaclab.utils.configclass import configclass
 
 from ..asset_base_cfg import AssetBaseCfg

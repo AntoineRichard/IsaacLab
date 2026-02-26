@@ -11,16 +11,18 @@ from collections.abc import Sequence
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, ArticulationCfg
-from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.envs.direct_marl_env import DirectMARLEnv
+from isaaclab.envs.direct_marl_env_cfg import DirectMARLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.math import sample_uniform
 
 from isaaclab_assets.robots.cart_double_pendulum import CART_DOUBLE_PENDULUM_CFG
+from isaaclab.sim.spawners.lights import DomeLightCfg
 
 
 @configclass
@@ -90,7 +92,7 @@ class CartDoublePendulumEnv(DirectMARLEnv):
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:

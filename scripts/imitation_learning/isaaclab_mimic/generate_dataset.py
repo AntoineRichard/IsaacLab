@@ -58,7 +58,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from isaaclab.envs import ManagerBasedRLMimicEnv
+from isaaclab.envs.manager_based_rl_mimic_env import ManagerBasedRLMimicEnv
 
 import isaaclab_mimic.envs  # noqa: F401
 from isaaclab_mimic.datagen.generation import env_loop, setup_async_generation, setup_env_config

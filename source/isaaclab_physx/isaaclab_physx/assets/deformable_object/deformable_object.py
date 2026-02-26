@@ -17,7 +17,6 @@ import warp as wp
 import omni.physics.tensors.impl.api as physx
 from pxr import UsdShade
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 from isaaclab.assets.asset_base import AssetBase
 from isaaclab.markers import VisualizationMarkers
@@ -32,6 +31,7 @@ from .kernels import (
     write_nodal_vec3f_to_buffer,
     write_nodal_vec4f_to_buffer,
 )
+from isaaclab.sim.utils.queries import find_first_matching_prim, get_all_matching_child_prims
 
 if TYPE_CHECKING:
     from .deformable_object_cfg import DeformableObjectCfg
@@ -507,13 +507,13 @@ class DeformableObject(AssetBase):
         # obtain global simulation view
         self._physics_sim_view = SimulationManager.get_physics_sim_view()
         # obtain the first prim in the regex expression (all others are assumed to be a copy of this)
-        template_prim = sim_utils.find_first_matching_prim(self.cfg.prim_path)
+        template_prim = find_first_matching_prim(self.cfg.prim_path)
         if template_prim is None:
             raise RuntimeError(f"Failed to find prim for expression: '{self.cfg.prim_path}'.")
         template_prim_path = template_prim.GetPath().pathString
 
         # find deformable root prims
-        root_prims = sim_utils.get_all_matching_child_prims(
+        root_prims = get_all_matching_child_prims(
             template_prim_path,
             predicate=lambda prim: "PhysxDeformableBodyAPI" in prim.GetAppliedSchemas(),
             traverse_instance_prims=False,

@@ -21,19 +21,30 @@ import pytest
 
 from pxr import Usd
 
-import isaaclab.sim as sim_utils
+from isaaclab.sim.utils.stage import (
+    clear_stage,
+    close_stage,
+    create_new_stage,
+    get_current_stage,
+    get_current_stage_id,
+    is_current_stage_in_memory,
+    open_stage,
+    save_stage,
+    update_stage,
+    use_stage,
+)
 
 
 def test_create_new_stage():
     """Test creating a new stage attached to USD context."""
-    stage = sim_utils.create_new_stage()
+    stage = create_new_stage()
 
     # Should return a valid stage
     assert stage is not None
     assert isinstance(stage, Usd.Stage)
 
     # Stage should be the current stage
-    current_stage = sim_utils.get_current_stage()
+    current_stage = get_current_stage()
     assert stage == current_stage
 
     # Stage should have a root prim
@@ -43,9 +54,9 @@ def test_create_new_stage():
 
 def test_create_multiple_stages():
     """Test creating multiple stages."""
-    stage1 = sim_utils.create_new_stage()
-    stage2 = sim_utils.create_new_stage()
-    stage3 = sim_utils.create_new_stage()
+    stage1 = create_new_stage()
+    stage2 = create_new_stage()
+    stage3 = create_new_stage()
 
     assert stage1 is not None
     assert stage2 is not None
@@ -57,7 +68,7 @@ def test_create_multiple_stages():
 
 def test_create_new_stage_in_memory():
     """Test creating a new stage in memory (Isaac Sim 5.0+)."""
-    stage = sim_utils.create_new_stage()
+    stage = create_new_stage()
 
     # Should return a valid stage
     assert stage is not None
@@ -71,8 +82,8 @@ def test_create_new_stage_in_memory():
 def test_is_current_stage_in_memory():
     """Test checking if current stage is in memory."""
     # Create a stage - in kitless mode, this creates an in-memory stage
-    sim_utils.create_new_stage()
-    is_in_memory = sim_utils.is_current_stage_in_memory()
+    create_new_stage()
+    is_in_memory = is_current_stage_in_memory()
 
     # Should return a boolean
     assert isinstance(is_in_memory, bool)
@@ -80,9 +91,9 @@ def test_is_current_stage_in_memory():
     assert is_in_memory is True
 
     # Create a stage in memory explicitly
-    stage = sim_utils.create_new_stage()
-    with sim_utils.use_stage(stage):
-        is_in_memory = sim_utils.is_current_stage_in_memory()
+    stage = create_new_stage()
+    with use_stage(stage):
+        is_in_memory = is_current_stage_in_memory()
         assert isinstance(is_in_memory, bool)
         assert is_in_memory is True
 
@@ -91,20 +102,20 @@ def test_save_and_open_stage():
     """Test saving and opening a stage."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create a stage with some content
-        stage = sim_utils.create_new_stage()
+        stage = create_new_stage()
         stage.DefinePrim("/World", "Xform")
         stage.DefinePrim("/World/TestCube", "Cube")
 
         # Save the stage
         save_path = Path(temp_dir) / "test_stage.usd"
-        result = sim_utils.save_stage(str(save_path), save_and_reload_in_place=False)
+        result = save_stage(str(save_path), save_and_reload_in_place=False)
 
         # Save should succeed
         assert result is True
         assert save_path.exists()
 
         # Open the saved stage
-        opened_stage = sim_utils.open_stage(str(save_path))
+        opened_stage = open_stage(str(save_path))
         assert isinstance(opened_stage, Usd.Stage)
 
         # Verify content was preserved
@@ -116,13 +127,13 @@ def test_save_and_open_stage():
 def test_open_stage_invalid_path():
     """Test opening a stage with invalid path."""
     with pytest.raises(ValueError, match="not supported"):
-        sim_utils.open_stage("/invalid/path/to/stage.invalid")
+        open_stage("/invalid/path/to/stage.invalid")
 
 
 def test_use_stage_context_manager():
     """Test use_stage context manager."""
     # Create two stages
-    stage1 = sim_utils.create_new_stage()
+    stage1 = create_new_stage()
     stage1.DefinePrim("/World", "Xform")
     stage1.DefinePrim("/World/Stage1Marker", "Xform")
 
@@ -131,19 +142,19 @@ def test_use_stage_context_manager():
     stage2.DefinePrim("/World/Stage2Marker", "Xform")
 
     # Initially on stage1
-    current = sim_utils.get_current_stage()
+    current = get_current_stage()
     marker1 = current.GetPrimAtPath("/World/Stage1Marker")
     assert marker1.IsValid()
 
     # Switch to stage2 temporarily
-    with sim_utils.use_stage(stage2):
-        temp_current = sim_utils.get_current_stage()
+    with use_stage(stage2):
+        temp_current = get_current_stage()
         # Should be on stage2 now
         marker2 = temp_current.GetPrimAtPath("/World/Stage2Marker")
         assert marker2.IsValid()
 
     # Should be back on stage1
-    final_current = sim_utils.get_current_stage()
+    final_current = get_current_stage()
     marker1_again = final_current.GetPrimAtPath("/World/Stage1Marker")
     assert marker1_again.IsValid()
 
@@ -151,21 +162,21 @@ def test_use_stage_context_manager():
 def test_use_stage_with_invalid_input():
     """Test use_stage with invalid input."""
     with pytest.raises((TypeError, AssertionError)):
-        with sim_utils.use_stage("not a stage"):  # type: ignore
+        with use_stage("not a stage"):  # type: ignore
             pass
 
 
 def test_update_stage():
     """Test updating the stage."""
     # Create a new stage
-    stage = sim_utils.create_new_stage()
+    stage = create_new_stage()
 
     # Add a prim
     prim_path = "/World/Test"
     stage.DefinePrim(prim_path, "Xform")
 
     # Update stage should not raise errors
-    sim_utils.update_stage()
+    update_stage()
 
     # Prim should still exist
     prim = stage.GetPrimAtPath(prim_path)
@@ -176,39 +187,39 @@ def test_save_stage_with_reload():
     """Test saving stage with reload in place."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create a stage with content
-        stage = sim_utils.create_new_stage()
+        stage = create_new_stage()
         stage.DefinePrim("/World", "Xform")
         stage.DefinePrim("/World/TestSphere", "Sphere")
 
         # Save with reload
         save_path = Path(temp_dir) / "test_reload.usd"
-        result = sim_utils.save_stage(str(save_path), save_and_reload_in_place=True)
+        result = save_stage(str(save_path), save_and_reload_in_place=True)
 
         assert result is True
         assert save_path.exists()
 
         # Stage should be reloaded, content should be preserved
-        current_stage = sim_utils.get_current_stage()
+        current_stage = get_current_stage()
         test_sphere = current_stage.GetPrimAtPath("/World/TestSphere")
         assert test_sphere.IsValid()
 
 
 def test_save_stage_invalid_path():
     """Test saving stage with invalid path."""
-    _ = sim_utils.create_new_stage()
+    _ = create_new_stage()
 
     with pytest.raises(ValueError, match="not supported"):
-        sim_utils.save_stage("/tmp/test.invalid")
+        save_stage("/tmp/test.invalid")
 
 
 def test_close_stage():
     """Test closing the current stage."""
     # Create a stage
-    stage = sim_utils.create_new_stage()
+    stage = create_new_stage()
     assert stage is not None
 
     # Close it
-    result = sim_utils.close_stage()
+    result = close_stage()
 
     # Should succeed (or return bool)
     assert isinstance(result, bool)
@@ -217,7 +228,7 @@ def test_close_stage():
 def test_clear_stage():
     """Test clearing the stage."""
     # Create a new stage
-    stage = sim_utils.create_new_stage()
+    stage = create_new_stage()
 
     # Add some prims
     stage.DefinePrim("/World", "Xform")
@@ -225,7 +236,7 @@ def test_clear_stage():
     stage.DefinePrim("/World/Sphere", "Sphere")
 
     # Clear the stage
-    sim_utils.clear_stage()
+    clear_stage()
 
     # Stage should still exist but prims should be removed
     assert stage is not None
@@ -234,10 +245,10 @@ def test_clear_stage():
 def test_get_current_stage():
     """Test getting the current stage."""
     # Create a new stage
-    created_stage = sim_utils.create_new_stage()
+    created_stage = create_new_stage()
 
     # Get current stage should return the same stage
-    current_stage = sim_utils.get_current_stage()
+    current_stage = get_current_stage()
     assert current_stage == created_stage
     assert isinstance(current_stage, Usd.Stage)
 
@@ -245,10 +256,10 @@ def test_get_current_stage():
 def test_get_current_stage_id():
     """Test getting the current stage ID."""
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     # Get stage ID
-    stage_id = sim_utils.get_current_stage_id()
+    stage_id = get_current_stage_id()
 
     # Should be a valid integer ID
     assert isinstance(stage_id, int)
@@ -293,28 +304,28 @@ def test_resolve_paths():
 def test_stage_context_tracking():
     """Test that stage context is properly tracked across operations."""
     # Create initial stage
-    stage1 = sim_utils.create_new_stage()
+    stage1 = create_new_stage()
     stage1.DefinePrim("/Stage1Marker", "Xform")
 
     # Verify it's the current stage
-    current = sim_utils.get_current_stage()
+    current = get_current_stage()
     assert current.GetPrimAtPath("/Stage1Marker").IsValid()
 
     # Create another stage - should become current
-    stage2 = sim_utils.create_new_stage()
+    stage2 = create_new_stage()
     stage2.DefinePrim("/Stage2Marker", "Xform")
 
-    current = sim_utils.get_current_stage()
+    current = get_current_stage()
     assert current.GetPrimAtPath("/Stage2Marker").IsValid()
     assert not current.GetPrimAtPath("/Stage1Marker").IsValid()
 
     # Use stage context manager to temporarily switch
-    with sim_utils.use_stage(stage1):
-        current = sim_utils.get_current_stage()
+    with use_stage(stage1):
+        current = get_current_stage()
         assert current.GetPrimAtPath("/Stage1Marker").IsValid()
 
     # After context manager, should be back to stage2
-    current = sim_utils.get_current_stage()
+    current = get_current_stage()
     assert current.GetPrimAtPath("/Stage2Marker").IsValid()
 
 
@@ -322,7 +333,7 @@ def test_is_prim_deletable():
     """Test _is_prim_deletable with various prim types."""
     from isaaclab.sim.utils.stage import _is_prim_deletable
 
-    stage = sim_utils.create_new_stage()
+    stage = create_new_stage()
 
     # Create a locally authored prim - should be deletable
     local_prim = stage.DefinePrim("/World/LocalPrim", "Xform")
@@ -341,20 +352,20 @@ def test_open_stage_sets_current():
     """Test that open_stage sets the opened stage as current."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save a stage
-        stage = sim_utils.create_new_stage()
+        stage = create_new_stage()
         stage.DefinePrim("/TestPrim", "Xform")
 
         save_path = Path(temp_dir) / "test.usd"
-        sim_utils.save_stage(str(save_path), save_and_reload_in_place=False)
+        save_stage(str(save_path), save_and_reload_in_place=False)
 
         # Create a different stage
-        sim_utils.create_new_stage()
-        sim_utils.get_current_stage().DefinePrim("/DifferentPrim", "Xform")
+        create_new_stage()
+        get_current_stage().DefinePrim("/DifferentPrim", "Xform")
 
         # Open the saved stage
-        opened = sim_utils.open_stage(str(save_path))
+        opened = open_stage(str(save_path))
 
         # Opened stage should now be current
-        current = sim_utils.get_current_stage()
+        current = get_current_stage()
         assert current == opened
         assert current.GetPrimAtPath("/TestPrim").IsValid()

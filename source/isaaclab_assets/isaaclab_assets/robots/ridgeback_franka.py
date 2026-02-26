@@ -12,19 +12,20 @@ The following configurations are available:
 Reference: https://github.com/ridgeback/ridgeback_manipulation
 """
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets.articulation import ArticulationCfg
+from isaaclab.actuators.actuator_pd_cfg import ImplicitActuatorCfg
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sim.schemas import ArticulationRootPropertiesCfg
+from isaaclab.sim.spawners.from_files import UsdFileCfg
 
 ##
 # Configuration
 ##
 
 RIDGEBACK_FRANKA_PANDA_CFG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(
+    spawn=UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/RidgebackFranka/ridgeback_franka.usd",
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(enabled_self_collisions=False),
+        articulation_props=ArticulationRootPropertiesCfg(enabled_self_collisions=False),
         activate_contact_sensors=False,
     ),
     init_state=ArticulationCfg.InitialStateCfg(

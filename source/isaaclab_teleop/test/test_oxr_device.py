@@ -26,11 +26,13 @@ from isaaclab_teleop.deprecated.openxr import OpenXRDevice, OpenXRDeviceCfg, XrC
 
 import carb
 
-import isaaclab.sim as sim_utils
 from isaaclab.devices.retargeter_base import RetargeterBase, RetargeterCfg
-from isaaclab.envs import ManagerBasedEnv, ManagerBasedEnvCfg
+from isaaclab.envs.manager_based_env import ManagerBasedEnv
+from isaaclab.envs.manager_based_env_cfg import ManagerBasedEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.sim.utils.stage import create_new_stage
+from isaaclab.sim.views import XformPrimView
 
 
 class NoOpRetargeter(RetargeterBase):
@@ -158,7 +160,7 @@ def mock_xrcore(mocker):
 def empty_env():
     """Fixture to create and cleanup an empty environment."""
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Create environment with config
     env_cfg = EmptyEnvCfg()
     env = ManagerBasedEnv(cfg=env_cfg)
@@ -179,7 +181,7 @@ def test_xr_anchor(empty_env, mock_xrcore):
     device = OpenXRDevice(OpenXRDeviceCfg(xr_cfg=env_cfg.xr))
 
     # Check that the xr anchor prim is created with the correct pose
-    xr_anchor_view = sim_utils.XformPrimView("/World/XRAnchor")
+    xr_anchor_view = XformPrimView("/World/XRAnchor")
     assert xr_anchor_view.count == 1
 
     position, orientation = xr_anchor_view.get_world_poses()
@@ -202,7 +204,7 @@ def test_xr_anchor_default(empty_env, mock_xrcore):
     device = OpenXRDevice(OpenXRDeviceCfg())
 
     # Check that the xr anchor prim is created with the correct default pose
-    xr_anchor_view = sim_utils.XformPrimView("/World/XRAnchor")
+    xr_anchor_view = XformPrimView("/World/XRAnchor")
     assert xr_anchor_view.count == 1
 
     position, orientation = xr_anchor_view.get_world_poses()
@@ -225,7 +227,7 @@ def test_xr_anchor_multiple_devices(empty_env, mock_xrcore):
     device_2 = OpenXRDevice(OpenXRDeviceCfg())
 
     # Check that the xr anchor prim is created with the correct default pose
-    xr_anchor_view = sim_utils.XformPrimView("/World/XRAnchor")
+    xr_anchor_view = XformPrimView("/World/XRAnchor")
     assert xr_anchor_view.count == 1
 
     position, orientation = xr_anchor_view.get_world_poses()

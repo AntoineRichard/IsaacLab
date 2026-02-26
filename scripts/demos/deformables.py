@@ -38,8 +38,15 @@ import torch
 import tqdm
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import DeformableObject, DeformableObjectCfg
+from isaaclab_physx.assets.deformable_object.deformable_object import DeformableObject
+from isaaclab_physx.assets.deformable_object.deformable_object_cfg import DeformableObjectCfg
+from isaaclab.sim.schemas import DeformableBodyPropertiesCfg
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import DeformableBodyMaterialCfg, PreviewSurfaceCfg
+from isaaclab.sim.spawners.meshes import MeshCapsuleCfg, MeshConeCfg, MeshCuboidCfg, MeshCylinderCfg, MeshSphereCfg
 
 
 def define_origins(num_origins: int, spacing: float) -> list[list[float]]:
@@ -60,49 +67,49 @@ def define_origins(num_origins: int, spacing: float) -> list[list[float]]:
 def design_scene() -> tuple[dict, list[list[float]]]:
     """Designs the scene."""
     # Ground-plane
-    cfg_ground = sim_utils.GroundPlaneCfg()
+    cfg_ground = GroundPlaneCfg()
     cfg_ground.func("/World/defaultGroundPlane", cfg_ground)
 
     # spawn distant light
-    cfg_light = sim_utils.DomeLightCfg(
+    cfg_light = DomeLightCfg(
         intensity=3000.0,
         color=(0.75, 0.75, 0.75),
     )
     cfg_light.func("/World/light", cfg_light)
 
     # spawn a red cone
-    cfg_sphere = sim_utils.MeshSphereCfg(
+    cfg_sphere = MeshSphereCfg(
         radius=0.25,
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0),
-        visual_material=sim_utils.PreviewSurfaceCfg(),
-        physics_material=sim_utils.DeformableBodyMaterialCfg(),
+        deformable_props=DeformableBodyPropertiesCfg(rest_offset=0.0),
+        visual_material=PreviewSurfaceCfg(),
+        physics_material=DeformableBodyMaterialCfg(),
     )
-    cfg_cuboid = sim_utils.MeshCuboidCfg(
+    cfg_cuboid = MeshCuboidCfg(
         size=(0.2, 0.2, 0.2),
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0),
-        visual_material=sim_utils.PreviewSurfaceCfg(),
-        physics_material=sim_utils.DeformableBodyMaterialCfg(),
+        deformable_props=DeformableBodyPropertiesCfg(rest_offset=0.0),
+        visual_material=PreviewSurfaceCfg(),
+        physics_material=DeformableBodyMaterialCfg(),
     )
-    cfg_cylinder = sim_utils.MeshCylinderCfg(
+    cfg_cylinder = MeshCylinderCfg(
         radius=0.15,
         height=0.5,
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0),
-        visual_material=sim_utils.PreviewSurfaceCfg(),
-        physics_material=sim_utils.DeformableBodyMaterialCfg(),
+        deformable_props=DeformableBodyPropertiesCfg(rest_offset=0.0),
+        visual_material=PreviewSurfaceCfg(),
+        physics_material=DeformableBodyMaterialCfg(),
     )
-    cfg_capsule = sim_utils.MeshCapsuleCfg(
+    cfg_capsule = MeshCapsuleCfg(
         radius=0.15,
         height=0.5,
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0),
-        visual_material=sim_utils.PreviewSurfaceCfg(),
-        physics_material=sim_utils.DeformableBodyMaterialCfg(),
+        deformable_props=DeformableBodyPropertiesCfg(rest_offset=0.0),
+        visual_material=PreviewSurfaceCfg(),
+        physics_material=DeformableBodyMaterialCfg(),
     )
-    cfg_cone = sim_utils.MeshConeCfg(
+    cfg_cone = MeshConeCfg(
         radius=0.15,
         height=0.5,
-        deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0),
-        visual_material=sim_utils.PreviewSurfaceCfg(),
-        physics_material=sim_utils.DeformableBodyMaterialCfg(),
+        deformable_props=DeformableBodyPropertiesCfg(rest_offset=0.0),
+        visual_material=PreviewSurfaceCfg(),
+        physics_material=DeformableBodyMaterialCfg(),
     )
     # create a dictionary of all the objects to be spawned
     objects_cfg = {
@@ -145,7 +152,7 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     return scene_entities, origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, DeformableObject], origins: torch.Tensor):
+def run_simulator(sim: SimulationContext, entities: dict[str, DeformableObject], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -179,8 +186,8 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Deformab
 def main():
     """Main function."""
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.01, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([4.0, 4.0, 3.0], [0.5, 0.5, 0.0])
 

@@ -13,9 +13,12 @@ from typing import Any
 
 import torch
 
-from isaaclab.managers import ActionManager, EventManager, ObservationManager, RecorderManager
+from isaaclab.managers.action_manager import ActionManager
+from isaaclab.managers.event_manager import EventManager
+from isaaclab.managers.observation_manager import ObservationManager
+from isaaclab.managers.recorder_manager import RecorderManager
 from isaaclab.scene import InteractiveScene
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.sim.utils.stage import use_stage
 from isaaclab.ui.widgets import ManagerLiveVisualizer
 from isaaclab.utils.seed import configure_seed

@@ -87,13 +87,11 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, LogEveryNTimesteps
 from stable_baselines3.common.vec_env import VecNormalize
 
-from isaaclab.envs import (
-    DirectMARLEnv,
-    DirectMARLEnvCfg,
-    DirectRLEnvCfg,
-    ManagerBasedRLEnvCfg,
-    multi_agent_to_single_agent,
-)
+from isaaclab.envs.direct_marl_env import DirectMARLEnv
+from isaaclab.envs.direct_marl_env_cfg import DirectMARLEnvCfg
+from isaaclab.envs.direct_rl_env_cfg import DirectRLEnvCfg
+from isaaclab.envs.manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+from isaaclab.envs.utils.marl import multi_agent_to_single_agent
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 

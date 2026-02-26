@@ -17,11 +17,12 @@ import torch
 import warp as wp
 
 import isaaclab.utils.math as math_utils
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 if TYPE_CHECKING:
-    from isaaclab.assets import Articulation
-    from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
+    from isaaclab.assets.articulation.articulation import Articulation
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
+    from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 
     from isaaclab_contrib.assets import Multirotor
 

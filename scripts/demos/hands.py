@@ -36,14 +36,16 @@ import numpy as np
 import torch
 import warp as wp
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-
-##
+from isaaclab.assets.articulation.articulation import Articulation
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.allegro import ALLEGRO_HAND_CFG  # isort:skip
 from isaaclab_assets.robots.shadow_hand import SHADOW_HAND_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.utils.prims import create_prim
 
 
 def define_origins(num_origins: int, spacing: float) -> list[list[float]]:
@@ -64,10 +66,10 @@ def define_origins(num_origins: int, spacing: float) -> list[list[float]]:
 def design_scene() -> tuple[dict, list[list[float]]]:
     """Designs the scene."""
     # Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+    cfg = DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
     # Create separate groups called "Origin1", "Origin2", "Origin3"
@@ -75,12 +77,12 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     origins = define_origins(num_origins=2, spacing=0.5)
 
     # Origin 1 with Allegro Hand
-    sim_utils.create_prim("/World/Origin1", "Xform", translation=origins[0])
+    create_prim("/World/Origin1", "Xform", translation=origins[0])
     # -- Robot
     allegro = Articulation(ALLEGRO_HAND_CFG.replace(prim_path="/World/Origin1/Robot"))
 
     # Origin 2 with Shadow Hand
-    sim_utils.create_prim("/World/Origin2", "Xform", translation=origins[1])
+    create_prim("/World/Origin2", "Xform", translation=origins[1])
     # -- Robot
     shadow_hand = Articulation(SHADOW_HAND_CFG.replace(prim_path="/World/Origin2/Robot"))
 
@@ -92,7 +94,7 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     return scene_entities, origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articulation], origins: torch.Tensor):
+def run_simulator(sim: SimulationContext, entities: dict[str, Articulation], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -147,8 +149,8 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articula
 def main():
     """Main function."""
     # Initialize the simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=0.01, device=args_cli.device)
+    sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[0.0, -0.5, 1.5], target=[0.0, -0.2, 0.5])
     # design scene

@@ -16,15 +16,18 @@ from pxr import UsdPhysics
 
 import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
-from isaaclab.assets.articulation import Articulation
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.controllers.differential_ik import DifferentialIKController
 from isaaclab.controllers.operational_space import OperationalSpaceController
 from isaaclab.managers.action_manager import ActionTerm
-from isaaclab.sensors import ContactSensor, ContactSensorCfg, FrameTransformer, FrameTransformerCfg
-from isaaclab.sim.utils import find_matching_prims
+from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
+from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
+from isaaclab.sensors.frame_transformer.frame_transformer import FrameTransformer
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
+from isaaclab.sim.utils.queries import find_matching_prims
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
     from isaaclab.envs.utils.io_descriptors import GenericActionIODescriptor
 
     from . import actions_cfg

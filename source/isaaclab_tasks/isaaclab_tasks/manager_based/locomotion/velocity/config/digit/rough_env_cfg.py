@@ -5,7 +5,13 @@
 
 import math
 
-from isaaclab.managers import ObservationGroupCfg, ObservationTermCfg, RewardTermCfg, SceneEntityCfg, TerminationTermCfg
+from isaaclab.managers.manager_term_cfg import (
+    ObservationGroupCfg,
+    ObservationTermCfg,
+    RewardTermCfg,
+    TerminationTermCfg,
+)
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 

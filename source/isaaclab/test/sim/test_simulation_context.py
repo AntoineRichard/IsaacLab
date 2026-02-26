@@ -20,8 +20,11 @@ from isaaclab_physx.physics import IsaacEvents, PhysxCfg, PhysxManager
 
 import omni.timeline
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.shapes import CuboidCfg
+from isaaclab.sim.utils.prims import delete_prim
+from isaaclab.sim.utils.stage import create_new_stage
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +32,7 @@ def test_setup_teardown():
     """Setup and teardown for each test."""
     # Setup: Clear any existing simulation context and create a fresh stage
     SimulationContext.clear_instance()
-    sim_utils.create_new_stage()
+    create_new_stage()
 
     # Yield for the test
     yield
@@ -196,7 +199,7 @@ def test_reset():
     sim = SimulationContext(cfg)
 
     # create a simple cube to test with
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     # reset the simulation
@@ -216,7 +219,7 @@ def test_reset_soft():
     sim = SimulationContext(cfg)
 
     # create a simple cube
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     # perform initial reset
@@ -237,7 +240,7 @@ def test_forward():
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     sim.reset()
@@ -257,7 +260,7 @@ def test_step(render):
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     sim.reset()
@@ -277,7 +280,7 @@ def test_render():
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     sim.reset()
@@ -314,9 +317,9 @@ def test_clear_stage():
     sim = SimulationContext()
 
     # create some objects
-    cube_cfg1 = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg1 = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg1.func("/World/Cube1", cube_cfg1)
-    cube_cfg2 = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg2 = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg2.func("/World/Cube2", cube_cfg2)
 
     # verify objects exist
@@ -409,7 +412,7 @@ def test_timeline_callbacks_on_play():
     sim = SimulationContext(cfg)
 
     # create a simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     # create a flag to track callback execution
@@ -471,7 +474,7 @@ def test_timeline_callbacks_with_weakref():
     sim = SimulationContext(cfg)
 
     # create a simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     # create a test object that will be weakly referenced
@@ -747,7 +750,7 @@ def test_isaac_event_triggered_on_reset(event_type):
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     # create callback tracker
@@ -782,7 +785,7 @@ def test_isaac_event_prim_deletion():
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     sim.reset()
@@ -804,7 +807,7 @@ def test_isaac_event_prim_deletion():
         assert not callback_state["prim_deleted"]
 
         # delete the cube prim
-        sim_utils.delete_prim("/World/Cube")
+        delete_prim("/World/Cube")
 
         # trigger the event by dispatching it manually (since deletion might be handled differently)
         PhysxManager._message_bus.dispatch_event(IsaacEvents.PRIM_DELETION.value, payload={"prim_path": "/World/Cube"})  # type: ignore
@@ -865,7 +868,7 @@ def test_isaac_event_callbacks_with_weakref():
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     # create a test object that will be weakly referenced
@@ -939,7 +942,7 @@ def test_multiple_isaac_event_callbacks():
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     # create tracking for multiple callbacks
@@ -993,7 +996,7 @@ def test_exception_in_callback_on_reset():
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     test_error_message = "Test exception on reset"
@@ -1019,7 +1022,7 @@ def test_exception_in_callback_on_step():
     sim = SimulationContext(cfg)
 
     # create simple scene
-    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg = CuboidCfg(size=(0.1, 0.1, 0.1))
     cube_cfg.func("/World/Cube", cube_cfg)
 
     # reset first to initialize

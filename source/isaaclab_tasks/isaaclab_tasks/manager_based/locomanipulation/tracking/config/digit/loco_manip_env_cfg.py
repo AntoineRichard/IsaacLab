@@ -5,10 +5,11 @@
 
 import math
 
-from isaaclab.managers import EventTermCfg, SceneEntityCfg
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers.manager_term_cfg import EventTermCfg
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import ObservationGroupCfg as ObsGroup
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg as ObsTerm
+from isaaclab.managers.manager_term_cfg import RewardTermCfg as RewTerm
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 

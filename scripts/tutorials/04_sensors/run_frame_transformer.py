@@ -39,18 +39,20 @@ import warp as wp
 
 import isaacsim.util.debug_draw._debug_draw as omni_debug_draw
 
-import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
-from isaaclab.sensors import FrameTransformer, FrameTransformerCfg, OffsetCfg
-from isaaclab.sim import SimulationContext
-
-##
+from isaaclab.sensors.frame_transformer.frame_transformer import FrameTransformer
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg, OffsetCfg
+from isaaclab.sim.simulation_context import SimulationContext
 # Pre-defined configs
 ##
 from isaaclab_assets.robots.anymal import ANYMAL_C_CFG  # isort:skip
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DistantLightCfg
 
 
 def define_sensor() -> FrameTransformer:
@@ -81,10 +83,10 @@ def design_scene() -> dict:
     """Design the scene."""
     # Populate scene
     # -- Ground-plane
-    cfg = sim_utils.GroundPlaneCfg()
+    cfg = GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
     # -- Lights
-    cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+    cfg = DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
     # -- Robot
     robot = Articulation(ANYMAL_C_CFG.replace(prim_path="/World/Robot"))
@@ -96,7 +98,7 @@ def design_scene() -> dict:
     return scene_entities
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
+def run_simulator(sim: SimulationContext, scene_entities: dict):
     """Run the simulator."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
@@ -166,7 +168,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view(eye=[2.5, 2.5, 2.5], target=[0.0, 0.0, 0.0])

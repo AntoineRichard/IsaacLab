@@ -16,7 +16,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.sim.utils.stage import get_current_stage_id
 
 from .xr_cfg import XrAnchorRotationMode

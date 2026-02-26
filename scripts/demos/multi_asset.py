@@ -41,18 +41,15 @@ import warp as wp
 
 from pxr import Gf, Sdf
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import (
-    Articulation,
-    ArticulationCfg,
-    AssetBaseCfg,
-    RigidObject,
-    RigidObjectCfg,
-    RigidObjectCollection,
-    RigidObjectCollectionCfg,
-)
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
+from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
+from isaaclab.assets.rigid_object_collection.rigid_object_collection import RigidObjectCollection
+from isaaclab.assets.rigid_object_collection.rigid_object_collection_cfg import RigidObjectCollectionCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sim import SimulationContext
+from isaaclab.sim.simulation_context import SimulationContext
 from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.timer import Timer
@@ -63,6 +60,19 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 ##
 
 from isaaclab_assets.robots.anymal import ANYDRIVE_3_LSTM_ACTUATOR_CFG  # isort: skip
+from isaaclab.sim.schemas import (
+    ArticulationRootPropertiesCfg,
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+)
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import DomeLightCfg
+from isaaclab.sim.spawners.materials import PreviewSurfaceCfg
+from isaaclab.sim.spawners.shapes import ConeCfg, CuboidCfg, SphereCfg
+from isaaclab.sim.spawners.wrappers import MultiAssetSpawnerCfg, MultiUsdFileCfg
+from isaaclab.sim.utils.queries import find_matching_prim_paths
 
 
 ##
@@ -75,7 +85,7 @@ def randomize_shape_color(prim_path_expr: str):
     # get stage handle
     stage = get_current_stage()
     # resolve prim paths for spawning and cloning
-    prim_paths = sim_utils.find_matching_prim_paths(prim_path_expr)
+    prim_paths = find_matching_prim_paths(prim_path_expr)
     # manually clone prims if the source prim path is a regex expression
     with Sdf.ChangeBlock():
         for prim_path in prim_paths:
@@ -99,38 +109,38 @@ class MultiObjectSceneCfg(InteractiveSceneCfg):
     """Configuration for a multi-object scene."""
 
     # ground plane
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=GroundPlaneCfg())
 
     # lights
     dome_light = AssetBaseCfg(
-        prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+        prim_path="/World/Light", spawn=DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
     # rigid object
     object: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Object",
-        spawn=sim_utils.MultiAssetSpawnerCfg(
+        spawn=MultiAssetSpawnerCfg(
             assets_cfg=[
-                sim_utils.ConeCfg(
+                ConeCfg(
                     radius=0.3,
                     height=0.6,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.2),
                 ),
-                sim_utils.CuboidCfg(
+                CuboidCfg(
                     size=(0.3, 0.3, 0.3),
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
                 ),
-                sim_utils.SphereCfg(
+                SphereCfg(
                     radius=0.3,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.2),
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.2),
                 ),
             ],
             random_choice=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
+            mass_props=MassPropertiesCfg(mass=1.0),
+            collision_props=CollisionPropertiesCfg(),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 2.0)),
     )
@@ -140,41 +150,41 @@ class MultiObjectSceneCfg(InteractiveSceneCfg):
         rigid_objects={
             "object_A": RigidObjectCfg(
                 prim_path="/World/envs/env_.*/Object_A",
-                spawn=sim_utils.SphereCfg(
+                spawn=SphereCfg(
                     radius=0.1,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
+                    rigid_props=RigidBodyPropertiesCfg(
                         solver_position_iteration_count=4, solver_velocity_iteration_count=0
                     ),
-                    mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-                    collision_props=sim_utils.CollisionPropertiesCfg(),
+                    mass_props=MassPropertiesCfg(mass=1.0),
+                    collision_props=CollisionPropertiesCfg(),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.5, 2.0)),
             ),
             "object_B": RigidObjectCfg(
                 prim_path="/World/envs/env_.*/Object_B",
-                spawn=sim_utils.CuboidCfg(
+                spawn=CuboidCfg(
                     size=(0.1, 0.1, 0.1),
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
+                    rigid_props=RigidBodyPropertiesCfg(
                         solver_position_iteration_count=4, solver_velocity_iteration_count=0
                     ),
-                    mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-                    collision_props=sim_utils.CollisionPropertiesCfg(),
+                    mass_props=MassPropertiesCfg(mass=1.0),
+                    collision_props=CollisionPropertiesCfg(),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.5, 2.0)),
             ),
             "object_C": RigidObjectCfg(
                 prim_path="/World/envs/env_.*/Object_C",
-                spawn=sim_utils.ConeCfg(
+                spawn=ConeCfg(
                     radius=0.1,
                     height=0.3,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.2),
+                    rigid_props=RigidBodyPropertiesCfg(
                         solver_position_iteration_count=4, solver_velocity_iteration_count=0
                     ),
-                    mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-                    collision_props=sim_utils.CollisionPropertiesCfg(),
+                    mass_props=MassPropertiesCfg(mass=1.0),
+                    collision_props=CollisionPropertiesCfg(),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 2.0)),
             ),
@@ -184,13 +194,13 @@ class MultiObjectSceneCfg(InteractiveSceneCfg):
     # articulation
     robot: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
-        spawn=sim_utils.MultiUsdFileCfg(
+        spawn=MultiUsdFileCfg(
             usd_path=[
                 f"{ISAACLAB_NUCLEUS_DIR}/Robots/ANYbotics/ANYmal-C/anymal_c.usd",
                 f"{ISAACLAB_NUCLEUS_DIR}/Robots/ANYbotics/ANYmal-D/anymal_d.usd",
             ],
             random_choice=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 retain_accelerations=False,
                 linear_damping=0.0,
@@ -199,7 +209,7 @@ class MultiObjectSceneCfg(InteractiveSceneCfg):
                 max_angular_velocity=1000.0,
                 max_depenetration_velocity=1.0,
             ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_props=ArticulationRootPropertiesCfg(
                 enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
             ),
             activate_contact_sensors=True,
@@ -281,7 +291,7 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene):
 def main():
     """Main function."""
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device=args_cli.device)
+    sim_cfg = SimulationCfg(dt=0.005, device=args_cli.device)
     sim = SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.5, 0.0, 4.0], [0.0, 0.0, 2.0])

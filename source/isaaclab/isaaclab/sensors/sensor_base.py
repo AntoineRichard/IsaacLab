@@ -21,11 +21,12 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 from isaaclab_physx.physics import IsaacEvents, PhysxManager
 
-import isaaclab.sim as sim_utils
 from isaaclab.physics import PhysicsEvent
 from isaaclab.sim.utils.stage import get_current_stage
 
 from .kernels import reset_envs_kernel, update_outdated_envs_kernel, update_timestamp_kernel
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.utils.queries import find_matching_prims
 
 if TYPE_CHECKING:
     from .sensor_base_cfg import SensorBaseCfg
@@ -210,7 +211,7 @@ class SensorBase(ABC):
     def _initialize_impl(self):
         """Initializes the sensor-related handles and internal buffers."""
         # Obtain Simulation Context
-        sim = sim_utils.SimulationContext.instance()
+        sim = SimulationContext.instance()
         if sim is None:
             raise RuntimeError("Simulation Context is not initialized!")
         # Obtain device and backend
@@ -219,7 +220,7 @@ class SensorBase(ABC):
         self._sim_physics_dt = sim.get_physics_dt()
         # Count number of environments
         env_prim_path_expr = self.cfg.prim_path.rsplit("/", 1)[0]
-        self._parent_prims = sim_utils.find_matching_prims(env_prim_path_expr)
+        self._parent_prims = find_matching_prims(env_prim_path_expr)
         self._num_envs = len(self._parent_prims)
         # Create warp env mask arrays for "all envs" cases and resets.
         # Note: We use wp.to_torch() to create zero-copy torch tensor views of warp arrays.

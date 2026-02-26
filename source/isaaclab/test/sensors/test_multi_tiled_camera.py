@@ -26,8 +26,23 @@ from flaky import flaky
 import omni.replicator.core as rep
 from pxr import Gf, UsdGeom
 
-import isaaclab.sim as sim_utils
-from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
+from isaaclab.sensors.camera.tiled_camera import TiledCamera
+from isaaclab.sensors.camera.tiled_camera_cfg import TiledCameraCfg
+from isaaclab.sim.schemas import (
+    CollisionPropertiesCfg,
+    MassPropertiesCfg,
+    RigidBodyPropertiesCfg,
+    define_collision_properties,
+    define_mass_properties,
+    define_rigid_body_properties,
+)
+from isaaclab.sim.simulation_cfg import SimulationCfg
+from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg
+from isaaclab.sim.spawners.lights import SphereLightCfg
+from isaaclab.sim.spawners.sensors import PinholeCameraCfg
+from isaaclab.sim.utils.prims import create_prim
+from isaaclab.sim.utils.stage import create_new_stage, get_current_stage, update_stage
 
 
 @pytest.fixture()
@@ -40,21 +55,21 @@ def setup_camera():
         prim_path="/World/Camera",
         update_period=0,
         data_types=["rgb", "distance_to_camera"],
-        spawn=sim_utils.PinholeCameraCfg(
+        spawn=PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
     )
     # Create a new stage
-    sim_utils.create_new_stage()
+    create_new_stage()
     # Simulation time-step
     dt = 0.01
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=dt)
-    sim = sim_utils.SimulationContext(sim_cfg)
+    sim_cfg = SimulationCfg(dt=dt)
+    sim = SimulationContext(sim_cfg)
     # populate scene
     _populate_scene()
     # load stage
-    sim_utils.update_stage()
+    update_stage()
     yield camera_cfg, sim, dt
     # Teardown
     rep.vp_manager.destroy_hydra_textures("Replicator")
@@ -74,7 +89,7 @@ def test_multi_tiled_camera_init(setup_camera):
     tiled_cameras = []
     for i in range(num_tiled_cameras):
         for j in range(num_cameras_per_tiled_camera):
-            sim_utils.create_prim(f"/World/Origin_{i}_{j}", "Xform")
+            create_prim(f"/World/Origin_{i}_{j}", "Xform")
 
         # Create camera
         camera_cfg = copy.deepcopy(camera_cfg)
@@ -170,7 +185,7 @@ def test_all_annotators_multi_tiled_camera(setup_camera):
     tiled_cameras = []
     for i in range(num_tiled_cameras):
         for j in range(num_cameras_per_tiled_camera):
-            sim_utils.create_prim(f"/World/Origin_{i}_{j}", "Xform")
+            create_prim(f"/World/Origin_{i}_{j}", "Xform")
 
         # Create camera
         camera_cfg = copy.deepcopy(camera_cfg)
@@ -273,7 +288,7 @@ def test_different_resolution_multi_tiled_camera(setup_camera):
     resolutions = [(16, 16), (23, 765)]
     for i in range(num_tiled_cameras):
         for j in range(num_cameras_per_tiled_camera):
-            sim_utils.create_prim(f"/World/Origin_{i}_{j}", "Xform")
+            create_prim(f"/World/Origin_{i}_{j}", "Xform")
 
         # Create camera
         camera_cfg = copy.deepcopy(camera_cfg)
@@ -345,7 +360,7 @@ def test_frame_offset_multi_tiled_camera(setup_camera):
     tiled_cameras = []
     for i in range(num_tiled_cameras):
         for j in range(num_cameras_per_tiled_camera):
-            sim_utils.create_prim(f"/World/Origin_{i}_{j}", "Xform")
+            create_prim(f"/World/Origin_{i}_{j}", "Xform")
 
         # Create camera
         camera_cfg = copy.deepcopy(camera_cfg)
@@ -354,7 +369,7 @@ def test_frame_offset_multi_tiled_camera(setup_camera):
         tiled_cameras.append(camera)
 
     # modify scene to be less stochastic
-    stage = sim_utils.get_current_stage()
+    stage = get_current_stage()
     for i in range(10):
         prim = stage.GetPrimAtPath(f"/World/Objects/Obj_{i:02d}")
         color = Gf.Vec3f(1, 1, 1)
@@ -413,7 +428,7 @@ def test_frame_different_poses_multi_tiled_camera(setup_camera):
     tiled_cameras = []
     for i in range(num_tiled_cameras):
         for j in range(num_cameras_per_tiled_camera):
-            sim_utils.create_prim(f"/World/Origin_{i}_{j}", "Xform")
+            create_prim(f"/World/Origin_{i}_{j}", "Xform")
 
         # Create camera
         camera_cfg = copy.deepcopy(camera_cfg)
@@ -477,10 +492,10 @@ def _populate_scene():
     """Add prims to the scene."""
     # TODO: this causes hang with Kit 107.3???
     # # Ground-plane
-    # cfg = sim_utils.GroundPlaneCfg()
+    # cfg = GroundPlaneCfg()
     # cfg.func("/World/defaultGroundPlane", cfg)
     # Lights
-    cfg = sim_utils.SphereLightCfg()
+    cfg = SphereLightCfg()
     cfg.func("/World/Light/GreySphere", cfg, translation=(4.5, 3.5, 10.0))
     cfg.func("/World/Light/WhiteSphere", cfg, translation=(-4.5, 3.5, 10.0))
     # Random objects
@@ -491,7 +506,7 @@ def _populate_scene():
         position *= np.asarray([1.5, 1.5, 0.5])
         # create prim
         prim_type = random.choice(["Cube", "Sphere", "Cylinder"])
-        prim = sim_utils.create_prim(
+        prim = create_prim(
             f"/World/Objects/Obj_{i:02d}",
             prim_type,
             translation=position,
@@ -506,6 +521,6 @@ def _populate_scene():
         geom_prim.GetDisplayColorAttr().Set([color])
         # add rigid body and collision properties using Isaac Lab schemas
         prim_path = f"/World/Objects/Obj_{i:02d}"
-        sim_utils.define_rigid_body_properties(prim_path, sim_utils.RigidBodyPropertiesCfg())
-        sim_utils.define_mass_properties(prim_path, sim_utils.MassPropertiesCfg(mass=5.0))
-        sim_utils.define_collision_properties(prim_path, sim_utils.CollisionPropertiesCfg())
+        define_rigid_body_properties(prim_path, RigidBodyPropertiesCfg())
+        define_mass_properties(prim_path, MassPropertiesCfg(mass=5.0))
+        define_collision_properties(prim_path, CollisionPropertiesCfg())
