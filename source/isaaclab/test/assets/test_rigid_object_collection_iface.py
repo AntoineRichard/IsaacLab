@@ -100,6 +100,7 @@ def create_physx_rigid_object_collection(
     object.__setattr__(collection, "_num_bodies", num_bodies)
     object.__setattr__(collection, "_num_instances", num_instances)
     object.__setattr__(collection, "_body_names_list", [f"object_{i}" for i in range(num_bodies)])
+    collection._init_resolve_matching_names_caches()
 
     # Create RigidObjectCollectionData instance
     data = PhysXRigidObjectCollectionData(mock_view, num_bodies, device)
@@ -184,6 +185,7 @@ def create_newton_rigid_object_collection(
     object.__setattr__(collection, "_num_instances", num_instances)
     object.__setattr__(collection, "_body_names_list", body_names)
     object.__setattr__(collection, "_data", data)
+    collection._init_resolve_matching_names_caches()
     data.body_names = body_names
 
     # Mock wrench composers (Newton-specific)

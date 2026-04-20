@@ -107,6 +107,7 @@ def create_test_collection(
     object.__setattr__(collection, "_root_view", mock_view)
     object.__setattr__(collection, "_device", device)
     object.__setattr__(collection, "_body_names_list", object_names)
+    collection._init_resolve_matching_names_caches()
 
     # Create RigidObjectCollectionData instance
     data = RigidObjectCollectionData(mock_view, num_bodies, device)

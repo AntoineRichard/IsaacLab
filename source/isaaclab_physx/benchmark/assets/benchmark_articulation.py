@@ -124,6 +124,7 @@ def create_test_articulation(
 
     object.__setattr__(articulation, "_root_view", mock_view)
     object.__setattr__(articulation, "_device", device)
+    articulation._init_resolve_matching_names_caches()
 
     # Create ArticulationData instance (SimulationManager already mocked at module level)
     data = ArticulationData(mock_view, device)

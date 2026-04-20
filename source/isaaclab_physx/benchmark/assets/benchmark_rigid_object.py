@@ -106,6 +106,7 @@ def create_test_rigid_object(
     # Set up attributes required before _create_buffers
     object.__setattr__(rigid_object, "_root_view", mock_view)
     object.__setattr__(rigid_object, "_device", device)
+    rigid_object._init_resolve_matching_names_caches()
 
     # Create RigidObjectData instance (mocks already set up at module level)
     data = RigidObjectData(mock_view, device)

@@ -19,7 +19,6 @@ from newton.solvers import SolverNotifyFlags
 from pxr import UsdPhysics
 
 import isaaclab.sim as sim_utils
-import isaaclab.utils.string as string_utils
 from isaaclab.assets.rigid_object_collection.base_rigid_object_collection import BaseRigidObjectCollection
 from isaaclab.utils.wrench_composer import WrenchComposer
 
@@ -252,7 +251,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         Returns:
             A tuple of lists containing the body indices and names.
         """
-        obj_ids, obj_names = string_utils.resolve_matching_names(name_keys, self.body_names, preserve_order)
+        obj_ids, obj_names = self._resolve_matching_names_cached(name_keys, self.body_names, preserve_order)
         return torch.tensor(obj_ids, device=self.device, dtype=torch.int32), obj_names
 
     """

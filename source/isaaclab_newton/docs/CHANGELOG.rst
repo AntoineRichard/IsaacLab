@@ -1,17 +1,92 @@
 Changelog
 ---------
 
-0.5.11 (2026-04-09)
+0.5.17 (2026-04-20)
 ~~~~~~~~~~~~~~~~~~~
 
 Changed
 ^^^^^^^
 
 * Cached articulation and rigid-object finder methods via per-instance
-  ``_resolve_matching_names_cached`` and ``_resolve_matching_names_values_cached``
-  closures defined in :class:`~isaaclab.assets.AssetBase`, avoiding repeated
+  caching defined in :class:`~isaaclab.assets.AssetBase`, avoiding repeated
   regex resolution on every call. :class:`~isaaclab_newton.assets.RigidObject`
-  now also benefits from the cache.
+  and :class:`~isaaclab_newton.assets.RigidObjectCollection` now also benefit
+  from the cache.
+
+
+0.5.16 (2026-04-17)
+~~~~~~~~~~~~~~~~~~~
+
+Fixed
+^^^^^
+
+* Fixed incorrect attribute name ``contact_margin`` on Newton
+  ``ShapeConfig`` in
+  :meth:`~isaaclab_newton.physics.NewtonManager.create_builder`. The
+  field was renamed to ``gap`` in Newton PR #1732. The typo created a
+  dead attribute so the intended 1 cm default shape gap was never applied.
+
+
+0.5.15 (2026-04-16)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added :class:`~isaaclab_newton.sensors.pva.Pva` sensor wrapping Newton's
+  body state (``body_q``, ``body_qd``, ``body_qdd``) to provide world-frame
+  pose and body-frame velocities/accelerations.
+
+
+0.5.14 (2026-04-14)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added :class:`~isaaclab_newton.sensors.Imu` sensor wrapping Newton's
+  ``SensorIMU``, providing angular velocity and linear acceleration in the
+  sensor's body frame.
+
+
+0.5.13 (2026-04-13)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added :class:`~isaaclab_newton.physics.NewtonCollisionPipelineCfg` to expose Newton
+  collision pipeline parameters via :attr:`~isaaclab_newton.physics.NewtonCfg.collision_cfg`.
+* Added :attr:`~isaaclab_newton.physics.MJWarpSolverCfg.tolerance` for solver convergence control.
+
+Fixed
+^^^^^
+
+* Fixed truthiness check on hydroelastic config dict in collision pipeline
+  initialization. An explicit ``is not None`` check is now used so that
+  :class:`~isaaclab_newton.physics.newton_collision_cfg.HydroelasticSDFCfg`
+  with all-default values is no longer silently skipped.
+
+
+0.5.12 (2026-04-13)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``set_friction_index/mask`` and ``set_restitution_index/mask`` methods to
+  Newton assets for native material property randomization.
+
+
+0.5.11 (2026-04-13)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added :class:`~isaaclab_newton.sensors.frame_transformer.FrameTransformer` sensor
+  wrapping Newton's ``SensorFrameTransform``. Supports per-env source/target site
+  registration, wildcard body matching, and zero-copy transform views.
 
 
 0.5.10 (2026-04-05)
