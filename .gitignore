@@ -79,3 +79,6 @@ _build
 
 # Ruff cache
 **/.ruff_cache/
+
+# Superpowers (Claude Code plugin artifacts)
+docs/superpowers/
