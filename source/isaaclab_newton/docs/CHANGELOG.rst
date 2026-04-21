@@ -12,6 +12,16 @@ Changed
   regex resolution on every call. :class:`~isaaclab_newton.assets.RigidObject`
   and :class:`~isaaclab_newton.assets.RigidObjectCollection` now also benefit
   from the cache.
+* Changed Newton Warp tiled camera outputs to clear with a light linear gray
+  (0xFFEEEEEE, 93% gray, fully opaque) background via ``SensorTiledCamera.ClearData``
+  in :class:`~isaaclab_newton.renderers.NewtonWarpRenderer`.
+
+Fixed
+^^^^^
+
+* Fixed Newton visualization colors drifting from the USD stage by calling
+  :func:`~isaaclab.sim.utils.newton_model_utils.replace_newton_shape_colors`
+  after the model is finalized in :class:`~isaaclab_newton.physics.NewtonManager`.
 
 
 0.5.16 (2026-04-17)
