@@ -471,7 +471,13 @@ def build_entry_from_task_spec(
     has_rsl_rl = "rsl_rl_cfg_entry_point" in kwargs
     has_skrl = "skrl_cfg_entry_point" in kwargs
     framework = suggest_framework(has_rsl_rl, has_skrl)
-    group = derive_group(task_spec.entry_point or "")
+    # Manager-based tasks all share the generic ``isaaclab.envs:ManagerBasedRLEnv``
+    # entry_point — the task-specific path lives in ``env_cfg_entry_point``. Try
+    # both and take whichever yields a non-``"unknown"`` group.
+    env_cfg_ep = kwargs.get("env_cfg_entry_point") or ""
+    group_from_env_cfg = derive_group(env_cfg_ep) if isinstance(env_cfg_ep, str) else "unknown"
+    group_from_entry = derive_group(task_spec.entry_point or "")
+    group = group_from_env_cfg if group_from_env_cfg != "unknown" else group_from_entry
 
     num_envs: int | None = None
     max_iterations: int | None = None

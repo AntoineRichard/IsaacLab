@@ -404,6 +404,24 @@ def test_build_entry_defaults_loader_failure_forces_keep_false():
     assert "training defaults" in e.notes.lower()
 
 
+def test_build_entry_manager_based_derives_group_from_env_cfg_entry_point():
+    # Manager-based envs all share entry_point=isaaclab.envs:ManagerBasedRLEnv.
+    # The task-specific path lives in env_cfg_entry_point.
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Velocity-Flat-Anymal-C-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        kwargs={
+            "env_cfg_entry_point": (
+                "isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.flat_env_cfg:"
+                "AnymalCFlatEnvCfg"
+            ),
+            "rsl_rl_cfg_entry_point": "x:Y",
+        },
+    )
+    e = build_entry_from_task_spec(spec, defaults_loader=_noop_defaults_loader)
+    assert e.group == "manager_based/locomotion/velocity"
+
+
 # -----------------------------------------------------------------------------
 # classify_for_newton (used by enumerate_newton_envs.py)
 # -----------------------------------------------------------------------------
