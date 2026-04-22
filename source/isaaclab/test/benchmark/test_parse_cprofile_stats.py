@@ -86,7 +86,7 @@ def test_whitelist_path_returns_ncalls():
 
     # Matched row carries the real ncalls; placeholder row carries 0.
     labels = {r[0]: r for r in results}
-    inner_label = next((l for l in labels if l.endswith(":inner")), None)
+    inner_label = next((lbl for lbl in labels if lbl.endswith(":inner")), None)
     assert inner_label is not None, f"inner() should match wildcard whitelist, labels: {list(labels)}"
     assert labels[inner_label][3] == 8, f"inner ncalls should be 2*4=8, got {labels[inner_label][3]}"
 
