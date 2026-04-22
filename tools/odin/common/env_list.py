@@ -34,6 +34,7 @@ __all__ = [
     "merge",
     "extract_training_defaults_from_cfgs",
     "load_shipped_training_defaults",
+    "build_entry_from_task_spec",
 ]
 
 
@@ -441,3 +442,72 @@ def load_shipped_training_defaults(task_id: str, framework: str) -> tuple[int | 
         return None, None
 
     return extract_training_defaults_from_cfgs(env_cfg, agent_cfg, framework)
+
+
+# -----------------------------------------------------------------------------
+# Per-task-spec row construction (used by enumerate_physx_envs.py)
+# -----------------------------------------------------------------------------
+
+
+def build_entry_from_task_spec(
+    task_spec: Any,
+    *,
+    defaults_loader=load_shipped_training_defaults,
+) -> EnvEntry:
+    """Construct an :class:`EnvEntry` from a gym ``EnvSpec``-like object.
+
+    Args:
+        task_spec: An object with ``id``, ``entry_point``, and ``kwargs``
+            attributes (gymnasium's ``EnvSpec`` satisfies this).
+        defaults_loader: Callable taking ``(task_id, framework)`` and returning
+            ``(num_envs, max_iterations)``. Defaults to the real
+            :func:`load_shipped_training_defaults`; tests pass a stub.
+
+    Returns:
+        A freshly-built :class:`EnvEntry` with ``status="current"``.
+    """
+    kwargs = task_spec.kwargs or {}
+    has_rsl_rl = "rsl_rl_cfg_entry_point" in kwargs
+    has_skrl = "skrl_cfg_entry_point" in kwargs
+    framework = suggest_framework(has_rsl_rl, has_skrl)
+    group = derive_group(task_spec.entry_point or "")
+
+    num_envs: int | None = None
+    max_iterations: int | None = None
+    notes = ""
+
+    if framework is None:
+        notes = "No rsl_rl or skrl entry point registered."
+    else:
+        try:
+            num_envs, max_iterations = defaults_loader(task_spec.id, framework)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"WARNING env_list: defaults_loader raised for {task_spec.id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            num_envs = None
+            max_iterations = None
+        if num_envs is None or max_iterations is None:
+            notes = (
+                "Could not resolve training defaults from shipped framework cfg; "
+                "review the cfg and fill num_envs / max_iterations manually."
+            )
+
+    keep = framework is not None and num_envs is not None and max_iterations is not None
+
+    return EnvEntry(
+        task_id=task_spec.id,
+        entry_point=task_spec.entry_point or "",
+        env_cfg_entry_point=kwargs.get("env_cfg_entry_point"),
+        group=group,
+        has_rsl_rl=has_rsl_rl,
+        has_skrl=has_skrl,
+        framework=framework,
+        num_envs=num_envs,
+        max_iterations=max_iterations,
+        keep=keep,
+        status="current",
+        notes=notes,
+        suspected_gap=None,
+    )

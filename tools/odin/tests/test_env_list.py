@@ -312,3 +312,93 @@ def test_extract_training_defaults_skrl_missing_trainer():
 def test_extract_training_defaults_unknown_framework():
     with pytest.raises(ValueError, match="framework"):
         extract_training_defaults_from_cfgs(_EnvCfgRsl(), _RslAgentCfg(), "bogus")
+
+
+# -----------------------------------------------------------------------------
+# build_entry_from_task_spec (called from enumerate_physx_envs.py)
+# -----------------------------------------------------------------------------
+
+
+from tools.odin.common.env_list import build_entry_from_task_spec
+
+
+class _FakeTaskSpec:
+    """Imitates a gymnasium EnvSpec enough for build_entry_from_task_spec."""
+
+    def __init__(self, task_id, entry_point, kwargs):
+        self.id = task_id
+        self.entry_point = entry_point
+        self.kwargs = kwargs
+
+
+def _noop_defaults_loader(task_id, framework):
+    return 4096, 300
+
+
+def test_build_entry_rsl_rl_preferred_when_both_registered():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Ant-Direct-v0",
+        entry_point="isaaclab_tasks.direct.ant:AntEnv",
+        kwargs={
+            "env_cfg_entry_point": "isaaclab_tasks.direct.ant.ant_env_cfg:AntEnvCfg",
+            "rsl_rl_cfg_entry_point": "x:Y",
+            "skrl_cfg_entry_point": "x:Y",
+        },
+    )
+    e = build_entry_from_task_spec(spec, defaults_loader=_noop_defaults_loader)
+    assert e.task_id == "Isaac-Ant-Direct-v0"
+    assert e.group == "direct/ant"
+    assert e.has_rsl_rl is True
+    assert e.has_skrl is True
+    assert e.framework == "rsl_rl"
+    assert e.num_envs == 4096
+    assert e.max_iterations == 300
+    assert e.keep is True
+    assert e.notes == ""
+
+
+def test_build_entry_skrl_only():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Cartpole-RGB-Camera-v0",
+        entry_point="isaaclab_tasks.direct.cartpole:CartpoleRGBEnv",
+        kwargs={
+            "env_cfg_entry_point": "isaaclab_tasks.direct.cartpole.cfg:Cfg",
+            "skrl_cfg_entry_point": "x:Y",
+        },
+    )
+    e = build_entry_from_task_spec(spec, defaults_loader=_noop_defaults_loader)
+    assert e.framework == "skrl"
+    assert e.keep is True
+
+
+def test_build_entry_no_framework_forces_keep_false():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Manual-v0",
+        entry_point="isaaclab_tasks.direct.manual:Env",
+        kwargs={"env_cfg_entry_point": "x:Y"},
+    )
+    e = build_entry_from_task_spec(spec, defaults_loader=_noop_defaults_loader)
+    assert e.framework is None
+    assert e.keep is False
+    assert "No rsl_rl or skrl" in e.notes
+
+
+def test_build_entry_defaults_loader_failure_forces_keep_false():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Broken-v0",
+        entry_point="isaaclab_tasks.direct.broken:Env",
+        kwargs={
+            "env_cfg_entry_point": "x:Y",
+            "rsl_rl_cfg_entry_point": "x:Y",
+        },
+    )
+
+    def failing_loader(task_id, framework):
+        return None, None
+
+    e = build_entry_from_task_spec(spec, defaults_loader=failing_loader)
+    assert e.framework == "rsl_rl"
+    assert e.num_envs is None
+    assert e.max_iterations is None
+    assert e.keep is False
+    assert "training defaults" in e.notes.lower()
