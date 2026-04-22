@@ -251,7 +251,7 @@ def _build_startup_bundle(
     phases_out: dict[str, StartupPhase] = {}
     for name, data in phases_data.items():
         top_funcs: list[CProfileFunction] = []
-        for label, tottime_ms, cumtime_ms in parse_cprofile_stats(
+        for label, tottime_ms, cumtime_ms, ncalls in parse_cprofile_stats(
             data["profile"], _ISAACLAB_PREFIXES, top_n=args_cli.top_n, whitelist=_WHITELIST.get(name)
         ):
             top_funcs.append(
@@ -259,9 +259,7 @@ def _build_startup_bundle(
                     name=label,
                     own_time_s=tottime_ms / 1000.0,
                     cum_time_s=cumtime_ms / 1000.0,
-                    # parse_cprofile_stats does not currently return call counts;
-                    # tracked as a known v1 limitation (docs/odin/architecture.md §9).
-                    calls=0,
+                    calls=ncalls,
                 )
             )
         phases_out[name] = StartupPhase(
@@ -423,7 +421,7 @@ def main(
                 )
 
             # Log per-function measurements (tottime + cumtime)
-            for label, tottime_ms, cumtime_ms in functions:
+            for label, tottime_ms, cumtime_ms, _ncalls in functions:
                 benchmark.add_measurement(
                     phase_name, measurement=SingleMeasurement(name=label, value=round(tottime_ms, 2), unit="ms")
                 )
