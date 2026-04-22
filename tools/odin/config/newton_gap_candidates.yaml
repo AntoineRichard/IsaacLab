@@ -1,6 +1,11 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 schema_version: '1.0'
-generated_at: '2026-04-22T18:20:27Z'
-generator: play-keep-off-sweep
+generated_at: '2026-04-22T18:49:23Z'
+generator: normalize-gap-vocabulary
 groups:
   direct/anymal_c:
   - task_id: Isaac-Velocity-Flat-Anymal-C-Direct-v0
@@ -15,7 +20,7 @@ groups:
     max_iterations: 500
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-C-Direct-v0
     entry_point: isaaclab_tasks.direct.anymal_c.anymal_c_env:AnymalCEnv
@@ -29,8 +34,8 @@ groups:
     max_iterations: 1500
     keep: true
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: sdf_collision
+    notes: Also requires rough_terrain support (heightfield).
   direct/cart_double_pendulum:
   - task_id: Isaac-Cart-Double-Pendulum-Direct-v0
     entry_point: isaaclab_tasks.direct.cart_double_pendulum.cart_double_pendulum_env:CartDoublePendulumEnv
@@ -44,7 +49,7 @@ groups:
     max_iterations: 4800
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   direct/cartpole:
   - task_id: Isaac-Cartpole-Albedo-Camera-Direct-v0
@@ -57,9 +62,9 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Cartpole-Depth-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
@@ -73,7 +78,7 @@ groups:
     max_iterations: 32000
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Cartpole-RGB-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
@@ -87,7 +92,7 @@ groups:
     max_iterations: 32000
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Cartpole-SimpleShading-Constant-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
@@ -99,10 +104,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-SimpleShading-Diffuse-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleSimpleShadingDiffuseCameraEnvCfg
@@ -113,10 +118,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-SimpleShading-Full-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleSimpleShadingFullCameraEnvCfg
@@ -127,10 +132,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   direct/cartpole_showcase:
   - task_id: Isaac-Cartpole-Camera-Showcase-Box-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -142,10 +147,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-Camera-Showcase-Box-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:BoxDiscreteEnvCfg
@@ -156,10 +161,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-Camera-Showcase-Box-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:BoxMultiDiscreteEnvCfg
@@ -170,10 +175,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-Camera-Showcase-Dict-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:DictBoxEnvCfg
@@ -184,10 +189,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-Camera-Showcase-Dict-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:DictDiscreteEnvCfg
@@ -198,10 +203,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-Camera-Showcase-Dict-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:DictMultiDiscreteEnvCfg
@@ -212,10 +217,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:TupleBoxEnvCfg
@@ -226,10 +231,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:TupleDiscreteEnvCfg
@@ -240,10 +245,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:TupleMultiDiscreteEnvCfg
@@ -254,10 +259,10 @@ groups:
     framework: skrl
     num_envs: 512
     max_iterations: 32000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
-    notes: ''
+    suspected_gap: preset_missing
+    notes: Lets not do the showcase for cartpole
   direct/franka_cabinet:
   - task_id: Isaac-Franka-Cabinet-Direct-v0
     entry_point: isaaclab_tasks.direct.franka_cabinet.franka_cabinet_env:FrankaCabinetEnv
@@ -271,7 +276,7 @@ groups:
     max_iterations: 1500
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   direct/quadcopter:
   - task_id: Isaac-Quadcopter-Direct-v0
@@ -286,7 +291,7 @@ groups:
     max_iterations: 200
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   direct/shadow_hand_over:
   - task_id: Isaac-Shadow-Hand-Over-Direct-v0
@@ -299,9 +304,9 @@ groups:
     framework: skrl
     num_envs: 2048
     max_iterations: 36000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: tendons
     notes: ''
   manager_based/drone_arl/track_position_state_based:
   - task_id: Isaac-TrackPositionNoObstacles-ARL-Robot-1-Play-v0
@@ -316,7 +321,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-TrackPositionNoObstacles-ARL-Robot-1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -330,7 +335,7 @@ groups:
     max_iterations: 1500
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   manager_based/locomanipulation/tracking:
   - task_id: Isaac-Tracking-LocoManip-Digit-Play-v0
@@ -345,7 +350,7 @@ groups:
     max_iterations: 2000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: manipulation_coverage
     notes: ''
   - task_id: Isaac-Tracking-LocoManip-Digit-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -357,9 +362,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 2000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: manipulation_coverage
     notes: ''
   manager_based/locomotion/velocity:
   - task_id: Isaac-Velocity-Flat-Digit-Play-v0
@@ -374,7 +379,7 @@ groups:
     max_iterations: 2000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: parallel_joints
     notes: ''
   - task_id: Isaac-Velocity-Flat-Digit-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -386,9 +391,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 2000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: parallel_joints
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-B-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -402,7 +407,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-B-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -414,9 +419,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-C-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -430,7 +435,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-C-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -442,9 +447,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-D-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -458,7 +463,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-D-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -470,9 +475,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Cassie-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -486,7 +491,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Cassie-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -498,9 +503,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Digit-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -514,7 +519,7 @@ groups:
     max_iterations: 3000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Digit-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -526,9 +531,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 3000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-G1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -542,7 +547,7 @@ groups:
     max_iterations: 3000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-G1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -554,9 +559,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 3000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-H1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -570,7 +575,7 @@ groups:
     max_iterations: 3000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-H1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -582,9 +587,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 3000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-A1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -598,7 +603,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-A1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -610,9 +615,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-Go1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -626,7 +631,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-Go1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -638,9 +643,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-Go2-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -654,7 +659,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-Go2-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -666,9 +671,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: rough_terrain
     notes: ''
   manager_based/manipulation/cabinet:
   - task_id: Isaac-Open-Drawer-Franka-Play-v0
@@ -683,7 +688,7 @@ groups:
     max_iterations: 400
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Open-Drawer-Franka-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -697,7 +702,7 @@ groups:
     max_iterations: 400
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Open-Drawer-OpenArm-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -711,7 +716,7 @@ groups:
     max_iterations: 600
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Open-Drawer-OpenArm-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -725,7 +730,7 @@ groups:
     max_iterations: 600
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   manager_based/manipulation/deploy:
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F140-ROS-Inference-v0
@@ -738,9 +743,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: sdf_collision
     notes: ''
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F140-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -752,9 +757,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: sdf_collision
     notes: ''
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F85-ROS-Inference-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -766,9 +771,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: sdf_collision
     notes: ''
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F85-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -780,9 +785,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: sdf_collision
     notes: ''
   - task_id: Isaac-Deploy-Reach-Rizon4s-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -796,7 +801,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Deploy-Reach-Rizon4s-ROS-Inference-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -808,9 +813,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Deploy-Reach-Rizon4s-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -824,7 +829,7 @@ groups:
     max_iterations: 1500
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Deploy-Reach-UR10e-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -838,7 +843,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Deploy-Reach-UR10e-ROS-Inference-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -850,9 +855,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Deploy-Reach-UR10e-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -866,7 +871,7 @@ groups:
     max_iterations: 1500
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   manager_based/manipulation/inhand:
   - task_id: Isaac-Repose-Cube-Allegro-NoVelObs-Play-v0
@@ -881,7 +886,7 @@ groups:
     max_iterations: 5000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Repose-Cube-Allegro-NoVelObs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -893,9 +898,9 @@ groups:
     framework: rsl_rl
     num_envs: 8192
     max_iterations: 5000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Repose-Cube-Allegro-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -907,9 +912,9 @@ groups:
     framework: rsl_rl
     num_envs: 50
     max_iterations: 5000
-    keep: false
+    keep: none
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Repose-Cube-Allegro-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -923,7 +928,7 @@ groups:
     max_iterations: 5000
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   manager_based/manipulation/lift:
   - task_id: Isaac-Lift-Cube-Franka-Play-v0
@@ -938,7 +943,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: manipulation_coverage
     notes: ''
   - task_id: Isaac-Lift-Cube-Franka-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -950,9 +955,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: manipulation_coverage
     notes: ''
   - task_id: Isaac-Lift-Cube-OpenArm-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -966,7 +971,7 @@ groups:
     max_iterations: 2000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: manipulation_coverage
     notes: ''
   - task_id: Isaac-Lift-Cube-OpenArm-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -978,9 +983,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 2000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: manipulation_coverage
     notes: ''
   manager_based/manipulation/reach:
   - task_id: Isaac-Reach-Franka-OSC-Play-v0
@@ -995,7 +1000,7 @@ groups:
     max_iterations: 1000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: controller_untested
     notes: ''
   - task_id: Isaac-Reach-Franka-OSC-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1007,9 +1012,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: controller_untested
     notes: ''
   - task_id: Isaac-Reach-OpenArm-Bi-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1023,7 +1028,7 @@ groups:
     max_iterations: 550
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Reach-OpenArm-Bi-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1035,9 +1040,9 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 550
-    keep: true
+    keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Reach-OpenArm-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1051,7 +1056,7 @@ groups:
     max_iterations: 1000
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Reach-OpenArm-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1065,7 +1070,7 @@ groups:
     max_iterations: 1000
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   manager_based/navigation/config:
   - task_id: Isaac-Navigation-Flat-Anymal-C-Play-v0
@@ -1080,7 +1085,7 @@ groups:
     max_iterations: 1500
     keep: false
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''
   - task_id: Isaac-Navigation-Flat-Anymal-C-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1094,5 +1099,5 @@ groups:
     max_iterations: 1500
     keep: true
     status: new
-    suspected_gap: tbd
+    suspected_gap: preset_missing
     notes: ''

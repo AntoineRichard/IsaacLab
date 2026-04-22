@@ -127,6 +127,26 @@ def test_load_rejects_non_dict_yaml(tmp_path: Path):
         load_env_list(bad)
 
 
+def test_write_rejects_suspected_gap_outside_vocabulary(tmp_path: Path):
+    # Free-form suspected_gap values are a silent data rot — the gap doc
+    # and downstream appendix rendering assume the controlled vocabulary.
+    original = EnvList()
+    original.groups["direct/ant"] = [_make_entry("Isaac-Ant-Direct-v0", suspected_gap="freeform string")]
+    out = tmp_path / "bad_gap.yaml"
+    with pytest.raises(ValueError, match="GAP_VOCABULARY"):
+        write_env_list(out, original, generator="test")
+
+
+def test_write_accepts_every_vocabulary_entry(tmp_path: Path):
+    from tools.odin.common.env_list import GAP_VOCABULARY
+
+    original = EnvList()
+    for i, gap in enumerate(GAP_VOCABULARY):
+        original.groups.setdefault("direct/ant", []).append(_make_entry(f"Isaac-Dummy-{i}-v0", suspected_gap=gap))
+    out = tmp_path / "ok_gap.yaml"
+    write_env_list(out, original, generator="test")  # must not raise
+
+
 def test_load_rejects_row_missing_task_id(tmp_path: Path):
     # A row without task_id can't be merge-keyed; fail loudly instead of
     # silently constructing an EnvEntry with task_id=None.
@@ -448,8 +468,7 @@ def test_build_entry_manager_based_derives_group_from_env_cfg_entry_point():
         entry_point="isaaclab.envs:ManagerBasedRLEnv",
         kwargs={
             "env_cfg_entry_point": (
-                "isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.flat_env_cfg:"
-                "AnymalCFlatEnvCfg"
+                "isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.flat_env_cfg:AnymalCFlatEnvCfg"
             ),
             "rsl_rl_cfg_entry_point": "x:Y",
         },

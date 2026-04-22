@@ -5,9 +5,10 @@
 (`physx_envs.yaml` ∩ ¬ `newton_envs.yaml`), plus related observations
 surfaced by T2.1 enumeration.
 
-**Status:** Draft skeleton. Framework-coverage and Deploy-duplication
-sections are authored; the per-Newton-gap sections and the appendix are
-placeholders to fill during T2.1's human curation pass.
+**Status:** Authored — end of T2.1 curation pass. All
+`tools/odin/config/newton_gap_candidates.yaml` rows carry a controlled-vocabulary
+`suspected_gap` value (see :data:`tools.odin.common.env_list.GAP_VOCABULARY`);
+the appendix is rendered directly from that YAML.
 
 ---
 
@@ -129,58 +130,284 @@ robots and ROS hooks; it is not a code-refactor target for T2.1.
 
 ## 3. Newton API gaps
 
-*To be filled in during the Task 14 curation pass, once every row in
-`tools/odin/config/newton_gap_candidates.yaml` has been assigned a
-category from the controlled vocabulary (`sdf_collision`, `tendons`,
-`rough_terrain`, `manipulation_coverage`, `deformable`, `other`).*
+Every non-`tbd` row in `newton_gap_candidates.yaml` was assigned a
+category from `GAP_VOCABULARY`. The sections below are ordered by
+bucket size, from largest to smallest.
 
-For each gap category, fill in:
+| Category | Envs blocked | keep=true | Nature |
+|---|---:|---:|---|
+| `preset_missing` | 41 | 15 | Pure wiring — **not** an API gap |
+| `rough_terrain` | 20 | 0 | API gap — heightfield locomotion |
+| `manipulation_coverage` | 6 | 0 | Coverage gap — manipulation scenes untested |
+| `sdf_collision` | 5 | 1 | API gap — SDF colliders |
+| `parallel_joints` | 2 | 0 | API gap — closed-loop kinematics |
+| `controller_untested` | 2 | 0 | Coverage gap — low-level controller |
+| `tendons` | 1 | 0 | API gap — tendon actuation |
+| `deformable` | 0 | — | — |
+| `other` | 0 | — | — |
 
-- **Envs blocked:** count from `newton_gap_candidates.yaml`.
-- **Unlock value:** high / medium / low based on how many envs the gap
-  blocks and how commonly they're used for benchmarking.
-- **What's missing:** what API / feature Newton would need to provide.
-- **Effort estimate:** rough sizing based on the Newton backlog.
-- **Upstream link:** Newton issue / discussion URL if one exists.
+`keep=true` counts show how many of the category's envs are on Odin's
+dispatch shortlist (per user curation in `newton_envs.yaml` or
+`newton_gap_candidates.yaml`), i.e. rows the user explicitly cares
+about. Categories with `keep=true = 0` are still worth closing for
+coverage, but they don't block today's benchmark set.
 
-### 3.1 SDF collisions
+### 3.1 `preset_missing` — 41 envs, 15 keep=true
 
-*TODO.* Candidates: `direct/anymal_c` rough variant, any nut-and-bolt /
-gear-assembly tasks that survive rl_games migration.
+**Not an API gap.** Newton already supports the physics these envs
+need; they simply don't declare a `newton` `PresetCfg` in their env
+config, so `enumerate_newton_envs.py` classified them as gap
+candidates.
 
-### 3.2 Tendons
+**Unlock value:** high per-env effort-to-impact ratio — closing this
+bucket is mechanical preset wiring. The 15 `keep=true` envs in
+particular are tasks the user has explicitly opted into; getting them
+running on Newton unlocks 15 rows of the Odin benchmark set with no
+Newton backlog involvement.
 
-*TODO.* Candidates: any dexterous-hand task using tendon-actuated
-fingers.
+**Highlights of the 15 keep=true rows:**
 
-### 3.3 Rough terrain (heightfield)
+| Env | Group |
+|---|---|
+| `Isaac-Velocity-Flat-Anymal-C-Direct-v0` | `direct/anymal_c` |
+| `Isaac-Cart-Double-Pendulum-Direct-v0` | `direct/cart_double_pendulum` |
+| `Isaac-Cartpole-Depth-Camera-Direct-v0` | `direct/cartpole` |
+| `Isaac-Cartpole-RGB-Camera-Direct-v0` | `direct/cartpole` |
+| `Isaac-Franka-Cabinet-Direct-v0` | `direct/franka_cabinet` |
+| `Isaac-Quadcopter-Direct-v0` | `direct/quadcopter` |
+| `Isaac-TrackPositionNoObstacles-ARL-Robot-1-v0` | `manager_based/drone_arl/track_position_state_based` |
+| `Isaac-Open-Drawer-Franka-v0` | `manager_based/manipulation/cabinet` |
+| `Isaac-Open-Drawer-OpenArm-v0` | `manager_based/manipulation/cabinet` |
+| `Isaac-Deploy-Reach-Rizon4s-v0` | `manager_based/manipulation/deploy` |
+| `Isaac-Deploy-Reach-UR10e-v0` | `manager_based/manipulation/deploy` |
+| `Isaac-Repose-Cube-Allegro-Play-v0` | `manager_based/manipulation/inhand` |
+| `Isaac-Repose-Cube-Allegro-v0` | `manager_based/manipulation/inhand` |
+| `Isaac-Reach-OpenArm-v0` | `manager_based/manipulation/reach` |
+| `Isaac-Navigation-Flat-Anymal-C-v0` | `manager_based/navigation/config` |
 
-*TODO.* Candidates: rough-locomotion variants across velocity family.
+**Action:** file preset-wiring tickets per task family; no Newton API
+backlog involvement needed.
 
-### 3.4 Manipulation coverage
+### 3.2 `rough_terrain` — 20 envs, 0 keep=true
 
-*TODO.* Candidates: most `manager_based/manipulation/{lift, reach,
-cabinet, inhand}` envs — Newton hasn't been wired up for manipulation
-scenes yet.
+**API gap.** Heightfield / procedural terrain. All 20 envs are the
+Rough variants of `manager_based/locomotion/velocity` across every
+legged-robot in the suite (Anymal-B/C/D, Cassie, Digit, G1, H1,
+Unitree-A1/Go1/Go2) plus their `Play` companions.
 
-### 3.5 Deformable / softbody
+**Unlock value:** medium — the user has set `keep=false` on the whole
+family for now, so nothing in today's benchmark set hinges on closing
+the gap. But rough-terrain locomotion is a flagship IsaacLab
+benchmark and will almost certainly come back into scope once Newton
+supports it.
 
-*TODO.* Candidates: any task using cloth, rope, softbody assets.
+**What's missing:** heightfield-based terrain support in Newton (the
+`manager_based/locomotion/velocity` rough variants rely on the
+heightfield sampler + friction model that PhysX provides today).
 
-### 3.6 Other
+**Action:** confirm the exact Newton API surface needed (heightfield
+sampler, stochastic-terrain friction, etc.) with the Newton team.
+Single API gap unlocks 20 envs at once.
 
-*TODO.* Reserved for envs whose gap doesn't fit the vocabulary; the
-`notes:` field in their YAML row explains the specific miss.
+### 3.3 `manipulation_coverage` — 6 envs, 0 keep=true
+
+**Coverage gap, not an API gap.** Newton has the physics primitives
+(rigid bodies + contact) to run these envs; what's missing is *testing*
+of the manipulation-scene integration. Affected:
+
+- `manager_based/manipulation/lift/Isaac-Lift-Cube-{Franka,OpenArm}-v0`
+  (and their `Play` variants).
+- `manager_based/locomanipulation/tracking/Isaac-Tracking-LocoManip-Digit-v0`
+  (and its `Play` variant).
+
+**Unlock value:** medium — `keep=false` across the category today, but
+these are standard manipulation baselines that the user is likely to
+re-enable as Newton stabilises.
+
+**Action:** run the four training variants on Newton manually; file
+bugs against Newton only if the runs diverge from PhysX. Closure is a
+test-matrix item, not an API change.
+
+### 3.4 `sdf_collision` — 5 envs, 1 keep=true
+
+**API gap.** SDF-based colliders. The five envs break into two
+subfamilies:
+
+- `direct/anymal_c/Isaac-Velocity-Rough-Anymal-C-Direct-v0` (1, `keep=true`)
+  — also requires rough-terrain support (heightfield); dual-categorized
+  in `notes`.
+- `manager_based/manipulation/deploy/Isaac-Deploy-GearAssembly-UR10e-*`
+  (4 envs: 2F140 and 2F85 grippers, each with a `v0` training variant
+  and a `ROS-Inference-v0` deployment variant; all `keep=false`).
+
+**Unlock value:** high. The one `keep=true` row is the user's only
+path to an on-Newton rough-terrain locomotion benchmark (it doubles as
+a `rough_terrain` candidate). Gear assembly is a marquee task family
+that would come back into scope once Newton + rl_games-migration work
+unblocks it (see §1).
+
+**What's missing:** SDF collider evaluation on Newton. The assembly
+family additionally needs precise normal/friction handling during
+tight-clearance insertion.
+
+**Action:** prioritise SDF collider support in Newton. Single gap
+unlocks the Rough-Anymal training target and the entire gear-assembly
+family once they migrate off rl_games.
+
+### 3.5 `parallel_joints` — 2 envs, 0 keep=true
+
+**API gap.** Closed-loop / parallel kinematic constraints.
+
+- `manager_based/locomotion/velocity/Isaac-Velocity-Flat-Digit-v0`
+- `manager_based/locomotion/velocity/Isaac-Velocity-Flat-Digit-Play-v0`
+
+Digit's kinematic chain has parallel linkages (passive joints); PhysX
+models these directly but Newton currently lacks the constraint type.
+
+**Unlock value:** low in the current benchmark set (`keep=false` on
+both rows), but any future humanoid adopting parallel linkages will
+surface the same gap.
+
+**Action:** confirm whether Newton has constraint primitives
+sufficient to model parallel linkages and file a single upstream
+ticket if not.
+
+### 3.6 `controller_untested` — 2 envs, 0 keep=true
+
+**Coverage gap.** Operational-space-controller (OSC) variants of the
+Franka reach task:
+
+- `manager_based/manipulation/reach/Isaac-Reach-Franka-OSC-v0`
+- `manager_based/manipulation/reach/Isaac-Reach-Franka-OSC-Play-v0`
+
+The underlying physics (rigid-body manipulator + joint torque
+commands) is available on Newton; what's untested is the OSC
+controller's stability when driven by Newton's integration step.
+
+**Unlock value:** low in scope today (`keep=false`). OSC is a
+research-grade controller that will matter for fine-manipulation
+benchmarks later.
+
+**Action:** drive the controller on Newton manually; file bugs only
+if the solver diverges.
+
+### 3.7 `tendons` — 1 env, 0 keep=true
+
+**API gap.** Tendon actuation.
+
+- `direct/shadow_hand_over/Isaac-Shadow-Hand-Over-Direct-v0`
+
+**Unlock value:** low in the current sweep (`keep=false`), but
+dexterous-manipulation research historically leans on the ShadowHand
+and any future dexterity benchmark would re-surface this gap.
+
+**What's missing:** tendon-actuation primitive in Newton.
+
+**Action:** low-priority; batch with any broader tendon / soft-body
+work when prioritised.
+
+### 3.8 `deformable` — 0 envs
+
+No currently-enumerated envs require deformable / softbody physics
+(cloth, rope, FEM). The category is retained in `GAP_VOCABULARY` for
+forward compatibility — if the DeformableObject integration adds new
+training envs, they'll land here.
+
+### 3.9 `other` — 0 envs
+
+No rows fell outside the other eight categories. The category is
+retained as an escape hatch (`notes:` required when used).
 
 ---
 
 ## Appendix: per-env table
 
-*To be rendered from `tools/odin/config/newton_gap_candidates.yaml`
-once every row's `suspected_gap` has been set to a non-`tbd` value. Use
-the one-liner in `docs/superpowers/plans/2026-04-22-odin-t2-1-env-lists.md`
-Task 14 to regenerate this table as curation progresses.*
+Rendered from `tools/odin/config/newton_gap_candidates.yaml`. Rows
+grouped by gap category (in vocabulary order), then by group, then by
+task_id. `Keep` reflects the user's curation in the gap-candidates
+YAML — `**no**` means the row is excluded from the Odin dispatch set
+even if the gap were closed.
 
-| Task | Group | Gap | Notes |
-|------|-------|-----|-------|
-| *(pending)* | | | |
+Regenerate with the one-liner in
+`docs/superpowers/plans/2026-04-22-odin-t2-1-env-lists.md` Task 14 (use
+the order `GAP_VOCABULARY → group → task_id`).
+
+| Task | Group | Gap | Keep | Notes |
+|------|-------|-----|------|-------|
+| `Isaac-Velocity-Flat-Anymal-C-Direct-v0` | `direct/anymal_c` | `preset_missing` | yes |  |
+| `Isaac-Cart-Double-Pendulum-Direct-v0` | `direct/cart_double_pendulum` | `preset_missing` | yes |  |
+| `Isaac-Cartpole-Albedo-Camera-Direct-v0` | `direct/cartpole` | `preset_missing` | **no** |  |
+| `Isaac-Cartpole-Depth-Camera-Direct-v0` | `direct/cartpole` | `preset_missing` | yes |  |
+| `Isaac-Cartpole-RGB-Camera-Direct-v0` | `direct/cartpole` | `preset_missing` | yes |  |
+| `Isaac-Cartpole-SimpleShading-Constant-Camera-Direct-v0` | `direct/cartpole` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-SimpleShading-Diffuse-Camera-Direct-v0` | `direct/cartpole` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-SimpleShading-Full-Camera-Direct-v0` | `direct/cartpole` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Box-Box-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Box-Discrete-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Box-MultiDiscrete-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Dict-Box-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Dict-Discrete-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Dict-MultiDiscrete-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Tuple-Box-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Tuple-Discrete-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Cartpole-Camera-Showcase-Tuple-MultiDiscrete-Direct-v0` | `direct/cartpole_showcase` | `preset_missing` | **no** | Lets not do the showcase for cartpole |
+| `Isaac-Franka-Cabinet-Direct-v0` | `direct/franka_cabinet` | `preset_missing` | yes |  |
+| `Isaac-Quadcopter-Direct-v0` | `direct/quadcopter` | `preset_missing` | yes |  |
+| `Isaac-TrackPositionNoObstacles-ARL-Robot-1-Play-v0` | `manager_based/drone_arl/track_position_state_based` | `preset_missing` | **no** |  |
+| `Isaac-TrackPositionNoObstacles-ARL-Robot-1-v0` | `manager_based/drone_arl/track_position_state_based` | `preset_missing` | yes |  |
+| `Isaac-Open-Drawer-Franka-Play-v0` | `manager_based/manipulation/cabinet` | `preset_missing` | **no** |  |
+| `Isaac-Open-Drawer-Franka-v0` | `manager_based/manipulation/cabinet` | `preset_missing` | yes |  |
+| `Isaac-Open-Drawer-OpenArm-Play-v0` | `manager_based/manipulation/cabinet` | `preset_missing` | **no** |  |
+| `Isaac-Open-Drawer-OpenArm-v0` | `manager_based/manipulation/cabinet` | `preset_missing` | yes |  |
+| `Isaac-Deploy-Reach-Rizon4s-Play-v0` | `manager_based/manipulation/deploy` | `preset_missing` | **no** |  |
+| `Isaac-Deploy-Reach-Rizon4s-ROS-Inference-v0` | `manager_based/manipulation/deploy` | `preset_missing` | **no** |  |
+| `Isaac-Deploy-Reach-Rizon4s-v0` | `manager_based/manipulation/deploy` | `preset_missing` | yes |  |
+| `Isaac-Deploy-Reach-UR10e-Play-v0` | `manager_based/manipulation/deploy` | `preset_missing` | **no** |  |
+| `Isaac-Deploy-Reach-UR10e-ROS-Inference-v0` | `manager_based/manipulation/deploy` | `preset_missing` | **no** |  |
+| `Isaac-Deploy-Reach-UR10e-v0` | `manager_based/manipulation/deploy` | `preset_missing` | yes |  |
+| `Isaac-Repose-Cube-Allegro-NoVelObs-Play-v0` | `manager_based/manipulation/inhand` | `preset_missing` | **no** |  |
+| `Isaac-Repose-Cube-Allegro-NoVelObs-v0` | `manager_based/manipulation/inhand` | `preset_missing` | **no** |  |
+| `Isaac-Repose-Cube-Allegro-Play-v0` | `manager_based/manipulation/inhand` | `preset_missing` | yes |  |
+| `Isaac-Repose-Cube-Allegro-v0` | `manager_based/manipulation/inhand` | `preset_missing` | yes |  |
+| `Isaac-Reach-OpenArm-Bi-Play-v0` | `manager_based/manipulation/reach` | `preset_missing` | **no** |  |
+| `Isaac-Reach-OpenArm-Bi-v0` | `manager_based/manipulation/reach` | `preset_missing` | **no** |  |
+| `Isaac-Reach-OpenArm-Play-v0` | `manager_based/manipulation/reach` | `preset_missing` | **no** |  |
+| `Isaac-Reach-OpenArm-v0` | `manager_based/manipulation/reach` | `preset_missing` | yes |  |
+| `Isaac-Navigation-Flat-Anymal-C-Play-v0` | `manager_based/navigation/config` | `preset_missing` | **no** |  |
+| `Isaac-Navigation-Flat-Anymal-C-v0` | `manager_based/navigation/config` | `preset_missing` | yes |  |
+| `Isaac-Velocity-Rough-Anymal-C-Direct-v0` | `direct/anymal_c` | `sdf_collision` | yes | Also requires rough_terrain support (heightfield). |
+| `Isaac-Deploy-GearAssembly-UR10e-2F140-ROS-Inference-v0` | `manager_based/manipulation/deploy` | `sdf_collision` | **no** |  |
+| `Isaac-Deploy-GearAssembly-UR10e-2F140-v0` | `manager_based/manipulation/deploy` | `sdf_collision` | **no** |  |
+| `Isaac-Deploy-GearAssembly-UR10e-2F85-ROS-Inference-v0` | `manager_based/manipulation/deploy` | `sdf_collision` | **no** |  |
+| `Isaac-Deploy-GearAssembly-UR10e-2F85-v0` | `manager_based/manipulation/deploy` | `sdf_collision` | **no** |  |
+| `Isaac-Shadow-Hand-Over-Direct-v0` | `direct/shadow_hand_over` | `tendons` | **no** |  |
+| `Isaac-Velocity-Rough-Anymal-B-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Anymal-B-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Anymal-C-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Anymal-C-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Anymal-D-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Anymal-D-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Cassie-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Cassie-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Digit-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Digit-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-G1-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-G1-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-H1-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-H1-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Unitree-A1-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Unitree-A1-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Unitree-Go1-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Unitree-Go1-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Unitree-Go2-Play-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Velocity-Rough-Unitree-Go2-v0` | `manager_based/locomotion/velocity` | `rough_terrain` | **no** |  |
+| `Isaac-Tracking-LocoManip-Digit-Play-v0` | `manager_based/locomanipulation/tracking` | `manipulation_coverage` | **no** |  |
+| `Isaac-Tracking-LocoManip-Digit-v0` | `manager_based/locomanipulation/tracking` | `manipulation_coverage` | **no** |  |
+| `Isaac-Lift-Cube-Franka-Play-v0` | `manager_based/manipulation/lift` | `manipulation_coverage` | **no** |  |
+| `Isaac-Lift-Cube-Franka-v0` | `manager_based/manipulation/lift` | `manipulation_coverage` | **no** |  |
+| `Isaac-Lift-Cube-OpenArm-Play-v0` | `manager_based/manipulation/lift` | `manipulation_coverage` | **no** |  |
+| `Isaac-Lift-Cube-OpenArm-v0` | `manager_based/manipulation/lift` | `manipulation_coverage` | **no** |  |
+| `Isaac-Velocity-Flat-Digit-Play-v0` | `manager_based/locomotion/velocity` | `parallel_joints` | **no** |  |
+| `Isaac-Velocity-Flat-Digit-v0` | `manager_based/locomotion/velocity` | `parallel_joints` | **no** |  |
+| `Isaac-Reach-Franka-OSC-Play-v0` | `manager_based/manipulation/reach` | `controller_untested` | **no** |  |
+| `Isaac-Reach-Franka-OSC-v0` | `manager_based/manipulation/reach` | `controller_untested` | **no** |  |

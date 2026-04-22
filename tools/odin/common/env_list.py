@@ -29,6 +29,7 @@ __all__ = [
     "EnvEntry",
     "EnvList",
     "SCHEMA_VERSION",
+    "GAP_VOCABULARY",
     "load_env_list",
     "write_env_list",
     "merge",
@@ -111,6 +112,39 @@ def suggest_framework(has_rsl_rl: bool, has_skrl: bool) -> str | None:
 # -----------------------------------------------------------------------------
 
 SCHEMA_VERSION = "1.0"
+
+# Controlled vocabulary for :attr:`EnvEntry.suspected_gap`. Only used on
+# rows in ``newton_gap_candidates.yaml`` (elsewhere ``suspected_gap`` is
+# ``None``). Any non-``None`` value written to the YAML must be a member
+# of this tuple — extending the vocabulary is a conscious schema update
+# that should be reflected in the T2.1 spec, the Odin README, and
+# ``docs/odin/newton_api_gaps.md``.
+GAP_VOCABULARY: tuple[str, ...] = (
+    "tbd",  # initial value emitted by enumerate_newton_envs.py
+    "preset_missing",  # not a physics gap: newton would work, preset unwired
+    "sdf_collision",  # signed-distance-field colliders (rough terrain, assembly)
+    "tendons",  # tendon actuation
+    "rough_terrain",  # heightfield / procedural terrain (not SDF-based)
+    "manipulation_coverage",  # manipulation scenes untested on newton
+    "deformable",  # cloth / softbody / FEM
+    "parallel_joints",  # closed-loop / parallel kinematic constraints
+    "controller_untested",  # low-level controller stack untested on newton
+    "other",  # anything else; the `notes:` field is required
+)
+
+
+def _validate_suspected_gap(value: object, task_id: str) -> None:
+    """Raise ``ValueError`` if ``value`` is outside :data:`GAP_VOCABULARY`.
+
+    ``None`` is always allowed (non-gap-candidate rows carry ``None``).
+    """
+    if value is None:
+        return
+    if value not in GAP_VOCABULARY:
+        raise ValueError(
+            f"{task_id}: suspected_gap={value!r} is not in GAP_VOCABULARY. Allowed values: {GAP_VOCABULARY}."
+        )
+
 
 # Per-row field order in written YAML. Keeps diffs stable across re-runs.
 _ENTRY_FIELD_ORDER = [
@@ -248,6 +282,12 @@ def write_env_list(path: Path, env_list: EnvList, *, generator: str) -> None:
         env_list: The list to write.
         generator: Script identity string (e.g. ``"enumerate_physx_envs.py"``).
     """
+    # Validate the vocabulary before writing: catching a stray value here
+    # is cheaper than catching it when the gap doc is rendered downstream.
+    for rows in env_list.groups.values():
+        for r in rows:
+            _validate_suspected_gap(r.suspected_gap, r.task_id)
+
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -495,8 +535,7 @@ def build_entry_from_task_spec(
     if framework is None:
         if has_rl_games:
             notes = (
-                "rl_games-only registration — not dispatched by Odin. "
-                "Migrate to rsl_rl or skrl to enable benchmarking."
+                "rl_games-only registration — not dispatched by Odin. Migrate to rsl_rl or skrl to enable benchmarking."
             )
         else:
             notes = "No rsl_rl or skrl entry point registered."

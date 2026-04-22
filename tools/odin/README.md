@@ -97,9 +97,25 @@ Reads your filtered `physx_envs.yaml`, writes:
 ### Categorize the gap candidates and write the gap doc
 
 1. Edit `tools/odin/config/newton_gap_candidates.yaml`: replace each
-   `suspected_gap: tbd` with one of
-   `sdf_collision | tendons | rough_terrain | manipulation_coverage | deformable | other`.
-   Use `notes:` to add context where it helps the gap narrative.
+   `suspected_gap: tbd` with one of the controlled-vocabulary values
+   (see `GAP_VOCABULARY` in `tools/odin/common/env_list.py`):
+
+   - `preset_missing` — Newton would support this env, the task just
+     needs its `newton` preset wired up. Not a physics gap.
+   - `sdf_collision` — SDF colliders (rough terrain, nut-and-bolt, …).
+   - `tendons` — tendon actuation.
+   - `rough_terrain` — heightfield / procedural terrain (non-SDF).
+   - `manipulation_coverage` — manipulation scene untested on Newton.
+   - `deformable` — cloth / softbody / FEM assets.
+   - `parallel_joints` — closed-loop or parallel kinematic constraints.
+   - `controller_untested` — low-level controller stack untested on Newton.
+   - `other` — doesn't fit the above; `notes:` required.
+
+   `write_env_list` rejects any value outside the vocabulary on write.
+   Use `notes:` to record secondary observations when one category
+   isn't enough (e.g. a row that needs *both* `sdf_collision` and
+   `rough_terrain` can be classified as the primary with the
+   secondary noted).
 2. Author `docs/odin/newton_api_gaps.md` with per-gap body sections
    (what's missing, count of affected envs, unlock value) followed by a
    per-env appendix table.
