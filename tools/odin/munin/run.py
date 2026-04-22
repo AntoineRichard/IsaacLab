@@ -12,6 +12,7 @@ script swapped to ``benchmark_skrl.py`` and the framework set to ``skrl``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
 import os
 import shutil
@@ -63,10 +64,8 @@ def _copy_tb_events(training_log_dir: str, bundle_dir: str) -> None:
     tb_target = os.path.join(bundle_dir, "tb")
     os.makedirs(tb_target, exist_ok=True)
     for evt in glob.glob(os.path.join(training_log_dir, "**", "events.out.tfevents.*"), recursive=True):
-        try:
+        with contextlib.suppress(OSError):
             shutil.copy2(evt, tb_target)
-        except OSError:
-            pass
 
 
 def main():

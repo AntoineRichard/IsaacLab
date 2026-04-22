@@ -48,7 +48,7 @@ that is explicitly deferred to T3.
 
 ### 1. IsaacLab — single-purpose benchmark scripts (upstream)
 
-Three scripts in `scripts/benchmarks/`, each independently invokable and each
+Three scripts in `scripts/benchmarks/`, each independently invocable and each
 emitting one file of a known schema:
 
 | Script | Role | Output |

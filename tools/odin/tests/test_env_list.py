@@ -402,3 +402,44 @@ def test_build_entry_defaults_loader_failure_forces_keep_false():
     assert e.max_iterations is None
     assert e.keep is False
     assert "training defaults" in e.notes.lower()
+
+
+# -----------------------------------------------------------------------------
+# classify_for_newton (used by enumerate_newton_envs.py)
+# -----------------------------------------------------------------------------
+
+
+from tools.odin.common.env_list import classify_for_newton
+
+
+class _FakeNewtonPhysicsCfg:
+    newton = object()
+
+
+class _FakePhysxOnlyPhysicsCfg:
+    mjwarp = object()
+
+
+class _FakeSimCfg:
+    def __init__(self, physics):
+        self.physics = physics
+
+
+class _FakeRawCfg:
+    def __init__(self, physics):
+        self.sim = _FakeSimCfg(physics)
+
+
+def test_classify_supported_when_newton_preset_present():
+    cfg = _FakeRawCfg(_FakeNewtonPhysicsCfg())
+    assert classify_for_newton(cfg) == "supported"
+
+
+def test_classify_gap_when_no_newton_preset():
+    cfg = _FakeRawCfg(_FakePhysxOnlyPhysicsCfg())
+    assert classify_for_newton(cfg) == "gap"
+
+
+def test_classify_gap_when_no_physics_at_all():
+    cfg = _FakeRawCfg(None)
+    assert classify_for_newton(cfg) == "gap"

@@ -71,7 +71,7 @@ invent parallel name schemes. Update this table when a new name is committed.
 ┌────────────────────────────┴──────────────────────────────────────┐
 │ Layer 1 — IsaacLab benchmark scripts (T1)                         │
 │   scripts/benchmarks/benchmark_{rsl_rl,skrl,startup}.py           │
-│   Independently invokable; each emits one schema-v1 JSON.         │
+│   Independently invocable; each emits one schema-v1 JSON.         │
 │   Reuses VersionInfoRecorder / GPUInfoRecorder / CPUInfoRecorder. │
 └───────────────────────────────────────────────────────────────────┘
 ```

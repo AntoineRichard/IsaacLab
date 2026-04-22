@@ -102,6 +102,7 @@ sys.argv = [sys.argv[0]] + hydra_args
 
 imports_time_begin = time.perf_counter_ns()
 
+import contextlib
 import importlib.metadata as metadata
 from datetime import datetime, timezone
 
@@ -483,12 +484,10 @@ def main(
             # Proxy for first-step time: the first iteration's collection+learning time.
             # Pending a dedicated first-step timer in runner.learn().
             first_step_s = 0.0
-            try:
+            with contextlib.suppress(IndexError, KeyError, ValueError):
                 first_step_s = float(rl_training_times["Collection Time"][0]) + float(
                     rl_training_times["Learning Time"][0]
                 )
-            except (IndexError, KeyError, ValueError):
-                pass
 
             bundle = _build_training_bundle(
                 log_data=log_data,

@@ -35,6 +35,7 @@ __all__ = [
     "extract_training_defaults_from_cfgs",
     "load_shipped_training_defaults",
     "build_entry_from_task_spec",
+    "classify_for_newton",
 ]
 
 
@@ -511,3 +512,26 @@ def build_entry_from_task_spec(
         notes=notes,
         suspected_gap=None,
     )
+
+
+# -----------------------------------------------------------------------------
+# classify_for_newton (used by enumerate_newton_envs.py)
+# -----------------------------------------------------------------------------
+
+
+def classify_for_newton(raw_cfg: Any) -> str:
+    """Decide whether a raw env cfg is ``"supported"`` or ``"gap"`` on Newton.
+
+    A cfg is ``"supported"`` iff it exposes a ``newton`` physics preset
+    (see :func:`isaaclab_tasks.utils.presets.has_physics_preset`).
+
+    Args:
+        raw_cfg: Raw env cfg from ``load_cfg_from_registry``.
+
+    Returns:
+        ``"supported"`` or ``"gap"``.
+    """
+    # Deferred import so this module remains import-light.
+    from tools.odin.common.presets import has_physics_preset
+
+    return "supported" if has_physics_preset(raw_cfg, "newton") else "gap"

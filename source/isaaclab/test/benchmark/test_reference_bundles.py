@@ -29,19 +29,22 @@ def _iter_bundles():
     ids=lambda b: b.name if b is not None else "none",
 )
 def test_bundle_schema_v1(bundle):
-    manifest = json.load(open(bundle / "manifest.json"))
+    with open(bundle / "manifest.json") as fh:
+        manifest = json.load(fh)
     assert manifest["schema_version"] == SCHEMA_VERSION
     for key in ("run_id", "config", "machine", "phases", "artifacts"):
         assert key in manifest, f"{bundle.name}: missing manifest key {key}"
 
-    training = json.load(open(bundle / "training.json"))
+    with open(bundle / "training.json") as fh:
+        training = json.load(fh)
     assert training["schema_version"] == SCHEMA_VERSION
     for key in ("run", "versions", "hardware", "runtime", "resources", "learning"):
         assert key in training, f"{bundle.name}: missing training key {key}"
     assert "env_steps_per_s" in training["runtime"]
     assert "final_ema" in training["learning"]["reward"]
 
-    startup = json.load(open(bundle / "startup.json"))
+    with open(bundle / "startup.json") as fh:
+        startup = json.load(fh)
     assert startup["schema_version"] == SCHEMA_VERSION
     for key in ("run", "versions", "hardware", "phases", "config"):
         assert key in startup, f"{bundle.name}: missing startup key {key}"
