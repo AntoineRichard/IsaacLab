@@ -1,0 +1,2487 @@
+schema_version: '1.0'
+generated_at: '2026-04-22T17:10:24Z'
+generator: enumerate_physx_envs.py
+groups:
+  direct/allegro_hand:
+  - task_id: Isaac-Repose-Cube-Allegro-Direct-v0
+    entry_point: isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env:InHandManipulationEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.allegro_hand.allegro_hand_env_cfg:AllegroHandEnvCfg
+    group: direct/allegro_hand
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 8192
+    max_iterations: 10000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/ant:
+  - task_id: Isaac-Ant-Direct-v0
+    entry_point: isaaclab_tasks.direct.ant.ant_env:AntEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.ant.ant_env_cfg:AntEnvCfg
+    group: direct/ant
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/anymal_c:
+  - task_id: Isaac-Velocity-Flat-Anymal-C-Direct-v0
+    entry_point: isaaclab_tasks.direct.anymal_c.anymal_c_env:AnymalCEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.anymal_c.anymal_c_env_cfg:AnymalCFlatEnvCfg
+    group: direct/anymal_c
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-C-Direct-v0
+    entry_point: isaaclab_tasks.direct.anymal_c.anymal_c_env:AnymalCEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.anymal_c.anymal_c_env_cfg:AnymalCRoughEnvCfg
+    group: direct/anymal_c
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/automate:
+  - task_id: Isaac-AutoMate-Assembly-Direct-v0
+    entry_point: isaaclab_tasks.direct.automate.assembly_env:AssemblyEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.automate.assembly_env_cfg:AssemblyEnvCfg
+    group: direct/automate
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-AutoMate-Disassembly-Direct-v0
+    entry_point: isaaclab_tasks.direct.automate.disassembly_env:DisassemblyEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.automate.disassembly_env_cfg:DisassemblyEnvCfg
+    group: direct/automate
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  direct/cart_double_pendulum:
+  - task_id: Isaac-Cart-Double-Pendulum-Direct-v0
+    entry_point: isaaclab_tasks.direct.cart_double_pendulum.cart_double_pendulum_env:CartDoublePendulumEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cart_double_pendulum.cart_double_pendulum_env_cfg:CartDoublePendulumEnvCfg
+    group: direct/cart_double_pendulum
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/cartpole:
+  - task_id: Isaac-Cartpole-Albedo-Camera-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleAlbedoCameraEnvCfg
+    group: direct/cartpole
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Presets-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_presets_env_cfg:CartpoleCameraPresetsEnvCfg
+    group: direct/cartpole
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: null
+    max_iterations: 32000
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
+      manually.
+  - task_id: Isaac-Cartpole-Depth-Camera-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleDepthCameraEnvCfg
+    group: direct/cartpole
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole.cartpole_env:CartpoleEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_env_cfg:CartpoleEnvCfg
+    group: direct/cartpole
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 150
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-RGB-Camera-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleRGBCameraEnvCfg
+    group: direct/cartpole
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-SimpleShading-Constant-Camera-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleSimpleShadingConstantCameraEnvCfg
+    group: direct/cartpole
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-SimpleShading-Diffuse-Camera-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleSimpleShadingDiffuseCameraEnvCfg
+    group: direct/cartpole
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-SimpleShading-Full-Camera-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleSimpleShadingFullCameraEnvCfg
+    group: direct/cartpole
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/cartpole_showcase:
+  - task_id: Isaac-Cartpole-Camera-Showcase-Box-Box-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:BoxBoxEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Showcase-Box-Discrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:BoxDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Showcase-Box-MultiDiscrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:BoxMultiDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Showcase-Dict-Box-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:DictBoxEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Showcase-Dict-Discrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:DictDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Showcase-Dict-MultiDiscrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:DictMultiDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-Box-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:TupleBoxEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-Discrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:TupleDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-MultiDiscrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env_cfg:TupleMultiDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 512
+    max_iterations: 32000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Box-Box-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:BoxBoxEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Box-Discrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:BoxDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Box-MultiDiscrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:BoxMultiDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Dict-Box-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DictBoxEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Dict-Discrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DictDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Dict-MultiDiscrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DictMultiDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Discrete-Box-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DiscreteBoxEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Discrete-Discrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DiscreteDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Discrete-MultiDiscrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DiscreteMultiDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-Box-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:MultiDiscreteBoxEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-Discrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:MultiDiscreteDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-MultiDiscrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:MultiDiscreteMultiDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Tuple-Box-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:TupleBoxEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Tuple-Discrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:TupleDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Cartpole-Showcase-Tuple-MultiDiscrete-Direct-v0
+    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:TupleMultiDiscreteEnvCfg
+    group: direct/cartpole_showcase
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 4096
+    max_iterations: 4800
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/factory:
+  - task_id: Isaac-Factory-GearMesh-Direct-v0
+    entry_point: isaaclab_tasks.direct.factory.factory_env:FactoryEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.factory.factory_env_cfg:FactoryTaskGearMeshCfg
+    group: direct/factory
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Factory-NutThread-Direct-v0
+    entry_point: isaaclab_tasks.direct.factory.factory_env:FactoryEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.factory.factory_env_cfg:FactoryTaskNutThreadCfg
+    group: direct/factory
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Factory-PegInsert-Direct-v0
+    entry_point: isaaclab_tasks.direct.factory.factory_env:FactoryEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.factory.factory_env_cfg:FactoryTaskPegInsertCfg
+    group: direct/factory
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  direct/forge:
+  - task_id: Isaac-Forge-GearMesh-Direct-v0
+    entry_point: isaaclab_tasks.direct.forge.forge_env:ForgeEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.forge.forge_env_cfg:ForgeTaskGearMeshCfg
+    group: direct/forge
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Forge-NutThread-Direct-v0
+    entry_point: isaaclab_tasks.direct.forge.forge_env:ForgeEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.forge.forge_env_cfg:ForgeTaskNutThreadCfg
+    group: direct/forge
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Forge-PegInsert-Direct-v0
+    entry_point: isaaclab_tasks.direct.forge.forge_env:ForgeEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.forge.forge_env_cfg:ForgeTaskPegInsertCfg
+    group: direct/forge
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  direct/franka_cabinet:
+  - task_id: Isaac-Franka-Cabinet-Direct-v0
+    entry_point: isaaclab_tasks.direct.franka_cabinet.franka_cabinet_env:FrankaCabinetEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.franka_cabinet.franka_cabinet_env_cfg:FrankaCabinetEnvCfg
+    group: direct/franka_cabinet
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/humanoid:
+  - task_id: Isaac-Humanoid-Direct-v0
+    entry_point: isaaclab_tasks.direct.humanoid.humanoid_env:HumanoidEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.humanoid.humanoid_env_cfg:HumanoidEnvCfg
+    group: direct/humanoid
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/humanoid_amp:
+  - task_id: Isaac-Humanoid-AMP-Dance-Direct-v0
+    entry_point: isaaclab_tasks.direct.humanoid_amp.humanoid_amp_env:HumanoidAmpEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.humanoid_amp.humanoid_amp_env_cfg:HumanoidAmpDanceEnvCfg
+    group: direct/humanoid_amp
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Humanoid-AMP-Run-Direct-v0
+    entry_point: isaaclab_tasks.direct.humanoid_amp.humanoid_amp_env:HumanoidAmpEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.humanoid_amp.humanoid_amp_env_cfg:HumanoidAmpRunEnvCfg
+    group: direct/humanoid_amp
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Humanoid-AMP-Walk-Direct-v0
+    entry_point: isaaclab_tasks.direct.humanoid_amp.humanoid_amp_env:HumanoidAmpEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.humanoid_amp.humanoid_amp_env_cfg:HumanoidAmpWalkEnvCfg
+    group: direct/humanoid_amp
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  direct/quadcopter:
+  - task_id: Isaac-Quadcopter-Direct-v0
+    entry_point: isaaclab_tasks.direct.quadcopter.quadcopter_env:QuadcopterEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.quadcopter.quadcopter_env_cfg:QuadcopterEnvCfg
+    group: direct/quadcopter
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 200
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/shadow_hand:
+  - task_id: Isaac-Repose-Cube-Shadow-Direct-v0
+    entry_point: isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env:InHandManipulationEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg:ShadowHandEnvCfg
+    group: direct/shadow_hand
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: null
+    max_iterations: 10000
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
+      manually.
+  - task_id: Isaac-Repose-Cube-Shadow-OpenAI-FF-Direct-v0
+    entry_point: isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env:InHandManipulationEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg:ShadowHandOpenAIEnvCfg
+    group: direct/shadow_hand
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: null
+    max_iterations: 10000
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
+      manually.
+  - task_id: Isaac-Repose-Cube-Shadow-OpenAI-LSTM-Direct-v0
+    entry_point: isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env:InHandManipulationEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg:ShadowHandOpenAIEnvCfg
+    group: direct/shadow_hand
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Repose-Cube-Shadow-Vision-Benchmark-Direct-v0
+    entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env_cfg:ShadowHandVisionBenchmarkEnvCfg
+    group: direct/shadow_hand
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 1225
+    max_iterations: 50000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Repose-Cube-Shadow-Vision-Direct-Play-v0
+    entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env_cfg:ShadowHandVisionEnvPlayCfg
+    group: direct/shadow_hand
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 64
+    max_iterations: 50000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Repose-Cube-Shadow-Vision-Direct-v0
+    entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env_cfg:ShadowHandVisionEnvCfg
+    group: direct/shadow_hand
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 1225
+    max_iterations: 50000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  direct/shadow_hand_over:
+  - task_id: Isaac-Shadow-Hand-Over-Direct-v0
+    entry_point: isaaclab_tasks.direct.shadow_hand_over.shadow_hand_over_env:ShadowHandOverEnv
+    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand_over.shadow_hand_over_env_cfg:ShadowHandOverEnvCfg
+    group: direct/shadow_hand_over
+    has_rsl_rl: false
+    has_skrl: true
+    framework: skrl
+    num_envs: 2048
+    max_iterations: 36000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/classic/ant:
+  - task_id: Isaac-Ant-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.classic.ant.ant_env_cfg:AntEnvCfg
+    group: manager_based/classic/ant
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/classic/cartpole:
+  - task_id: Isaac-Cartpole-Depth-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.classic.cartpole.cartpole_camera_env_cfg:CartpoleDepthCameraEnvCfg
+    group: manager_based/classic/cartpole
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Cartpole-RGB-ResNet18-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.classic.cartpole.cartpole_camera_env_cfg:CartpoleResNet18CameraEnvCfg
+    group: manager_based/classic/cartpole
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Cartpole-RGB-TheiaTiny-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.classic.cartpole.cartpole_camera_env_cfg:CartpoleTheiaTinyCameraEnvCfg
+    group: manager_based/classic/cartpole
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Cartpole-RGB-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.classic.cartpole.cartpole_camera_env_cfg:CartpoleRGBCameraEnvCfg
+    group: manager_based/classic/cartpole
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Cartpole-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg
+    group: manager_based/classic/cartpole
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 150
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/classic/humanoid:
+  - task_id: Isaac-Humanoid-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.classic.humanoid.humanoid_env_cfg:HumanoidEnvCfg
+    group: manager_based/classic/humanoid
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/drone_arl/track_position_state_based:
+  - task_id: Isaac-TrackPositionNoObstacles-ARL-Robot-1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.drone_arl.track_position_state_based.config.arl_robot_1.no_obstacle_env_cfg:NoObstacleEnvCfg_PLAY
+    group: manager_based/drone_arl/track_position_state_based
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-TrackPositionNoObstacles-ARL-Robot-1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.drone_arl.track_position_state_based.config.arl_robot_1.no_obstacle_env_cfg:NoObstacleEnvCfg
+    group: manager_based/drone_arl/track_position_state_based
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/locomanipulation/pick_place:
+  - task_id: Isaac-PickPlace-FixedBaseUpperBodyIK-G1-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomanipulation.pick_place.fixed_base_upper_body_ik_g1_env_cfg:FixedBaseUpperBodyIKG1EnvCfg
+    group: manager_based/locomanipulation/pick_place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-PickPlace-Locomanipulation-G1-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomanipulation.pick_place.locomanipulation_g1_env_cfg:LocomanipulationG1EnvCfg
+    group: manager_based/locomanipulation/pick_place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  manager_based/locomanipulation/tracking:
+  - task_id: Isaac-Tracking-LocoManip-Digit-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomanipulation.tracking.config.digit.loco_manip_env_cfg:DigitLocoManipEnvCfg_PLAY
+    group: manager_based/locomanipulation/tracking
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 2000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Tracking-LocoManip-Digit-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomanipulation.tracking.config.digit.loco_manip_env_cfg:DigitLocoManipEnvCfg
+    group: manager_based/locomanipulation/tracking
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 2000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/locomotion/velocity:
+  - task_id: Isaac-Velocity-Flat-Anymal-B-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_b.flat_env_cfg:AnymalBFlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Anymal-B-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_b.flat_env_cfg:AnymalBFlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Anymal-C-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.flat_env_cfg:AnymalCFlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Anymal-C-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.flat_env_cfg:AnymalCFlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Anymal-D-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_d.flat_env_cfg:AnymalDFlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Anymal-D-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_d.flat_env_cfg:AnymalDFlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Cassie-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.cassie.flat_env_cfg:CassieFlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Cassie-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.cassie.flat_env_cfg:CassieFlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Digit-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.digit.flat_env_cfg:DigitFlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 2000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Digit-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.digit.flat_env_cfg:DigitFlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 2000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-G1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg:G1FlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-G1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg:G1FlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-H1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.h1.flat_env_cfg:H1FlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-H1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.h1.flat_env_cfg:H1FlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Spot-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.spot.flat_env_cfg:SpotFlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 20000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Spot-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.spot.flat_env_cfg:SpotFlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 20000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Unitree-A1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.a1.flat_env_cfg:UnitreeA1FlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Unitree-A1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.a1.flat_env_cfg:UnitreeA1FlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Unitree-Go1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go1.flat_env_cfg:UnitreeGo1FlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Unitree-Go1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go1.flat_env_cfg:UnitreeGo1FlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Unitree-Go2-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go2.flat_env_cfg:UnitreeGo2FlatEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Flat-Unitree-Go2-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go2.flat_env_cfg:UnitreeGo2FlatEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 300
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-B-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_b.rough_env_cfg:AnymalBRoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-B-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_b.rough_env_cfg:AnymalBRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-C-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.rough_env_cfg:AnymalCRoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-C-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.rough_env_cfg:AnymalCRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-D-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_d.rough_env_cfg:AnymalDRoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-D-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_d.rough_env_cfg:AnymalDRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Cassie-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.cassie.rough_env_cfg:CassieRoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Cassie-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.cassie.rough_env_cfg:CassieRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Digit-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.digit.rough_env_cfg:DigitRoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Digit-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.digit.rough_env_cfg:DigitRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-G1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.g1.rough_env_cfg:G1RoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-G1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.g1.rough_env_cfg:G1RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-H1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.h1.rough_env_cfg:H1RoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-H1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.h1.rough_env_cfg:H1RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-A1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.a1.rough_env_cfg:UnitreeA1RoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-A1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.a1.rough_env_cfg:UnitreeA1RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-Go1-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go1.rough_env_cfg:UnitreeGo1RoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-Go1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go1.rough_env_cfg:UnitreeGo1RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-Go2-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go2.rough_env_cfg:UnitreeGo2RoughEnvCfg_PLAY
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-Go2-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go2.rough_env_cfg:UnitreeGo2RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/manipulation/cabinet:
+  - task_id: Isaac-Open-Drawer-Franka-IK-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.cabinet.config.franka.ik_abs_env_cfg:FrankaCabinetEnvCfg
+    group: manager_based/manipulation/cabinet
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Open-Drawer-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.cabinet.config.franka.ik_rel_env_cfg:FrankaCabinetEnvCfg
+    group: manager_based/manipulation/cabinet
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Open-Drawer-Franka-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.cabinet.config.franka.joint_pos_env_cfg:FrankaCabinetEnvCfg_PLAY
+    group: manager_based/manipulation/cabinet
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 400
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Open-Drawer-Franka-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.cabinet.config.franka.joint_pos_env_cfg:FrankaCabinetEnvCfg
+    group: manager_based/manipulation/cabinet
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 400
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Open-Drawer-OpenArm-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.cabinet.config.openarm.joint_pos_env_cfg:OpenArmCabinetEnvCfg_PLAY
+    group: manager_based/manipulation/cabinet
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 600
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Open-Drawer-OpenArm-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.cabinet.config.openarm.joint_pos_env_cfg:OpenArmCabinetEnvCfg
+    group: manager_based/manipulation/cabinet
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 600
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/manipulation/deploy:
+  - task_id: Isaac-Deploy-GearAssembly-UR10e-2F140-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.gear_assembly.config.ur_10e.joint_pos_env_cfg:UR10e2F140GearAssemblyEnvCfg_PLAY
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Deploy-GearAssembly-UR10e-2F140-ROS-Inference-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.gear_assembly.config.ur_10e.ros_inference_env_cfg:UR10e2F140GearAssemblyROSInferenceEnvCfg
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-GearAssembly-UR10e-2F140-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.gear_assembly.config.ur_10e.joint_pos_env_cfg:UR10e2F140GearAssemblyEnvCfg
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-GearAssembly-UR10e-2F85-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.gear_assembly.config.ur_10e.joint_pos_env_cfg:UR10e2F85GearAssemblyEnvCfg_PLAY
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Deploy-GearAssembly-UR10e-2F85-ROS-Inference-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.gear_assembly.config.ur_10e.ros_inference_env_cfg:UR10e2F85GearAssemblyROSInferenceEnvCfg
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-GearAssembly-UR10e-2F85-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.gear_assembly.config.ur_10e.joint_pos_env_cfg:UR10e2F85GearAssemblyEnvCfg
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-Reach-Rizon4s-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.reach.config.rizon_4s.joint_pos_env_cfg:Rizon4sReachEnvCfg_PLAY
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-Reach-Rizon4s-ROS-Inference-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.reach.config.rizon_4s.ros_inference_env_cfg:Rizon4sReachROSInferenceEnvCfg
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-Reach-Rizon4s-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.reach.config.rizon_4s.joint_pos_env_cfg:Rizon4sReachEnvCfg
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-Reach-UR10e-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.reach.config.ur_10e.joint_pos_env_cfg:UR10eReachEnvCfg_PLAY
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-Reach-UR10e-ROS-Inference-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.reach.config.ur_10e.ros_inference_env_cfg:UR10eReachROSInferenceEnvCfg
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Deploy-Reach-UR10e-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.deploy.reach.config.ur_10e.joint_pos_env_cfg:UR10eReachEnvCfg
+    group: manager_based/manipulation/deploy
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/manipulation/dexsuite:
+  - task_id: Isaac-Dexsuite-Kuka-Allegro-Lift-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.dexsuite.config.kuka_allegro.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroLiftEnvCfg_PLAY
+    group: manager_based/manipulation/dexsuite
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
+      manually.
+  - task_id: Isaac-Dexsuite-Kuka-Allegro-Lift-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.dexsuite.config.kuka_allegro.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroLiftEnvCfg
+    group: manager_based/manipulation/dexsuite
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
+      manually.
+  - task_id: Isaac-Dexsuite-Kuka-Allegro-Reorient-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.dexsuite.config.kuka_allegro.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroReorientEnvCfg_PLAY
+    group: manager_based/manipulation/dexsuite
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
+      manually.
+  - task_id: Isaac-Dexsuite-Kuka-Allegro-Reorient-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.dexsuite.config.kuka_allegro.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroReorientEnvCfg
+    group: manager_based/manipulation/dexsuite
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
+      manually.
+  manager_based/manipulation/inhand:
+  - task_id: Isaac-Repose-Cube-Allegro-NoVelObs-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.inhand.config.allegro_hand.allegro_env_cfg:AllegroCubeNoVelObsEnvCfg_PLAY
+    group: manager_based/manipulation/inhand
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 5000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Repose-Cube-Allegro-NoVelObs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.inhand.config.allegro_hand.allegro_env_cfg:AllegroCubeNoVelObsEnvCfg
+    group: manager_based/manipulation/inhand
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 8192
+    max_iterations: 5000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Repose-Cube-Allegro-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.inhand.config.allegro_hand.allegro_env_cfg:AllegroCubeEnvCfg_PLAY
+    group: manager_based/manipulation/inhand
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 5000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Repose-Cube-Allegro-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.inhand.config.allegro_hand.allegro_env_cfg:AllegroCubeEnvCfg
+    group: manager_based/manipulation/inhand
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 8192
+    max_iterations: 5000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/manipulation/lift:
+  - task_id: Isaac-Lift-Cube-Franka-IK-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.lift.config.franka.ik_abs_env_cfg:FrankaCubeLiftEnvCfg
+    group: manager_based/manipulation/lift
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Lift-Cube-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.lift.config.franka.ik_rel_env_cfg:FrankaCubeLiftEnvCfg
+    group: manager_based/manipulation/lift
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Lift-Cube-Franka-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.lift.config.franka.joint_pos_env_cfg:FrankaCubeLiftEnvCfg_PLAY
+    group: manager_based/manipulation/lift
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Lift-Cube-Franka-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.lift.config.franka.joint_pos_env_cfg:FrankaCubeLiftEnvCfg
+    group: manager_based/manipulation/lift
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Lift-Cube-OpenArm-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.lift.config.openarm.joint_pos_env_cfg:OpenArmCubeLiftEnvCfg_PLAY
+    group: manager_based/manipulation/lift
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 2000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Lift-Cube-OpenArm-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.lift.config.openarm.joint_pos_env_cfg:OpenArmCubeLiftEnvCfg
+    group: manager_based/manipulation/lift
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 2000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Lift-Teddy-Bear-Franka-IK-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.lift.config.franka.ik_abs_env_cfg:FrankaTeddyBearLiftEnvCfg
+    group: manager_based/manipulation/lift
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  manager_based/manipulation/pick_place:
+  - task_id: Isaac-ExhaustPipe-GR1T2-Pink-IK-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.pick_place.exhaustpipe_gr1t2_pink_ik_env_cfg:ExhaustPipeGR1T2PinkIKEnvCfg
+    group: manager_based/manipulation/pick_place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-NutPour-GR1T2-Pink-IK-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.pick_place.nutpour_gr1t2_pink_ik_env_cfg:NutPourGR1T2PinkIKEnvCfg
+    group: manager_based/manipulation/pick_place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-PickPlace-G1-InspireFTP-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.pick_place.pickplace_unitree_g1_inspire_hand_env_cfg:PickPlaceG1InspireFTPEnvCfg
+    group: manager_based/manipulation/pick_place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-PickPlace-GR1T2-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.pick_place.pickplace_gr1t2_env_cfg:PickPlaceGR1T2EnvCfg
+    group: manager_based/manipulation/pick_place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-PickPlace-GR1T2-WaistEnabled-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.pick_place.pickplace_gr1t2_waist_enabled_env_cfg:PickPlaceGR1T2WaistEnabledEnvCfg
+    group: manager_based/manipulation/pick_place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  manager_based/manipulation/place:
+  - task_id: Isaac-Place-Mug-Agibot-Left-Arm-RmpFlow-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.place.config.agibot.place_upright_mug_rmp_rel_env_cfg:RmpFlowAgibotPlaceUprightMugEnvCfg
+    group: manager_based/manipulation/place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Place-Toy2Box-Agibot-Right-Arm-RmpFlow-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.place.config.agibot.place_toy2box_rmp_rel_env_cfg:RmpFlowAgibotPlaceToy2BoxEnvCfg
+    group: manager_based/manipulation/place
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  manager_based/manipulation/reach:
+  - task_id: Isaac-Reach-Franka-IK-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.franka.ik_abs_env_cfg:FrankaReachEnvCfg
+    group: manager_based/manipulation/reach
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Reach-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.franka.ik_rel_env_cfg:FrankaReachEnvCfg
+    group: manager_based/manipulation/reach
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Reach-Franka-OSC-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.franka.osc_env_cfg:FrankaReachEnvCfg_PLAY
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 16
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-Franka-OSC-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.franka.osc_env_cfg:FrankaReachEnvCfg
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-Franka-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.franka.joint_pos_env_cfg:FrankaReachEnvCfg_PLAY
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-Franka-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.franka.joint_pos_env_cfg:FrankaReachEnvCfg
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-OpenArm-Bi-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.openarm.bimanual.joint_pos_env_cfg:OpenArmReachEnvCfg_PLAY
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 550
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-OpenArm-Bi-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.openarm.bimanual.joint_pos_env_cfg:OpenArmReachEnvCfg
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 550
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-OpenArm-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.openarm.unimanual.joint_pos_env_cfg:OpenArmReachEnvCfg_PLAY
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-OpenArm-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.openarm.unimanual.joint_pos_env_cfg:OpenArmReachEnvCfg
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-UR10-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.ur_10.joint_pos_env_cfg:UR10ReachEnvCfg_PLAY
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Reach-UR10-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.ur_10.joint_pos_env_cfg:UR10ReachEnvCfg
+    group: manager_based/manipulation/reach
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1000
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  manager_based/manipulation/stack:
+  - task_id: Isaac-Stack-Cube-Bin-Franka-IK-Rel-Mimic-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.bin_stack_ik_rel_env_cfg:FrankaBinStackEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-BlueGreen-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_env_cfg:FrankaCubeStackBlueGreenEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-BlueGreenRed-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_env_cfg:FrankaCubeStackBlueGreenRedEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Franka-IK-Abs-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_abs_env_cfg:FrankaCubeStackEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Franka-IK-Rel-Blueprint-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_blueprint_env_cfg:FrankaCubeStackBlueprintEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Franka-IK-Rel-Skillgen-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_env_cfg_skillgen:FrankaCubeStackSkillgenEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Cosmos-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_visuomotor_cosmos_env_cfg:FrankaCubeStackVisuomotorCosmosEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_visuomotor_env_cfg:FrankaCubeStackVisuomotorEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_env_cfg:FrankaCubeStackEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Franka-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_joint_pos_env_cfg:FrankaCubeStackEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Galbot-Left-Arm-Gripper-RmpFlow-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.galbot.stack_rmp_rel_env_cfg:RmpFlowGalbotLeftArmCubeStackEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Galbot-Left-Arm-Gripper-Visuomotor-Joint-Position-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.galbot.stack_rmp_rel_env_cfg:GalbotLeftArmJointPositionCubeStackVisuomotorEnvCfg_PLAY
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Galbot-Left-Arm-Gripper-Visuomotor-RmpFlow-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.galbot.stack_rmp_rel_env_cfg:GalbotLeftArmRmpFlowCubeStackVisuomotorEnvCfg_PLAY
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Galbot-Left-Arm-Gripper-Visuomotor-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.galbot.stack_rmp_rel_env_cfg:RmpFlowGalbotLeftArmCubeStackVisuomotorEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Galbot-Right-Arm-Suction-RmpFlow-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.galbot.stack_rmp_rel_env_cfg:RmpFlowGalbotRightArmCubeStackEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Instance-Randomize-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_instance_randomize_env_cfg:FrankaCubeStackInstanceRandomizeEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-Instance-Randomize-Franka-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_joint_pos_instance_randomize_env_cfg:FrankaCubeStackInstanceRandomizeEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-RedGreen-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_env_cfg:FrankaCubeStackRedGreenEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-RedGreenBlue-Franka-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.franka.stack_ik_rel_env_cfg:FrankaCubeStackRedGreenBlueEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-UR10-Long-Suction-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.ur10_gripper.stack_ik_rel_env_cfg:UR10LongSuctionCubeStackEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  - task_id: Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.stack.config.ur10_gripper.stack_ik_rel_env_cfg:UR10ShortSuctionCubeStackEnvCfg
+    group: manager_based/manipulation/stack
+    has_rsl_rl: false
+    has_skrl: false
+    framework: null
+    num_envs: null
+    max_iterations: null
+    keep: false
+    status: new
+    suspected_gap: null
+    notes: No rsl_rl or skrl entry point registered.
+  manager_based/navigation/config:
+  - task_id: Isaac-Navigation-Flat-Anymal-C-Play-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.navigation.config.anymal_c.navigation_env_cfg:NavigationEnvCfg_PLAY
+    group: manager_based/navigation/config
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 50
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
+  - task_id: Isaac-Navigation-Flat-Anymal-C-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.navigation.config.anymal_c.navigation_env_cfg:NavigationEnvCfg
+    group: manager_based/navigation/config
+    has_rsl_rl: true
+    has_skrl: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    notes: ''
