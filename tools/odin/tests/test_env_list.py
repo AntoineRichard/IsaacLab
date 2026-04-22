@@ -107,18 +107,12 @@ def test_schema_version_written_and_read(tmp_path: Path):
     write_env_list(out, original, generator="test")
 
     text = out.read_text()
-    assert 'schema_version: "1.0"' in text or "schema_version: '1.0'" in text or \
-           "schema_version: 1.0" in text
+    assert 'schema_version: "1.0"' in text or "schema_version: '1.0'" in text or "schema_version: 1.0" in text
 
 
 def test_load_rejects_unknown_schema_version(tmp_path: Path):
     bad = tmp_path / "bad.yaml"
-    bad.write_text(
-        "schema_version: \"99.0\"\n"
-        "generated_at: \"2026-04-22T00:00:00Z\"\n"
-        "generator: \"test\"\n"
-        "groups: {}\n"
-    )
+    bad.write_text('schema_version: "99.0"\ngenerated_at: "2026-04-22T00:00:00Z"\ngenerator: "test"\ngroups: {}\n')
     with pytest.raises(ValueError, match="schema_version"):
         load_env_list(bad)
 
@@ -137,9 +131,9 @@ def test_load_rejects_row_missing_task_id(tmp_path: Path):
     # silently constructing an EnvEntry with task_id=None.
     bad = tmp_path / "no_id.yaml"
     bad.write_text(
-        "schema_version: \"1.0\"\n"
-        "generated_at: \"2026-04-22T00:00:00Z\"\n"
-        "generator: \"test\"\n"
+        'schema_version: "1.0"\n'
+        'generated_at: "2026-04-22T00:00:00Z"\n'
+        'generator: "test"\n'
         "groups:\n"
         "  direct/ant:\n"
         "    - entry_point: isaaclab_tasks.direct.ant:AntEnv\n"
@@ -147,3 +141,91 @@ def test_load_rejects_row_missing_task_id(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="task_id"):
         load_env_list(bad)
+
+
+# -----------------------------------------------------------------------------
+# Merge semantics
+# -----------------------------------------------------------------------------
+
+
+from tools.odin.common.env_list import merge
+
+
+def _existing_list_with(task_id: str, **overrides) -> EnvList:
+    el = EnvList()
+    entry = _make_entry(task_id, **overrides)
+    el.groups.setdefault(entry.group, []).append(entry)
+    return el
+
+
+def test_merge_preserves_user_keep_false():
+    existing = _existing_list_with("Isaac-Ant-Direct-v0", keep=False, notes="too slow")
+    discovered = [_make_entry("Isaac-Ant-Direct-v0")]  # script default keep=True
+    merged = merge(existing, discovered)
+
+    entry = merged.groups["direct/ant"][0]
+    assert entry.keep is False
+    assert entry.notes == "too slow"
+    assert entry.status == "current"
+
+
+def test_merge_preserves_user_framework_override():
+    existing = _existing_list_with("Isaac-Ant-Direct-v0", framework="skrl")
+    discovered = [_make_entry("Isaac-Ant-Direct-v0", framework="rsl_rl")]
+    merged = merge(existing, discovered)
+
+    assert merged.groups["direct/ant"][0].framework == "skrl"
+
+
+def test_merge_preserves_user_training_knobs():
+    existing = _existing_list_with("Isaac-Ant-Direct-v0", num_envs=2048, max_iterations=500)
+    discovered = [_make_entry("Isaac-Ant-Direct-v0", num_envs=4096, max_iterations=300)]
+    merged = merge(existing, discovered)
+
+    entry = merged.groups["direct/ant"][0]
+    assert entry.num_envs == 2048
+    assert entry.max_iterations == 500
+
+
+def test_merge_refreshes_derived_fields():
+    # has_rsl_rl/has_skrl/entry_point reflect the registry now, not the past.
+    existing = _existing_list_with("Isaac-Ant-Direct-v0", has_rsl_rl=False, has_skrl=False, entry_point="stale:X")
+    discovered = [_make_entry("Isaac-Ant-Direct-v0", has_rsl_rl=True, has_skrl=True)]
+    merged = merge(existing, discovered)
+
+    entry = merged.groups["direct/ant"][0]
+    assert entry.has_rsl_rl is True
+    assert entry.has_skrl is True
+    assert entry.entry_point == "isaaclab_tasks.direct.ant:AntEnv"
+
+
+def test_merge_marks_vanished_rows_stale_and_does_not_delete():
+    existing = _existing_list_with("Isaac-Ant-Direct-v0", keep=True)
+    discovered: list[EnvEntry] = []  # registry removed the task
+    merged = merge(existing, discovered)
+
+    entry = merged.groups["direct/ant"][0]
+    assert entry.status == "stale"
+    # Row is still present — user removes it consciously.
+
+
+def test_merge_marks_new_rows_new():
+    existing = EnvList()
+    discovered = [_make_entry("Isaac-Humanoid-Direct-v0", group="direct/humanoid")]
+    merged = merge(existing, discovered)
+
+    entry = merged.groups["direct/humanoid"][0]
+    assert entry.status == "new"
+    assert entry.keep is True
+
+
+def test_merge_handles_task_moving_between_groups():
+    # Rare but possible: upstream re-filed a task under a different dir.
+    existing = _existing_list_with("Isaac-Ant-Direct-v0", group="direct/ant", keep=False)
+    discovered = [_make_entry("Isaac-Ant-Direct-v0", group="direct/ant_v2", keep=True)]
+    merged = merge(existing, discovered)
+
+    # User's keep=False travels with the task despite the group change.
+    assert "direct/ant" not in merged.groups or not merged.groups["direct/ant"]
+    entry = merged.groups["direct/ant_v2"][0]
+    assert entry.keep is False

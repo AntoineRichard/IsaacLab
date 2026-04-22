@@ -31,6 +31,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "load_env_list",
     "write_env_list",
+    "merge",
 ]
 
 
@@ -256,3 +257,86 @@ def write_env_list(path: Path, env_list: EnvList, *, generator: str) -> None:
             sort_keys=False,
             width=120,
         )
+
+
+def merge(existing: EnvList, discovered: list[EnvEntry]) -> EnvList:
+    """Merge discovered entries against an existing list, preserving user edits.
+
+    Semantics (spec §Architecture):
+
+    - ``task_id`` in both → preserve user fields
+      (``keep``, ``framework``, ``num_envs``, ``max_iterations``, ``notes``,
+      ``suspected_gap``); refresh derived fields
+      (``entry_point``, ``env_cfg_entry_point``, ``has_rsl_rl``, ``has_skrl``,
+      ``group``); set ``status = "current"``.
+    - ``task_id`` in existing only → mark ``status = "stale"``; keep the row.
+      Never delete automatically; the user removes stale rows consciously.
+    - ``task_id`` in discovered only → insert with ``status = "new"``.
+
+    Merging is keyed on ``task_id`` alone. If a task's ``group`` has changed
+    upstream, the row migrates to the new group carrying the user's fields.
+
+    Args:
+        existing: Previously-written env list (from :func:`load_env_list`).
+        discovered: Rows from the current enumeration pass.
+
+    Returns:
+        A new :class:`EnvList` combining both, never mutating inputs.
+    """
+    # Flatten existing into a dict keyed on task_id.
+    existing_by_id: dict[str, EnvEntry] = {}
+    for rows in existing.groups.values():
+        for row in rows:
+            existing_by_id[row.task_id] = row
+
+    merged = EnvList()
+    discovered_ids: set[str] = set()
+
+    # First pass: existing + discovered intersection, plus new-only.
+    for new in discovered:
+        discovered_ids.add(new.task_id)
+        old = existing_by_id.get(new.task_id)
+        if old is None:
+            merged_entry = EnvEntry(
+                task_id=new.task_id,
+                entry_point=new.entry_point,
+                env_cfg_entry_point=new.env_cfg_entry_point,
+                group=new.group,
+                has_rsl_rl=new.has_rsl_rl,
+                has_skrl=new.has_skrl,
+                framework=new.framework,
+                num_envs=new.num_envs,
+                max_iterations=new.max_iterations,
+                keep=new.keep,
+                status="new",
+                notes=new.notes,
+                suspected_gap=new.suspected_gap,
+            )
+        else:
+            merged_entry = EnvEntry(
+                task_id=new.task_id,
+                # Derived / refreshed from current registry:
+                entry_point=new.entry_point,
+                env_cfg_entry_point=new.env_cfg_entry_point,
+                group=new.group,
+                has_rsl_rl=new.has_rsl_rl,
+                has_skrl=new.has_skrl,
+                # Preserved from user edits:
+                framework=old.framework,
+                num_envs=old.num_envs,
+                max_iterations=old.max_iterations,
+                keep=old.keep,
+                notes=old.notes,
+                suspected_gap=old.suspected_gap,
+                status="current",
+            )
+        merged.groups.setdefault(merged_entry.group, []).append(merged_entry)
+
+    # Second pass: existing-only → stale. Preserve all fields; flag status.
+    for task_id, old in existing_by_id.items():
+        if task_id in discovered_ids:
+            continue
+        stale = EnvEntry(**{**asdict(old), "status": "stale"})
+        merged.groups.setdefault(stale.group, []).append(stale)
+
+    return merged
