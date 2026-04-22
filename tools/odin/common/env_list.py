@@ -15,7 +15,7 @@ It also provides small pure-Python helpers used by the enumeration scripts:
 
 from __future__ import annotations
 
-__all__ = ["derive_group"]
+__all__ = ["derive_group", "suggest_framework"]
 
 
 _ISAACLAB_TASKS_PREFIX = "isaaclab_tasks."
@@ -61,3 +61,25 @@ def derive_group(entry_point: str) -> str:
     if len(parts) >= 2:
         return "/".join(parts[:2])
     return parts[0]
+
+
+def suggest_framework(has_rsl_rl: bool, has_skrl: bool) -> str | None:
+    """Suggest the default learning framework for a task.
+
+    Preference: rsl_rl whenever registered; else skrl; else ``None``. A
+    ``None`` return signals the caller to force ``keep: false`` on the
+    YAML row with a diagnostic ``notes`` message — the dispatcher has
+    nothing to run against a frameworkless task.
+
+    Args:
+        has_rsl_rl: Whether the task registers ``rsl_rl_cfg_entry_point``.
+        has_skrl: Whether the task registers ``skrl_cfg_entry_point``.
+
+    Returns:
+        ``"rsl_rl"``, ``"skrl"``, or ``None``.
+    """
+    if has_rsl_rl:
+        return "rsl_rl"
+    if has_skrl:
+        return "skrl"
+    return None
