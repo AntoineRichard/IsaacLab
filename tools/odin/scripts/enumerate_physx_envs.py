@@ -10,6 +10,10 @@ registered ``Isaac*`` gym task, grouped by directory-derived type. Preserves
 user edits (``keep``, ``framework``, ``num_envs``, ``max_iterations``,
 ``notes``) on re-run via :func:`tools.odin.common.env_list.merge`.
 
+Skips ``*-Play-v0`` evaluation variants — Odin dispatches training runs,
+not play demos. This matches the default ``include_play=False`` behaviour
+of :func:`isaaclab_tasks.test.env_test_utils.setup_environment`.
+
 Usage (from the repo root; PYTHONPATH=. is required so ``tools.odin.*`` is
 importable):
 
@@ -106,8 +110,12 @@ def main() -> int:
 
     discovered: list = []
     errors = 0
+    skipped_play = 0
     for task_spec in gym.registry.values():
         if "Isaac" not in task_spec.id:
+            continue
+        if task_spec.id.endswith("-Play-v0"):
+            skipped_play += 1
             continue
         try:
             discovered.append(build_entry_from_task_spec(task_spec))
@@ -133,7 +141,8 @@ def main() -> int:
         f"physx envs: {sum(totals.values())} total "
         f"({totals.get('new', 0)} new, {totals.get('stale', 0)} stale, "
         f"{totals.get('current', 0)} current), "
-        f"{frameworkless} frameworkless, {errors} enumeration errors."
+        f"{frameworkless} frameworkless, {skipped_play} -Play-v0 skipped, "
+        f"{errors} enumeration errors."
     )
 
     if args_cli.dry_run:

@@ -6,7 +6,10 @@
 """Derive Newton env list and gap-candidates from a filtered PhysX list.
 
 Reads ``tools/odin/config/physx_envs.yaml`` (filtered by the user), visits
-every ``keep: true`` row, and partitions them by Newton preset presence:
+every ``keep: true`` row (skipping any ``*-Play-v0`` variants defensively
+— the physx script filters them at source, so they only appear here if
+an older YAML predates that change), and partitions them by Newton preset
+presence:
 
 - Rows whose raw env cfg has a ``newton`` preset → ``newton_envs.yaml``.
 - Rows without a ``newton`` preset → ``newton_gap_candidates.yaml`` with
@@ -91,17 +94,19 @@ def main() -> int:
     physx = load_env_list(physx_path)
     if not physx.groups:
         print(
-            f"No PhysX env list at {physx_path}. Run "
-            f"tools/odin/scripts/enumerate_physx_envs.py first.",
+            f"No PhysX env list at {physx_path}. Run tools/odin/scripts/enumerate_physx_envs.py first.",
             file=sys.stderr,
         )
         return 1
 
+    # Skip -Play-v0 variants defensively: the physx script now filters them,
+    # but an existing physx_envs.yaml written before that change may still
+    # contain them.
     kept = [
         e
         for rows in physx.groups.values()
         for e in rows
-        if e.keep and e.status != "stale"
+        if e.keep and e.status != "stale" and not e.task_id.endswith("-Play-v0")
     ]
     print(f"PhysX input: {sum(len(v) for v in physx.groups.values())} total, {len(kept)} kept.")
 
@@ -124,8 +129,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             errors += 1
             print(
-                f"WARNING enum: {e.task_id}: cfg load failed: "
-                f"{type(exc).__name__}: {exc}",
+                f"WARNING enum: {e.task_id}: cfg load failed: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             continue
@@ -142,23 +146,17 @@ def main() -> int:
     gaps_merged = merge(existing_gaps, gap_discovered)
 
     print(
-        f"newton envs:   {sum(len(v) for v in newton_merged.groups.values())} "
-        f"({len(newton_discovered)} from this run)"
+        f"newton envs:   {sum(len(v) for v in newton_merged.groups.values())} ({len(newton_discovered)} from this run)"
     )
-    print(
-        f"gap candidates:{sum(len(v) for v in gaps_merged.groups.values())} "
-        f"({len(gap_discovered)} from this run)"
-    )
+    print(f"gap candidates:{sum(len(v) for v in gaps_merged.groups.values())} ({len(gap_discovered)} from this run)")
     print(f"load errors:   {errors}")
 
     if args_cli.dry_run:
         print("--dry-run: not writing.")
         return 0
 
-    write_env_list(args_cli.newton_output, newton_merged,
-                   generator="enumerate_newton_envs.py")
-    write_env_list(args_cli.gap_output, gaps_merged,
-                   generator="enumerate_newton_envs.py")
+    write_env_list(args_cli.newton_output, newton_merged, generator="enumerate_newton_envs.py")
+    write_env_list(args_cli.gap_output, gaps_merged, generator="enumerate_newton_envs.py")
     print(f"Wrote {args_cli.newton_output}")
     print(f"Wrote {args_cli.gap_output}")
     return 0
