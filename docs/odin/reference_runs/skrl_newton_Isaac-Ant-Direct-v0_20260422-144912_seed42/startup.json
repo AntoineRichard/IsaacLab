@@ -1,0 +1,972 @@
+{
+  "run": {
+    "run_id": "skrl_newton_Isaac-Ant-Direct-v0_20260422-144912_seed42",
+    "framework": "rsl_rl",
+    "backend": "newton",
+    "task": "Isaac-Ant-Direct-v0",
+    "seed": 42,
+    "start_time_utc": "2026-04-22T14:49:13.897334Z",
+    "end_time_utc": "2026-04-22T14:49:27.235363Z",
+    "duration_s": 13.338029,
+    "status": "completed"
+  },
+  "versions": {
+    "isaaclab": "4.6.9",
+    "isaacsim": null,
+    "kit": null,
+    "newton": "1.1.0.dev0",
+    "warp": "1.12.0",
+    "mjwarp": "3.5.0.2",
+    "torch": "2.10.0+cu128",
+    "rsl_rl": "5.0.1",
+    "skrl": "1.4.3",
+    "git_commit": "b325b4bb0859b2973065bf6f0063b6491415ca0b",
+    "git_branch": "antoiner/feat/odin",
+    "git_dirty": true
+  },
+  "hardware": {
+    "hostname": "373da29-lcelt",
+    "gpu_devices": [
+      {
+        "name": "NVIDIA RTX 5000 Ada Generation Laptop GPU",
+        "mem_gb": 15.57,
+        "compute_cap": "8.9"
+      }
+    ],
+    "cpu_name": "13th Gen Intel(R) Core(TM) i9-13950HX",
+    "cpu_count": 32,
+    "ram_gb": 62.48
+  },
+  "phases": {
+    "app_launch": {
+      "total_time_s": 3.370031631,
+      "top_functions": [
+        {
+          "name": "lib.python3.12.copy:deepcopy",
+          "own_time_s": 0.06031798000000001,
+          "cum_time_s": 0.126860046,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_wrap_resolvable_strings",
+          "own_time_s": 0.044993484,
+          "cum_time_s": 0.09510474000000001,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.isinstance>",
+          "own_time_s": 0.030596743000000003,
+          "cum_time_s": 0.030929998,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_custom_post_init",
+          "own_time_s": 0.028789635,
+          "cum_time_s": 0.258668365,
+          "calls": 0
+        },
+        {
+          "name": "<method 'get' of 'dict' objects>",
+          "own_time_s": 0.027619075000000003,
+          "cum_time_s": 0.027619075000000003,
+          "calls": 0
+        },
+        {
+          "name": "<method 'startswith' of 'str' objects>",
+          "own_time_s": 0.02081991,
+          "cum_time_s": 0.02081991,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_field_module_dir",
+          "own_time_s": 0.01818312,
+          "cum_time_s": 0.030218952,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.getattr>",
+          "own_time_s": 0.017434364,
+          "cum_time_s": 0.399153882,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.len>",
+          "own_time_s": 0.012899162,
+          "cum_time_s": 0.012937971000000001,
+          "calls": 0
+        },
+        {
+          "name": "<method 'strip' of 'str' objects>",
+          "own_time_s": 0.009240859,
+          "cum_time_s": 0.009240859,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.__build_class__>",
+          "own_time_s": 0.00912583,
+          "cum_time_s": 0.09480112,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.id>",
+          "own_time_s": 0.009009278999999999,
+          "cum_time_s": 0.009009278999999999,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method __new__ of type object at 0x7929f6dd7680>",
+          "own_time_s": 0.007894031000000001,
+          "cum_time_s": 0.013470058,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.dir>",
+          "own_time_s": 0.007617797000000001,
+          "cum_time_s": 0.007645304,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.hasattr>",
+          "own_time_s": 0.007515585000000001,
+          "cum_time_s": 0.10095231,
+          "calls": 0
+        },
+        {
+          "name": "<method 'rsplit' of 'str' objects>",
+          "own_time_s": 0.006016808,
+          "cum_time_s": 0.006016808,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.setattr>",
+          "own_time_s": 0.005755833,
+          "cum_time_s": 0.006414373,
+          "calls": 0
+        },
+        {
+          "name": "<method 'split' of 'str' objects>",
+          "own_time_s": 0.0057060240000000005,
+          "cum_time_s": 0.0057060240000000005,
+          "calls": 0
+        },
+        {
+          "name": "<method 'append' of 'list' objects>",
+          "own_time_s": 0.005551685000000001,
+          "cum_time_s": 0.005551685000000001,
+          "calls": 0
+        },
+        {
+          "name": "<method 'add' of 'set' objects>",
+          "own_time_s": 0.005155295000000001,
+          "cum_time_s": 0.005155295000000001,
+          "calls": 0
+        },
+        {
+          "name": "_find_and_load",
+          "own_time_s": 0.00511591,
+          "cum_time_s": 0.6596979040000001,
+          "calls": 0
+        },
+        {
+          "name": "<method 'match' of 're.Pattern' objects>",
+          "own_time_s": 0.0048814950000000005,
+          "cum_time_s": 0.0048814950000000005,
+          "calls": 0
+        },
+        {
+          "name": "<method 'get' of 'mappingproxy' objects>",
+          "own_time_s": 0.00417523,
+          "cum_time_s": 0.00417523,
+          "calls": 0
+        },
+        {
+          "name": "<method 'replace' of 'str' objects>",
+          "own_time_s": 0.0040447140000000005,
+          "cum_time_s": 0.0040447140000000005,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_process_mutable_types",
+          "own_time_s": 0.002294884,
+          "cum_time_s": 0.006315518,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.all>",
+          "own_time_s": 0.002241512,
+          "cum_time_s": 0.0036257790000000004,
+          "calls": 0
+        },
+        {
+          "name": "lib.python3.12.enum:__setitem__",
+          "own_time_s": 0.002166593,
+          "cum_time_s": 0.004624872,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.callable>",
+          "own_time_s": 0.001683823,
+          "cum_time_s": 0.001683823,
+          "calls": 0
+        },
+        {
+          "name": "lib.python3.12.typing:inner",
+          "own_time_s": 0.001659925,
+          "cum_time_s": 0.01103555,
+          "calls": 0
+        },
+        {
+          "name": "<method '__exit__' of '_io._IOBase' objects>",
+          "own_time_s": 0.0016389750000000002,
+          "cum_time_s": 0.0016389750000000002,
+          "calls": 0
+        }
+      ]
+    },
+    "python_imports": {
+      "total_time_s": 0.6255796779999999,
+      "top_functions": [
+        {
+          "name": "<built-in method builtins.__build_class__>",
+          "own_time_s": 0.009819881,
+          "cum_time_s": 0.09077283300000001,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.isinstance>",
+          "own_time_s": 0.008968156,
+          "cum_time_s": 0.010535994,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.getattr>",
+          "own_time_s": 0.005369142,
+          "cum_time_s": 0.013896548000000002,
+          "calls": 0
+        },
+        {
+          "name": "lib.python3.12.copy:deepcopy",
+          "own_time_s": 0.004378186,
+          "cum_time_s": 0.0135572,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.len>",
+          "own_time_s": 0.003942345,
+          "cum_time_s": 0.004025174,
+          "calls": 0
+        },
+        {
+          "name": "<method 'get' of 'dict' objects>",
+          "own_time_s": 0.00364969,
+          "cum_time_s": 0.00364969,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method __new__ of type object at 0x7929f6dd7680>",
+          "own_time_s": 0.0033774150000000004,
+          "cum_time_s": 0.005228775000000001,
+          "calls": 0
+        },
+        {
+          "name": "<method 'append' of 'list' objects>",
+          "own_time_s": 0.0031737420000000002,
+          "cum_time_s": 0.0031737420000000002,
+          "calls": 0
+        },
+        {
+          "name": "<method 'startswith' of 'str' objects>",
+          "own_time_s": 0.003068676,
+          "cum_time_s": 0.003068676,
+          "calls": 0
+        },
+        {
+          "name": "<method 'join' of 'str' objects>",
+          "own_time_s": 0.002459656,
+          "cum_time_s": 0.0027490070000000004,
+          "calls": 0
+        },
+        {
+          "name": "_find_and_load",
+          "own_time_s": 0.0024204770000000003,
+          "cum_time_s": 0.058195437,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.hasattr>",
+          "own_time_s": 0.001846666,
+          "cum_time_s": 0.030450461,
+          "calls": 0
+        },
+        {
+          "name": "<method 'read' of '_io.TextIOWrapper' objects>",
+          "own_time_s": 0.0015294800000000002,
+          "cum_time_s": 0.0016261320000000002,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.setattr>",
+          "own_time_s": 0.001395549,
+          "cum_time_s": 0.0015809860000000002,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_process_mutable_types",
+          "own_time_s": 0.0011606910000000002,
+          "cum_time_s": 0.0035643510000000003,
+          "calls": 0
+        },
+        {
+          "name": "<method '__exit__' of '_io._IOBase' objects>",
+          "own_time_s": 0.000990211,
+          "cum_time_s": 0.000990211,
+          "calls": 0
+        },
+        {
+          "name": "_handle_fromlist",
+          "own_time_s": 0.000948378,
+          "cum_time_s": 0.019633311,
+          "calls": 0
+        },
+        {
+          "name": "lib.python3.12.ast:parse",
+          "own_time_s": 0.0009371700000000001,
+          "cum_time_s": 0.009761872000000001,
+          "calls": 0
+        },
+        {
+          "name": "<method 'match' of 're.Pattern' objects>",
+          "own_time_s": 0.0009163950000000001,
+          "cum_time_s": 0.0009163950000000001,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_custom_post_init",
+          "own_time_s": 0.000897787,
+          "cum_time_s": 0.004500886000000001,
+          "calls": 0
+        },
+        {
+          "name": "lib.python3.12.typing:inner",
+          "own_time_s": 0.0008560530000000001,
+          "cum_time_s": 0.01274485,
+          "calls": 0
+        },
+        {
+          "name": "lib.python3.12.enum:__setitem__",
+          "own_time_s": 0.000741627,
+          "cum_time_s": 0.001538272,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_skippable_class_member",
+          "own_time_s": 0.000739526,
+          "cum_time_s": 0.002383898,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.id>",
+          "own_time_s": 0.000587177,
+          "cum_time_s": 0.000587177,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_wrap_resolvable_strings",
+          "own_time_s": 0.0005588640000000001,
+          "cum_time_s": 0.0011597870000000002,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:configclass",
+          "own_time_s": 0.000551548,
+          "cum_time_s": 0.035294258,
+          "calls": 0
+        },
+        {
+          "name": "_lock_unlock_module",
+          "own_time_s": 0.0005466220000000001,
+          "cum_time_s": 0.007050600000000001,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.module:lazy_export",
+          "own_time_s": 0.000546557,
+          "cum_time_s": 0.011526107,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_add_annotation_types",
+          "own_time_s": 0.000538146,
+          "cum_time_s": 0.001847345,
+          "calls": 0
+        },
+        {
+          "name": "parent",
+          "own_time_s": 0.000520969,
+          "cum_time_s": 0.0008601850000000001,
+          "calls": 0
+        }
+      ]
+    },
+    "task_config": {
+      "total_time_s": 0.649660657,
+      "top_functions": [
+        {
+          "name": "lib.python3.12.copy:deepcopy",
+          "own_time_s": 0.07473154800000001,
+          "cum_time_s": 0.246702737,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.isinstance>",
+          "own_time_s": 0.031064730000000002,
+          "cum_time_s": 0.048722431000000004,
+          "calls": 0
+        },
+        {
+          "name": "<method 'get' of 'dict' objects>",
+          "own_time_s": 0.030166654,
+          "cum_time_s": 0.033018086,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.id>",
+          "own_time_s": 0.008922012,
+          "cum_time_s": 0.008922012,
+          "calls": 0
+        },
+        {
+          "name": "_handle_fromlist",
+          "own_time_s": 0.008470589,
+          "cum_time_s": 0.042577587,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.getattr>",
+          "own_time_s": 0.007171643,
+          "cum_time_s": 0.049553991000000006,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.len>",
+          "own_time_s": 0.006951449,
+          "cum_time_s": 0.007396108,
+          "calls": 0
+        },
+        {
+          "name": "<method 'append' of 'list' objects>",
+          "own_time_s": 0.005292411,
+          "cum_time_s": 0.005292411,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.hasattr>",
+          "own_time_s": 0.005229027000000001,
+          "cum_time_s": 0.032675909,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_wrap_resolvable_strings",
+          "own_time_s": 0.0037867850000000004,
+          "cum_time_s": 0.008368359,
+          "calls": 0
+        },
+        {
+          "name": "parent",
+          "own_time_s": 0.003371559,
+          "cum_time_s": 0.006062645,
+          "calls": 0
+        },
+        {
+          "name": "<method 'startswith' of 'str' objects>",
+          "own_time_s": 0.0032220540000000002,
+          "cum_time_s": 0.0032220540000000002,
+          "calls": 0
+        },
+        {
+          "name": "<method 'group' of 're.Match' objects>",
+          "own_time_s": 0.0026694040000000002,
+          "cum_time_s": 0.0026694040000000002,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_custom_post_init",
+          "own_time_s": 0.0022025670000000003,
+          "cum_time_s": 0.021391918000000003,
+          "calls": 0
+        },
+        {
+          "name": "<method 'match' of 're.Pattern' objects>",
+          "own_time_s": 0.002047417,
+          "cum_time_s": 0.002047417,
+          "calls": 0
+        },
+        {
+          "name": "<method 'items' of 'dict' objects>",
+          "own_time_s": 0.0018816430000000001,
+          "cum_time_s": 0.0018816430000000001,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_process_mutable_types",
+          "own_time_s": 0.001776592,
+          "cum_time_s": 0.0047410360000000006,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_field_module_dir",
+          "own_time_s": 0.00168585,
+          "cum_time_s": 0.0028032910000000003,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.__build_class__>",
+          "own_time_s": 0.001539159,
+          "cum_time_s": 0.020055641000000003,
+          "calls": 0
+        },
+        {
+          "name": "<method 'update' of 'dict' objects>",
+          "own_time_s": 0.001356481,
+          "cum_time_s": 0.001356481,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_skippable_class_member",
+          "own_time_s": 0.0011654430000000002,
+          "cum_time_s": 0.0033902240000000003,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method __new__ of type object at 0x7929f6dd7680>",
+          "own_time_s": 0.001035702,
+          "cum_time_s": 0.0010500070000000002,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.dir>",
+          "own_time_s": 0.000941993,
+          "cum_time_s": 0.000941993,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.setattr>",
+          "own_time_s": 0.000909926,
+          "cum_time_s": 0.000909926,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:_add_annotation_types",
+          "own_time_s": 0.0008453270000000001,
+          "cum_time_s": 0.003023318,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.any>",
+          "own_time_s": 0.0007521580000000001,
+          "cum_time_s": 0.0015893370000000001,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method _io.open>",
+          "own_time_s": 0.000644261,
+          "cum_time_s": 0.000698638,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.configclass:configclass",
+          "own_time_s": 0.000612322,
+          "cum_time_s": 0.051305573,
+          "calls": 0
+        },
+        {
+          "name": "<method 'rsplit' of 'str' objects>",
+          "own_time_s": 0.000591005,
+          "cum_time_s": 0.000591005,
+          "calls": 0
+        },
+        {
+          "name": "<method 'get' of 'mappingproxy' objects>",
+          "own_time_s": 0.0004445,
+          "cum_time_s": 0.0004445,
+          "calls": 0
+        }
+      ]
+    },
+    "env_creation": {
+      "total_time_s": 7.668116331,
+      "top_functions": [
+        {
+          "name": "isaaclab.sim.utils.prims:wrapper",
+          "own_time_s": 3.0987922880000003,
+          "cum_time_s": 3.972289791,
+          "calls": 0
+        },
+        {
+          "name": "client.impl.__init__:stat",
+          "own_time_s": 1.0373350220000002,
+          "cum_time_s": 1.037438361,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.cloner.cloner_utils:usd_replicate",
+          "own_time_s": 0.9083216820000001,
+          "cum_time_s": 0.9147004700000001,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab_physx.cloner.physx_replicate:attach_end_fn",
+          "own_time_s": 0.45778482600000003,
+          "cum_time_s": 0.45778482600000003,
+          "calls": 0
+        },
+        {
+          "name": "...isaaclab_tasks.isaaclab_tasks.direct.locomotion.locomotion_env:_compute_intermediate_values",
+          "own_time_s": 0.06227491600000001,
+          "cum_time_s": 0.062494307000000006,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method torch.tensor>",
+          "own_time_s": 0.034181696000000004,
+          "cum_time_s": 0.034181696000000004,
+          "calls": 0
+        },
+        {
+          "name": "tensors.impl.api:get_dof_stiffnesses",
+          "own_time_s": 0.030882056,
+          "cum_time_s": 0.162995008,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.sim.utils.queries:find_matching_prims",
+          "own_time_s": 0.030118752000000002,
+          "cum_time_s": 0.047588221,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method torch.allclose>",
+          "own_time_s": 0.023013441000000003,
+          "cum_time_s": 0.023013441000000003,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.isinstance>",
+          "own_time_s": 0.021598686000000002,
+          "cum_time_s": 0.022048029,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.getattr>",
+          "own_time_s": 0.019528378000000002,
+          "cum_time_s": 0.228398064,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab_physx.cloner.physx_replicate:physx_replicate",
+          "own_time_s": 0.017380027000000003,
+          "cum_time_s": 0.017621241000000003,
+          "calls": 0
+        },
+        {
+          "name": "<method 'match' of 're.Pattern' objects>",
+          "own_time_s": 0.015526577000000001,
+          "cum_time_s": 0.015526577000000001,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.cloner.cloner_utils:grid_transforms",
+          "own_time_s": 0.014082235,
+          "cum_time_s": 0.025195082,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.len>",
+          "own_time_s": 0.010049146,
+          "cum_time_s": 0.010102376000000001,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method __new__ of type object at 0x7929f6dd7680>",
+          "own_time_s": 0.009918102,
+          "cum_time_s": 0.015388980000000002,
+          "calls": 0
+        },
+        {
+          "name": "<method 'startswith' of 'str' objects>",
+          "own_time_s": 0.009400732,
+          "cum_time_s": 0.009400732,
+          "calls": 0
+        },
+        {
+          "name": "<method 'append' of 'list' objects>",
+          "own_time_s": 0.009261872,
+          "cum_time_s": 0.009261872,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.sim.utils.queries:find_matching_prim_paths",
+          "own_time_s": 0.008172076,
+          "cum_time_s": 0.020697861000000005,
+          "calls": 0
+        },
+        {
+          "name": "lib.python3.12.copy:deepcopy",
+          "own_time_s": 0.0070835460000000005,
+          "cum_time_s": 0.015936073000000002,
+          "calls": 0
+        },
+        {
+          "name": "<method 'strip' of 'str' objects>",
+          "own_time_s": 0.006718459,
+          "cum_time_s": 0.006718459,
+          "calls": 0
+        },
+        {
+          "name": "<method 'get' of 'dict' objects>",
+          "own_time_s": 0.006623645,
+          "cum_time_s": 0.00662621,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.assets:_find_usd_dependencies",
+          "own_time_s": 0.006119575,
+          "cum_time_s": 0.006156581,
+          "calls": 0
+        },
+        {
+          "name": "<method 'format' of 'str' objects>",
+          "own_time_s": 0.005725778,
+          "cum_time_s": 0.005725778,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.__build_class__>",
+          "own_time_s": 0.005497547,
+          "cum_time_s": 0.031741395,
+          "calls": 0
+        },
+        {
+          "name": "<method 'join' of 'str' objects>",
+          "own_time_s": 0.005472247,
+          "cum_time_s": 0.006379218000000001,
+          "calls": 0
+        },
+        {
+          "name": "<method 'flatten' of 'torch._C.TensorBase' objects>",
+          "own_time_s": 0.005151618,
+          "cum_time_s": 0.005151618,
+          "calls": 0
+        },
+        {
+          "name": "tensors.impl.api:get_dof_friction_properties",
+          "own_time_s": 0.005059214,
+          "cum_time_s": 0.17145358000000002,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.sim.simulation_context:_init_usd_physics_scene",
+          "own_time_s": 0.004293297000000001,
+          "cum_time_s": 0.056744550000000005,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.sim.utils.prims:_add_reference_to_prim",
+          "own_time_s": 0.004237566,
+          "cum_time_s": 0.004237566,
+          "calls": 0
+        }
+      ]
+    },
+    "first_step": {
+      "total_time_s": 0.24890985499999999,
+      "top_functions": [
+        {
+          "name": "...isaaclab_tasks.isaaclab_tasks.direct.locomotion.locomotion_env:_get_rewards",
+          "own_time_s": 0.018699963,
+          "cum_time_s": 0.018700354000000002,
+          "calls": 0
+        },
+        {
+          "name": "warp._src.context:launch",
+          "own_time_s": 0.00031430200000000003,
+          "cum_time_s": 0.0010224610000000001,
+          "calls": 0
+        },
+        {
+          "name": "...isaaclab_tasks.isaaclab_tasks.direct.locomotion.locomotion_env:_apply_action",
+          "own_time_s": 0.000144233,
+          "cum_time_s": 0.000868164,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.actuators.actuator_pd:compute",
+          "own_time_s": 0.000104233,
+          "cum_time_s": 0.00015314000000000001,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab_physx.assets.articulation.articulation:_apply_actuator_model",
+          "own_time_s": 8.9035e-05,
+          "cum_time_s": 0.000999703,
+          "calls": 0
+        },
+        {
+          "name": "tensors.impl.api:get_dof_velocities",
+          "own_time_s": 6.3071e-05,
+          "cum_time_s": 6.3071e-05,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method torch.clamp>",
+          "own_time_s": 5.6514e-05,
+          "cum_time_s": 5.6514e-05,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method builtins.isinstance>",
+          "own_time_s": 5.4249e-05,
+          "cum_time_s": 5.4249e-05,
+          "calls": 0
+        },
+        {
+          "name": "...isaaclab_tasks.isaaclab_tasks.direct.locomotion.locomotion_env:_get_observations",
+          "own_time_s": 5.2026000000000006e-05,
+          "cum_time_s": 0.00015277500000000001,
+          "calls": 0
+        },
+        {
+          "name": "warp._src.torch:to_torch",
+          "own_time_s": 5.1348000000000004e-05,
+          "cum_time_s": 0.000245515,
+          "calls": 0
+        },
+        {
+          "name": "<method 'get' of 'dict' objects>",
+          "own_time_s": 4.4947e-05,
+          "cum_time_s": 4.4947e-05,
+          "calls": 0
+        },
+        {
+          "name": "warp._src.types:__init__",
+          "own_time_s": 4.3638000000000005e-05,
+          "cum_time_s": 0.00033951500000000003,
+          "calls": 0
+        },
+        {
+          "name": "tensors.impl.api:get_dof_positions",
+          "own_time_s": 3.8910000000000005e-05,
+          "cum_time_s": 3.8910000000000005e-05,
+          "calls": 0
+        },
+        {
+          "name": "warp._src.types:__del__",
+          "own_time_s": 3.1451e-05,
+          "cum_time_s": 8.077900000000001e-05,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab_physx.assets.articulation.articulation_data:joint_pos",
+          "own_time_s": 2.8525999999999998e-05,
+          "cum_time_s": 0.000101909,
+          "calls": 0
+        },
+        {
+          "name": "tensors.impl.api:get_root_velocities",
+          "own_time_s": 2.7444e-05,
+          "cum_time_s": 2.7444e-05,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.utils.string:__getattribute__",
+          "own_time_s": 2.6064000000000003e-05,
+          "cum_time_s": 2.6064000000000003e-05,
+          "calls": 0
+        },
+        {
+          "name": "tensors.impl.api:get_root_transforms",
+          "own_time_s": 2.5523000000000003e-05,
+          "cum_time_s": 2.5523000000000003e-05,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.actuators.actuator_base:_clip_effort",
+          "own_time_s": 2.4986e-05,
+          "cum_time_s": 4.8907000000000005e-05,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab_physx.physics.physx_manager:wait_for_playing",
+          "own_time_s": 2.4567e-05,
+          "cum_time_s": 4.9717000000000005e-05,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method torch.clip>",
+          "own_time_s": 2.3921e-05,
+          "cum_time_s": 2.3921e-05,
+          "calls": 0
+        },
+        {
+          "name": "<method 'clone' of 'torch._C.TensorBase' objects>",
+          "own_time_s": 2.3820000000000002e-05,
+          "cum_time_s": 2.3820000000000002e-05,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab_physx.assets.articulation.articulation:set_joint_effort_target_index",
+          "own_time_s": 2.0927e-05,
+          "cum_time_s": 0.0006436860000000001,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method torch.cat>",
+          "own_time_s": 1.9828e-05,
+          "cum_time_s": 1.9828e-05,
+          "calls": 0
+        },
+        {
+          "name": "warp._src.types:view",
+          "own_time_s": 1.9231000000000003e-05,
+          "cum_time_s": 5.6262000000000004e-05,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab.app.settings_manager:get",
+          "own_time_s": 1.9092000000000003e-05,
+          "cum_time_s": 1.9092000000000003e-05,
+          "calls": 0
+        },
+        {
+          "name": "isaaclab_physx.assets.articulation.articulation:_resolve_joint_ids",
+          "own_time_s": 1.8998e-05,
+          "cum_time_s": 0.00031919500000000004,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method torch.sin>",
+          "own_time_s": 1.8092000000000002e-05,
+          "cum_time_s": 1.8092000000000002e-05,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method torch.atan2>",
+          "own_time_s": 1.7806000000000002e-05,
+          "cum_time_s": 1.7806000000000002e-05,
+          "calls": 0
+        },
+        {
+          "name": "<built-in method torch.cos>",
+          "own_time_s": 1.6871e-05,
+          "cum_time_s": 1.6871e-05,
+          "calls": 0
+        }
+      ]
+    }
+  },
+  "config": {
+    "top_n": 30,
+    "whitelist": null
+  },
+  "schema_version": "1.0"
+}

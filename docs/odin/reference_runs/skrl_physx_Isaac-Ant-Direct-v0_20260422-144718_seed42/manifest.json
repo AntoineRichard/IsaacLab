@@ -1,0 +1,40 @@
+{
+  "run_id": "skrl_physx_Isaac-Ant-Direct-v0_20260422-144718_seed42",
+  "run_start_time_utc": "2026-04-22T14:47:18.169379Z",
+  "run_end_time_utc": "2026-04-22T14:48:42.155937Z",
+  "run_duration_s": 83.986558,
+  "config": {
+    "framework": "skrl",
+    "backend": "physx",
+    "task": "Isaac-Ant-Direct-v0",
+    "seed": 42,
+    "num_envs": 4096,
+    "max_iterations": 300
+  },
+  "machine": {
+    "hostname": "373da29-lcelt",
+    "git_commit": "b325b4bb0859b2973065bf6f0063b6491415ca0b",
+    "git_branch": "antoiner/feat/odin"
+  },
+  "phases": {
+    "startup": {
+      "file": "startup.json",
+      "status": "completed",
+      "duration_s": 15.711995,
+      "exit_code": 0
+    },
+    "training": {
+      "file": "training.json",
+      "status": "completed",
+      "duration_s": 68.273927,
+      "exit_code": 0
+    }
+  },
+  "artifacts": [
+    "logs",
+    "startup.json",
+    "tb",
+    "training.json"
+  ],
+  "schema_version": "1.0"
+}

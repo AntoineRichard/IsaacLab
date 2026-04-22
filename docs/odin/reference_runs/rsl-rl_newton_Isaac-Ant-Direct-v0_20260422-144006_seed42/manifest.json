@@ -1,0 +1,40 @@
+{
+  "run_id": "rsl-rl_newton_Isaac-Ant-Direct-v0_20260422-144006_seed42",
+  "run_start_time_utc": "2026-04-22T14:40:06.050540Z",
+  "run_end_time_utc": "2026-04-22T14:46:59.200654Z",
+  "run_duration_s": 413.150114,
+  "config": {
+    "framework": "rsl_rl",
+    "backend": "newton",
+    "task": "Isaac-Ant-Direct-v0",
+    "seed": 42,
+    "num_envs": 4096,
+    "max_iterations": 300
+  },
+  "machine": {
+    "hostname": "373da29-lcelt",
+    "git_commit": "b325b4bb0859b2973065bf6f0063b6491415ca0b",
+    "git_branch": "antoiner/feat/odin"
+  },
+  "phases": {
+    "startup": {
+      "file": "startup.json",
+      "status": "completed",
+      "duration_s": 25.321219,
+      "exit_code": 0
+    },
+    "training": {
+      "file": "training.json",
+      "status": "completed",
+      "duration_s": 387.828097,
+      "exit_code": 0
+    }
+  },
+  "artifacts": [
+    "logs",
+    "startup.json",
+    "tb",
+    "training.json"
+  ],
+  "schema_version": "1.0"
+}
