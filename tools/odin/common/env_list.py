@@ -27,11 +27,10 @@ def derive_group(entry_point: str) -> str:
     The ``entry_point`` is of the form ``"package.module.path:ClassName"``.
     For env registrations under ``isaaclab_tasks.direct.*`` we return
     ``"direct/<first_subpackage>"``. For ``isaaclab_tasks.manager_based.*``
-    we return the first three components
-    (``"manager_based/<family>/<subfamily>"``); some tasks register deeper
-    paths (e.g. ``manager_based.locomotion.velocity.config.anymal_c``) —
-    depth cap of two subparts beyond ``manager_based`` keeps the group
-    usefully coarse.
+    we return ``"manager_based/<family>/<subfamily>"`` — i.e. up to two
+    subpackages beyond ``manager_based``. Some tasks register deeper paths
+    (e.g. ``manager_based.locomotion.velocity.config.anymal_c``); the
+    two-subpart cap keeps the group usefully coarse.
 
     Args:
         entry_point: The gym ``entry_point`` string.
