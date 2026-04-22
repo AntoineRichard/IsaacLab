@@ -1,6 +1,27 @@
 Changelog
 ---------
 
+4.6.10 (2026-04-22)
+~~~~~~~~~~~~~~~~~~~~
+
+Fixed
+^^^^^
+
+* Fixed :func:`~scripts.benchmarks.utils.parse_cprofile_stats` discarding
+  the per-function call count. The function now returns 4-tuples
+  ``(label, tottime_ms, cumtime_ms, ncalls)``; the schema-v1
+  ``CProfileFunction.calls`` field in ``startup.json`` is now the real
+  call count instead of the placeholder ``0``.
+* Fixed :class:`~isaaclab.test.benchmark.recorders.MemoryInfoRecorder`
+  and :class:`~isaaclab.test.benchmark.recorders.GPUInfoRecorder` not
+  tracking a running max alongside the Welford mean/std. New
+  SingleMeasurement entries expose the peak
+  (``System Memory {RSS,VMS,USS} peak`` and
+  ``GPU {i} {Memory Used,Utilization} peak``).
+  :func:`scripts.benchmarks.benchmark_rsl_rl._capture_resources` and the
+  SKRL equivalent now populate ``Resources.*.peak`` with the real peak
+  instead of copying ``mean``.
+
 4.6.9 (2026-04-22)
 ~~~~~~~~~~~~~~~~~~
 
