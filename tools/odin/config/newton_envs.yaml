@@ -1,6 +1,6 @@
 schema_version: '1.0'
-generated_at: '2026-04-22T17:11:05Z'
-generator: enumerate_newton_envs.py
+generated_at: '2026-04-22T18:20:27Z'
+generator: play-keep-off-sweep
 groups:
   direct/allegro_hand:
   - task_id: Isaac-Repose-Cube-Allegro-Direct-v0
@@ -9,6 +9,7 @@ groups:
     group: direct/allegro_hand
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 8192
     max_iterations: 10000
@@ -23,6 +24,7 @@ groups:
     group: direct/ant
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
@@ -37,6 +39,7 @@ groups:
     group: direct/cartpole
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 150
@@ -51,6 +54,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -64,6 +68,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -77,6 +82,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -90,6 +96,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -103,6 +110,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -116,6 +124,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -129,6 +138,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -142,6 +152,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -155,6 +166,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -168,6 +180,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -181,6 +194,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -194,6 +208,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -207,6 +222,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -220,6 +236,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -233,6 +250,7 @@ groups:
     group: direct/cartpole_showcase
     has_rsl_rl: false
     has_skrl: true
+    has_rl_games: false
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
@@ -247,6 +265,7 @@ groups:
     group: direct/humanoid
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
@@ -261,6 +280,7 @@ groups:
     group: direct/shadow_hand
     has_rsl_rl: true
     has_skrl: false
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 1225
     max_iterations: 50000
@@ -274,10 +294,11 @@ groups:
     group: direct/shadow_hand
     has_rsl_rl: true
     has_skrl: false
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 64
     max_iterations: 50000
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -287,6 +308,7 @@ groups:
     group: direct/shadow_hand
     has_rsl_rl: true
     has_skrl: false
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 1225
     max_iterations: 50000
@@ -301,6 +323,7 @@ groups:
     group: manager_based/classic/ant
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
@@ -315,6 +338,7 @@ groups:
     group: manager_based/classic/cartpole
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 150
@@ -329,6 +353,7 @@ groups:
     group: manager_based/classic/humanoid
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
@@ -343,10 +368,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 300
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -356,6 +382,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 300
@@ -369,10 +396,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 300
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -382,6 +410,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 300
@@ -395,10 +424,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 300
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -408,6 +438,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 300
@@ -421,10 +452,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 1000
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -434,6 +466,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
@@ -447,10 +480,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 1500
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -460,6 +494,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
@@ -473,10 +508,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 1000
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -486,6 +522,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
@@ -499,10 +536,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 20000
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -512,6 +550,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 20000
@@ -525,10 +564,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 300
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -538,6 +578,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 300
@@ -551,10 +592,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 300
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -564,6 +606,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 300
@@ -577,10 +620,11 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 300
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -590,6 +634,7 @@ groups:
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 300
@@ -604,10 +649,11 @@ groups:
     group: manager_based/manipulation/reach
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 1000
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -617,6 +663,7 @@ groups:
     group: manager_based/manipulation/reach
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
@@ -630,10 +677,11 @@ groups:
     group: manager_based/manipulation/reach
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 50
     max_iterations: 1000
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -643,6 +691,7 @@ groups:
     group: manager_based/manipulation/reach
     has_rsl_rl: true
     has_skrl: true
+    has_rl_games: false
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
