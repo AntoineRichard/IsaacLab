@@ -1,6 +1,17 @@
 Changelog
 ---------
 
+1.5.24 (2026-04-22)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added :func:`~isaaclab_tasks.utils.presets.has_physics_preset` as a public
+  helper for checking whether a raw env config declares a named physics preset
+  (e.g. ``"newton"``). Promoted from the test-only
+  ``env_test_utils._has_physics_preset``; the latter is now a thin alias.
+
 1.5.23 (2026-04-21)
 ~~~~~~~~~~~~~~~~~~~
 

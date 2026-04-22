@@ -55,31 +55,14 @@ def _is_pickplace_stack_env(task_id: str) -> bool:
 
 
 def _has_physics_preset(raw_cfg, preset_name: str) -> bool:
-    """Check if a raw (unresolved) env config has a named physics preset.
+    """Thin alias for :func:`isaaclab_tasks.utils.presets.has_physics_preset`.
 
-    Must be called with the result of :func:`load_cfg_from_registry`, not
-    :func:`parse_env_cfg`, because the latter resolves all PresetCfg wrappers
-    to their default before returning.
-
-    Args:
-        raw_cfg: Raw env config from :func:`load_cfg_from_registry`.
-        preset_name: Name of the preset to check for (e.g., 'newton').
-
-    Returns:
-        True if ``raw_cfg.sim.physics`` is a PresetCfg with the given preset field.
+    Kept for backward compatibility with existing tests; new callers should
+    import the public helper directly.
     """
-    if isinstance(raw_cfg, dict):
-        return False
-    # If the top-level cfg is itself a PresetCfg wrapper, unwrap to its default.
-    env_cfg = raw_cfg
-    if (
-        hasattr(env_cfg, "__dataclass_fields__")
-        and hasattr(env_cfg, "default")
-        and not hasattr(type(env_cfg), "class_type")
-    ):
-        env_cfg = env_cfg.default
-    physics = getattr(getattr(env_cfg, "sim", None), "physics", None)
-    return physics is not None and hasattr(physics, preset_name)
+    from isaaclab_tasks.utils.presets import has_physics_preset
+
+    return has_physics_preset(raw_cfg, preset_name)
 
 
 def setup_environment(
