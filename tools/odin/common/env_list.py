@@ -289,6 +289,14 @@ def merge(existing: EnvList, discovered: list[EnvEntry]) -> EnvList:
         for row in rows:
             existing_by_id[row.task_id] = row
 
+    # Reject duplicate task_ids in discovered — ambiguous contract and a
+    # programmer error (gym.registry cannot produce duplicates by design).
+    seen_discovered: set[str] = set()
+    for new in discovered:
+        if new.task_id in seen_discovered:
+            raise ValueError(f"Duplicate task_id {new.task_id!r} in discovered list")
+        seen_discovered.add(new.task_id)
+
     merged = EnvList()
     discovered_ids: set[str] = set()
 

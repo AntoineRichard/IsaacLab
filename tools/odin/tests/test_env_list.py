@@ -226,6 +226,16 @@ def test_merge_handles_task_moving_between_groups():
     merged = merge(existing, discovered)
 
     # User's keep=False travels with the task despite the group change.
-    assert "direct/ant" not in merged.groups or not merged.groups["direct/ant"]
+    assert "direct/ant" not in merged.groups
     entry = merged.groups["direct/ant_v2"][0]
     assert entry.keep is False
+
+
+def test_merge_rejects_duplicate_task_ids_in_discovered():
+    existing = EnvList()
+    discovered = [
+        _make_entry("Isaac-Ant-Direct-v0"),
+        _make_entry("Isaac-Ant-Direct-v0", num_envs=2048),
+    ]
+    with pytest.raises(ValueError, match="Duplicate task_id"):
+        merge(existing, discovered)
