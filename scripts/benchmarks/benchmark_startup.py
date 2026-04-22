@@ -14,10 +14,16 @@ standard benchmark backend.
 import argparse
 import cProfile
 import os
+import socket
 import sys
 import time
+from datetime import datetime, timezone
 
 from isaaclab.app import AppLauncher
+
+# Wall-clock start of the entire script, captured as early as possible so the
+# Odin startup bundle can report a total duration that covers all phases.
+_SCRIPT_START_DT = datetime.now(timezone.utc)
 
 # -- CLI arguments -----------------------------------------------------------
 
@@ -53,6 +59,24 @@ parser.add_argument(
     type=str,
     default=None,
     help="Path to YAML file with per-phase function whitelist patterns. Overrides --top_n for listed phases.",
+)
+parser.add_argument(
+    "--schema_v1_output",
+    type=str,
+    default=None,
+    help="If set, write a schema-v1 startup.json to this path (Odin bundle format).",
+)
+parser.add_argument(
+    "--backend",
+    choices=["physx", "newton"],
+    default=None,
+    help=("Physics backend tag recorded in the bundle. Odin wrappers pass this; if omitted, defaults to 'physx'."),
+)
+parser.add_argument(
+    "--run_id",
+    type=str,
+    default=None,
+    help="Run identity string to embed in the bundle. Odin wrappers pass this.",
 )
 
 # append AppLauncher cli args (provides --device, --headless, etc.)
@@ -183,6 +207,142 @@ benchmark = BaseIsaacLabBenchmark(
         ]
     },
 )
+
+
+# -- Schema v1 helpers ------------------------------------------------------
+
+
+def _capture_versions(bm: BaseIsaacLabBenchmark):
+    """Build a schema-v1 ``Versions`` dataclass from the VersionInfoRecorder."""
+    from isaaclab.test.benchmark.standard_schema import Versions
+
+    meta = {m.name: m.data for m in bm._manual_recorders["VersionInfo"].get_data().metadata}
+    dev = meta.get("dev", {}) or {}
+    return Versions(
+        isaaclab=meta.get("isaaclab_version", "unknown"),
+        isaacsim=meta.get("isaacsim_version"),
+        kit=meta.get("kit_version"),
+        newton=meta.get("newton_version"),
+        warp=meta.get("warp_version"),
+        mjwarp=meta.get("mujoco_warp_version"),
+        torch=meta.get("torch_version", "unknown"),
+        rsl_rl=meta.get("rsl_rl_version"),
+        skrl=meta.get("skrl_version"),
+        git_commit=dev.get("commit_hash"),
+        git_branch=dev.get("branch"),
+        git_dirty=bool(dev.get("dirty", False)),
+    )
+
+
+def _capture_hardware(bm: BaseIsaacLabBenchmark):
+    """Build a schema-v1 ``Hardware`` dataclass from GPU/CPU/Memory recorders."""
+    from isaaclab.test.benchmark.standard_schema import GpuDeviceInfo, Hardware
+
+    gpu_meta = {m.name: m.data for m in bm._manual_recorders["GPUInfo"].get_data().metadata}
+    cpu_meta = {m.name: m.data for m in bm._manual_recorders["CPUInfo"].get_data().metadata}
+    mem_meta = {m.name: m.data for m in bm._manual_recorders["MemoryInfo"].get_data().metadata}
+    devices_raw = gpu_meta.get("gpu_devices", {}) or {}
+    devices = [
+        GpuDeviceInfo(
+            name=str(d.get("name", "unknown")),
+            mem_gb=float(d.get("total_memory_gb", 0.0) or 0.0),
+            compute_cap=str(d.get("compute_capability", "unknown")),
+        )
+        for d in devices_raw.values()
+    ]
+    return Hardware(
+        hostname=socket.gethostname(),
+        gpu_devices=devices,
+        cpu_name=str(cpu_meta.get("cpu_name", "unknown")),
+        cpu_count=int(cpu_meta.get("physical_cores", 0) or 0),
+        ram_gb=float(mem_meta.get("total_ram_gb", 0.0) or 0.0),
+    )
+
+
+def _synth_run_id(framework: str, backend: str, task: str, seed: int) -> str:
+    """Fallback run_id when --run_id is not provided (standalone use)."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    fw = framework.replace("_", "-")
+    return f"{fw}_{backend}_{task}_{stamp}_seed{seed}"
+
+
+def _build_startup_bundle(
+    phases_data: dict,
+    run_start_dt: datetime,
+    run_end_dt: datetime,
+    status: str,
+    versions,
+    hardware,
+):
+    """Build a schema-v1 StartupBundle from the collected phase data.
+
+    Args:
+        phases_data: The same ``phases`` dict ``main()`` builds for legacy logging.
+        run_start_dt: UTC timestamp when the whole script started.
+        run_end_dt: UTC timestamp when the whole script finished.
+        status: Completion status of the run (``"completed"`` or ``"crashed"``).
+        versions: Pre-captured :class:`Versions` (must be captured before
+            ``benchmark._finalize_impl()`` which clears the recorders).
+        hardware: Pre-captured :class:`Hardware`.
+
+    Returns:
+        A :class:`StartupBundle` ready to be passed to :func:`write_bundle_file`.
+    """
+    from isaaclab.test.benchmark.standard_schema import (
+        CProfileFunction,
+        StartupBundle,
+        StartupConfig,
+        StartupPhase,
+        StartupRunIdentity,
+    )
+
+    # Startup profiling is framework-agnostic; Odin wrappers pass the real
+    # framework via --run_id. We record "rsl_rl" as a schema placeholder when
+    # invoked standalone (the field is required by the schema).
+    framework = "rsl_rl"
+    backend = args_cli.backend or "physx"
+
+    phases_out: dict[str, StartupPhase] = {}
+    for name, data in phases_data.items():
+        top_funcs: list[CProfileFunction] = []
+        for label, tottime_ms, cumtime_ms in parse_cprofile_stats(
+            data["profile"], _ISAACLAB_PREFIXES, top_n=args_cli.top_n, whitelist=_WHITELIST.get(name)
+        ):
+            top_funcs.append(
+                CProfileFunction(
+                    name=label,
+                    own_time_s=tottime_ms / 1000.0,
+                    cum_time_s=cumtime_ms / 1000.0,
+                    # parse_cprofile_stats does not currently return call counts;
+                    # tracked as a known v1 limitation (docs/odin/architecture.md §9).
+                    calls=0,
+                )
+            )
+        phases_out[name] = StartupPhase(
+            total_time_s=data["wall_clock_ms"] / 1000.0,
+            top_functions=top_funcs,
+        )
+
+    seed = args_cli.seed if args_cli.seed is not None else 0
+    run_id = args_cli.run_id or _synth_run_id(framework, backend, args_cli.task, seed)
+
+    return StartupBundle(
+        run=StartupRunIdentity(
+            run_id=run_id,
+            framework=framework,
+            backend=backend,
+            task=args_cli.task,
+            seed=seed,
+            start_time_utc=run_start_dt.isoformat().replace("+00:00", "Z"),
+            end_time_utc=run_end_dt.isoformat().replace("+00:00", "Z"),
+            duration_s=(run_end_dt - run_start_dt).total_seconds(),
+            status=status,
+        ),
+        versions=versions,
+        hardware=hardware,
+        phases=phases_out,
+        config=StartupConfig(top_n=args_cli.top_n, whitelist=args_cli.whitelist_config),
+    )
 
 
 # -- Main profiling logic ---------------------------------------------------
@@ -326,9 +486,30 @@ def main(
                     measurement=SingleMeasurement(name=f"{label} (cumtime)", value=round(cumtime_ms, 2), unit="ms"),
                 )
 
-        # Finalize benchmark output
+        # Capture versions/hardware BEFORE finalize, which clears the recorders.
+        versions_v1 = None
+        hardware_v1 = None
+        if args_cli.schema_v1_output is not None:
+            benchmark.update_manual_recorders()
+            versions_v1 = _capture_versions(benchmark)
+            hardware_v1 = _capture_hardware(benchmark)
+
+        # Finalize benchmark output (nulls out _manual_recorders).
         benchmark.update_manual_recorders()
         benchmark._finalize_impl()
+
+        if args_cli.schema_v1_output is not None:
+            from isaaclab.test.benchmark.standard_schema import write_bundle_file
+
+            bundle = _build_startup_bundle(
+                phases,
+                _SCRIPT_START_DT,
+                datetime.now(timezone.utc),
+                status="completed",
+                versions=versions_v1,
+                hardware=hardware_v1,
+            )
+            write_bundle_file(bundle, args_cli.schema_v1_output)
     finally:
         if env is not None:
             env.close()
