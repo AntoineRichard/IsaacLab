@@ -58,7 +58,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -72,7 +72,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -86,7 +86,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -100,7 +100,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -114,7 +114,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -128,7 +128,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -142,7 +142,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -156,7 +156,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -170,7 +170,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -184,7 +184,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -198,7 +198,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -212,7 +212,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -226,7 +226,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -240,7 +240,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
@@ -254,7 +254,7 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     notes: ''
