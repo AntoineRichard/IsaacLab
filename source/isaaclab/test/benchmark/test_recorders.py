@@ -287,6 +287,69 @@ class TestGPUInfoRecorder:
         assert "compute_capability" in device_0
         assert "multi_processor_count" in device_0
 
+    def test_mem_peak_is_zero_before_any_record(self, monkeypatch):
+        """Peak memory row for device 0 exists and is 0.0 before any update."""
+        import torch
+
+        from isaaclab.test.benchmark.recorders.record_gpu_info import GPUInfoRecorder
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+        class _FakeProps:
+            name = "FakeGPU"
+            total_memory = 80 * 1024**3
+            major = 9
+            minor = 0
+            multi_processor_count = 132
+
+        monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i: _FakeProps())
+
+        rec = GPUInfoRecorder()
+        data = rec.get_data()
+        peaks = [m for m in data.measurements if "peak" in m.name.lower() and "GPU" in m.name]
+        # At minimum there should be a GPU memory peak row for device 0.
+        mem_peak_rows = [m for m in peaks if "Memory" in m.name]
+        assert mem_peak_rows, f"expected a GPU memory peak row, got names: {[m.name for m in data.measurements]}"
+        assert mem_peak_rows[0].value == 0.0
+
+    def test_mem_peak_tracks_running_max(self, monkeypatch):
+        """Feed the recorder a scripted memory sequence; peak must match the max."""
+        import torch
+
+        from isaaclab.test.benchmark.recorders.record_gpu_info import GPUInfoRecorder
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+        class _FakeProps:
+            name = "FakeGPU"
+            total_memory = 80 * 1024**3
+            major = 9
+            minor = 0
+            multi_processor_count = 132
+
+        monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i: _FakeProps())
+
+        rec = GPUInfoRecorder()
+
+        # Bypass nvml / nvidia-smi entirely and drive memory_allocated.
+        scripted_mem = iter([10 * 1024**3, 50 * 1024**3, 30 * 1024**3])  # 10 GB, 50 GB, 30 GB
+        monkeypatch.setattr(torch.cuda, "memory_allocated", lambda i: next(scripted_mem))
+        rec._nvml_available = False
+        rec._nvidia_smi_available = False
+
+        for _ in range(3):
+            rec.update()
+
+        data = rec.get_data()
+        mem_peak_rows = [m for m in data.measurements if "Memory" in m.name and "peak" in m.name.lower()]
+        assert mem_peak_rows, "expected a GPU memory peak row"
+        # 50 GB is the max.
+        assert mem_peak_rows[0].value == 50.0, f"expected 50.0 GB peak, got {mem_peak_rows[0].value}"
+
 
 # ==============================================================================
 # MemoryInfoRecorder Tests
