@@ -140,7 +140,7 @@ Status legend: ✅ complete · 🟡 in progress · ⚪ pending
 | Task | Title | Spec | Status |
 |---|---|---|---|
 | T0 | Naming | — (recorded in `eval_plan.md`) | ✅ |
-| T1 | Evaluation runner (Layer 1 + 2) | `docs/superpowers/specs/2026-04-22-odin-t1-evaluation-runner-design.md` | 🟡 (design approved, impl pending) |
+| T1 | Evaluation runner (Layer 1 + 2) | `docs/superpowers/specs/2026-04-22-odin-t1-evaluation-runner-design.md` | ✅ |
 | T2.1 | Environment lists + Newton gap doc | — | ⚪ |
 | T2.2 | Dense startup profiling survey | — | ⚪ |
 | T3 | Distributed dispatcher (Layer 3) + Asgard | — | ⚪ |
@@ -186,3 +186,4 @@ explicitly expand scope and note it here.
 | Date | Change | By |
 |---|---|---|
 | 2026-04-22 | Initial version — created at end of T1 design. | Odin T1 |
+| 2026-04-22 | T1 implementation complete: v1.0 schema, three benchmark scripts upgraded/added, Hugin + Munin runners. `startup.json` captures five phases (`app_launch`, `python_imports`, `task_config`, `env_creation`, `first_step`) — the T1 spec originally listed three; the implementation reused `benchmark_startup.py`'s richer existing split. Known v1 limitations: `CProfileFunction.calls` is always `0` (upstream `parse_cprofile_stats` does not return call counts) and `Resources.*.peak` falls back to `mean` because the underlying recorders track Welford online stats but not peak. | Odin T1 |
