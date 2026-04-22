@@ -208,16 +208,18 @@ def _capture_resources(bm: BaseIsaacLabBenchmark):
     gpu_util_std = _find_measurement(gpu_m, "GPU Utilization std") or 0.0
     gpu_mem_mean = _find_measurement(gpu_m, "GPU Memory Used") or 0.0
     gpu_mem_std = _find_measurement(gpu_m, "GPU Memory Used std") or 0.0
+    gpu_mem_peak = _find_measurement(gpu_m, "GPU Memory Used peak") or 0.0
     cpu_util_mean = _find_measurement(cpu_m, "CPU Utilization") or 0.0
     cpu_util_std = _find_measurement(cpu_m, "CPU Utilization std") or 0.0
     ram_mean = _find_measurement(mem_m, "System Memory RSS") or 0.0
     ram_std = _find_measurement(mem_m, "System Memory RSS std") or 0.0
+    ram_peak = _find_measurement(mem_m, "System Memory RSS peak") or 0.0
 
     return Resources(
         gpu_util_pct=MeanStd(mean=gpu_util_mean, std=gpu_util_std),
-        gpu_mem_gb=MeanStdPeak(mean=gpu_mem_mean, std=gpu_mem_std, peak=gpu_mem_mean),
+        gpu_mem_gb=MeanStdPeak(mean=gpu_mem_mean, std=gpu_mem_std, peak=gpu_mem_peak),
         cpu_util_pct=MeanStd(mean=cpu_util_mean, std=cpu_util_std),
-        ram_gb=MeanStdPeak(mean=ram_mean, std=ram_std, peak=ram_mean),
+        ram_gb=MeanStdPeak(mean=ram_mean, std=ram_std, peak=ram_peak),
     )
 
 
