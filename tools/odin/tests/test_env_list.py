@@ -27,6 +27,7 @@ def _make_entry(task_id: str, group: str = "direct/ant", **overrides) -> EnvEntr
         group=group,
         has_rsl_rl=True,
         has_skrl=True,
+        has_rl_games=False,
         framework="rsl_rl",
         num_envs=4096,
         max_iterations=300,
@@ -402,6 +403,41 @@ def test_build_entry_defaults_loader_failure_forces_keep_false():
     assert e.max_iterations is None
     assert e.keep is False
     assert "training defaults" in e.notes.lower()
+
+
+def test_build_entry_rl_games_only_note_and_flag():
+    # A task that registers ONLY rl_games_cfg_entry_point gets keep=False
+    # (Odin doesn't dispatch rl_games) but the note spells out the
+    # modernization path, and has_rl_games=True is surfaced in the row.
+    spec = _FakeTaskSpec(
+        task_id="Isaac-AutoMate-Assembly-Direct-v0",
+        entry_point="isaaclab_tasks.direct.automate.assembly_env:AssemblyEnv",
+        kwargs={
+            "env_cfg_entry_point": "isaaclab_tasks.direct.automate.assembly_env_cfg:AssemblyEnvCfg",
+            "rl_games_cfg_entry_point": "x:rl_games_ppo_cfg.yaml",
+        },
+    )
+    e = build_entry_from_task_spec(spec, defaults_loader=_noop_defaults_loader)
+    assert e.framework is None
+    assert e.keep is False
+    assert e.has_rl_games is True
+    assert e.has_rsl_rl is False
+    assert e.has_skrl is False
+    assert "rl_games-only" in e.notes
+    assert "modernize" in e.notes.lower() or "migrate" in e.notes.lower()
+
+
+def test_build_entry_truly_frameworkless_note():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Manual-v0",
+        entry_point="isaaclab_tasks.direct.manual:Env",
+        kwargs={"env_cfg_entry_point": "x:Y"},
+    )
+    e = build_entry_from_task_spec(spec, defaults_loader=_noop_defaults_loader)
+    assert e.framework is None
+    assert e.keep is False
+    assert e.has_rl_games is False
+    assert "No rsl_rl or skrl" in e.notes
 
 
 def test_build_entry_manager_based_derives_group_from_env_cfg_entry_point():

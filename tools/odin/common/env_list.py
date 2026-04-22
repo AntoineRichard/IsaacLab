@@ -120,6 +120,7 @@ _ENTRY_FIELD_ORDER = [
     "group",
     "has_rsl_rl",
     "has_skrl",
+    "has_rl_games",
     "framework",
     "num_envs",
     "max_iterations",
@@ -149,6 +150,10 @@ class EnvEntry:
     num_envs: int | None
     max_iterations: int | None
     keep: bool
+    # Diagnostic: task declares ``rl_games_cfg_entry_point``. Odin does not
+    # dispatch rl_games, but surfacing this lets the gap doc distinguish
+    # "rl_games-only, needs modernization" from "truly frameworkless".
+    has_rl_games: bool = False
     status: str = "current"  # "current" | "new" | "stale"
     suspected_gap: str | None = None
     notes: str = ""
@@ -183,6 +188,7 @@ def _entry_from_dict(d: dict[str, Any]) -> EnvEntry:
     known.setdefault("group", "unknown")
     known.setdefault("has_rsl_rl", False)
     known.setdefault("has_skrl", False)
+    known.setdefault("has_rl_games", False)
     known.setdefault("framework", None)
     known.setdefault("num_envs", None)
     known.setdefault("max_iterations", None)
@@ -316,6 +322,7 @@ def merge(existing: EnvList, discovered: list[EnvEntry]) -> EnvList:
                 group=new.group,
                 has_rsl_rl=new.has_rsl_rl,
                 has_skrl=new.has_skrl,
+                has_rl_games=new.has_rl_games,
                 framework=new.framework,
                 num_envs=new.num_envs,
                 max_iterations=new.max_iterations,
@@ -333,6 +340,7 @@ def merge(existing: EnvList, discovered: list[EnvEntry]) -> EnvList:
                 group=new.group,
                 has_rsl_rl=new.has_rsl_rl,
                 has_skrl=new.has_skrl,
+                has_rl_games=new.has_rl_games,
                 # Preserved from user edits:
                 framework=old.framework,
                 num_envs=old.num_envs,
@@ -470,6 +478,7 @@ def build_entry_from_task_spec(
     kwargs = task_spec.kwargs or {}
     has_rsl_rl = "rsl_rl_cfg_entry_point" in kwargs
     has_skrl = "skrl_cfg_entry_point" in kwargs
+    has_rl_games = "rl_games_cfg_entry_point" in kwargs
     framework = suggest_framework(has_rsl_rl, has_skrl)
     # Manager-based tasks all share the generic ``isaaclab.envs:ManagerBasedRLEnv``
     # entry_point — the task-specific path lives in ``env_cfg_entry_point``. Try
@@ -484,7 +493,13 @@ def build_entry_from_task_spec(
     notes = ""
 
     if framework is None:
-        notes = "No rsl_rl or skrl entry point registered."
+        if has_rl_games:
+            notes = (
+                "rl_games-only registration — not dispatched by Odin. "
+                "Migrate to rsl_rl or skrl to enable benchmarking."
+            )
+        else:
+            notes = "No rsl_rl or skrl entry point registered."
     else:
         try:
             num_envs, max_iterations = defaults_loader(task_spec.id, framework)
@@ -510,6 +525,7 @@ def build_entry_from_task_spec(
         group=group,
         has_rsl_rl=has_rsl_rl,
         has_skrl=has_skrl,
+        has_rl_games=has_rl_games,
         framework=framework,
         num_envs=num_envs,
         max_iterations=max_iterations,
