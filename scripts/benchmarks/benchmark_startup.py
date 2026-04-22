@@ -14,7 +14,6 @@ standard benchmark backend.
 import argparse
 import cProfile
 import os
-import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -92,6 +91,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."
 from isaaclab.test.benchmark import BaseIsaacLabBenchmark, SingleMeasurement
 from isaaclab.utils.timer import Timer, TimerError
 
+from scripts.benchmarks._schema_helpers import capture_hardware, capture_versions, synth_run_id
 from scripts.benchmarks.utils import (
     get_backend_type,
     get_preset_string,
@@ -212,60 +212,6 @@ benchmark = BaseIsaacLabBenchmark(
 # -- Schema v1 helpers ------------------------------------------------------
 
 
-def _capture_versions(bm: BaseIsaacLabBenchmark):
-    """Build a schema-v1 ``Versions`` dataclass from the VersionInfoRecorder."""
-    from isaaclab.test.benchmark.standard_schema import Versions
-
-    meta = {m.name: m.data for m in bm._manual_recorders["VersionInfo"].get_data().metadata}
-    dev = meta.get("dev", {}) or {}
-    return Versions(
-        isaaclab=meta.get("isaaclab_version", "unknown"),
-        isaacsim=meta.get("isaacsim_version"),
-        kit=meta.get("kit_version"),
-        newton=meta.get("newton_version"),
-        warp=meta.get("warp_version"),
-        mjwarp=meta.get("mujoco_warp_version"),
-        torch=meta.get("torch_version", "unknown"),
-        rsl_rl=meta.get("rsl_rl_version"),
-        skrl=meta.get("skrl_version"),
-        git_commit=dev.get("commit_hash"),
-        git_branch=dev.get("branch"),
-        git_dirty=bool(dev.get("dirty", False)),
-    )
-
-
-def _capture_hardware(bm: BaseIsaacLabBenchmark):
-    """Build a schema-v1 ``Hardware`` dataclass from GPU/CPU/Memory recorders."""
-    from isaaclab.test.benchmark.standard_schema import GpuDeviceInfo, Hardware
-
-    gpu_meta = {m.name: m.data for m in bm._manual_recorders["GPUInfo"].get_data().metadata}
-    cpu_meta = {m.name: m.data for m in bm._manual_recorders["CPUInfo"].get_data().metadata}
-    mem_meta = {m.name: m.data for m in bm._manual_recorders["MemoryInfo"].get_data().metadata}
-    devices_raw = gpu_meta.get("gpu_devices", {}) or {}
-    devices = [
-        GpuDeviceInfo(
-            name=str(d.get("name", "unknown")),
-            mem_gb=float(d.get("total_memory_gb", 0.0) or 0.0),
-            compute_cap=str(d.get("compute_capability", "unknown")),
-        )
-        for d in devices_raw.values()
-    ]
-    return Hardware(
-        hostname=socket.gethostname(),
-        gpu_devices=devices,
-        cpu_name=str(cpu_meta.get("cpu_name", "unknown")),
-        cpu_count=int(cpu_meta.get("physical_cores", 0) or 0),
-        ram_gb=float(mem_meta.get("total_ram_gb", 0.0) or 0.0),
-    )
-
-
-def _synth_run_id(framework: str, backend: str, task: str, seed: int) -> str:
-    """Fallback run_id when --run_id is not provided (standalone use)."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    fw = framework.replace("_", "-")
-    return f"{fw}_{backend}_{task}_{stamp}_seed{seed}"
-
-
 def _build_startup_bundle(
     phases_data: dict,
     run_start_dt: datetime,
@@ -324,7 +270,7 @@ def _build_startup_bundle(
         )
 
     seed = args_cli.seed if args_cli.seed is not None else 0
-    run_id = args_cli.run_id or _synth_run_id(framework, backend, args_cli.task, seed)
+    run_id = args_cli.run_id or synth_run_id(framework, backend, args_cli.task, seed)
 
     return StartupBundle(
         run=StartupRunIdentity(
@@ -491,8 +437,8 @@ def main(
         hardware_v1 = None
         if args_cli.schema_v1_output is not None:
             benchmark.update_manual_recorders()
-            versions_v1 = _capture_versions(benchmark)
-            hardware_v1 = _capture_hardware(benchmark)
+            versions_v1 = capture_versions(benchmark)
+            hardware_v1 = capture_hardware(benchmark)
 
         # Finalize benchmark output (nulls out _manual_recorders).
         benchmark.update_manual_recorders()

@@ -55,6 +55,36 @@ parser.add_argument(
 parser.add_argument(
     "--convergence_config", type=str, default="full", help="Config mode for convergence thresholds (default: full)."
 )
+parser.add_argument(
+    "--backend",
+    choices=["physx", "newton"],
+    default=None,
+    help="Physics backend tag recorded in the Odin bundle.",
+)
+parser.add_argument(
+    "--run_id",
+    type=str,
+    default=None,
+    help="Run identity string. Odin wrappers pass this; if omitted, a synthetic run_id is generated.",
+)
+parser.add_argument(
+    "--schema_v1_output",
+    type=str,
+    default=None,
+    help="If set, write a schema-v1 training.json to this path (Odin bundle format).",
+)
+parser.add_argument(
+    "--ema_alpha",
+    type=float,
+    default=0.05,
+    help="EMA smoothing factor for reward/ep_length (default 0.05, ~20-sample window).",
+)
+parser.add_argument(
+    "--no_series",
+    action="store_true",
+    default=False,
+    help="Omit per-iteration series from training.json (leaves final_raw + final_ema only).",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -73,7 +103,9 @@ sys.argv = [sys.argv[0]] + hydra_args
 imports_time_begin = time.perf_counter_ns()
 
 import importlib.metadata as metadata
-from datetime import datetime
+from datetime import datetime, timezone
+
+_SCRIPT_START_DT = datetime.now(timezone.utc)
 
 import gymnasium as gym
 import numpy as np
@@ -94,6 +126,7 @@ imports_time_end = time.perf_counter_ns()
 from isaaclab.test.benchmark import BaseIsaacLabBenchmark, BenchmarkMonitor
 from isaaclab.utils.timer import Timer
 
+from scripts.benchmarks._schema_helpers import capture_hardware, capture_versions, synth_run_id
 from scripts.benchmarks.utils import (
     get_backend_type,
     get_preset_string,
@@ -134,6 +167,160 @@ benchmark = BaseIsaacLabBenchmark(
         ]
     },
 )
+
+
+def _compute_ema(series: list[float], alpha: float) -> float:
+    """Exponentially weighted moving average over a per-iteration series.
+
+    Returns the final EMA value: ``x_0`` initialised to ``series[0]`` and updated
+    as ``x_t = alpha * y_t + (1 - alpha) * x_{t-1}``. Empty series returns 0.0.
+
+    Args:
+        series: Per-iteration scalar values (reward or episode length).
+        alpha: Smoothing factor in [0, 1]. Smaller values give more smoothing.
+
+    Returns:
+        Final EMA value after walking the full series.
+    """
+    if not series:
+        return 0.0
+    ema = float(series[0])
+    for y in series[1:]:
+        ema = alpha * float(y) + (1.0 - alpha) * ema
+    return ema
+
+
+def _find_measurement(measurements, name: str) -> float | None:
+    """Return the value of the first SingleMeasurement with matching ``name``."""
+    for meas in measurements:
+        if meas.name == name:
+            return float(meas.value)
+    return None
+
+
+def _capture_resources(bm: BaseIsaacLabBenchmark):
+    """Build a schema-v1 :class:`Resources` dataclass from GPU/CPU/Memory recorders.
+
+    The underlying recorders track Welford online mean/std but not peak, so
+    ``peak`` fields fall back to the mean when no peak is tracked. This is a
+    known v1 limitation (see docs/odin/architecture.md §9).
+    """
+    from isaaclab.test.benchmark.standard_schema import MeanStd, MeanStdPeak, Resources
+
+    gpu_m = bm._manual_recorders["GPUInfo"].get_data().measurements
+    cpu_m = bm._manual_recorders["CPUInfo"].get_data().measurements
+    mem_m = bm._manual_recorders["MemoryInfo"].get_data().measurements
+
+    gpu_util_mean = _find_measurement(gpu_m, "GPU Utilization") or 0.0
+    gpu_util_std = _find_measurement(gpu_m, "GPU Utilization std") or 0.0
+    gpu_mem_mean = _find_measurement(gpu_m, "GPU Memory Used") or 0.0
+    gpu_mem_std = _find_measurement(gpu_m, "GPU Memory Used std") or 0.0
+    cpu_util_mean = _find_measurement(cpu_m, "CPU Utilization") or 0.0
+    cpu_util_std = _find_measurement(cpu_m, "CPU Utilization std") or 0.0
+    ram_mean = _find_measurement(mem_m, "System Memory RSS") or 0.0
+    ram_std = _find_measurement(mem_m, "System Memory RSS std") or 0.0
+
+    return Resources(
+        gpu_util_pct=MeanStd(mean=gpu_util_mean, std=gpu_util_std),
+        gpu_mem_gb=MeanStdPeak(mean=gpu_mem_mean, std=gpu_mem_std, peak=gpu_mem_mean),
+        cpu_util_pct=MeanStd(mean=cpu_util_mean, std=cpu_util_std),
+        ram_gb=MeanStdPeak(mean=ram_mean, std=ram_std, peak=ram_mean),
+    )
+
+
+def _build_training_bundle(
+    log_data,
+    agent_cfg,
+    env,
+    args,
+    framework: str,
+    versions,
+    hardware,
+    resources,
+    run_start_dt: datetime,
+    run_end_dt: datetime,
+    status: str,
+    app_launch_s: float,
+    env_creation_s: float,
+    first_step_s: float,
+):
+    """Build a schema-v1 :class:`TrainingBundle` from tensorboard-parsed training data."""
+    import numpy as np
+
+    from isaaclab.test.benchmark.standard_schema import (
+        Learning,
+        LearningCurve,
+        MeanStd,
+        RunIdentity,
+        Runtime,
+        StartupPhaseTimes,
+        TrainingBundle,
+    )
+
+    reward_series = [float(x) for x in log_data.get("Train/mean_reward", [])]
+    ep_len_series = [float(x) for x in log_data.get("Train/mean_episode_length", [])]
+
+    num_envs = env.unwrapped.num_envs
+    steps_per_iter = agent_cfg.num_steps_per_env
+    total_fps = list(log_data.get("Perf/total_fps", []) or [])
+    iter_times = [num_envs * steps_per_iter / fps if fps > 0 else 0.0 for fps in total_fps]
+
+    def _ms(xs):
+        return MeanStd(
+            mean=float(np.mean(xs)) if xs else 0.0,
+            std=float(np.std(xs)) if xs else 0.0,
+        )
+
+    env_steps_per_s_series = [num_envs * steps_per_iter / t if t > 0 else 0.0 for t in iter_times]
+    iters_per_s_series = [1.0 / t if t > 0 else 0.0 for t in iter_times]
+
+    backend = args.backend or "physx"
+    run_id = args.run_id or synth_run_id(framework, backend, args.task, args.seed)
+
+    return TrainingBundle(
+        run=RunIdentity(
+            run_id=run_id,
+            framework=framework,
+            backend=backend,
+            task=args.task,
+            seed=args.seed,
+            num_envs=num_envs,
+            max_iterations=agent_cfg.max_iterations,
+            start_time_utc=run_start_dt.isoformat().replace("+00:00", "Z"),
+            end_time_utc=run_end_dt.isoformat().replace("+00:00", "Z"),
+            duration_s=(run_end_dt - run_start_dt).total_seconds(),
+            status=status,
+        ),
+        versions=versions,
+        hardware=hardware,
+        runtime=Runtime(
+            startup_phase_times_s=StartupPhaseTimes(
+                app_launch=app_launch_s,
+                env_creation=env_creation_s,
+                first_step=first_step_s,
+            ),
+            iterations_completed=len(iter_times),
+            total_wall_time_s=sum(iter_times),
+            steps_per_iteration=steps_per_iter,
+            iteration_time_s=_ms(iter_times),
+            env_steps_per_s=_ms(env_steps_per_s_series),
+            iterations_per_s=_ms(iters_per_s_series),
+        ),
+        resources=resources,
+        learning=Learning(
+            ema_alpha=args.ema_alpha,
+            reward=LearningCurve(
+                final_raw=reward_series[-1] if reward_series else 0.0,
+                final_ema=_compute_ema(reward_series, args.ema_alpha),
+                series_per_iter=None if args.no_series else reward_series,
+            ),
+            ep_length=LearningCurve(
+                final_raw=ep_len_series[-1] if ep_len_series else 0.0,
+                final_ema=_compute_ema(ep_len_series, args.ema_alpha),
+                series_per_iter=None if args.no_series else ep_len_series,
+            ),
+        ),
+    )
 
 
 def main(
@@ -279,7 +466,47 @@ def main(
             convergence_config=args_cli.convergence_config,
         )
 
+        # Capture v1 state before _finalize_impl nulls out _manual_recorders.
+        versions_v1 = None
+        hardware_v1 = None
+        resources_v1 = None
+        if args_cli.schema_v1_output is not None:
+            versions_v1 = capture_versions(benchmark)
+            hardware_v1 = capture_hardware(benchmark)
+            resources_v1 = _capture_resources(benchmark)
+
         benchmark._finalize_impl()
+
+        if args_cli.schema_v1_output is not None:
+            from isaaclab.test.benchmark.standard_schema import write_bundle_file
+
+            # Proxy for first-step time: the first iteration's collection+learning time.
+            # Pending a dedicated first-step timer in runner.learn().
+            first_step_s = 0.0
+            try:
+                first_step_s = float(rl_training_times["Collection Time"][0]) + float(
+                    rl_training_times["Learning Time"][0]
+                )
+            except (IndexError, KeyError, ValueError):
+                pass
+
+            bundle = _build_training_bundle(
+                log_data=log_data,
+                agent_cfg=agent_cfg,
+                env=env,
+                args=args_cli,
+                framework="rsl_rl",
+                versions=versions_v1,
+                hardware=hardware_v1,
+                resources=resources_v1,
+                run_start_dt=_SCRIPT_START_DT,
+                run_end_dt=datetime.now(timezone.utc),
+                status="completed",
+                app_launch_s=(app_start_time_end - app_start_time_begin) / 1e9,
+                env_creation_s=(task_startup_time_end - task_startup_time_begin) / 1e9,
+                first_step_s=first_step_s,
+            )
+            write_bundle_file(bundle, args_cli.schema_v1_output)
 
     # close the simulator
     env.close()
