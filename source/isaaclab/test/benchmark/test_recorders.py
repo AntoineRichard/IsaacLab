@@ -392,10 +392,10 @@ class TestMemoryInfoRecorder:
 
         data = recorder.get_data()
         assert isinstance(data, MeasurementData)
-        # 6 measurements for RSS and VMS (mean, std, n for each)
-        # Plus potentially 3 more for USS if available (mean, std, n)
-        assert len(data.measurements) >= 6
-        assert len(data.measurements) <= 9
+        # 8 measurements for RSS and VMS (mean, std, peak, n for each)
+        # Plus potentially 4 more for USS if available (mean, std, peak, n)
+        assert len(data.measurements) >= 8
+        assert len(data.measurements) <= 12
         assert len(data.metadata) == 1
 
     def test_get_data_measurement_names(self, recorder):
