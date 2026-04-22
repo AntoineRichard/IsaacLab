@@ -6,7 +6,7 @@
 > Per-task design details live in the per-task specs under
 > `docs/superpowers/specs/`; this document gives the map.
 
-**Last updated:** 2026-04-22 (end of T1 design)
+**Last updated:** 2026-04-22 (end of T2.1)
 **Plan:** `eval_plan.md` (repo root)
 **Branch during in-tree development:** `antoiner/feat/odin`
 
@@ -141,7 +141,7 @@ Status legend: ✅ complete · 🟡 in progress · ⚪ pending
 |---|---|---|---|
 | T0 | Naming | — (recorded in `eval_plan.md`) | ✅ |
 | T1 | Evaluation runner (Layer 1 + 2) | `docs/superpowers/specs/2026-04-22-odin-t1-evaluation-runner-design.md` | ✅ |
-| T2.1 | Environment lists + Newton gap doc | — | ⚪ |
+| T2.1 | Environment lists + Newton gap doc | `docs/superpowers/specs/2026-04-22-odin-t2-1-env-lists-design.md` | ✅ |
 | T2.2 | Dense startup profiling survey | — | ⚪ |
 | T3 | Distributed dispatcher (Layer 3) + Asgard | — | ⚪ |
 | T4 | Reporting + Valhalla dashboard (Layer 4) | — | ⚪ |
@@ -187,3 +187,4 @@ explicitly expand scope and note it here.
 |---|---|---|
 | 2026-04-22 | Initial version — created at end of T1 design. | Odin T1 |
 | 2026-04-22 | T1 implementation complete: v1.0 schema, three benchmark scripts upgraded/added, Hugin + Munin runners. `startup.json` captures five phases (`app_launch`, `python_imports`, `task_config`, `env_creation`, `first_step`) — the T1 spec originally listed three; the implementation reused `benchmark_startup.py`'s richer existing split. Known v1 limitations: `CProfileFunction.calls` is always `0` (upstream `parse_cprofile_stats` does not return call counts) and `Resources.*.peak` falls back to `mean` because the underlying recorders track Welford online stats but not peak. | Odin T1 |
+| 2026-04-22 | T2.1 delivered. Three curated artifacts committed: `tools/odin/config/physx_envs.yaml` (188 envs → 54 keep=true), `tools/odin/config/newton_envs.yaml` (49 envs → 21 keep=true), `docs/odin/newton_api_gaps.md` (per-gap narrative + per-env appendix). Upstream IsaacLab change: `has_physics_preset` promoted from `test/env_test_utils._has_physics_preset` to public `isaaclab_tasks.utils.presets.has_physics_preset` (CHANGELOG 1.5.24). Odin side: `tools/odin/common/env_list.py` (EnvEntry dataclass, YAML IO + merge semantics, training-defaults loader, `build_entry_from_task_spec`, `classify_for_newton`, `GAP_VOCABULARY`) plus `tools/odin/scripts/enumerate_{physx,newton}_envs.py` with Play-v0 filtering. Findings surfaced: `has_rl_games` flag on EnvEntry documents the rl_games phase-out (55 rows), Deploy-family duplicates (Deploy-Reach-* mirrors reach/) noted for curation, and `preset_missing` (41 rows) identified as the largest bucket of Newton candidates — pure wiring work, not an API gap. Deferred polish items carried to T2.2: `raw_cfg: object` annotation on the promoted helper, skrl-dataclass test path for training-defaults extraction, module docstring drift in `env_list.py`. Known-broken T1 dry-run bundles under `odin_runs/` (stale TB copies; identical reward series across backends) still await a fix pass; T2.1 does not consume them. | Odin T2.1 |
