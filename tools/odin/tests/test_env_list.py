@@ -239,3 +239,76 @@ def test_merge_rejects_duplicate_task_ids_in_discovered():
     ]
     with pytest.raises(ValueError, match="Duplicate task_id"):
         merge(existing, discovered)
+
+
+# -----------------------------------------------------------------------------
+# Training defaults extraction
+# -----------------------------------------------------------------------------
+
+
+from tools.odin.common.env_list import extract_training_defaults_from_cfgs
+
+
+class _SceneCfgRsl:
+    num_envs = 4096
+
+
+class _EnvCfgRsl:
+    scene = _SceneCfgRsl()
+
+
+class _RslAgentCfg:
+    max_iterations = 1000
+
+
+class _SceneCfgSkrl:
+    num_envs = 2048
+
+
+class _EnvCfgSkrl:
+    scene = _SceneCfgSkrl()
+
+
+# SKRL agent cfg is a dict (loaded from YAML) in practice.
+_SKRL_AGENT_CFG = {"trainer": {"timesteps": 8000}}
+
+
+def test_extract_training_defaults_rsl_rl():
+    n, m = extract_training_defaults_from_cfgs(_EnvCfgRsl(), _RslAgentCfg(), "rsl_rl")
+    assert n == 4096
+    assert m == 1000
+
+
+def test_extract_training_defaults_skrl():
+    n, m = extract_training_defaults_from_cfgs(_EnvCfgSkrl(), _SKRL_AGENT_CFG, "skrl")
+    assert n == 2048
+    assert m == 8000
+
+
+def test_extract_training_defaults_missing_max_iterations():
+    class _BareRslAgentCfg:  # no max_iterations
+        pass
+
+    n, m = extract_training_defaults_from_cfgs(_EnvCfgRsl(), _BareRslAgentCfg(), "rsl_rl")
+    assert n == 4096
+    assert m is None
+
+
+def test_extract_training_defaults_missing_scene():
+    class _BareEnvCfg:
+        pass
+
+    n, m = extract_training_defaults_from_cfgs(_BareEnvCfg(), _RslAgentCfg(), "rsl_rl")
+    assert n is None
+    assert m == 1000
+
+
+def test_extract_training_defaults_skrl_missing_trainer():
+    n, m = extract_training_defaults_from_cfgs(_EnvCfgSkrl(), {}, "skrl")
+    assert n == 2048
+    assert m is None
+
+
+def test_extract_training_defaults_unknown_framework():
+    with pytest.raises(ValueError, match="framework"):
+        extract_training_defaults_from_cfgs(_EnvCfgRsl(), _RslAgentCfg(), "bogus")

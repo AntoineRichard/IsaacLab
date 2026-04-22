@@ -32,6 +32,8 @@ __all__ = [
     "load_env_list",
     "write_env_list",
     "merge",
+    "extract_training_defaults_from_cfgs",
+    "load_shipped_training_defaults",
 ]
 
 
@@ -348,3 +350,94 @@ def merge(existing: EnvList, discovered: list[EnvEntry]) -> EnvList:
         merged.groups.setdefault(stale.group, []).append(stale)
 
     return merged
+
+
+# -----------------------------------------------------------------------------
+# Training-defaults loader
+# -----------------------------------------------------------------------------
+
+
+def extract_training_defaults_from_cfgs(env_cfg: Any, agent_cfg: Any, framework: str) -> tuple[int | None, int | None]:
+    """Pull ``(num_envs, max_iterations)`` from already-loaded cfg objects.
+
+    Args:
+        env_cfg: Env-side cfg (attribute-navigable, has a ``scene.num_envs``).
+        agent_cfg: Framework-specific learning cfg. For ``rsl_rl`` it is a
+            ``@configclass`` instance with ``.max_iterations``; for ``skrl``
+            it is a plain ``dict`` loaded from YAML.
+        framework: ``"rsl_rl"`` or ``"skrl"``.
+
+    Returns:
+        ``(num_envs, max_iterations)`` where either can be ``None`` if the
+        field is absent.
+
+    Raises:
+        ValueError: If ``framework`` is not ``"rsl_rl"`` or ``"skrl"``.
+    """
+    if framework not in ("rsl_rl", "skrl"):
+        raise ValueError(f"Unknown framework {framework!r}; expected 'rsl_rl' or 'skrl'")
+
+    # num_envs: same place for both frameworks — env_cfg.scene.num_envs.
+    scene = getattr(env_cfg, "scene", None)
+    num_envs = getattr(scene, "num_envs", None) if scene is not None else None
+
+    # max_iterations: framework-specific.
+    if framework == "rsl_rl":
+        max_iterations = getattr(agent_cfg, "max_iterations", None)
+    else:  # skrl
+        # SKRL cfgs come from YAML as dicts; trainer.timesteps is the
+        # closest analog. NB: semantics differ from RSL-RL's max_iterations;
+        # T1's benchmark_skrl.py handles the distinction at run time.
+        if isinstance(agent_cfg, dict):
+            trainer = agent_cfg.get("trainer") or {}
+            max_iterations = trainer.get("timesteps") if isinstance(trainer, dict) else None
+        else:
+            # Some SKRL cfgs are dataclasses; fall back to attribute access.
+            trainer = getattr(agent_cfg, "trainer", None)
+            max_iterations = getattr(trainer, "timesteps", None) if trainer is not None else None
+
+    return num_envs, max_iterations
+
+
+def load_shipped_training_defaults(task_id: str, framework: str) -> tuple[int | None, int | None]:
+    """Load the shipped ``(num_envs, max_iterations)`` for a task.
+
+    Launches no Isaac Sim — the caller must have done so (``gym.registry``
+    must be populated).
+
+    Args:
+        task_id: The gym task id (e.g. ``"Isaac-Ant-Direct-v0"``).
+        framework: ``"rsl_rl"`` or ``"skrl"``.
+
+    Returns:
+        ``(num_envs, max_iterations)``; either may be ``None`` on partial
+        failure (logged to stderr).
+    """
+    # Deferred import — isaaclab_tasks must be importable, which requires the
+    # app to be up. Caller's responsibility.
+    from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+
+    entry_point_key = f"{framework}_cfg_entry_point"
+
+    try:
+        env_cfg = load_cfg_from_registry(task_id, "env_cfg_entry_point")
+    except Exception as exc:  # noqa: BLE001 — we want any failure isolated
+        print(
+            f"WARNING env_list: could not load env cfg for {task_id}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        env_cfg = None
+
+    try:
+        agent_cfg = load_cfg_from_registry(task_id, entry_point_key)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"WARNING env_list: could not load {framework} cfg for {task_id}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        agent_cfg = None
+
+    if env_cfg is None or agent_cfg is None:
+        return None, None
+
+    return extract_training_defaults_from_cfgs(env_cfg, agent_cfg, framework)
