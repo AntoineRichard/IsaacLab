@@ -423,6 +423,77 @@ class TestMemoryInfoRecorder:
         names = [m.name for m in data.metadata]
         assert "total_ram_gb" in names
 
+    def test_rss_peak_is_zero_before_any_record(self):
+        """Test that RSS peak is 0.0 before any update has been called."""
+        from isaaclab.test.benchmark.recorders.record_memory_info import MemoryInfoRecorder
+
+        rec = MemoryInfoRecorder()
+        data = rec.get_data()
+        peak_rows = [m for m in data.measurements if m.name == "System Memory RSS peak"]
+        assert peak_rows, "expected a 'System Memory RSS peak' SingleMeasurement"
+        assert peak_rows[0].value == 0.0
+
+    def test_rss_peak_tracks_running_max(self, monkeypatch):
+        """Test that RSS peak tracks the running maximum across updates."""
+        import psutil
+
+        from isaaclab.test.benchmark.recorders.record_memory_info import MemoryInfoRecorder
+
+        # Scripted RSS sequence; peak must equal the max seen so far.
+        scripted_values = [100 * 1024**3, 200 * 1024**3, 150 * 1024**3]  # bytes
+        scripted_iter = iter(scripted_values)
+
+        class _FakeMemInfo:
+            def __init__(self, rss):
+                self.rss = rss
+                self.vms = rss  # mirror so VMS also moves
+                # USS is read via memory_full_info, not memory_info; leave alone.
+
+        def _fake_memory_info(self):  # noqa: ARG001 — bound method, self is the process
+            return _FakeMemInfo(next(scripted_iter))
+
+        monkeypatch.setattr(psutil.Process, "memory_info", _fake_memory_info)
+
+        rec = MemoryInfoRecorder()
+        for _ in scripted_values:
+            rec.update()
+
+        data = rec.get_data()
+        rss_peak = next(m for m in data.measurements if m.name == "System Memory RSS peak")
+        # The recorder emits GB; input was in bytes. 200 GiB -> 200.0 after rounding.
+        assert rss_peak.value == 200.0, f"expected peak=200.0 GB, got {rss_peak.value}"
+
+        vms_peak = next(m for m in data.measurements if m.name == "System Memory VMS peak")
+        assert vms_peak.value == 200.0
+
+    def test_rss_peak_does_not_decrease(self, monkeypatch):
+        """Test that RSS peak does not decrease when memory usage drops."""
+        import psutil
+
+        from isaaclab.test.benchmark.recorders.record_memory_info import MemoryInfoRecorder
+
+        # Decreasing sequence — peak is set by the first sample and then stays.
+        scripted_values = [300 * 1024**3, 50 * 1024**3, 25 * 1024**3]
+        scripted_iter = iter(scripted_values)
+
+        class _FakeMemInfo:
+            def __init__(self, rss):
+                self.rss = rss
+                self.vms = rss
+
+        def _fake_memory_info(self):  # noqa: ARG001
+            return _FakeMemInfo(next(scripted_iter))
+
+        monkeypatch.setattr(psutil.Process, "memory_info", _fake_memory_info)
+
+        rec = MemoryInfoRecorder()
+        for _ in scripted_values:
+            rec.update()
+
+        data = rec.get_data()
+        rss_peak = next(m for m in data.measurements if m.name == "System Memory RSS peak")
+        assert rss_peak.value == 300.0
+
 
 # ==============================================================================
 # VersionInfoRecorder Tests
