@@ -1,6 +1,22 @@
 Changelog
 ---------
 
+4.6.9 (2026-04-22)
+~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added :mod:`isaaclab.test.benchmark.standard_schema` defining the v1.0 Odin
+  benchmark bundle format (training, startup, manifest JSON schemas).
+* Extended :mod:`scripts.benchmarks.benchmark_startup` and
+  :mod:`scripts.benchmarks.benchmark_rsl_rl` to emit v1.0 ``startup.json``
+  and ``training.json`` via a new ``--schema_v1_output`` CLI flag, with
+  reward/episode-length EMA smoothing for stable final-value reporting.
+* Added :mod:`scripts.benchmarks.benchmark_skrl` mirroring the RSL-RL
+  benchmark script for SKRL trainings with the same v1.0 output schema.
+
+
 4.6.8 (2026-04-21)
 ~~~~~~~~~~~~~~~~~~
 
