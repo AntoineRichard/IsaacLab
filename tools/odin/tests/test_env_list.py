@@ -121,3 +121,29 @@ def test_load_rejects_unknown_schema_version(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="schema_version"):
         load_env_list(bad)
+
+
+def test_load_rejects_non_dict_yaml(tmp_path: Path):
+    # Top-level YAML that parses to something other than a mapping (a list,
+    # here) must raise a clear error, not an AttributeError from payload.get.
+    bad = tmp_path / "list.yaml"
+    bad.write_text("- foo\n- bar\n")
+    with pytest.raises(ValueError, match="mapping"):
+        load_env_list(bad)
+
+
+def test_load_rejects_row_missing_task_id(tmp_path: Path):
+    # A row without task_id can't be merge-keyed; fail loudly instead of
+    # silently constructing an EnvEntry with task_id=None.
+    bad = tmp_path / "no_id.yaml"
+    bad.write_text(
+        "schema_version: \"1.0\"\n"
+        "generated_at: \"2026-04-22T00:00:00Z\"\n"
+        "generator: \"test\"\n"
+        "groups:\n"
+        "  direct/ant:\n"
+        "    - entry_point: isaaclab_tasks.direct.ant:AntEnv\n"
+        "      framework: rsl_rl\n"
+    )
+    with pytest.raises(ValueError, match="task_id"):
+        load_env_list(bad)

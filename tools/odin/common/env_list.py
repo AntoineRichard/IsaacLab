@@ -145,8 +145,8 @@ class EnvEntry:
     max_iterations: int | None
     keep: bool
     status: str = "current"  # "current" | "new" | "stale"
-    notes: str = ""
     suspected_gap: str | None = None
+    notes: str = ""
 
 
 @dataclass
@@ -166,8 +166,11 @@ def _entry_from_dict(d: dict[str, Any]) -> EnvEntry:
     """Build an :class:`EnvEntry` tolerantly from a loaded YAML row.
 
     Missing optional fields get the dataclass defaults; unknown fields are
-    ignored with a warning (printed to stderr).
+    ignored with a warning (printed to stderr). A missing ``task_id`` is
+    fatal — every row must be identifiable for merge keying.
     """
+    if "task_id" not in d:
+        raise ValueError(f"Row missing required 'task_id' field: {d!r}")
     known = {f: d.get(f) for f in _ENTRY_FIELD_ORDER if f in d}
     # Required fields must be present; default to "" / None on truly minimal rows.
     known.setdefault("entry_point", "")
@@ -207,7 +210,11 @@ def load_env_list(path: Path) -> EnvList:
     if not path.exists():
         return EnvList()
     with path.open("r") as fh:
-        payload = yaml.safe_load(fh) or {}
+        payload = yaml.safe_load(fh)
+    if payload is None:
+        return EnvList()
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected top-level YAML mapping in {path}, got {type(payload).__name__}")
     got_version = str(payload.get("schema_version", ""))
     if got_version != SCHEMA_VERSION:
         raise ValueError(f"Unsupported schema_version {got_version!r} in {path} (expected {SCHEMA_VERSION!r})")
