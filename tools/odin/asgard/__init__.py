@@ -21,6 +21,7 @@ from tools.odin.asgard.state import (
     reset_in_flight_to_pending,
     write_dispatch_state,
 )
+from tools.odin.asgard.preflight import PreflightResult, preflight_valkyrie
 from tools.odin.asgard.transport import (
     RsyncResult,
     RsyncRunner,
@@ -49,4 +50,6 @@ __all__ = [
     "ShellSSHRunner",
     "SSHResult",
     "SSHRunner",
+    "PreflightResult",
+    "preflight_valkyrie",
 ]
