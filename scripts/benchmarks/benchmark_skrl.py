@@ -63,7 +63,22 @@ parser.add_argument(
     "--backend",
     choices=["physx", "newton"],
     default=None,
-    help="Physics backend tag recorded in the Odin bundle.",
+    help=(
+        "Physics backend to run with. Drives both the bundle tag and "
+        "hydra `presets=<backend>`. Pass an explicit `presets=...` on "
+        "the CLI to override."
+    ),
+)
+parser.add_argument(
+    "--log_dir",
+    type=str,
+    default=None,
+    help=(
+        "Absolute path where the training framework writes its outputs "
+        "(TB events, checkpoints, params). When unset, falls back to "
+        "the default logs/<framework>/<experiment>/<timestamp>/ path. "
+        "Odin passes this to collect outputs directly into the bundle."
+    ),
 )
 parser.add_argument(
     "--run_id",
@@ -92,6 +107,15 @@ parser.add_argument(
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+
+# Map --backend X to hydra presets=X so the physics preset is applied
+# at config-resolve time. An explicit presets=... on the CLI wins.
+if args_cli.backend is not None:
+    existing_presets = [a for a in hydra_args if a.startswith("presets=")]
+    if existing_presets:
+        print(f"[WARNING] --backend={args_cli.backend} ignored because {existing_presets[0]} was explicitly passed.")
+    else:
+        hydra_args = [f"presets={args_cli.backend}"] + hydra_args
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -330,14 +354,20 @@ def main(
     agent_cfg["seed"] = args_cli.seed
     env_cfg.seed = args_cli.seed
 
-    log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
-    log_root_path = os.path.abspath(log_root_path)
-    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{_algorithm}_{args_cli.ml_framework}"
-    if agent_cfg["agent"]["experiment"]["experiment_name"]:
-        log_dir += f"_{agent_cfg['agent']['experiment']['experiment_name']}"
-    agent_cfg["agent"]["experiment"]["directory"] = log_root_path
-    agent_cfg["agent"]["experiment"]["experiment_name"] = log_dir
-    log_dir = os.path.join(log_root_path, log_dir)
+    if args_cli.log_dir is not None:
+        log_dir = os.path.abspath(args_cli.log_dir)
+        agent_cfg["agent"]["experiment"]["directory"] = log_dir
+        agent_cfg["agent"]["experiment"]["experiment_name"] = ""
+        os.makedirs(log_dir, exist_ok=True)
+    else:
+        log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
+        log_root_path = os.path.abspath(log_root_path)
+        log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{_algorithm}_{args_cli.ml_framework}"
+        if agent_cfg["agent"]["experiment"]["experiment_name"]:
+            log_dir += f"_{agent_cfg['agent']['experiment']['experiment_name']}"
+        agent_cfg["agent"]["experiment"]["directory"] = log_root_path
+        agent_cfg["agent"]["experiment"]["experiment_name"] = log_dir
+        log_dir = os.path.join(log_root_path, log_dir)
     if isinstance(env_cfg, ManagerBasedRLEnvCfg):
         env_cfg.log_dir = log_dir
 
