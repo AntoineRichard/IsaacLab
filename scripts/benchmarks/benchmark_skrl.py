@@ -380,14 +380,23 @@ def main(
 
     from scripts.benchmarks.skrl_benchmark_trainer import BenchmarkTrainer
 
-    runner = Runner(env, agent_cfg)
-    # Swap SKRL's stock SequentialTrainer for the per-iter-capturing variant.
-    # Runner._trainer and Runner._agent are mutable attributes (Runner exposes
-    # ``trainer`` / ``agent`` @property accessors reading them).
-    trainer_cfg = dict(agent_cfg["trainer"])
-    trainer_cfg.pop("class", None)  # stock Runner deletes this; mirror that.
-    benchmark_trainer = BenchmarkTrainer(env=env, agents=runner._agent, cfg=trainer_cfg)
-    runner._trainer = benchmark_trainer
+    class _BenchmarkRunner(Runner):
+        """Runner variant that builds a BenchmarkTrainer instead of a stock SequentialTrainer.
+
+        Using a Runner subclass (rather than swapping ``Runner._trainer`` after
+        construction) ensures SKRL's ``agent.init()`` — which creates a
+        ``SummaryWriter`` — fires exactly once. Swapping after-the-fact would
+        call ``agent.init()`` twice and leave an orphaned TB events file in
+        the log dir.
+        """
+
+        def _generate_trainer(self, env, cfg, agent):
+            # Mirror stock Runner._generate_trainer: pop 'class', pass cfg["trainer"].
+            cfg["trainer"].pop("class", None)
+            return BenchmarkTrainer(env=env, agents=agent, cfg=cfg["trainer"])
+
+    runner = _BenchmarkRunner(env, agent_cfg)
+    benchmark_trainer = runner._trainer
 
     with BenchmarkMonitor(benchmark, interval=1.0):
         runner.run()
@@ -412,7 +421,8 @@ def main(
     log_scene_creation_time(benchmark, Timer.get_timer_info("scene_creation") * 1000)
     log_simulation_start_time(benchmark, Timer.get_timer_info("simulation_start") * 1000)
     log_total_start_time(benchmark, (task_startup_time_end - app_start_time_begin) / 1e6)
-    log_runtime_step_times(benchmark, rl_training_times, compute_stats=True)
+    if iter_times_s:
+        log_runtime_step_times(benchmark, rl_training_times, compute_stats=True)
     if reward_series:
         log_rl_policy_rewards(benchmark, reward_series)
     if ep_len_series:
