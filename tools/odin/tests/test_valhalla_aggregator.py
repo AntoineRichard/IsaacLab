@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.odin.valhalla.aggregator import AggregateOptions, aggregate_dispatch
+from tools.odin.valhalla.aggregator import aggregate_dispatch
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -46,7 +46,14 @@ def _write_completed_bundle(
                 "startup": {"file": "startup.json", "status": "completed", "duration_s": 30.0, "exit_code": 0},
                 "training": {"file": "training.json", "status": "completed", "duration_s": 150.0, "exit_code": 0},
             },
-            "config": {"framework": "rsl_rl", "backend": "physx", "task": "Isaac-Ant-Direct-v0", "seed": 42, "num_envs": 4096, "max_iterations": 300},
+            "config": {
+                "framework": "rsl_rl",
+                "backend": "physx",
+                "task": "Isaac-Ant-Direct-v0",
+                "seed": 42,
+                "num_envs": 4096,
+                "max_iterations": 300,
+            },
             "run_start_time_utc": "2026-04-23T10:00:00Z",
             "run_end_time_utc": "2026-04-23T10:03:00Z",
             "run_duration_s": 180.0,
@@ -70,8 +77,16 @@ def _write_completed_bundle(
                 "gpu_mem_gb": {"mean": gpu_mem_gb_peak * 0.9, "peak": gpu_mem_gb_peak},
             },
             "learning": {
-                "reward": {"final_raw": reward_final_ema * 1.01, "final_ema": reward_final_ema, "series_per_iter": [0.0] * 300},
-                "ep_length": {"final_raw": ep_length_final_ema * 1.02, "final_ema": ep_length_final_ema, "series_per_iter": [0.0] * 300},
+                "reward": {
+                    "final_raw": reward_final_ema * 1.01,
+                    "final_ema": reward_final_ema,
+                    "series_per_iter": [0.0] * 300,
+                },
+                "ep_length": {
+                    "final_raw": ep_length_final_ema * 1.02,
+                    "final_ema": ep_length_final_ema,
+                    "series_per_iter": [0.0] * 300,
+                },
             },
         },
     )
@@ -297,3 +312,28 @@ def test_missing_dispatch_json_raises(tmp_path: Path):
     dispatch.mkdir()
     with pytest.raises(FileNotFoundError):
         aggregate_dispatch(dispatch)
+
+
+def test_missing_dispatch_id_warns_and_falls_back(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    dispatch = tmp_path / "20260423-100000"
+    dispatch.mkdir()
+    # Write dispatch.json without a dispatch_id key.
+    with (dispatch / "dispatch.json").open("w") as fh:
+        import json
+
+        json.dump(
+            {
+                "schema_version": "1.0",
+                "started_at": "",
+                "ended_at": "",
+                "seeds": [],
+                "commit_sha": "",
+                "fleet": [],
+                "jobs": [],
+            },
+            fh,
+        )
+    agg = aggregate_dispatch(dispatch)
+    assert agg["dispatch_id"] == "20260423-100000"  # directory-name fallback
+    out = capsys.readouterr().out
+    assert "no dispatch_id" in out

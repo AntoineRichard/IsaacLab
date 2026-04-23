@@ -31,12 +31,12 @@ SCHEMA_VERSION = "1.0"
 # Metrics aggregated into Stats blobs. Each entry is
 # (per-seed field name, training.json dotted path).
 _AGGREGATED_METRICS: list[tuple[str, str]] = [
-    ("reward_final_ema",      "learning.reward.final_ema"),
-    ("ep_length_final_ema",   "learning.ep_length.final_ema"),
-    ("iter_time_s_mean",      "runtime.iteration_time_s.mean"),
-    ("env_steps_per_s_mean",  "runtime.env_steps_per_s.mean"),
-    ("ram_gb_peak",           "resources.ram_gb.peak"),
-    ("gpu_mem_gb_peak",       "resources.gpu_mem_gb.peak"),
+    ("reward_final_ema", "learning.reward.final_ema"),
+    ("ep_length_final_ema", "learning.ep_length.final_ema"),
+    ("iter_time_s_mean", "runtime.iteration_time_s.mean"),
+    ("env_steps_per_s_mean", "runtime.env_steps_per_s.mean"),
+    ("ram_gb_peak", "resources.ram_gb.peak"),
+    ("gpu_mem_gb_peak", "resources.gpu_mem_gb.peak"),
 ]
 
 
@@ -89,27 +89,26 @@ def _extract_seed_payload(training: dict, manifest: dict, run_id: str, assigned_
     res = training["resources"]
     startup_s = rt.get("startup_phase_times_s", {}) or {}
     return {
-        "run_id":                  run_id,
-        "status":                  "completed",
-        "assigned_to":             assigned_to,
-        "reward_final_ema":        float(rew["final_ema"]),
-        "ep_length_final_ema":     float(ep["final_ema"]),
-        "iter_time_s_mean":        float(rt["iteration_time_s"]["mean"]),
-        "iter_time_s_std":         float(rt["iteration_time_s"]["std"]),
-        "env_steps_per_s_mean":    float(rt["env_steps_per_s"]["mean"]),
-        "iterations_completed":    int(rt["iterations_completed"]),
-        "total_wall_time_s":       float(rt["total_wall_time_s"]),
-        "ram_gb_peak":             float(res["ram_gb"]["peak"]),
-        "gpu_mem_gb_peak":         float(res["gpu_mem_gb"]["peak"]),
-        "startup_app_launch_s":    float(startup_s.get("app_launch") or 0.0),
-        "startup_env_creation_s":  float(startup_s.get("env_creation") or 0.0),
-        "startup_first_step_s":    float(startup_s.get("first_step") or 0.0),
+        "run_id": run_id,
+        "status": "completed",
+        "assigned_to": assigned_to,
+        "reward_final_ema": float(rew["final_ema"]),
+        "ep_length_final_ema": float(ep["final_ema"]),
+        "iter_time_s_mean": float(rt["iteration_time_s"]["mean"]),
+        "iter_time_s_std": float(rt["iteration_time_s"]["std"]),
+        "env_steps_per_s_mean": float(rt["env_steps_per_s"]["mean"]),
+        "iterations_completed": int(rt["iterations_completed"]),
+        "total_wall_time_s": float(rt["total_wall_time_s"]),
+        "ram_gb_peak": float(res["ram_gb"]["peak"]),
+        "gpu_mem_gb_peak": float(res["gpu_mem_gb"]["peak"]),
+        "startup_app_launch_s": float(startup_s.get("app_launch") or 0.0),
+        "startup_env_creation_s": float(startup_s.get("env_creation") or 0.0),
+        "startup_first_step_s": float(startup_s.get("first_step") or 0.0),
     }
 
 
-def _compute_aggregate(seeds: dict[str, dict], divergence_z: float) -> dict:
+def _compute_aggregate(seeds: dict[str, dict]) -> dict:
     """Compute the ``aggregate`` block + ``divergent_seeds`` for one row."""
-    del divergence_z  # divergent_seeds is computed separately.
     if not seeds:
         return {"n_seeds_completed": 0, "n_seeds_failed": 0}
     result: dict = {"n_seeds_completed": len(seeds), "n_seeds_failed": 0}
@@ -117,10 +116,10 @@ def _compute_aggregate(seeds: dict[str, dict], divergence_z: float) -> dict:
         values = [s[field_name] for s in seeds.values()]
         s = stats_over(values)
         result[field_name] = {
-            "mean":   s.mean,
-            "std":    s.std,
-            "min":    s.min,
-            "max":    s.max,
+            "mean": s.mean,
+            "std": s.std,
+            "min": s.min,
+            "max": s.max,
             "cv_pct": s.cv_pct,
         }
     return result
@@ -203,24 +202,18 @@ def aggregate_dispatch(
         key = (task, framework, backend)
         if key not in rows_by_key:
             rows_by_key[key] = {
-                "task":      task,
+                "task": task,
                 "framework": framework,
-                "backend":   backend,
-                "seeds":     {},
+                "backend": backend,
+                "seeds": {},
             }
 
         bundle_dir = dispatch_dir / run_id
         bundle_jsons = _load_bundle_jsons(bundle_dir)
-        is_completed = (
-            bundle_dir.exists()
-            and bundle_jsons is not None
-            and _bundle_is_completed(*bundle_jsons)
-        )
+        is_completed = bundle_dir.exists() and bundle_jsons is not None and _bundle_is_completed(*bundle_jsons)
         if is_completed:
             manifest, training = bundle_jsons  # type: ignore[misc]
-            rows_by_key[key]["seeds"][str(seed)] = _extract_seed_payload(
-                training, manifest, run_id, assigned_to
-            )
+            rows_by_key[key]["seeds"][str(seed)] = _extract_seed_payload(training, manifest, run_id, assigned_to)
             commit_shas.append(str(manifest.get("machine", {}).get("git_commit") or ""))
             hostname = manifest.get("machine", {}).get("hostname")
             if hostname:
@@ -228,13 +221,13 @@ def aggregate_dispatch(
         else:
             failures.append(
                 {
-                    "run_id":          run_id,
-                    "task":            task,
-                    "framework":       framework,
-                    "backend":         backend,
-                    "seed":            seed,
-                    "assigned_to":     assigned_to,
-                    "failure_kind":    _classify_failure(job, bundle_dir, bundle_jsons),
+                    "run_id": run_id,
+                    "task": task,
+                    "framework": framework,
+                    "backend": backend,
+                    "seed": seed,
+                    "assigned_to": assigned_to,
+                    "failure_kind": _classify_failure(job, bundle_dir, bundle_jsons),
                     "failure_message": _classify_failure_message(job),
                 }
             )
@@ -242,12 +235,8 @@ def aggregate_dispatch(
     rows: list[dict] = []
     for key in sorted(rows_by_key):
         r = rows_by_key[key]
-        n_failed_for_row = sum(
-            1
-            for f in failures
-            if (f["task"], f["framework"], f["backend"]) == key
-        )
-        agg = _compute_aggregate(r["seeds"], options.divergence_z)
+        n_failed_for_row = sum(1 for f in failures if (f["task"], f["framework"], f["backend"]) == key)
+        agg = _compute_aggregate(r["seeds"])
         agg["n_seeds_failed"] = n_failed_for_row
         r["aggregate"] = agg if r["seeds"] else None
         r["divergent_seeds"] = _divergent_seed_keys(r["seeds"], options.divergence_z)
@@ -266,19 +255,27 @@ def aggregate_dispatch(
                 )
 
     totals = {
-        "tasks":     len(rows),
-        "runs":      sum(len(r["seeds"]) for r in rows) + len(failures),
+        "tasks": len(rows),
+        "runs": sum(len(r["seeds"]) for r in rows) + len(failures),
         "completed": sum(len(r["seeds"]) for r in rows),
-        "failed":    len(failures),
+        "failed": len(failures),
     }
+
+    dispatch_id = dispatch.get("dispatch_id")
+    if not dispatch_id:
+        print(
+            f"[WARNING] dispatch.json at {dispatch_path} has no dispatch_id; "
+            f"falling back to directory name {dispatch_dir.name!r}"
+        )
+        dispatch_id = dispatch_dir.name
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "dispatch_id":    str(dispatch.get("dispatch_id", dispatch_dir.name)),
-        "generated_at":   _utc_now_iso(),
-        "commit_sha":     commit_sha,
-        "hostnames":      sorted(hostnames),
-        "totals":         totals,
-        "rows":           rows,
-        "failures":       failures,
+        "dispatch_id": str(dispatch_id),
+        "generated_at": _utc_now_iso(),
+        "commit_sha": commit_sha,
+        "hostnames": sorted(hostnames),
+        "totals": totals,
+        "rows": rows,
+        "failures": failures,
     }
