@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -21,6 +21,7 @@ __all__ = [
     "SSHRunner",
     "RsyncRunner",
     "ShellSSHRunner",
+    "ShellRsyncRunner",
 ]
 
 
@@ -175,3 +176,90 @@ class ShellSSHRunner:
             duration_s=duration,
             timed_out=timed_out,
         )
+
+
+# --- Default rsync implementation -------------------------------------------
+
+
+_PUSH_EXCLUDES = [
+    "--exclude=__pycache__/",
+    "--exclude=.git/",
+    "--exclude=odin_runs/",
+    "--exclude=benchmark_*_Isaac-*.json",
+    "--exclude=*.swp",
+    "--exclude=.claude/",
+]
+
+
+class ShellRsyncRunner:
+    """Rsync runner that shells out to the ``rsync`` command."""
+
+    def _build_ssh_transport_opt(self, host: ValkyrieConfig) -> str | None:
+        """Return the value for rsync's ``-e`` flag when an ssh_key is set."""
+        if host.ssh_key is None:
+            return None
+        return f"ssh -i {host.ssh_key} -o StrictHostKeyChecking=accept-new"
+
+    def _run_rsync(self, argv: list[str]) -> RsyncResult:
+        t0 = time.monotonic()
+        proc = subprocess.run(argv, capture_output=True, text=True)
+        duration = time.monotonic() - t0
+        return RsyncResult(
+            exit_code=int(proc.returncode),
+            stdout=str(proc.stdout or ""),
+            stderr=str(proc.stderr or ""),
+            duration_s=duration,
+        )
+
+    def push(
+        self,
+        host: ValkyrieConfig,
+        local_path: Path,
+        remote_path: str,
+    ) -> RsyncResult:
+        """Push ``local_path`` (controller side) to ``remote_path`` on the Valkyrie.
+
+        Includes ``--delete`` so the remote tree matches the local tree
+        exactly (minus excludes), and a fixed exclude list for noise.
+
+        Args:
+            host: Target host configuration.
+            local_path: Local directory to sync from.
+            remote_path: Destination path on the remote host.
+
+        Returns:
+            :class:`RsyncResult` capturing exit code, output, and duration.
+        """
+        argv: list[str] = ["rsync", "-avz", "--delete", *_PUSH_EXCLUDES]
+        transport = self._build_ssh_transport_opt(host)
+        if transport is not None:
+            argv += ["-e", transport]
+        argv += [f"{str(local_path).rstrip('/')}/", f"{host.ssh_user}@{host.host}:{remote_path}"]
+        return self._run_rsync(argv)
+
+    def pull(
+        self,
+        host: ValkyrieConfig,
+        remote_path: str,
+        local_path: Path,
+    ) -> RsyncResult:
+        """Pull ``remote_path`` on the Valkyrie to ``local_path`` on the controller.
+
+        NO ``--delete`` — we don't want to prune prior bundles on the
+        controller's side when fetching a new bundle.
+
+        Args:
+            host: Target host configuration.
+            remote_path: Source path on the remote host.
+            local_path: Local destination path.
+
+        Returns:
+            :class:`RsyncResult` capturing exit code, output, and duration.
+        """
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        argv: list[str] = ["rsync", "-avz"]
+        transport = self._build_ssh_transport_opt(host)
+        if transport is not None:
+            argv += ["-e", transport]
+        argv += [f"{host.ssh_user}@{host.host}:{remote_path}", str(local_path)]
+        return self._run_rsync(argv)

@@ -21,6 +21,14 @@ from tools.odin.asgard.state import (
     reset_in_flight_to_pending,
     write_dispatch_state,
 )
+from tools.odin.asgard.transport import (
+    RsyncResult,
+    RsyncRunner,
+    ShellRsyncRunner,
+    ShellSSHRunner,
+    SSHResult,
+    SSHRunner,
+)
 
 __all__ = [
     "Fleet",
@@ -35,4 +43,10 @@ __all__ = [
     "read_dispatch_state",
     "reset_in_flight_to_pending",
     "write_dispatch_state",
+    "RsyncResult",
+    "RsyncRunner",
+    "ShellRsyncRunner",
+    "ShellSSHRunner",
+    "SSHResult",
+    "SSHRunner",
 ]
