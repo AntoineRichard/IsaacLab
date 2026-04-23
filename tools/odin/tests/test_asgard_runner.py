@@ -197,3 +197,46 @@ def test_run_dispatch_resume_preserves_completed(tmp_path: Path):
     )
     second = read_dispatch_state(dispatch_dir)
     assert second.jobs[0].status == "completed"
+
+
+def test_run_dispatch_writes_aggregate_json(tmp_path):
+    """run_dispatch auto-invokes valhalla.aggregator at the tail."""
+    fleet = _write_fleet(tmp_path)
+    env_yaml = _write_env_list(tmp_path)
+    dispatch_dir = tmp_path / "20260423-110000"
+    dispatch_dir.mkdir()
+
+    run_dispatch(
+        fleet=fleet,
+        physx_yaml=env_yaml,
+        newton_yaml=None,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42]),
+        ssh=_FakeSSH(),
+        rsync=_FakeRsync(),
+    )
+    assert (dispatch_dir / "aggregate.json").exists()
+    with (dispatch_dir / "aggregate.json").open("r") as fh:
+        import json
+
+        agg = json.load(fh)
+    assert agg["schema_version"] == "1.0"
+
+
+def test_run_dispatch_skip_aggregate_leaves_no_file(tmp_path):
+    """skip_aggregate=True suppresses the auto-call."""
+    fleet = _write_fleet(tmp_path)
+    env_yaml = _write_env_list(tmp_path)
+    dispatch_dir = tmp_path / "20260423-110000"
+    dispatch_dir.mkdir()
+
+    run_dispatch(
+        fleet=fleet,
+        physx_yaml=env_yaml,
+        newton_yaml=None,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42], skip_aggregate=True),
+        ssh=_FakeSSH(),
+        rsync=_FakeRsync(),
+    )
+    assert not (dispatch_dir / "aggregate.json").exists()

@@ -90,6 +90,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Print per-transition status lines as jobs progress.",
     )
+    parser.add_argument(
+        "--skip-aggregate",
+        action="store_true",
+        help="Skip the end-of-dispatch call to valhalla.aggregate_dispatch.",
+    )
     args = parser.parse_args(argv)
 
     if args.physx_yaml is None and args.newton_yaml is None:
@@ -115,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         include_filter=args.include,
         verbose=args.verbose,
         retry_failed=args.retry_failed,
+        skip_aggregate=args.skip_aggregate,
     )
 
     print(f"odin-dispatch: dispatch_id={dispatch_dir.name} fleet={fleet.fleet_name} hosts={len(fleet.hosts)}")

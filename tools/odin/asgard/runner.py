@@ -50,6 +50,9 @@ class DispatchOptions:
         verbose: Print per-job completion lines to stdout.
         retry_failed: Explicit list of ``run_id`` values to re-attempt on a
             resume even though they are ``"failed"`` in the prior state.
+        skip_aggregate: When ``True``, skip the automatic
+            :func:`~tools.odin.valhalla.aggregate_dispatch` + write at the
+            end of :func:`run_dispatch`. Default ``False``.
     """
 
     seeds: list[int]
@@ -60,6 +63,7 @@ class DispatchOptions:
     include_filter: list[str] | None = None
     verbose: bool = False
     retry_failed: list[str] | None = None
+    skip_aggregate: bool = False
 
 
 def _utc_now_iso() -> str:
@@ -431,4 +435,14 @@ def run_dispatch(
 
     state.ended_at = _utc_now_iso()
     write_dispatch_state(dispatch_dir, state)
+
+    if not options.skip_aggregate:
+        try:
+            from tools.odin.valhalla import aggregate_dispatch, write_aggregate
+
+            agg = aggregate_dispatch(dispatch_dir)
+            write_aggregate(dispatch_dir, agg)
+        except Exception as exc:  # noqa: BLE001 — aggregate failure must not mask the dispatch return
+            print(f"[WARNING] aggregate step failed: {exc}")
+
     return state
