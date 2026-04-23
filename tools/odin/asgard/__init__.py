@@ -31,6 +31,7 @@ from tools.odin.asgard.transport import (
     SSHResult,
     SSHRunner,
 )
+from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
 
 __all__ = [
     "Fleet",
@@ -55,4 +56,7 @@ __all__ = [
     "preflight_valkyrie",
     "ProvisionResult",
     "provision_valkyrie",
+    "StateEvent",
+    "ValkyrieWorker",
+    "WorkerOptions",
 ]
