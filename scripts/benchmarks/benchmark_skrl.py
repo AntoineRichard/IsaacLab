@@ -156,13 +156,7 @@ from scripts.benchmarks.utils import (
     log_simulation_start_time,
     log_task_start_time,
     log_total_start_time,
-    parse_tf_logs,
 )
-
-# Tensorboard tag names emitted by SKRL's PPO agent. Declared as module-level
-# constants so future SKRL upgrades that rename them show up as obvious breaks.
-_SKRL_REWARD_TAG = "Reward / Total reward (mean)"
-_SKRL_EP_LEN_TAG = "Episode / Total timesteps (mean)"
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -384,37 +378,32 @@ def main(
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
     task_startup_time_end = time.perf_counter_ns()
 
-    runner = Runner(env, agent_cfg)
+    from scripts.benchmarks.skrl_benchmark_trainer import BenchmarkTrainer
 
-    train_start = time.perf_counter_ns()
+    runner = Runner(env, agent_cfg)
+    # Swap SKRL's stock SequentialTrainer for the per-iter-capturing variant.
+    # Runner._trainer and Runner._agent are mutable attributes (Runner exposes
+    # ``trainer`` / ``agent`` @property accessors reading them).
+    trainer_cfg = dict(agent_cfg["trainer"])
+    trainer_cfg.pop("class", None)  # stock Runner deletes this; mirror that.
+    benchmark_trainer = BenchmarkTrainer(env=env, agents=runner._agent, cfg=trainer_cfg)
+    runner._trainer = benchmark_trainer
+
     with BenchmarkMonitor(benchmark, interval=1.0):
         runner.run()
-    train_end = time.perf_counter_ns()
 
     # Final recorder update after training completes.
     benchmark.update_manual_recorders()
 
-    # Parse tensorboard logs for reward / episode-length series. SKRL may skip
-    # writing events for very short runs; treat parse failures as empty series
-    # so the v1 bundle still lands with structural data intact.
-    try:
-        log_data = parse_tf_logs(log_dir)
-    except (ValueError, FileNotFoundError) as e:
-        print(f"[WARNING] Could not parse tensorboard logs in {log_dir}: {e}")
-        log_data = {}
-    reward_series = [float(x) for x in log_data.get(_SKRL_REWARD_TAG, []) or []]
-    ep_len_series = [float(x) for x in log_data.get(_SKRL_EP_LEN_TAG, []) or []]
-
-    # Each iteration consumes ``rollouts`` env steps; approximate per-iter
-    # wall-clock time as (total train time) / max_iterations.
-    total_train_s = (train_end - train_start) / 1e9
-    per_iter_s = total_train_s / max(args_cli.max_iterations, 1)
-    iter_times_s = [per_iter_s] * args_cli.max_iterations
+    iter_times_s = benchmark_trainer.iter_times_s
+    reward_series = benchmark_trainer.iter_rewards
+    ep_len_series = benchmark_trainer.iter_ep_lengths
+    per_iter_s = (sum(iter_times_s) / len(iter_times_s)) if iter_times_s else 0.0
 
     rl_training_times = {
         "Collection Time": iter_times_s,
         "Learning Time": [0.0] * len(iter_times_s),
-        "Total FPS": [args_cli.num_envs * rollouts / per_iter_s if per_iter_s > 0 else 0.0] * len(iter_times_s),
+        "Total FPS": [(args_cli.num_envs * rollouts / t) if t > 0 else 0.0 for t in iter_times_s],
     }
 
     log_app_start_time(benchmark, (app_start_time_end - app_start_time_begin) / 1e6)
