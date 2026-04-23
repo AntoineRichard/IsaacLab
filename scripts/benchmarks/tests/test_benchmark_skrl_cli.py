@@ -58,3 +58,53 @@ def test_backend_does_not_inject_when_preset_already_present(capsys):
 def test_backend_unset_is_noop():
     args = _build_parser().parse_args([])
     assert _inject_preset(args, ["env.decimation=4"]) == ["env.decimation=4"]
+
+
+def _compose_experiment_dir(directory: str, experiment_name: str, agent_classname: str = "PPO") -> str:
+    """Mirror of SKRL BaseAgent.__init__'s experiment-dir composition.
+
+    Replicates the falsy-string fallback so tests can assert the final
+    ``experiment_dir`` a real SKRL agent would pick.
+    """
+    import datetime
+    import os
+
+    if not directory:
+        directory = os.path.join(os.getcwd(), "runs")
+    if not experiment_name:
+        experiment_name = "{}_{}".format(datetime.datetime.now().strftime("%y-%m-%d_%H-%M-%S-%f"), agent_classname)
+    return os.path.join(directory, experiment_name)
+
+
+def _apply_log_dir_override(log_dir_arg: str) -> dict:
+    """Mirror of the agent_cfg mutation in benchmark_skrl.py's log_dir branch."""
+    import os
+
+    log_dir = os.path.abspath(log_dir_arg)
+    return {
+        "directory": os.path.dirname(log_dir) or ".",
+        "experiment_name": os.path.basename(log_dir),
+    }
+
+
+def test_log_dir_override_recomposes_to_exact_path():
+    """The override must make experiment_dir equal the absolute log_dir."""
+    import os
+
+    log_dir = "/tmp/bundle_xyz/training_data"
+    override = _apply_log_dir_override(log_dir)
+    composed = _compose_experiment_dir(override["directory"], override["experiment_name"])
+    assert composed == os.path.abspath(log_dir), (
+        f"experiment_dir {composed!r} != {log_dir!r}; SKRL will silently "
+        f"interpose a timestamp subdir when experiment_name is empty."
+    )
+
+
+def test_log_dir_override_handles_trailing_slash():
+    """Trailing slash on --log_dir should not corrupt the basename split."""
+    import os
+
+    log_dir = "/tmp/bundle_abc/training_data/"
+    override = _apply_log_dir_override(log_dir)
+    composed = _compose_experiment_dir(override["directory"], override["experiment_name"])
+    assert composed == os.path.abspath(log_dir)

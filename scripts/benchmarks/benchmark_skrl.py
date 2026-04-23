@@ -355,9 +355,14 @@ def main(
     env_cfg.seed = args_cli.seed
 
     if args_cli.log_dir is not None:
+        # Decompose so both `directory` and `experiment_name` are non-empty —
+        # SKRL's BaseAgent synthesizes a timestamp+classname subdir when
+        # `experiment_name` is falsy. Splitting <log_dir> into dirname/basename
+        # makes ``os.path.join(directory, experiment_name)`` recompose to
+        # <log_dir> exactly.
         log_dir = os.path.abspath(args_cli.log_dir)
-        agent_cfg["agent"]["experiment"]["directory"] = log_dir
-        agent_cfg["agent"]["experiment"]["experiment_name"] = ""
+        agent_cfg["agent"]["experiment"]["directory"] = os.path.dirname(log_dir) or "."
+        agent_cfg["agent"]["experiment"]["experiment_name"] = os.path.basename(log_dir)
         os.makedirs(log_dir, exist_ok=True)
     else:
         log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
