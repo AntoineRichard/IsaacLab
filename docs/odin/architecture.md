@@ -114,7 +114,7 @@ Every Odin run is uniquely identified by `(framework, backend, task, seed, date)
 ├── manifest.json       # Odin-side index (Layer 2)
 ├── startup.json        # Dense cProfile, v1.0 schema (Layer 1)
 ├── training.json       # Full training metrics, v1.0 schema (Layer 1)
-├── tb/                 # Raw TB event files, best-effort copy
+├── training_data/      # TB events + params/ + checkpoints, written by the training framework
 └── logs/               # stderr/stdout tails (last 16 KB) on failure only
 ```
 
