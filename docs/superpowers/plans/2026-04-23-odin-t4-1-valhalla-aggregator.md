@@ -107,14 +107,17 @@ def test_is_divergent_below_threshold_returns_empty():
 
 
 def test_is_divergent_outlier_flags_its_index():
-    # [1, 1, 1, 1, 10] — 10 is clearly > 2*std from mean.
-    assert is_divergent([1.0, 1.0, 1.0, 1.0, 10.0], z=2.0) == [4]
+    # [1, 1, 1, 1, 1, 10] — 10 is > 2*std from mean.
+    # Note: with strict `>` and ddof=1, a single outlier among n-1 identical values
+    # has a max achievable z-score of (n-1)/sqrt(n-1) = sqrt(n-1); n=6 → ≈ 2.24, which
+    # clears the z=2.0 threshold; n=5 → exactly 4/sqrt(5) ≈ 1.79, which does NOT.
+    assert is_divergent([1.0, 1.0, 1.0, 1.0, 1.0, 10.0], z=2.0) == [5]
 
 
 def test_is_divergent_higher_z_may_skip_outlier():
-    # With z=3.0 the single outlier might not breach, depends on numbers.
-    # Use a case that's 2-sigma (flags at z=2) but not 3-sigma (skipped at z=3).
-    values = [1.0, 1.0, 1.0, 1.0, 3.0]
+    # A case that's 2-sigma (flags at z=2) but not 3-sigma (skipped at z=3).
+    # Same reason n=6 is used: the max z-score of this shape is ~2.24, clears 2.0 not 3.0.
+    values = [1.0, 1.0, 1.0, 1.0, 1.0, 3.0]
     out_at_2 = is_divergent(values, z=2.0)
     out_at_3 = is_divergent(values, z=3.0)
     assert len(out_at_2) >= 1  # flags the outlier
