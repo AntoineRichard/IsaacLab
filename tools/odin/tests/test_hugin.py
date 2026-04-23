@@ -14,9 +14,13 @@ from tools.odin.hugin import run as hugin_run
 
 
 def _fake_run_factory():
-    """Return a stub that pretends to write startup.json/training.json."""
+    """Return a stub that pretends to write startup.json/training.json and
+    records every command it was called with for later assertions."""
+
+    captured_cmds: list[list[str]] = []
 
     def _fake_run(cmd, *args, **kwargs):
+        captured_cmds.append(list(cmd))
         out_idx = cmd.index("--schema_v1_output") + 1
         out_path = cmd[out_idx]
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -30,12 +34,14 @@ def _fake_run_factory():
 
         return R()
 
+    _fake_run.captured_cmds = captured_cmds
     return _fake_run
 
 
 def test_hugin_happy_path(tmp_path, monkeypatch):
     bundle_root = str(tmp_path)
-    monkeypatch.setattr(hugin_run, "_subprocess_run", _fake_run_factory())
+    fake_run = _fake_run_factory()
+    monkeypatch.setattr(hugin_run, "_subprocess_run", fake_run)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -65,6 +71,18 @@ def test_hugin_happy_path(tmp_path, monkeypatch):
     with open(os.path.join(bundle, "manifest.json")) as f:
         m = json.load(f)
     assert m["phases"]["training"]["exit_code"] == 0
+
+    training_data_dir = os.path.join(bundle, "training_data")
+    assert os.path.isdir(training_data_dir), f"{training_data_dir} not created"
+    # Training subprocess should receive --log_dir <bundle>/training_data.
+    training_cmds = [c for c in fake_run.captured_cmds if "benchmark_rsl_rl.py" in " ".join(c)]
+    assert len(training_cmds) == 1
+    cmd = training_cmds[0]
+    assert "--log_dir" in cmd
+    log_dir_idx = cmd.index("--log_dir")
+    assert cmd[log_dir_idx + 1] == training_data_dir
+    # Old tb/ directory should no longer be created.
+    assert not os.path.exists(os.path.join(bundle, "tb")), "stale tb/ dir leaked"
 
 
 def test_hugin_failure_path_writes_logs(tmp_path, monkeypatch):
