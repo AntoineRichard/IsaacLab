@@ -341,7 +341,9 @@ dashboard can surface "every seed failed for this task" prominently.
   min=1, max=5, cv_pct≈52.7.
 - `stats_over` on `[]`, `[5]`, `[5, 5]` — edge cases; std=0 for n=1,
   population std for n=2.
-- `is_divergent([1,1,1,1,10], z=2.0)` → `[4]`; with `z=3.0` → `[]`.
+- `is_divergent([1,1,1,1,1,10], z=2.0)` → `[5]`; with `z=3.0` → `[]`.
+  (The `(n-1)/sqrt(n-1)` bound on a single-outlier z-score requires n ≥ 6
+  to clear `z=2.0` under strict `>` comparison.)
 - `is_divergent` on n < 3 always returns `[]`.
 - `cv_pct` when mean=0 returns 0.0 (not NaN).
 
