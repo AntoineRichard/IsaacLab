@@ -119,3 +119,119 @@ Reads your filtered `physx_envs.yaml`, writes:
 2. Author `docs/odin/newton_api_gaps.md` with per-gap body sections
    (what's missing, count of affected envs, unlock value) followed by a
    per-env appendix table.
+
+## Dispatching across a fleet (T3.1 — Asgard)
+
+`tools/odin/asgard/cli.py` (the `odin-dispatch` entry point) ingests
+the curated T2.1 YAMLs + a `fleet.yaml` listing SSH-accessible Valkyrie
+machines and runs Hugin/Munin jobs across them in parallel.
+
+### Fleet configuration
+
+Create a `fleet.yaml` with per-host SSH / path config:
+
+```yaml
+fleet_name: h100-sweep-2026-04
+default_ssh_user: odinrunner
+default_ssh_key: ~/.ssh/odin_id_ed25519
+hosts:
+  - host: valkyrie-01.internal
+  - host: valkyrie-02.internal
+    ssh_user: svc-odin
+    isaaclab_path: /mnt/scratch/IsaacLab
+  - host: 10.0.0.42
+    ssh_key: ~/.ssh/alt_key
+```
+
+Per-host fields override the fleet-level defaults. `container_name`
+defaults to `isaac-lab-base` (matching `docker/docker-compose.yaml` for
+profile `base`); override per-host if you're using a different profile.
+
+### Running a dispatch
+
+Run from the repo root. `PYTHONPATH=.` makes `tools.odin.*` importable.
+
+```bash
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/asgard/cli.py \
+    --fleet fleet.yaml \
+    --physx-yaml tools/odin/config/physx_envs.yaml \
+    --newton-yaml tools/odin/config/newton_envs.yaml \
+    --seeds 42,43,44 \
+    [--include 'Isaac-Ant-*'] \
+    [--resume LATEST] \
+    [--fresh] \
+    [--skip-preflight] \
+    [--per-job-timeout 14400] \
+    [--verbose]
+```
+
+Each `keep: true` row in the YAML is expanded across the seed list into
+one job per `(task, seed)`. Jobs dispatch concurrently — one per
+Valkyrie. Bundles land in `odin_runs/<dispatch_id>/<run_id>/` on the
+controller (rsync'd back on each job completion).
+
+### What happens on first contact
+
+For each Valkyrie in the fleet:
+
+1. Preflight: SSH-reach + `docker ps` + `docker inspect <container_name>`
+   + `test -d <isaaclab_path>`. A failure aborts the dispatch with a
+   per-host report (`preflight.json` written either way). Use
+   `--skip-preflight` to continue with the healthy hosts.
+2. Provision: rsync the controller's working tree to the Valkyrie's
+   `isaaclab_path`, then `./docker/container.py start` (or stop+start
+   under `--fresh`). `--fresh` wipes the remote tree first.
+3. Dispatch loop: pull a job from the shared queue, SSH in and
+   `docker exec` Hugin/Munin with the job's CLI args, tee stdout to
+   `<run_id>/logs/ssh-tail.log`, rsync the bundle back on exit,
+   update `dispatch.json`.
+
+### Failure classification
+
+Jobs fail into one of four kinds (stored in `dispatch.json` under
+`failure.kind`):
+
+- `infrastructure` — SSH error / docker exec error before Hugin
+  started. Retried up to `--max-infrastructure-retries` (default 2),
+  preferring a different Valkyrie after the first failure.
+- `hugin_crash` — remote process exited non-zero. **Not retried** —
+  real bugs repeat; use `--retry-failed <run_id>` to explicitly
+  re-attempt on a later invocation.
+- `hugin_malformed_bundle` — Hugin exited 0 but `manifest.json` is
+  missing / bad / wrong schema. Not retried.
+- `timeout` — job ran past `--per-job-timeout`. Not retried; the
+  remote process is terminated.
+
+### Resume
+
+If the controller crashes mid-dispatch, re-invoke with
+`--resume <dispatch_id>` (or `--resume LATEST` to pick the most recent
+directory). In-flight jobs flip back to `pending` and re-dispatch;
+completed and failed jobs are preserved.
+
+Starting a fresh dispatch means **not** passing `--resume` — a new
+`<dispatch_id>` directory is created.
+
+### State on disk
+
+```
+odin_runs/
+└── 20260422-220000/                         # dispatch_id
+    ├── dispatch.json                         # full state, atomically rewritten
+    ├── fleet.yaml.snapshot                   # fleet.yaml at dispatch start
+    ├── preflight.json                        # opening health check
+    ├── rsl-rl_physx_Isaac-Ant-Direct-v0_20260422-220000_seed42/
+    │   ├── manifest.json
+    │   ├── training.json
+    │   ├── startup.json
+    │   ├── tb/
+    │   └── logs/
+    │       ├── ssh-tail.log                  # controller-side tee of remote stdout
+    │       └── (Hugin's own log files)
+    └── ...
+```
+
+`dispatch.json` schema v1.0 is defined in
+`tools/odin/asgard/state.py`. See
+`docs/superpowers/specs/2026-04-22-odin-t3-1-dispatch-design.md` for
+field-by-field details.
