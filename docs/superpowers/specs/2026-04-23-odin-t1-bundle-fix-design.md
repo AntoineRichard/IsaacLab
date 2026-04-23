@@ -103,10 +103,18 @@ When `args_cli.log_dir` is set:
   `OnPolicyRunner(..., log_dir=log_dir, ...)`.
 - **SKRL** (`benchmark_skrl.py` around line 333-340): set
   `agent_cfg["agent"]["experiment"]["directory"] =
-  os.path.abspath(args_cli.log_dir)` and
-  `agent_cfg["agent"]["experiment"]["experiment_name"] = ""`.
-  SKRL's `BaseAgent` concatenates those two to form `experiment_dir`, so
-  an empty `experiment_name` yields `<args_cli.log_dir>` exactly.
+  os.path.dirname(os.path.abspath(args_cli.log_dir)) or "."` and
+  `agent_cfg["agent"]["experiment"]["experiment_name"] =
+  os.path.basename(os.path.abspath(args_cli.log_dir))`. SKRL's
+  `BaseAgent.__init__` (`skrl/agents/torch/base.py:82-91`) applies a
+  `if not experiment_name:` fallback that synthesizes a
+  `<timestamp>_<AgentClass>` subdir — passing an empty string there
+  silently routes TB events under that synthetic subdir, not into
+  `<log_dir>`. Path decomposition guarantees both parts are truthy
+  strings whose `os.path.join` recomposes to `<log_dir>` exactly.
+  `os.path.abspath` must run before `dirname`/`basename` so that a
+  trailing slash (which would make `basename` empty) is canonicalised
+  away.
 
 When `args_cli.log_dir` is unset, both scripts preserve current
 auto-generated behavior. No standalone user is affected.
