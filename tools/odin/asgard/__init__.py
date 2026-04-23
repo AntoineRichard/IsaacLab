@@ -22,6 +22,7 @@ from tools.odin.asgard.state import (
     write_dispatch_state,
 )
 from tools.odin.asgard.preflight import PreflightResult, preflight_valkyrie
+from tools.odin.asgard.provisioner import ProvisionResult, provision_valkyrie
 from tools.odin.asgard.transport import (
     RsyncResult,
     RsyncRunner,
@@ -52,4 +53,6 @@ __all__ = [
     "SSHRunner",
     "PreflightResult",
     "preflight_valkyrie",
+    "ProvisionResult",
+    "provision_valkyrie",
 ]
