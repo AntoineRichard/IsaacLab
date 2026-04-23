@@ -149,12 +149,8 @@ def _classify_failure(
         return str(job_failure_kind)
     if not bundle_dir.exists():
         return "missing_bundle"
-    if bundle_jsons is None:
-        return "malformed_bundle"
-    manifest, training = bundle_jsons
-    if not _bundle_is_completed(manifest, training):
-        return "malformed_bundle"
-    # Shouldn't reach here — this job should have been classified completed.
+    # Remaining cases — including a job marked completed in dispatch.json
+    # whose bundle fails schema validation — are malformed bundles.
     return "malformed_bundle"
 
 

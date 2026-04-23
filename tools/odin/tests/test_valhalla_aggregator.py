@@ -319,8 +319,6 @@ def test_missing_dispatch_id_warns_and_falls_back(tmp_path: Path, capsys: pytest
     dispatch.mkdir()
     # Write dispatch.json without a dispatch_id key.
     with (dispatch / "dispatch.json").open("w") as fh:
-        import json
-
         json.dump(
             {
                 "schema_version": "1.0",

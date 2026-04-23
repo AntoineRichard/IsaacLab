@@ -220,6 +220,7 @@ odin_runs/
     ├── dispatch.json                         # full state, atomically rewritten
     ├── fleet.yaml.snapshot                   # fleet.yaml at dispatch start
     ├── preflight.json                        # opening health check
+    ├── aggregate.json                        # per-dispatch rollup (T4.1)
     ├── rsl-rl_physx_Isaac-Ant-Direct-v0_20260422-220000_seed42/
     │   ├── manifest.json
     │   ├── training.json
@@ -235,3 +236,33 @@ odin_runs/
 `tools/odin/asgard/state.py`. See
 `docs/superpowers/specs/2026-04-22-odin-t3-1-dispatch-design.md` for
 field-by-field details.
+
+## Aggregating a dispatch (T4.1 — Valhalla)
+
+Every dispatch auto-produces `odin_runs/<dispatch_id>/aggregate.json` at
+the tail of `run_dispatch` (opt out with `--skip-aggregate`). The
+aggregate rolls every bundle into a nested `(task, framework, backend) →
+seeds{} + aggregate{}` shape with cross-seed mean/std/min/max/cv_pct on
+six headline metrics (`reward_final_ema`, `ep_length_final_ema`,
+`iter_time_s_mean`, `env_steps_per_s_mean`, `ram_gb_peak`,
+`gpu_mem_gb_peak`). Seeds whose reward deviates more than `2.0 * std`
+from the cross-seed mean land in `divergent_seeds[]`. Failed bundles
+(or ones that fail the strict-whitelist validation) go in a top-level
+`failures[]` with `failure_kind` from T3.1's classification plus the
+synthesised `missing_bundle` / `malformed_bundle`.
+
+### Re-running the aggregator manually
+
+```bash
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/valhalla/cli.py <dispatch_id|LATEST> \
+    [--runs-root odin_runs/] \
+    [--divergence-z 2.0] \
+    [--no-overwrite] \
+    [--quiet]
+```
+
+Useful after `--retry-failed` lands new bundles in a prior dispatch, or
+to aggregate a partial (in-flight) dispatch.
+
+`aggregate.json` schema v1.0 and the full field list live in
+`docs/superpowers/specs/2026-04-23-odin-t4-1-valhalla-aggregator-design.md`.
