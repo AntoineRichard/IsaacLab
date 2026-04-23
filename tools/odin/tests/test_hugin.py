@@ -83,6 +83,8 @@ def test_hugin_happy_path(tmp_path, monkeypatch):
     assert cmd[log_dir_idx + 1] == training_data_dir
     # Old tb/ directory should no longer be created.
     assert not os.path.exists(os.path.join(bundle, "tb")), "stale tb/ dir leaked"
+    # The manifest's artifacts list should reflect the new dir.
+    assert "training_data" in m["artifacts"]
 
 
 def test_hugin_failure_path_writes_logs(tmp_path, monkeypatch):

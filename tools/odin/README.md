@@ -224,7 +224,7 @@ odin_runs/
     │   ├── manifest.json
     │   ├── training.json
     │   ├── startup.json
-    │   ├── tb/
+    │   ├── training_data/              # TB events + params/ + checkpoints, written by the training framework
     │   └── logs/
     │       ├── ssh-tail.log                  # controller-side tee of remote stdout
     │       └── (Hugin's own log files)

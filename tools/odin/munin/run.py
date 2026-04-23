@@ -12,10 +12,7 @@ script swapped to ``benchmark_skrl.py`` and the framework set to ``skrl``.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import glob
 import os
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -57,15 +54,6 @@ def _run_phase(cmd: list[str], bundle_dir: str, phase_name: str, output_json: st
         duration_s=duration_s,
         exit_code=completed.returncode,
     )
-
-
-def _copy_tb_events(training_log_dir: str, bundle_dir: str) -> None:
-    """Best-effort copy of TB event files from SKRL's log dir into ``<bundle>/tb/``."""
-    tb_target = os.path.join(bundle_dir, "tb")
-    os.makedirs(tb_target, exist_ok=True)
-    for evt in glob.glob(os.path.join(training_log_dir, "**", "events.out.tfevents.*"), recursive=True):
-        with contextlib.suppress(OSError):
-            shutil.copy2(evt, tb_target)
 
 
 def main():
@@ -117,6 +105,8 @@ def main():
             output_json=os.path.join(bundle_dir, "startup.json"),
         )
 
+    training_data_dir = os.path.join(bundle_dir, "training_data")
+    os.makedirs(training_data_dir, exist_ok=True)
     training_cmd = [
         _ISAACLAB_SH,
         "-p",
@@ -138,6 +128,8 @@ def main():
         os.path.join(bundle_dir, "training.json"),
         "--ema_alpha",
         str(args.ema_alpha),
+        "--log_dir",
+        training_data_dir,
     ]
     if args.no_series:
         training_cmd.append("--no_series")
@@ -148,15 +140,6 @@ def main():
         phase_name="training",
         output_json=os.path.join(bundle_dir, "training.json"),
     )
-
-    # Best-effort TB copy: look for the most recent skrl log dir.
-    skrl_logs = os.path.join(_REPO_ROOT, "logs", "skrl")
-    if os.path.isdir(skrl_logs):
-        for experiment_dir in sorted(os.listdir(skrl_logs), reverse=True):
-            experiment_path = os.path.join(skrl_logs, experiment_dir)
-            if os.path.isdir(experiment_path):
-                _copy_tb_events(experiment_path, bundle_dir)
-                break
 
     run_end = datetime.now(timezone.utc)
     write_manifest(
