@@ -13,6 +13,14 @@ same public surface.
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig, load_fleet
 from tools.odin.asgard.queue import FailureInfo, JobEntry, build_queue_from_env_lists
+from tools.odin.asgard.state import (
+    SCHEMA_VERSION,
+    DispatchState,
+    FleetSnapshot,
+    read_dispatch_state,
+    reset_in_flight_to_pending,
+    write_dispatch_state,
+)
 
 __all__ = [
     "Fleet",
@@ -21,4 +29,10 @@ __all__ = [
     "JobEntry",
     "FailureInfo",
     "build_queue_from_env_lists",
+    "DispatchState",
+    "FleetSnapshot",
+    "SCHEMA_VERSION",
+    "read_dispatch_state",
+    "reset_in_flight_to_pending",
+    "write_dispatch_state",
 ]
