@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.odin.asgard.fleet import Fleet, ValkyrieConfig, load_fleet
+from tools.odin.asgard.fleet import Fleet, load_fleet
 
 
 def _write_fleet(tmp_path: Path, text: str) -> Path:

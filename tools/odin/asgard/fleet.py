@@ -77,9 +77,7 @@ def load_fleet(path: Path) -> Fleet:
             raise ValueError(f"fleet.yaml host entry #{idx} missing required 'host' field: {raw!r}")
         ssh_user = raw.get("ssh_user") or default_ssh_user
         if ssh_user is None:
-            raise ValueError(
-                f"fleet.yaml host {raw['host']!r} has no ssh_user and no default_ssh_user is set"
-            )
+            raise ValueError(f"fleet.yaml host {raw['host']!r} has no ssh_user and no default_ssh_user is set")
         ssh_key_value = raw.get("ssh_key") if "ssh_key" in raw else default_ssh_key
         hosts.append(
             ValkyrieConfig(

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import subprocess
 from pathlib import Path
 
@@ -86,7 +85,8 @@ def stub_provisioner(monkeypatch):
 
     def _fake_pf(host, *, ssh):
         return pf.PreflightResult(
-            host=host.host, ok=True,
+            host=host.host,
+            ok=True,
             checks={"ssh_reach": True, "docker_running": True, "container_up": True, "isaaclab_present": True},
             message="",
         )

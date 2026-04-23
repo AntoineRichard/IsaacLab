@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.odin.asgard.queue import JobEntry, build_queue_from_env_lists
+from tools.odin.asgard.queue import build_queue_from_env_lists
 from tools.odin.common.env_list import EnvEntry, EnvList, write_env_list
 
 
@@ -43,9 +43,7 @@ def _write_env_list(tmp_path: Path, name: str, entries: list[EnvEntry]) -> Path:
 
 def test_expand_one_row_one_seed(tmp_path: Path):
     physx = _write_env_list(tmp_path, "physx.yaml", [_env("Isaac-Ant-Direct-v0")])
-    jobs = build_queue_from_env_lists(
-        physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000"
-    )
+    jobs = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
     assert len(jobs) == 1
     j = jobs[0]
     assert j.task_id == "Isaac-Ant-Direct-v0"
@@ -73,9 +71,7 @@ def test_expand_multiple_seeds(tmp_path: Path):
 def test_combines_physx_and_newton(tmp_path: Path):
     physx = _write_env_list(tmp_path, "physx.yaml", [_env("Isaac-Ant-Direct-v0")])
     newton = _write_env_list(tmp_path, "newton.yaml", [_env("Isaac-Ant-Direct-v0")])
-    jobs = build_queue_from_env_lists(
-        physx_yaml=physx, newton_yaml=newton, seeds=[42], dispatch_id="20260422-220000"
-    )
+    jobs = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=newton, seeds=[42], dispatch_id="20260422-220000")
     assert len(jobs) == 2
     assert {j.backend for j in jobs} == {"physx", "newton"}
 
@@ -86,9 +82,7 @@ def test_skips_keep_false_rows(tmp_path: Path):
         "physx.yaml",
         [_env("Isaac-Ant-Direct-v0"), _env("Isaac-Keep-False-v0", keep=False)],
     )
-    jobs = build_queue_from_env_lists(
-        physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000"
-    )
+    jobs = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
     assert [j.task_id for j in jobs] == ["Isaac-Ant-Direct-v0"]
 
 
@@ -98,9 +92,7 @@ def test_skips_stale_rows(tmp_path: Path):
         "physx.yaml",
         [_env("Isaac-Ant-Direct-v0"), _env("Isaac-Stale-v0", status="stale")],
     )
-    jobs = build_queue_from_env_lists(
-        physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000"
-    )
+    jobs = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
     assert [j.task_id for j in jobs] == ["Isaac-Ant-Direct-v0"]
 
 
@@ -122,14 +114,10 @@ def test_include_filter_fnmatch(tmp_path: Path):
 
 def test_neither_yaml_raises():
     with pytest.raises(ValueError, match="at least one"):
-        build_queue_from_env_lists(
-            physx_yaml=None, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000"
-        )
+        build_queue_from_env_lists(physx_yaml=None, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
 
 
 def test_empty_seeds_raises(tmp_path: Path):
     physx = _write_env_list(tmp_path, "physx.yaml", [_env("Isaac-Ant-Direct-v0")])
     with pytest.raises(ValueError, match="seed"):
-        build_queue_from_env_lists(
-            physx_yaml=physx, newton_yaml=None, seeds=[], dispatch_id="20260422-220000"
-        )
+        build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[], dispatch_id="20260422-220000")

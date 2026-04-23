@@ -14,13 +14,11 @@ content — the registry changes over time.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from tools.odin.common.env_list import load_env_list
-
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ISAACLAB_SH = REPO_ROOT / "isaaclab.sh"
@@ -34,6 +32,7 @@ def test_enumerate_pipeline_end_to_end(tmp_path: Path):
 
     # Inherit env plus PYTHONPATH=. so `tools.odin.*` imports resolve.
     import os
+
     child_env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
 
     # --- Step 1: enumerate PhysX envs ---
@@ -52,8 +51,7 @@ def test_enumerate_pipeline_end_to_end(tmp_path: Path):
         env=child_env,
     )
     assert result.returncode == 0, (
-        f"enumerate_physx_envs.py failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"enumerate_physx_envs.py failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert physx_out.exists(), "PhysX output YAML was not created"
 
@@ -80,8 +78,7 @@ def test_enumerate_pipeline_end_to_end(tmp_path: Path):
         env=child_env,
     )
     assert result.returncode == 0, (
-        f"enumerate_newton_envs.py failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"enumerate_newton_envs.py failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert newton_out.exists()
     assert gap_out.exists()
@@ -90,27 +87,20 @@ def test_enumerate_pipeline_end_to_end(tmp_path: Path):
     gaps = load_env_list(gap_out)
 
     # --- Consistency: every Newton/gap row was kept in PhysX ---
-    physx_by_id = {
-        e.task_id: e for rows in physx.groups.values() for e in rows
-    }
+    physx_by_id = {e.task_id: e for rows in physx.groups.values() for e in rows}
     for rows in newton.groups.values():
         for e in rows:
             assert e.task_id in physx_by_id, f"Newton row {e.task_id} not in PhysX YAML"
-            assert physx_by_id[e.task_id].keep, (
-                f"Newton row {e.task_id} was kept in physx but keep=False there"
-            )
+            assert physx_by_id[e.task_id].keep, f"Newton row {e.task_id} was kept in physx but keep=False there"
 
     # --- Consistency: no row appears in both Newton and gap lists ---
     newton_ids = {e.task_id for rows in newton.groups.values() for e in rows}
     gap_ids = {e.task_id for rows in gaps.groups.values() for e in rows}
     assert not (newton_ids & gap_ids), (
-        f"Rows appear in both newton_envs and gap_candidates: "
-        f"{sorted(newton_ids & gap_ids)}"
+        f"Rows appear in both newton_envs and gap_candidates: {sorted(newton_ids & gap_ids)}"
     )
 
     # --- Every gap row has suspected_gap set (tbd is fine for fresh runs) ---
     for rows in gaps.groups.values():
         for e in rows:
-            assert e.suspected_gap is not None, (
-                f"Gap row {e.task_id} missing suspected_gap"
-            )
+            assert e.suspected_gap is not None, f"Gap row {e.task_id} missing suspected_gap"

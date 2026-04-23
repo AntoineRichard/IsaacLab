@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,7 @@ class FleetSnapshot:
     """Per-host live state, written into ``dispatch.json``."""
 
     host: str
-    status: str                   # "idle" | "busy" | "down"
+    status: str  # "idle" | "busy" | "down"
     current_run_id: str | None = None
     last_error: str | None = None
 
@@ -51,7 +51,7 @@ class DispatchState:
 
     schema_version: str
     dispatch_id: str
-    started_at: str               # UTC ISO-8601
+    started_at: str  # UTC ISO-8601
     ended_at: str | None
     seeds: list[int]
     commit_sha: str
@@ -141,9 +141,7 @@ def _state_to_dict(s: DispatchState) -> dict[str, Any]:
 def _state_from_dict(d: dict[str, Any]) -> DispatchState:
     got_schema = str(d.get("schema_version", ""))
     if got_schema != SCHEMA_VERSION:
-        raise ValueError(
-            f"Unsupported dispatch.json schema_version {got_schema!r} (expected {SCHEMA_VERSION!r})"
-        )
+        raise ValueError(f"Unsupported dispatch.json schema_version {got_schema!r} (expected {SCHEMA_VERSION!r})")
     return DispatchState(
         schema_version=got_schema,
         dispatch_id=str(d["dispatch_id"]),

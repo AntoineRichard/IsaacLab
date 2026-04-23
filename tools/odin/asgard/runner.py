@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import json
 import queue
-import shutil
-import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +27,7 @@ from tools.odin.asgard.state import (
     reset_in_flight_to_pending,
     write_dispatch_state,
 )
-from tools.odin.asgard.transport import RsyncRunner, SSHRunner, ShellRsyncRunner, ShellSSHRunner
+from tools.odin.asgard.transport import RsyncRunner, ShellRsyncRunner, ShellSSHRunner, SSHRunner
 from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
 
 __all__ = ["DispatchOptions", "resolve_dispatch_dir", "run_dispatch"]
@@ -132,12 +130,67 @@ def _write_preflight(results, dispatch_dir: Path, dispatch_id: str) -> None:
         "schema_version": "1.0",
         "dispatch_id": dispatch_id,
         "checked_at": _utc_now_iso(),
-        "hosts": [
-            {"host": r.host, "ok": r.ok, "checks": r.checks, "message": r.message}
-            for r in results
-        ],
+        "hosts": [{"host": r.host, "ok": r.ok, "checks": r.checks, "message": r.message} for r in results],
     }
     (dispatch_dir / "preflight.json").write_text(json.dumps(payload, indent=2))
+
+
+def _apply_state_event(
+    ev: StateEvent,
+    state: DispatchState,
+    jobs_by_id: dict[str, JobEntry],
+    verbose: bool,
+) -> int:
+    """Apply one worker state event to the shared :class:`DispatchState`.
+
+    Mutates ``state`` in place: flips job status, records host assignment,
+    and updates the matching :class:`FleetSnapshot`.
+
+    Args:
+        ev: State event emitted by a :class:`ValkyrieWorker`.
+        state: Shared dispatch state to mutate.
+        jobs_by_id: ``run_id → JobEntry`` lookup rebuilt by the caller.
+        verbose: When ``True``, print per-job completion/failure lines.
+
+    Returns:
+        ``1`` when the event advances the "remaining" counter
+        (``completed`` or ``failed``), ``0`` otherwise.
+    """
+    j = jobs_by_id[ev.run_id]
+    if ev.transition == "running":
+        j.status = "running"
+        j.started_at = ev.started_at
+        j.assigned_to = ev.host
+        for f in state.fleet:
+            if f.host == ev.host:
+                f.status = "busy"
+                f.current_run_id = ev.run_id
+        return 0
+    if ev.transition == "completed":
+        j.status = "completed"
+        j.ended_at = ev.ended_at
+        for f in state.fleet:
+            if f.host == ev.host:
+                f.status = "idle"
+                f.current_run_id = None
+        if verbose:
+            print(f"[{_utc_now_iso()}] COMPLETE {j.run_id} on {ev.host}")
+        return 1
+    if ev.transition == "failed":
+        j.status = "failed"
+        j.failure = ev.failure
+        j.ended_at = ev.ended_at
+        for f in state.fleet:
+            if f.host == ev.host:
+                f.status = "idle"
+                f.current_run_id = None
+                if ev.failure is not None:
+                    f.last_error = ev.failure.message
+        if verbose:
+            kind = ev.failure.kind if ev.failure else "unknown"
+            print(f"[{_utc_now_iso()}] FAIL     {j.run_id} on {ev.host} (kind={kind})")
+        return 1
+    return 0
 
 
 def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntry]:
@@ -369,39 +422,7 @@ def run_dispatch(
                 write_dispatch_state(dispatch_dir, state)
                 last_write = time.monotonic()
             continue
-        j = jobs_by_id[ev.run_id]
-        if ev.transition == "running":
-            j.status = "running"
-            j.started_at = ev.started_at
-            j.assigned_to = ev.host
-            for f in state.fleet:
-                if f.host == ev.host:
-                    f.status = "busy"
-                    f.current_run_id = ev.run_id
-        elif ev.transition == "completed":
-            j.status = "completed"
-            j.ended_at = ev.ended_at
-            for f in state.fleet:
-                if f.host == ev.host:
-                    f.status = "idle"
-                    f.current_run_id = None
-            remaining -= 1
-            if options.verbose:
-                print(f"[{_utc_now_iso()}] COMPLETE {j.run_id} on {ev.host}")
-        elif ev.transition == "failed":
-            j.status = "failed"
-            j.failure = ev.failure
-            j.ended_at = ev.ended_at
-            for f in state.fleet:
-                if f.host == ev.host:
-                    f.status = "idle"
-                    f.current_run_id = None
-                    if ev.failure is not None:
-                        f.last_error = ev.failure.message
-            remaining -= 1
-            if options.verbose:
-                kind = ev.failure.kind if ev.failure else "unknown"
-                print(f"[{_utc_now_iso()}] FAIL     {j.run_id} on {ev.host} (kind={kind})")
+        remaining -= _apply_state_event(ev, state, jobs_by_id, options.verbose)
         write_dispatch_state(dispatch_dir, state)
         last_write = time.monotonic()
 

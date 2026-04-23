@@ -17,10 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-import yaml
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
-from tools.odin.asgard.queue import JobEntry
 from tools.odin.asgard.runner import DispatchOptions, resolve_dispatch_dir, run_dispatch
 from tools.odin.asgard.state import read_dispatch_state
 from tools.odin.asgard.transport import RsyncResult, SSHResult
@@ -70,6 +68,7 @@ def _write_fleet(tmp_path: Path) -> Fleet:
 
 def _write_env_list(tmp_path: Path) -> Path:
     from tools.odin.common.env_list import EnvEntry, EnvList, write_env_list
+
     el = EnvList()
     el.groups["direct/ant"] = [
         EnvEntry(

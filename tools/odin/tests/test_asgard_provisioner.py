@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pytest
-
 from tools.odin.asgard.fleet import ValkyrieConfig
 from tools.odin.asgard.provisioner import ProvisionResult, provision_valkyrie
 from tools.odin.asgard.transport import RsyncResult, SSHResult

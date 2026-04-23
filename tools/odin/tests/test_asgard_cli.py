@@ -34,9 +34,12 @@ def test_parse_seed_list_rejects_non_int():
 def test_parse_args_minimal():
     args = parse_args(
         [
-            "--fleet", "fleet.yaml",
-            "--physx-yaml", "physx.yaml",
-            "--seeds", "42",
+            "--fleet",
+            "fleet.yaml",
+            "--physx-yaml",
+            "physx.yaml",
+            "--seeds",
+            "42",
         ]
     )
     assert str(args.fleet) == "fleet.yaml"
@@ -51,17 +54,27 @@ def test_parse_args_minimal():
 def test_parse_args_all_flags():
     args = parse_args(
         [
-            "--fleet", "fleet.yaml",
-            "--physx-yaml", "physx.yaml",
-            "--newton-yaml", "newton.yaml",
-            "--seeds", "42,43",
-            "--include", "Isaac-Ant-*", "Isaac-Humanoid-*",
-            "--resume", "LATEST",
+            "--fleet",
+            "fleet.yaml",
+            "--physx-yaml",
+            "physx.yaml",
+            "--newton-yaml",
+            "newton.yaml",
+            "--seeds",
+            "42,43",
+            "--include",
+            "Isaac-Ant-*",
+            "Isaac-Humanoid-*",
+            "--resume",
+            "LATEST",
             "--fresh",
             "--skip-preflight",
-            "--per-job-timeout", "7200",
-            "--max-infrastructure-retries", "5",
-            "--retry-failed", "run1,run2",
+            "--per-job-timeout",
+            "7200",
+            "--max-infrastructure-retries",
+            "5",
+            "--retry-failed",
+            "run1,run2",
             "--verbose",
         ]
     )

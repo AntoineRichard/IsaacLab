@@ -10,8 +10,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from tools.odin.asgard.fleet import ValkyrieConfig
 from tools.odin.asgard.transport import ShellSSHRunner, SSHResult
 
