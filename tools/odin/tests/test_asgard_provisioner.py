@@ -133,3 +133,64 @@ def test_provision_result_records_commit_sha(tmp_path: Path, monkeypatch):
     rsync = _FakeRsync()
     r = provision_valkyrie(_host(), working_tree=tmp_path, fresh=False, ssh=ssh, rsync=rsync)
     assert r.commit_sha == "abc123d"
+
+
+def test_container_start_respects_custom_timeout():
+    """`_container_start(timeout_s=1800)` must reach the SSH call as timeout_s=1800."""
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.provisioner import _container_start
+
+    recorded: list[dict] = []
+
+    class _RecordingSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            recorded.append({"cmd": cmd, "timeout_s": timeout_s})
+
+            class R:
+                exit_code = 0
+                stdout = ""
+                stderr = ""
+                duration_s = 0.1
+
+            return R()
+
+    host = ValkyrieConfig(
+        host="v1.internal",
+        ssh_user="odin",
+        ssh_key=None,
+        isaaclab_path="/opt/IsaacLab",
+    )
+    ok = _container_start(host, _RecordingSSH(), timeout_s=1800)
+    assert ok is True
+    assert len(recorded) == 1
+    assert recorded[0]["timeout_s"] == 1800
+    assert "container.py start" in recorded[0]["cmd"]
+
+
+def test_container_start_default_timeout_is_300():
+    """Calling `_container_start(host, ssh)` without `timeout_s` keeps the warm-path default."""
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.provisioner import _container_start
+
+    recorded: list[dict] = []
+
+    class _RecordingSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            recorded.append({"timeout_s": timeout_s})
+
+            class R:
+                exit_code = 0
+                stdout = ""
+                stderr = ""
+                duration_s = 0.1
+
+            return R()
+
+    host = ValkyrieConfig(
+        host="v1.internal",
+        ssh_user="odin",
+        ssh_key=None,
+        isaaclab_path="/opt/IsaacLab",
+    )
+    _container_start(host, _RecordingSSH())
+    assert recorded[0]["timeout_s"] == 300

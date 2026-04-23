@@ -56,11 +56,18 @@ def _container_status(host: ValkyrieConfig, ssh: SSHRunner) -> str:
     return r.stdout.strip()
 
 
-def _container_start(host: ValkyrieConfig, ssh: SSHRunner) -> bool:
+def _container_start(host: ValkyrieConfig, ssh: SSHRunner, *, timeout_s: int = 300) -> bool:
+    """Run ``./docker/container.py start`` on ``host`` and return True on success.
+
+    The warm-path default of 300 s suits subsequent dispatches where the
+    container image is already built. First-time bootstrap must pass a
+    longer ``timeout_s`` (see :mod:`tools.odin.asgard.bootstrap`) because the
+    first-time docker build takes 15-30 minutes.
+    """
     r = ssh.run(
         host,
         f"cd {host.isaaclab_path} && ./docker/container.py start",
-        timeout_s=300.0,
+        timeout_s=timeout_s,
     )
     return r.exit_code == 0
 
