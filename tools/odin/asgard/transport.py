@@ -1,0 +1,177 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Transport layer — SSH / rsync Protocols + shell-out default implementations."""
+
+from __future__ import annotations
+
+import subprocess
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Protocol
+
+from tools.odin.asgard.fleet import ValkyrieConfig
+
+__all__ = [
+    "SSHResult",
+    "RsyncResult",
+    "SSHRunner",
+    "RsyncRunner",
+    "ShellSSHRunner",
+]
+
+
+@dataclass
+class SSHResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_s: float
+    timed_out: bool = False
+
+
+@dataclass
+class RsyncResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_s: float
+    bytes_transferred: int | None = None
+
+
+class SSHRunner(Protocol):
+    def run(
+        self,
+        host: ValkyrieConfig,
+        cmd: str,
+        *,
+        timeout_s: float | None = None,
+        stdout_tee: Path | None = None,
+    ) -> SSHResult: ...
+
+
+class RsyncRunner(Protocol):
+    def pull(self, host: ValkyrieConfig, remote_path: str, local_path: Path) -> RsyncResult: ...
+
+    def push(self, host: ValkyrieConfig, local_path: Path, remote_path: str) -> RsyncResult: ...
+
+
+# --- Default ssh implementation ---------------------------------------------
+
+
+_DEFAULT_SSH_OPTS = [
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "ConnectTimeout=10",
+    "-o",
+    "BatchMode=yes",  # no interactive password prompts in a dispatch
+]
+
+
+class ShellSSHRunner:
+    """SSH runner that shells out to the ``ssh`` command."""
+
+    def _build_ssh_argv(self, host: ValkyrieConfig, cmd: str, timeout_s: float | None) -> list[str]:
+        argv: list[str] = ["ssh", *_DEFAULT_SSH_OPTS]
+        if host.ssh_key is not None:
+            argv += ["-i", str(host.ssh_key)]
+        argv += [f"{host.ssh_user}@{host.host}", cmd]
+        return argv
+
+    def run(
+        self,
+        host: ValkyrieConfig,
+        cmd: str,
+        *,
+        timeout_s: float | None = None,
+        stdout_tee: Path | None = None,
+    ) -> SSHResult:
+        """Run ``cmd`` on ``host`` and return an :class:`SSHResult`.
+
+        Streams stdout line-by-line to ``stdout_tee`` (if given). On timeout
+        the child process is terminated (then killed after 10 s grace);
+        ``timed_out`` is set on the returned result and ``exit_code`` is
+        whatever the terminated process reported (typically negative).
+
+        Args:
+            host: Target host configuration.
+            cmd: Shell command to execute on the remote host.
+            timeout_s: Optional wall-clock timeout in seconds. ``None`` means no
+                timeout.
+            stdout_tee: Optional path to append stdout lines as they arrive.
+
+        Returns:
+            :class:`SSHResult` capturing exit code, captured output, duration,
+            and timeout flag.
+        """
+        argv = self._build_ssh_argv(host, cmd, timeout_s)
+        t0 = time.monotonic()
+        tee_fh = None
+        stdout_buf: list[str] = []
+        stderr_buf: list[str] = []
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        if stdout_tee is not None:
+            stdout_tee.parent.mkdir(parents=True, exist_ok=True)
+            tee_fh = stdout_tee.open("a", encoding="utf-8")
+
+        timed_out = False
+        stdout_stream = proc.stdout
+        stderr_stream = proc.stderr
+        try:
+            # Simple single-thread read: drain stdout then wait. Sufficient
+            # for our use case where the remote command runs to completion
+            # and we don't need line-level real-time interleaving with stderr.
+            if stdout_stream is not None:
+                while True:
+                    line = stdout_stream.readline()
+                    if not line:
+                        break
+                    stdout_buf.append(line)
+                    if tee_fh is not None:
+                        tee_fh.write(line)
+                        tee_fh.flush()
+            try:
+                rc = proc.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc.terminate()
+                try:
+                    rc = proc.wait(timeout=10.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    rc = proc.wait()
+            # Drain stderr last (Popen keeps the pipe open until wait returns).
+            if stderr_stream is not None:
+                while True:
+                    line = stderr_stream.readline()
+                    if not line:
+                        break
+                    stderr_buf.append(line)
+        finally:
+            if tee_fh is not None:
+                tee_fh.close()
+            if stdout_stream is not None:
+                stdout_stream.close()
+            if stderr_stream is not None:
+                stderr_stream.close()
+
+        duration = time.monotonic() - t0
+        return SSHResult(
+            exit_code=int(rc if rc is not None else -1),
+            stdout="".join(stdout_buf),
+            stderr="".join(stderr_buf),
+            duration_s=duration,
+            timed_out=timed_out,
+        )
