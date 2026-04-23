@@ -66,7 +66,7 @@ def _build_docker_exec_cmd(host: ValkyrieConfig, job: JobEntry) -> str:
         f"--seed {job.seed}",
         f"--num_envs {job.num_envs}",
         f"--max_iterations {job.max_iterations}",
-        f"--runs_root odin_runs",
+        "--runs_root odin_runs",
     ]
     inner = " && ".join(inner_parts[:1]) + " && " + " ".join(inner_parts[1:])
     return f"cd {host.isaaclab_path} && docker exec {host.container_name} bash -lc '{inner}'"
@@ -104,6 +104,7 @@ class ValkyrieWorker(threading.Thread):
         self._ssh = ssh
         self._rsync = rsync
         self._shutdown = shutdown_event
+        self._preferred_not_seen: dict[str, int] = {}
 
     # -- public entry point -------------------------------------------------
 
@@ -116,11 +117,16 @@ class ValkyrieWorker(threading.Thread):
             if job is None:  # sentinel: queue drained
                 return
             if job.preferred_not and self.host.host in job.preferred_not:
-                # Put it back and yield briefly so another worker gets a shot.
-                # Task 9 will add a bounded fallback for single-worker fleets.
-                self._job_queue.put(job)
-                time.sleep(0.5)
-                continue
+                # Put it back and let another worker pick it up. To avoid
+                # spinning in the degenerate "only worker alive" case, bound
+                # the number of times WE will refuse the same job.
+                seen_count = self._preferred_not_seen.get(job.run_id, 0) + 1
+                self._preferred_not_seen[job.run_id] = seen_count
+                if seen_count < 3:
+                    self._job_queue.put(job)
+                    time.sleep(0.5)
+                    continue
+                # Fall through: take the job anyway.
             self._execute(job)
 
     # -- execute one job ----------------------------------------------------
@@ -137,9 +143,7 @@ class ValkyrieWorker(threading.Thread):
         while True:
             started_at = _utc_now_iso()
             self._state_chan.put(
-                StateEvent(
-                    run_id=job.run_id, host=self.host.host, transition="running", started_at=started_at
-                )
+                StateEvent(run_id=job.run_id, host=self.host.host, transition="running", started_at=started_at)
             )
             job.started_at = started_at
             job.attempts += 1
@@ -228,9 +232,7 @@ class ValkyrieWorker(threading.Thread):
         if r.exit_code in _INFRASTRUCTURE_DOCKER_EXIT_CODES:
             return FailureInfo(
                 kind="infrastructure",
-                message=(
-                    f"docker exec failed with exit {r.exit_code}: {r.stderr.strip() or 'unknown'}"
-                ),
+                message=(f"docker exec failed with exit {r.exit_code}: {r.stderr.strip() or 'unknown'}"),
                 details={
                     "exit_code": r.exit_code,
                     "attempts": job.attempts,

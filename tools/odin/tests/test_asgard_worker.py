@@ -13,8 +13,6 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pytest
-
 from tools.odin.asgard.fleet import ValkyrieConfig
 from tools.odin.asgard.queue import JobEntry
 from tools.odin.asgard.transport import RsyncResult, SSHResult
@@ -66,7 +64,12 @@ class _FakeRsync:
             # Fake Hugin creating manifest + training + startup at local_path.
             local_path.mkdir(parents=True, exist_ok=True)
             (local_path / "manifest.json").write_text(
-                json.dumps({"schema_version": "1.0", "phases": {"startup": {"status": "completed"}, "training": {"status": "completed"}}})
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "phases": {"startup": {"status": "completed"}, "training": {"status": "completed"}},
+                    }
+                )
             )
             (local_path / "training.json").write_text(json.dumps({"schema_version": "1.0"}))
             (local_path / "startup.json").write_text(json.dumps({"schema_version": "1.0"}))
@@ -115,11 +118,7 @@ def test_worker_happy_path(tmp_path: Path):
 
 def test_worker_classifies_hugin_crash(tmp_path: Path):
     ssh = _FakeSSH(
-        scripted={
-            "docker exec": SSHResult(
-                exit_code=1, stdout="", stderr="CUDA out of memory\n", duration_s=5.0
-            )
-        }
+        scripted={"docker exec": SSHResult(exit_code=1, stdout="", stderr="CUDA out of memory\n", duration_s=5.0)}
     )
     rsync = _FakeRsync(materialize_bundle=False)
     w = _make_worker(tmp_path, ssh, rsync)
@@ -132,11 +131,7 @@ def test_worker_classifies_hugin_crash(tmp_path: Path):
 
 def test_worker_classifies_timeout(tmp_path: Path):
     ssh = _FakeSSH(
-        scripted={
-            "docker exec": SSHResult(
-                exit_code=-15, stdout="", stderr="", duration_s=60.1, timed_out=True
-            )
-        }
+        scripted={"docker exec": SSHResult(exit_code=-15, stdout="", stderr="", duration_s=60.1, timed_out=True)}
     )
     rsync = _FakeRsync(materialize_bundle=False)
     w = _make_worker(tmp_path, ssh, rsync)
@@ -198,3 +193,58 @@ def test_worker_writes_ssh_tail_log(tmp_path: Path):
     tee = tmp_path / _job().bundle_dir_name / "logs" / "ssh-tail.log"
     assert tee.exists()
     assert "iter 1" in tee.read_text()
+
+
+def test_worker_respects_shutdown_between_jobs(tmp_path: Path):
+    """shutdown_event.set() stops the worker from pulling the next job."""
+    ssh = _FakeSSH()
+    rsync = _FakeRsync()
+    host = _host()
+    job_q = queue.Queue()
+    state_q = queue.Queue()
+    shutdown = threading.Event()
+    worker = ValkyrieWorker(
+        host=host,
+        job_queue=job_q,
+        state_chan=state_q,
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(per_job_timeout_s=60),
+        ssh=ssh,
+        rsync=rsync,
+        shutdown_event=shutdown,
+    )
+    shutdown.set()
+    # Even with jobs queued, the worker should exit without consuming any.
+    job_q.put(_job("r-skipped"))
+    worker.run()
+    events = []
+    while not state_q.empty():
+        events.append(state_q.get_nowait())
+    # No running / completed / failed event for r-skipped.
+    assert all(e.run_id != "r-skipped" for e in events)
+
+
+def test_preferred_not_fallback_no_other_worker(tmp_path: Path):
+    """When a job's preferred_not lists our host but NO other worker is around,
+    the worker eventually accepts and runs it (we can't leave it stuck)."""
+    ssh = _FakeSSH()
+    rsync = _FakeRsync()
+    w = _make_worker(tmp_path, ssh, rsync)
+    j = _job("r-pref")
+    j.preferred_not = {w.host.host}
+    # The bounded fallback caps refusals at 3 before falling through.
+    # Because the worker re-queues to the tail of a FIFO queue, the sentinel
+    # must follow enough copies of the job so the worker gets 3 chances to
+    # refuse before the sentinel arrives.  Three pre-loaded copies suffice:
+    # the first two are refused (put back, cycling to tail), the third
+    # triggers the fall-through.
+    for _ in range(3):
+        w._job_queue.put(j)
+    w._job_queue.put(None)
+    w.run()
+    events = []
+    while not w._state_chan.empty():
+        events.append(w._state_chan.get_nowait())
+    transitions = [e.transition for e in events]
+    assert "running" in transitions
+    assert "completed" in transitions
