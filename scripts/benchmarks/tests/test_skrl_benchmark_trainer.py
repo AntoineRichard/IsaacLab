@@ -150,3 +150,83 @@ def test_iter_times_s_shows_variance_with_sleep():
     # First iter had two sleep(0.02) calls (steps 0 and 1); second iter didn't.
     # Accept any positive separation; this is about existence of variance, not magnitude.
     assert trainer.iter_times_s[0] > trainer.iter_times_s[1]
+
+
+def test_multi_env_does_not_call_env_reset_on_termination():
+    """Regression: Task 4's initial fix unconditionally reset on any termination,
+    which corrupts multi-env VecEnv training (parent's single_agent_train guards
+    this on num_envs > 1)."""
+    rollouts = 4
+    max_iters = 2
+
+    class _CountingMultiEnv(_FakeEnv):
+        num_envs = 8  # multi-env — parent must NOT mid-train reset
+
+        def __init__(self, reward_schedule):
+            super().__init__(reward_schedule=reward_schedule)
+            self.reset_calls = 0
+
+        def reset(self):
+            self.reset_calls += 1
+            return torch.zeros(self.num_envs, 2), {}
+
+        def step(self, actions):
+            r = self._rewards[self._i % len(self._rewards)]
+            self._i += 1
+            rewards = torch.full((self.num_envs,), float(r))
+            # Terminate env 0 on every step — should NOT trigger env.reset()
+            terminated = torch.zeros(self.num_envs, dtype=torch.bool)
+            terminated[0] = True
+            truncated = torch.zeros(self.num_envs, dtype=torch.bool)
+            next_states = torch.zeros(self.num_envs, 2)
+            return next_states, rewards, terminated, truncated, {}
+
+    env = _CountingMultiEnv(reward_schedule=[1.0] * 100)
+    agent = _FakeAgent(rollouts=rollouts)
+    trainer_cfg = {"timesteps": rollouts * max_iters, "headless": True}
+    trainer = BenchmarkTrainer(env=env, agents=agent, cfg=trainer_cfg)
+    trainer.train()
+
+    # Exactly one reset — the initial one at loop start.
+    assert env.reset_calls == 1, (
+        f"BenchmarkTrainer called env.reset() {env.reset_calls} times on a "
+        f"multi-env VecEnv. Parent single_agent_train only resets at start "
+        f"when num_envs > 1 — VecEnv handles per-env auto-reset internally."
+    )
+
+
+def test_single_env_resets_when_episode_ends():
+    """Sanity: the single-env branch still resets on termination."""
+    rollouts = 2
+    max_iters = 1
+
+    class _CountingSingleEnv(_FakeEnv):
+        num_envs = 1
+
+        def __init__(self, reward_schedule):
+            super().__init__(reward_schedule=reward_schedule)
+            self.reset_calls = 0
+
+        def reset(self):
+            self.reset_calls += 1
+            return torch.zeros(self.num_envs, 2), {}
+
+        def step(self, actions):
+            r = self._rewards[self._i % len(self._rewards)]
+            self._i += 1
+            rewards = torch.full((self.num_envs,), float(r))
+            terminated = torch.zeros(self.num_envs, dtype=torch.bool)
+            terminated[0] = True  # terminate every step on num_envs=1
+            truncated = torch.zeros(self.num_envs, dtype=torch.bool)
+            next_states = torch.zeros(self.num_envs, 2)
+            return next_states, rewards, terminated, truncated, {}
+
+    env = _CountingSingleEnv(reward_schedule=[0.0] * 100)
+    agent = _FakeAgent(rollouts=rollouts)
+    trainer_cfg = {"timesteps": rollouts * max_iters, "headless": True}
+    trainer = BenchmarkTrainer(env=env, agents=agent, cfg=trainer_cfg)
+    trainer.train()
+
+    # Initial reset (1) + per-step reset on each termination (rollouts=2)
+    # = 3 total.
+    assert env.reset_calls >= 2, f"Expected ≥2 resets on single-env terminations, got {env.reset_calls}"

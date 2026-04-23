@@ -48,7 +48,15 @@ class BenchmarkTrainer(SequentialTrainer):
             super().train()
             return
 
-        rollouts = int(getattr(self.agents, "_rollouts", 0)) or 1
+        rollouts_attr = getattr(self.agents, "_rollouts", None)
+        if not rollouts_attr:
+            # Agent has no rollout boundary (e.g. off-policy SAC/DDPG).
+            # Defer to the stock training loop — the per-iter attributes
+            # stay empty, and benchmark_skrl.py will treat that as "no
+            # per-iter data available" rather than wall-time garbage.
+            super().train()
+            return
+        rollouts = int(rollouts_attr)
         max_iters = self.timesteps // rollouts
 
         self.agents.set_running_mode("train")
@@ -93,11 +101,17 @@ class BenchmarkTrainer(SequentialTrainer):
 
             self.agents.post_interaction(timestep=timestep, timesteps=self.timesteps)
 
-            if terminated.any() or truncated.any():
-                with torch.no_grad():
-                    states, infos = self.env.reset()
-            else:
+            # Reset envs only when running a single env; multi-env VecEnvs
+            # handle per-env resets themselves. Mirrors
+            # skrl.trainers.torch.base.Trainer.single_agent_train.
+            if self.env.num_envs > 1:
                 states = next_states
+            else:
+                if terminated.any() or truncated.any():
+                    with torch.no_grad():
+                        states, infos = self.env.reset()
+                else:
+                    states = next_states
 
             # One iteration = one rollout-buffer fill.
             if (timestep + 1) % rollouts == 0:
@@ -105,9 +119,7 @@ class BenchmarkTrainer(SequentialTrainer):
                 self.iter_times_s.append((iter_end_ns - iter_start_ns) / 1e9)
                 mean_reward = rollout_reward_sum / max(rollout_reward_count, 1)
                 self.iter_rewards.append(mean_reward)
-                ep_len_samples = self.agents.tracking_data.get(
-                    "Episode / Total timesteps (mean)", []
-                )
+                ep_len_samples = self.agents.tracking_data.get("Episode / Total timesteps (mean)", [])
                 self.iter_ep_lengths.append(float(ep_len_samples[-1]) if ep_len_samples else 0.0)
                 # Reset per-iter accumulators + timer for the next rollout.
                 iter_start_ns = time.perf_counter_ns()
