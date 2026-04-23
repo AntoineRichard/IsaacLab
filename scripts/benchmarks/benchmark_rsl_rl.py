@@ -59,7 +59,11 @@ parser.add_argument(
     "--backend",
     choices=["physx", "newton"],
     default=None,
-    help="Physics backend tag recorded in the Odin bundle.",
+    help=(
+        "Physics backend to run with. Drives both the bundle tag and "
+        "hydra `presets=<backend>`. Pass an explicit `presets=...` on "
+        "the CLI to override."
+    ),
 )
 parser.add_argument(
     "--log_dir",
@@ -107,6 +111,15 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+
+# Map --backend X to hydra presets=X so the physics preset is applied
+# at config-resolve time. An explicit presets=... on the CLI wins.
+if args_cli.backend is not None:
+    existing_presets = [a for a in hydra_args if a.startswith("presets=")]
+    if existing_presets:
+        print(f"[WARNING] --backend={args_cli.backend} ignored because {existing_presets[0]} was explicitly passed.")
+    else:
+        hydra_args = [f"presets={args_cli.backend}"] + hydra_args
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
