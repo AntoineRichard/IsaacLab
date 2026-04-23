@@ -58,7 +58,7 @@ Bug 1 is in `tools/odin/{hugin,munin}/run.py`. Bug 2 is a semantic gap in
 | Bug 1 | Add `--log_dir PATH` flag; drop the `_copy_tb_events` heuristic | `benchmark_rsl_rl.py`, `benchmark_skrl.py`, `tools/odin/{hugin,munin}/run.py` |
 | Bug 2 | When `--backend X` is set, inject `presets=X` into hydra args | `benchmark_rsl_rl.py`, `benchmark_skrl.py` |
 | Bugs 3–4 | New `BenchmarkTrainer(SequentialTrainer)`; swap it into SKRL Runner after construction | new `scripts/benchmarks/skrl_benchmark_trainer.py`, `benchmark_skrl.py` |
-| Manifest | Rename `artifacts` entry `"tb"` → `"training_data"` | `tools/odin/common/manifest.py` |
+| Manifest | No code change needed — `artifacts` is derived from `os.listdir(bundle_dir)`; tracks the directory swap automatically | — |
 
 ## 5. Bundle layout after this fix
 
@@ -127,15 +127,16 @@ auto-generated behavior. No standalone user is affected.
 - `os.makedirs(os.path.join(bundle_dir, "training_data"), exist_ok=True)`
   before subprocess launch.
 
-### 6.3 Manifest artifact rename
+### 6.3 Manifest artifact list
 
-`tools/odin/common/manifest.py` — the hardcoded `artifacts` list changes
-from `["logs", "startup.json", "tb", "training.json"]` to
-`["logs", "startup.json", "training_data", "training.json"]`.
+No code change. `tools/odin/common/manifest.py:63` derives the
+`artifacts` list via `sorted(os.listdir(bundle_dir))` — so once the
+training subprocess writes to `training_data/` instead of `tb/`, the
+emitted manifest records `"training_data"` automatically.
 
-No consumer today enumerates `manifest.artifacts` programmatically; this
-is cosmetic metadata. The change is reflected in the T1 spec's layout
-reference.
+`tools/odin/tests/test_hugin.py` and `tools/odin/tests/test_munin.py`
+carry happy-path tests for the bundle; they gain an assertion on the
+new `training_data/` directory name.
 
 ## 7. Bug 2 — `--backend` drives physics via hydra `presets=`
 
