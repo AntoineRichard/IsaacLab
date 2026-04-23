@@ -730,19 +730,21 @@ Append to `tools/odin/tests/test_valhalla_aggregator.py`:
 
 ```python
 def test_divergent_seed_flagged(tmp_path: Path):
+    # Use the n=6 canonical shape from stats.is_divergent tests: 5 clustered
+    # values + 1 outlier. Smaller n hits the (n-1)/sqrt(n-1) z-score bound
+    # and won't cross z=2.0 under strict `>` comparison.
     dispatch = tmp_path / "20260423-100000"
     dispatch.mkdir()
-    _write_completed_bundle(dispatch, "run42", reward_final_ema=100.0)
-    _write_completed_bundle(dispatch, "run43", reward_final_ema=102.0)
-    _write_completed_bundle(dispatch, "run44", reward_final_ema=101.0)
-    _write_completed_bundle(dispatch, "run45", reward_final_ema=500.0)  # outlier
+    for s in (42, 43, 44, 45, 46):
+        _write_completed_bundle(dispatch, f"run{s}", reward_final_ema=100.0)
+    _write_completed_bundle(dispatch, "run47", reward_final_ema=1000.0)  # outlier
     _make_dispatch_json(
         dispatch,
-        [_job(f"run{s}", seed=s) for s in (42, 43, 44, 45)],
+        [_job(f"run{s}", seed=s) for s in (42, 43, 44, 45, 46, 47)],
     )
     agg = aggregate_dispatch(dispatch)
     row = agg["rows"][0]
-    assert "45" in row["divergent_seeds"]
+    assert "47" in row["divergent_seeds"]
     assert "42" not in row["divergent_seeds"]
 
 
