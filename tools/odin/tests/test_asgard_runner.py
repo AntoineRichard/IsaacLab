@@ -199,7 +199,7 @@ def test_run_dispatch_resume_preserves_completed(tmp_path: Path):
     assert second.jobs[0].status == "completed"
 
 
-def test_run_dispatch_writes_aggregate_json(tmp_path):
+def test_run_dispatch_writes_aggregate_json(tmp_path: Path):
     """run_dispatch auto-invokes valhalla.aggregator at the tail."""
     fleet = _write_fleet(tmp_path)
     env_yaml = _write_env_list(tmp_path)
@@ -217,13 +217,15 @@ def test_run_dispatch_writes_aggregate_json(tmp_path):
     )
     assert (dispatch_dir / "aggregate.json").exists()
     with (dispatch_dir / "aggregate.json").open("r") as fh:
-        import json
-
         agg = json.load(fh)
     assert agg["schema_version"] == "1.0"
+    # Dispatch enumerated exactly one (task, seed) pair; the aggregator
+    # saw it (whether completed or failed is out of scope — this test
+    # verifies the wiring, not the bundle-validation correctness).
+    assert agg["totals"]["runs"] == 1
 
 
-def test_run_dispatch_skip_aggregate_leaves_no_file(tmp_path):
+def test_run_dispatch_skip_aggregate_leaves_no_file(tmp_path: Path):
     """skip_aggregate=True suppresses the auto-call."""
     fleet = _write_fleet(tmp_path)
     env_yaml = _write_env_list(tmp_path)
