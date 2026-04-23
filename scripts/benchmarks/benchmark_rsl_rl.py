@@ -62,6 +62,17 @@ parser.add_argument(
     help="Physics backend tag recorded in the Odin bundle.",
 )
 parser.add_argument(
+    "--log_dir",
+    type=str,
+    default=None,
+    help=(
+        "Absolute path where the training framework writes its outputs "
+        "(TB events, checkpoints, params). When unset, falls back to "
+        "the default logs/<framework>/<experiment>/<timestamp>/ path. "
+        "Odin passes this to collect outputs directly into the bundle."
+    ),
+)
+parser.add_argument(
     "--run_id",
     type=str,
     default=None,
@@ -361,15 +372,21 @@ def main(
         agent_cfg.seed = seed
         world_size = int(os.getenv("WORLD_SIZE", 1))
 
-    # specify directory for logging experiments
-    log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
-    log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    # specify directory for logging runs: {time-stamp}_{run_name}
-    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    if agent_cfg.run_name:
-        log_dir += f"_{agent_cfg.run_name}"
-    log_dir = os.path.join(log_root_path, log_dir)
+    if args_cli.log_dir is not None:
+        # Explicit override (Odin / CI): write straight into the given dir.
+        log_dir = os.path.abspath(args_cli.log_dir)
+        log_root_path = os.path.dirname(log_dir)
+        os.makedirs(log_dir, exist_ok=True)
+        print(f"[INFO] Logging experiment in directory: {log_dir}")
+    else:
+        # Default: auto-generate logs/<framework>/<experiment>/<timestamp>/
+        log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
+        log_root_path = os.path.abspath(log_root_path)
+        print(f"[INFO] Logging experiment in directory: {log_root_path}")
+        log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        if agent_cfg.run_name:
+            log_dir += f"_{agent_cfg.run_name}"
+        log_dir = os.path.join(log_root_path, log_dir)
 
     # max iterations for training
     if args_cli.max_iterations:
