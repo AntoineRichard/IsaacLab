@@ -12,9 +12,13 @@ same public surface.
 """
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig, load_fleet
+from tools.odin.asgard.queue import FailureInfo, JobEntry, build_queue_from_env_lists
 
 __all__ = [
     "Fleet",
     "ValkyrieConfig",
     "load_fleet",
+    "JobEntry",
+    "FailureInfo",
+    "build_queue_from_env_lists",
 ]
