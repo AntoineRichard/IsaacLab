@@ -32,6 +32,7 @@ from tools.odin.asgard.transport import (
     SSHRunner,
 )
 from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
+from tools.odin.asgard.runner import DispatchOptions, resolve_dispatch_dir, run_dispatch
 
 __all__ = [
     "Fleet",
@@ -59,4 +60,7 @@ __all__ = [
     "StateEvent",
     "ValkyrieWorker",
     "WorkerOptions",
+    "DispatchOptions",
+    "resolve_dispatch_dir",
+    "run_dispatch",
 ]
