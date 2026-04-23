@@ -16,7 +16,6 @@ from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.runner import DispatchOptions, run_dispatch
 from tools.odin.asgard.transport import RsyncResult, SSHResult
 
-
 # --- Fakes ---------------------------------------------------------------------------------------
 
 
