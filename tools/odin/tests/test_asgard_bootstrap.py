@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 from tools.odin.asgard.bootstrap import BootstrapResult, bootstrap_valkyrie
 from tools.odin.asgard.fleet import ValkyrieConfig
 
@@ -218,3 +220,131 @@ def test_bootstrap_valkyrie_container_inspect_fails_surfaces_stderr(tmp_path: Pa
     assert result.ok is False
     assert "docker inspect failed" in result.message
     assert "No such object" in result.message
+
+
+def test_bootstrap_fleet_returns_results_in_fleet_order(tmp_path: Path):
+    from tools.odin.asgard.bootstrap import bootstrap_fleet
+    from tools.odin.asgard.fleet import Fleet
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[
+            ValkyrieConfig(host="v1", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+            ValkyrieConfig(host="v2", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+            ValkyrieConfig(host="v3", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+        ],
+    )
+    ssh = _FakeSSH(replies={"docker inspect": 0}, reply_stdout={"docker inspect": "running"})
+    rsync = _FakeRsync()
+    results = bootstrap_fleet(fleet, tmp_path, ssh=ssh, rsync=rsync, parallel=False)
+    assert [r.host for r in results] == ["v1", "v2", "v3"]
+    assert all(r.ok for r in results)
+
+
+def test_bootstrap_fleet_mixed_outcome(tmp_path: Path):
+    """One host reaches SSH fine, another fails; both appear in the result list."""
+    from tools.odin.asgard.bootstrap import bootstrap_fleet
+    from tools.odin.asgard.fleet import Fleet
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[
+            ValkyrieConfig(host="v-good", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+            ValkyrieConfig(host="v-bad", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+        ],
+    )
+
+    # A per-host SSH fake: v-bad's first probe fails; v-good otherwise normal.
+    good_ssh = _FakeSSH(replies={"docker inspect": 0}, reply_stdout={"docker inspect": "running"})
+    bad_ssh = _FakeSSH(replies={"echo bootstrap-ok": 255}, reply_stderr={"echo bootstrap-ok": "conn refused"})
+
+    # Wrap both with a routing SSH that dispatches on host.host.
+    @dataclass
+    class _RoutingSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            inner = good_ssh if host.host == "v-good" else bad_ssh
+            return inner.run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+
+    results = bootstrap_fleet(fleet, tmp_path, ssh=_RoutingSSH(), rsync=_FakeRsync(), parallel=False)
+    assert len(results) == 2
+    good = next(r for r in results if r.host == "v-good")
+    bad = next(r for r in results if r.host == "v-bad")
+    assert good.ok is True
+    assert bad.ok is False
+    assert "ssh unreachable" in bad.message
+
+
+def test_bootstrap_fleet_parallel_runs_concurrently(tmp_path: Path):
+    """With 3 hosts and parallel=True, wall time ≈ max(per-host), not sum."""
+    import time as _time_mod
+
+    from tools.odin.asgard.bootstrap import bootstrap_fleet
+    from tools.odin.asgard.fleet import Fleet
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[ValkyrieConfig(host=f"v{i}", ssh_user="u", ssh_key=None, isaaclab_path="/p") for i in (1, 2, 3)],
+    )
+
+    # SSH fake that sleeps 100 ms on container.py start to simulate slow hosts.
+    class _SlowSSH(_FakeSSH):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            if "container.py start" in cmd:
+                _time_mod.sleep(0.1)
+            return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+
+    ssh = _SlowSSH(replies={"docker inspect": 0}, reply_stdout={"docker inspect": "running"})
+    rsync = _FakeRsync()
+
+    t0 = _time_mod.perf_counter()
+    results = bootstrap_fleet(fleet, tmp_path, ssh=ssh, rsync=rsync, parallel=True)
+    elapsed = _time_mod.perf_counter() - t0
+
+    assert all(r.ok for r in results)
+    # Serial would be ≥ 3 * 0.1 = 0.3 s. Parallel should be < 0.25 s.
+    assert elapsed < 0.25, f"parallel=True elapsed={elapsed:.3f}s (expected <0.25)"
+
+
+def test_bootstrap_fleet_sequential_adds_up(tmp_path: Path):
+    """With parallel=False, wall time grows linearly with host count."""
+    import time as _time_mod
+
+    from tools.odin.asgard.bootstrap import bootstrap_fleet
+    from tools.odin.asgard.fleet import Fleet
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[ValkyrieConfig(host=f"v{i}", ssh_user="u", ssh_key=None, isaaclab_path="/p") for i in (1, 2, 3)],
+    )
+
+    class _SlowSSH(_FakeSSH):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            if "container.py start" in cmd:
+                _time_mod.sleep(0.1)
+            return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+
+    ssh = _SlowSSH(replies={"docker inspect": 0}, reply_stdout={"docker inspect": "running"})
+    rsync = _FakeRsync()
+
+    t0 = _time_mod.perf_counter()
+    bootstrap_fleet(fleet, tmp_path, ssh=ssh, rsync=rsync, parallel=False)
+    elapsed = _time_mod.perf_counter() - t0
+
+    # Serial wall time ≥ 3 * 0.1 s — allow loose upper bound for scheduler noise.
+    assert elapsed >= 0.28, f"parallel=False elapsed={elapsed:.3f}s (expected >=0.28)"
+
+
+def test_bootstrap_fleet_verbose_prints_per_host(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    from tools.odin.asgard.bootstrap import bootstrap_fleet
+    from tools.odin.asgard.fleet import Fleet
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[ValkyrieConfig(host="v-only", ssh_user="u", ssh_key=None, isaaclab_path="/p")],
+    )
+    ssh = _FakeSSH(replies={"docker inspect": 0}, reply_stdout={"docker inspect": "running"})
+    rsync = _FakeRsync()
+    bootstrap_fleet(fleet, tmp_path, ssh=ssh, rsync=rsync, parallel=False, verbose=True)
+    out = capsys.readouterr().out
+    assert "v-only" in out
+    assert "ok" in out
