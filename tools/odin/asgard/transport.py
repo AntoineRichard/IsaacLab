@@ -188,6 +188,11 @@ _PUSH_EXCLUDES = [
     "--exclude=benchmark_*_Isaac-*.json",
     "--exclude=*.swp",
     "--exclude=.claude/",
+    # tacsl_sensor asset data is sometimes installed as root:0600 on dev machines,
+    # which makes rsync return exit 23 ("partial transfer"). Exclude the whole
+    # data directory — these assets are regenerated inside the container on use
+    # and no Odin-curated task needs them.
+    "--exclude=source/isaaclab/isaaclab/sensors/tacsl_sensor/gelsight_r15_data/",
 ]
 
 
