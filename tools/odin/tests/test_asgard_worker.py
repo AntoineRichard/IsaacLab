@@ -16,7 +16,7 @@ from pathlib import Path
 from tools.odin.asgard.fleet import ValkyrieConfig
 from tools.odin.asgard.jobs import JobEntry
 from tools.odin.asgard.transport import RsyncResult, SSHResult
-from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
+from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions, _build_docker_exec_cmd
 
 
 def _host() -> ValkyrieConfig:
@@ -222,6 +222,18 @@ def test_worker_respects_shutdown_between_jobs(tmp_path: Path):
         events.append(state_q.get_nowait())
     # No running / completed / failed event for r-skipped.
     assert all(e.run_id != "r-skipped" for e in events)
+
+
+def test_build_docker_exec_cmd_includes_run_id():
+    """worker must pass --run_id so Hugin/Munin write bundles at the dispatcher-expected path."""
+    host = _host()
+    job = _job()
+    cmd = _build_docker_exec_cmd(host, job)
+    assert f"--run_id {job.run_id}" in cmd
+    # Sanity: other expected args still present.
+    assert f"--task {job.task_id}" in cmd
+    assert f"--backend {job.backend}" in cmd
+    assert "--runs_root odin_runs" in cmd
 
 
 def test_preferred_not_fallback_no_other_worker(tmp_path: Path):

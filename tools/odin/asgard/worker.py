@@ -67,6 +67,7 @@ def _build_docker_exec_cmd(host: ValkyrieConfig, job: JobEntry) -> str:
         f"--num_envs {job.num_envs}",
         f"--max_iterations {job.max_iterations}",
         "--runs_root odin_runs",
+        f"--run_id {job.run_id}",
     ]
     inner = " && ".join(inner_parts[:1]) + " && " + " ".join(inner_parts[1:])
     return f"cd {host.isaaclab_path} && docker exec {host.container_name} bash -lc '{inner}'"
