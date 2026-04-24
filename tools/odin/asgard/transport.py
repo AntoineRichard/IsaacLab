@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,10 +96,13 @@ class ShellSSHRunner:
     ) -> SSHResult:
         """Run ``cmd`` on ``host`` and return an :class:`SSHResult`.
 
-        Streams stdout line-by-line to ``stdout_tee`` (if given). On timeout
-        the child process is terminated (then killed after 10 s grace);
-        ``timed_out`` is set on the returned result and ``exit_code`` is
-        whatever the terminated process reported (typically negative).
+        Streams stdout line-by-line to ``stdout_tee`` (if given) via a reader
+        thread so ``timeout_s`` is honoured even when the remote command
+        produces no output — a single-thread drain-then-wait approach would
+        block in ``readline()`` indefinitely on a hung no-output command. On
+        timeout the child process is terminated (then killed after 10 s
+        grace); ``timed_out`` is set on the returned result and ``exit_code``
+        is whatever the terminated process reported (typically negative).
 
         Args:
             host: Target host configuration.
@@ -127,46 +131,59 @@ class ShellSSHRunner:
             stdout_tee.parent.mkdir(parents=True, exist_ok=True)
             tee_fh = stdout_tee.open("a", encoding="utf-8")
 
-        timed_out = False
         stdout_stream = proc.stdout
         stderr_stream = proc.stderr
+
+        def _drain_stdout() -> None:
+            if stdout_stream is None:
+                return
+            while True:
+                line = stdout_stream.readline()
+                if not line:
+                    return
+                stdout_buf.append(line)
+                if tee_fh is not None:
+                    tee_fh.write(line)
+                    tee_fh.flush()
+
+        def _drain_stderr() -> None:
+            if stderr_stream is None:
+                return
+            while True:
+                line = stderr_stream.readline()
+                if not line:
+                    return
+                stderr_buf.append(line)
+
+        stdout_thread = threading.Thread(target=_drain_stdout, daemon=True)
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+
+        timed_out = False
         try:
-            # Simple single-thread read: drain stdout then wait. Sufficient
-            # for our use case where the remote command runs to completion
-            # and we don't need line-level real-time interleaving with stderr.
-            if stdout_stream is not None:
-                while True:
-                    line = stdout_stream.readline()
-                    if not line:
-                        break
-                    stdout_buf.append(line)
-                    if tee_fh is not None:
-                        tee_fh.write(line)
-                        tee_fh.flush()
+            rc = proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.terminate()
             try:
-                rc = proc.wait(timeout=timeout_s)
+                rc = proc.wait(timeout=10.0)
             except subprocess.TimeoutExpired:
-                timed_out = True
-                proc.terminate()
-                try:
-                    rc = proc.wait(timeout=10.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    rc = proc.wait()
-            # Drain stderr last (Popen keeps the pipe open until wait returns).
-            if stderr_stream is not None:
-                while True:
-                    line = stderr_stream.readline()
-                    if not line:
-                        break
-                    stderr_buf.append(line)
-        finally:
-            if tee_fh is not None:
-                tee_fh.close()
-            if stdout_stream is not None:
-                stdout_stream.close()
-            if stderr_stream is not None:
-                stderr_stream.close()
+                proc.kill()
+                rc = proc.wait()
+
+        # Reader threads exit naturally when pipes close (which happens once the
+        # child is fully reaped). A small join bound guards against pathological
+        # cases where the OS has not yet EOF'd the pipe.
+        stdout_thread.join(timeout=5.0)
+        stderr_thread.join(timeout=5.0)
+
+        if tee_fh is not None:
+            tee_fh.close()
+        if stdout_stream is not None:
+            stdout_stream.close()
+        if stderr_stream is not None:
+            stderr_stream.close()
 
         duration = time.monotonic() - t0
         return SSHResult(
