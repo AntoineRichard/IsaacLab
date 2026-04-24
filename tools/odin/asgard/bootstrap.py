@@ -180,6 +180,30 @@ def bootstrap_valkyrie(
             step_durations_s=step_durations_s,
         )
 
+    # 5b. Retarget ``_isaac_sim`` inside the container. Dockerfile.base:70
+    # creates ``_isaac_sim → /isaac-sim`` during image build, but its final
+    # bulk ``COPY ../ ${ISAACLAB_PATH}/`` (line 121) overwrites it when the
+    # build context has a pre-existing ``_isaac_sim`` symlink pointing
+    # elsewhere (rsync -a preserves whatever the dev machine has).
+    # Excluding ``_isaac_sim`` from rsync prevents it reaching the remote
+    # tree; this docker-exec step guarantees the running container's
+    # symlink is correct even when the image was built with a broken one.
+    t0 = _time_step()
+    r = ssh.run(
+        host,
+        f"docker exec {host.container_name} ln -sf /isaac-sim /workspace/isaaclab/_isaac_sim",
+        timeout_s=15,
+    )
+    step_durations_s["fix_isaac_sim_symlink"] = _time_step() - t0
+    if r.exit_code != 0:
+        return BootstrapResult(
+            host=host.host,
+            ok=False,
+            message=f"failed to retarget _isaac_sim symlink inside container: {r.stderr.strip() or 'non-zero exit'}",
+            commit_sha=commit_sha,
+            step_durations_s=step_durations_s,
+        )
+
     # 6. Container verify.
     t0 = _time_step()
     r = ssh.run(

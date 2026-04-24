@@ -207,6 +207,15 @@ _PUSH_EXCLUDES = [
     # after rsync so Valkyries (which have no DISPLAY) can start the
     # container cleanly.
     "--exclude=docker/.container.cfg",
+    # _isaac_sim is a symlink to the dev-machine's local Isaac Sim install
+    # (e.g. ``../IsaacSim6/_build/linux-x86_64/release``) — meaningless on
+    # the remote. The Dockerfile creates a correct symlink
+    # ``_isaac_sim → /isaac-sim`` during image build; if the rsync'd broken
+    # symlink lands in the source tree the Dockerfile's subsequent bulk
+    # ``COPY ../ ${ISAACLAB_PATH}/`` overwrites it with the broken one.
+    # Excluding here lets the Dockerfile's symlink win, and bootstrap's
+    # post-start fix inside the container also retargets it explicitly.
+    "--exclude=_isaac_sim",
 ]
 
 
