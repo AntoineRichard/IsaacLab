@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 # Odin Asgard fleet — T4.1 first real-fleet validation
 # 2 Valkyrie machines; SSH via horde@<host> with ~/.ssh/id_ed25519.
 fleet_name: odin-first-fleet-2026-04-23
