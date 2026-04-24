@@ -193,6 +193,15 @@ _PUSH_EXCLUDES = [
     # data directory — these assets are regenerated inside the container on use
     # and no Odin-curated task needs them.
     "--exclude=source/isaaclab/isaaclab/sensors/tacsl_sensor/gelsight_r15_data/",
+    # logs/ is the controller-side scratch dir for local training runs (TB
+    # events, checkpoints, params) — typically multi-GB and never needed on a
+    # Valkyrie (Hugin/Munin write their training output into the bundle via
+    # --log_dir, not here).
+    "--exclude=logs/",
+    # docs/ hosts the sphinx sources + any built HTML / PDF / images. Not
+    # needed at runtime on a Valkyrie; can grow to several hundred MB with
+    # the full built site.
+    "--exclude=docs/",
 ]
 
 
