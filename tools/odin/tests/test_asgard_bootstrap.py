@@ -115,7 +115,9 @@ def test_bootstrap_valkyrie_happy_path(tmp_path: Path):
         "wipe",
         "rsync",
         "configure_headless",
+        "create_odin_runs",
         "container_start",
+        "fix_isaac_sim_symlink",
         "container_verify",
     }
     assert all(d >= 0.0 for d in result.step_durations_s.values())
@@ -383,3 +385,28 @@ def test_bootstrap_fleet_verbose_prints_per_host(tmp_path: Path, capsys: pytest.
     out = capsys.readouterr().out
     assert "v-only" in out
     assert "ok" in out
+
+
+def test_bootstrap_valkyrie_creates_odin_runs_dir(tmp_path: Path):
+    """bootstrap must `mkdir -p {isaaclab_path}/odin_runs` after configure_headless."""
+    ssh = _FakeSSH(
+        replies={"docker inspect": 0},
+        reply_stdout={"docker inspect": "running"},
+    )
+    rsync = _FakeRsync()
+    bootstrap_valkyrie(_host(), tmp_path, ssh=ssh, rsync=rsync)
+    mkdir_calls = [c for c in ssh.calls if "mkdir -p" in c.cmd and "/opt/IsaacLab/odin_runs" in c.cmd]
+    assert len(mkdir_calls) == 1, f"expected exactly one mkdir for odin_runs, got {len(mkdir_calls)}"
+
+
+def test_bootstrap_valkyrie_create_odin_runs_failure(tmp_path: Path):
+    """A failed `mkdir -p odin_runs` stops the pipeline before container.py start."""
+    ssh = _FakeSSH(
+        replies={"mkdir -p /opt/IsaacLab/odin_runs": 1},
+        reply_stderr={"mkdir -p /opt/IsaacLab/odin_runs": "Permission denied"},
+    )
+    rsync = _FakeRsync()
+    result = bootstrap_valkyrie(_host(), tmp_path, ssh=ssh, rsync=rsync)
+    assert result.ok is False
+    assert "create" in result.message and "odin_runs" in result.message
+    assert not any("container.py start" in c.cmd for c in ssh.calls)

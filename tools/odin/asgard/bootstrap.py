@@ -167,6 +167,29 @@ def bootstrap_valkyrie(
             step_durations_s=step_durations_s,
         )
 
+    # 4c. Pre-create the bundle output directory on the host.
+    # docker-compose's isaac-lab-base service bind-mounts ``~/IsaacLab/odin_runs``
+    # to ``/workspace/isaaclab/odin_runs``, so Hugin/Munin bundles written inside
+    # the container land on the host and can be rsync-pulled by the dispatcher.
+    # compose's ``create_host_path: true`` would auto-create it, but doing it
+    # explicitly here means the directory is owned by the SSH user
+    # (not root, as docker would do it).
+    t0 = _time_step()
+    r = ssh.run(
+        host,
+        f"mkdir -p {host.isaaclab_path}/odin_runs",
+        timeout_s=15,
+    )
+    step_durations_s["create_odin_runs"] = _time_step() - t0
+    if r.exit_code != 0:
+        return BootstrapResult(
+            host=host.host,
+            ok=False,
+            message=f"failed to create {host.isaaclab_path}/odin_runs: {r.stderr.strip() or 'non-zero exit'}",
+            commit_sha=commit_sha,
+            step_durations_s=step_durations_s,
+        )
+
     # 5. Container start.
     t0 = _time_step()
     started = _container_start(host, ssh, timeout_s=build_timeout_s)
