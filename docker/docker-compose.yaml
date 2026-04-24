@@ -69,6 +69,14 @@ x-default-isaac-lab-volumes: &default-isaac-lab-volumes
   - type: bind
     source: .isaac-lab-docker-history
     target: ${DOCKER_USER_HOME}/.bash_history
+    # Bundle output dir for Odin's dispatcher. Hugin/Munin write bundles
+    # into this path inside the container; bind-mounting makes them
+    # visible on the host so T3.1's worker can rsync them back.
+  - type: bind
+    source: ../odin_runs
+    target: ${DOCKER_ISAACLAB_PATH}/odin_runs
+    bind:
+      create_host_path: true
 
 x-default-isaac-lab-environment: &default-isaac-lab-environment
   - ISAACSIM_PATH=${DOCKER_ISAACLAB_PATH}/_isaac_sim
