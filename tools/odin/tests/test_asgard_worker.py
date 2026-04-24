@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools.odin.asgard.fleet import ValkyrieConfig
-from tools.odin.asgard.queue import JobEntry
+from tools.odin.asgard.jobs import JobEntry
 from tools.odin.asgard.transport import RsyncResult, SSHResult
 from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
 

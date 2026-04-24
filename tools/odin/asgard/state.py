@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tools.odin.asgard.queue import FailureInfo, JobEntry
+from tools.odin.asgard.jobs import FailureInfo, JobEntry
 
 __all__ = [
     "DispatchState",

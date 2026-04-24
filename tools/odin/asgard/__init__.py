@@ -13,7 +13,7 @@ same public surface.
 
 from tools.odin.asgard.bootstrap import BootstrapResult, bootstrap_fleet, bootstrap_valkyrie
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig, load_fleet
-from tools.odin.asgard.queue import FailureInfo, JobEntry, build_queue_from_env_lists
+from tools.odin.asgard.jobs import FailureInfo, JobEntry, build_queue_from_env_lists
 from tools.odin.asgard.state import (
     SCHEMA_VERSION,
     DispatchState,

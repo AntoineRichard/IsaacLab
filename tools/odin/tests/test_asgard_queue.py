@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Unit tests for :mod:`tools.odin.asgard.queue`."""
+"""Unit tests for :mod:`tools.odin.asgard.jobs`."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.odin.asgard.queue import build_queue_from_env_lists
+from tools.odin.asgard.jobs import build_queue_from_env_lists
 from tools.odin.common.env_list import EnvEntry, EnvList, write_env_list
 
 

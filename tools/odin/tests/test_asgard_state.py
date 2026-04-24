@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.odin.asgard.queue import FailureInfo, JobEntry
+from tools.odin.asgard.jobs import FailureInfo, JobEntry
 from tools.odin.asgard.state import (
     DispatchState,
     FleetSnapshot,

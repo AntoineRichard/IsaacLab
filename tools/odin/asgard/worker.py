@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.odin.asgard.fleet import ValkyrieConfig
-from tools.odin.asgard.queue import FailureInfo, JobEntry
+from tools.odin.asgard.jobs import FailureInfo, JobEntry
 from tools.odin.asgard.transport import RsyncRunner, SSHResult, SSHRunner
 
 __all__ = ["StateEvent", "ValkyrieWorker", "WorkerOptions"]

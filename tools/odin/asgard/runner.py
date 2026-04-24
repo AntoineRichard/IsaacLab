@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
+from tools.odin.asgard.jobs import JobEntry, build_queue_from_env_lists
 from tools.odin.asgard.preflight import preflight_valkyrie
 from tools.odin.asgard.provisioner import provision_valkyrie
-from tools.odin.asgard.queue import JobEntry, build_queue_from_env_lists
 from tools.odin.asgard.state import (
     SCHEMA_VERSION,
     DispatchState,
