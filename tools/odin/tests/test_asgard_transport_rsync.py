@@ -67,9 +67,21 @@ def test_pull_destination_shape(monkeypatch, tmp_path: Path):
     runner = ShellRsyncRunner()
     runner.pull(_host(), "~/IsaacLab/odin_runs/x", tmp_path / "x")
     argv = captured["argv"]
-    # First non-flag arg after rsync flags: user@host:remote_path, then local_path.
-    assert "odin@v1:~/IsaacLab/odin_runs/x" in argv
+    # Source must carry a trailing slash so rsync copies the remote bundle's
+    # *contents* into local_path rather than creating local_path/x/.
+    assert "odin@v1:~/IsaacLab/odin_runs/x/" in argv
     assert str(tmp_path / "x") in argv
+
+
+def test_pull_source_trailing_slash_idempotent(monkeypatch, tmp_path: Path):
+    """Caller-supplied trailing slash must not double up into ``//``."""
+    captured: dict = {}
+    monkeypatch.setattr(subprocess, "run", _fake_completed(captured))
+    runner = ShellRsyncRunner()
+    runner.pull(_host(), "~/IsaacLab/odin_runs/x/", tmp_path / "x")
+    argv = captured["argv"]
+    assert "odin@v1:~/IsaacLab/odin_runs/x/" in argv
+    assert "odin@v1:~/IsaacLab/odin_runs/x//" not in argv
 
 
 def test_pull_no_delete(monkeypatch, tmp_path: Path):

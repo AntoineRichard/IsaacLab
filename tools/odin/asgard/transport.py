@@ -293,6 +293,12 @@ class ShellRsyncRunner:
         NO ``--delete`` — we don't want to prune prior bundles on the
         controller's side when fetching a new bundle.
 
+        The source is forced to end in ``/`` so rsync copies the remote
+        directory's *contents* into ``local_path`` rather than creating a
+        nested ``local_path/<basename>/``. This matches the symmetric
+        behaviour of :meth:`push` and keeps the caller's mental model
+        simple: "pull THIS remote dir INTO THIS local dir".
+
         Args:
             host: Target host configuration.
             remote_path: Source path on the remote host.
@@ -306,5 +312,5 @@ class ShellRsyncRunner:
         transport = self._build_ssh_transport_opt(host)
         if transport is not None:
             argv += ["-e", transport]
-        argv += [f"{host.ssh_user}@{host.host}:{remote_path}", str(local_path)]
+        argv += [f"{host.ssh_user}@{host.host}:{remote_path.rstrip('/')}/", str(local_path)]
         return self._run_rsync(argv)
