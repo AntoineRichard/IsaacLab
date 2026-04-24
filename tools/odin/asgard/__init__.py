@@ -11,6 +11,7 @@ wrapper over :func:`run_dispatch`; a future T3.2 web UI would consume the
 same public surface.
 """
 
+from tools.odin.asgard.bootstrap import BootstrapResult, bootstrap_fleet, bootstrap_valkyrie
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig, load_fleet
 from tools.odin.asgard.queue import FailureInfo, JobEntry, build_queue_from_env_lists
 from tools.odin.asgard.state import (
@@ -35,6 +36,9 @@ from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
 from tools.odin.asgard.runner import DispatchOptions, resolve_dispatch_dir, run_dispatch
 
 __all__ = [
+    "BootstrapResult",
+    "bootstrap_fleet",
+    "bootstrap_valkyrie",
     "Fleet",
     "ValkyrieConfig",
     "load_fleet",
