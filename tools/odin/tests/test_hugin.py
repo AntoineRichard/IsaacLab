@@ -127,3 +127,33 @@ def test_hugin_failure_path_writes_logs(tmp_path, monkeypatch):
         m = json.load(f)
     assert m["phases"]["training"]["status"] == "failed"
     assert m["phases"]["training"]["exit_code"] == 7
+
+
+def test_hugin_honors_run_id_override(tmp_path, monkeypatch):
+    """--run_id uses the string verbatim instead of compute_run_id."""
+    bundle_root = str(tmp_path)
+    fake_run = _fake_run_factory()
+    monkeypatch.setattr(hugin_run, "_subprocess_run", fake_run)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hugin",
+            "--task",
+            "Isaac-Ant-Direct-v0",
+            "--backend",
+            "physx",
+            "--seed",
+            "42",
+            "--runs_root",
+            bundle_root,
+            "--skip_startup",
+            "--run_id",
+            "dispatched-run-id-xyz",
+        ],
+    )
+    hugin_run.main()
+
+    assert os.path.isdir(os.path.join(bundle_root, "dispatched-run-id-xyz"))
+    # No auto-generated run_id sibling directory.
+    siblings = [d for d in os.listdir(bundle_root) if d != "dispatched-run-id-xyz"]
+    assert siblings == [], f"unexpected sibling bundle dirs: {siblings}"

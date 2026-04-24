@@ -72,10 +72,30 @@ def main():
         default=False,
         help="Skip the dense startup-profile subprocess (training-only run).",
     )
+    parser.add_argument(
+        "--run_id",
+        type=str,
+        default=None,
+        help=(
+            "Override the computed run_id for this bundle. When set, Munin "
+            "uses this string verbatim as the bundle directory name. "
+            "Intended for Odin's T3.1 dispatcher, which pre-computes "
+            "run_ids against its dispatch_id so all bundles under one "
+            "dispatch share a consistent timestamp stem. When unset, "
+            "Munin falls back to ``compute_run_id(framework, backend, "
+            "task, seed, now)``."
+        ),
+    )
     args = parser.parse_args()
 
     run_start = datetime.now(timezone.utc)
-    run_id = compute_run_id("skrl", args.backend, args.task, args.seed, now=run_start)
+    run_id = args.run_id or compute_run_id(
+        "skrl",
+        args.backend,
+        args.task,
+        args.seed,
+        now=run_start,
+    )
     bundle_dir = os.path.abspath(os.path.join(args.runs_root, run_id))
     os.makedirs(bundle_dir, exist_ok=True)
 
