@@ -16,6 +16,20 @@ Usage::
 
 from __future__ import annotations
 
+# When Python runs this file as a script (``./isaaclab.sh -p tools/odin/asgard/bootstrap_cli.py``),
+# it prepends this file's directory to ``sys.path[0]``. That directory also
+# contains ``queue.py`` (our :mod:`tools.odin.asgard.queue` job-queue module),
+# which then shadows the stdlib ``queue`` — and ``concurrent.futures.thread``
+# imports ``queue`` to use ``queue.SimpleQueue``. De-prepend the script dir
+# before any other import so stdlib ``queue`` resolves correctly. A proper
+# fix is to rename ``queue.py`` (tracked as a latent cleanup item).
+import os as _os
+import sys as _sys
+
+_script_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _sys.path and _os.path.abspath(_sys.path[0]) == _script_dir:
+    _sys.path.pop(0)
+
 import argparse
 import sys
 from pathlib import Path
