@@ -155,6 +155,17 @@ class ValkyrieWorker(threading.Thread):
                 self.host, cmd, timeout_s=float(self._options.per_job_timeout_s), stdout_tee=ssh_tail
             )
 
+            # After an SSH timeout, the local ssh process is terminated, but
+            # the ``docker exec``'d training process inside the container
+            # often survives (docker's signal-forwarding does not cover this
+            # path reliably on every kernel). The zombie keeps burning GPU
+            # and will contend for resources with any subsequent job on the
+            # same host. Dispatch a best-effort pkill by run_id pattern —
+            # failure here is logged to the buffer but never escalated,
+            # because the job is already flagged timed-out.
+            if ssh_result.timed_out:
+                self._cleanup_remote_process(job)
+
             failure = self._classify(ssh_result, job, ssh_tail)
             if failure is not None and failure.kind == "infrastructure":
                 if job.attempts <= self._options.max_infrastructure_retries:
@@ -217,6 +228,22 @@ class ValkyrieWorker(threading.Thread):
                 ended_at=job.ended_at,
             )
         )
+
+    # -- timeout cleanup ----------------------------------------------------
+
+    def _cleanup_remote_process(self, job: JobEntry) -> None:
+        """Best-effort ``pkill -9 -f <run_id>`` inside the Valkyrie's container.
+
+        Run after an SSH timeout to stop the zombie ``docker exec``-launched
+        training process from holding the GPU on this host. Uses the job's
+        run_id as the pattern — that id is already baked into every
+        Hugin/Munin invocation's argv (via ``--run_id``), so the match is
+        surgical and will not hit unrelated processes. Errors are
+        intentionally swallowed; this is a hygiene step for the *next* job,
+        not a prerequisite for reporting the current one as timed out.
+        """
+        cleanup_cmd = f"docker exec {self.host.container_name} pkill -9 -f '{job.run_id}' 2>/dev/null; true"
+        self._ssh.run(self.host, cleanup_cmd, timeout_s=30.0)
 
     # -- classification -----------------------------------------------------
 

@@ -140,6 +140,42 @@ def test_worker_classifies_timeout(tmp_path: Path):
     assert failed.failure.kind == "timeout"
 
 
+def test_worker_cleans_up_remote_process_on_timeout(tmp_path: Path):
+    """After an SSH timeout, the worker must dispatch a pkill to the container.
+
+    Without this, the training process inside the container outlives its parent
+    and hogs the GPU for whatever job the scheduler places next on the same host.
+    """
+    ssh = _FakeSSH(
+        scripted={
+            # Only the *initial* docker-exec (the one carrying the training argv)
+            # times out. The cleanup pkill is a different command and falls
+            # through to the default exit-0 path in _FakeSSH.
+            "hugin/run.py": SSHResult(exit_code=-15, stdout="", stderr="", duration_s=60.1, timed_out=True),
+        }
+    )
+    rsync = _FakeRsync(materialize_bundle=False)
+    w = _make_worker(tmp_path, ssh, rsync)
+    job = _job()
+    _spin_worker(w, [job])
+    pkill_calls = [cmd for _, cmd in ssh.log if "pkill" in cmd]
+    assert len(pkill_calls) == 1
+    # Matches on the job's run_id (surgical kill — no risk of hitting unrelated procs).
+    assert job.run_id in pkill_calls[0]
+    # Targeted at the configured container on this host.
+    assert "docker exec" in pkill_calls[0]
+    assert w.host.container_name in pkill_calls[0]
+
+
+def test_worker_does_not_clean_up_on_normal_exit(tmp_path: Path):
+    """No pkill dispatched on clean exit — cleanup is only for timeout zombies."""
+    ssh = _FakeSSH()  # default: exit 0 for all commands
+    rsync = _FakeRsync()
+    w = _make_worker(tmp_path, ssh, rsync)
+    _spin_worker(w, [_job()])
+    assert not any("pkill" in cmd for _, cmd in ssh.log)
+
+
 def test_worker_classifies_malformed_bundle(tmp_path: Path):
     class _RsyncNoManifest(_FakeRsync):
         def pull(self, host, remote_path: str, local_path: Path) -> RsyncResult:
