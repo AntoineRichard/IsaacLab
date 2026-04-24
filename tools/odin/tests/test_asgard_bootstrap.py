@@ -111,7 +111,13 @@ def test_bootstrap_valkyrie_happy_path(tmp_path: Path):
     assert isinstance(result, BootstrapResult)
     assert result.ok is True
     assert result.host == "v1.internal"
-    assert set(result.step_durations_s.keys()) == {"wipe", "rsync", "container_start", "container_verify"}
+    assert set(result.step_durations_s.keys()) == {
+        "wipe",
+        "rsync",
+        "configure_headless",
+        "container_start",
+        "container_verify",
+    }
     assert all(d >= 0.0 for d in result.step_durations_s.values())
 
 
@@ -145,6 +151,35 @@ def test_bootstrap_valkyrie_rsync_failure(tmp_path: Path):
     # Wipe ran; rsync ran; container_start did NOT.
     assert any("rm -rf" in c.cmd for c in ssh.calls)
     assert len(rsync.calls) == 1
+    assert not any("container.py start" in c.cmd for c in ssh.calls)
+    # configure_headless must NOT run either when rsync fails.
+    assert not any(".container.cfg" in c.cmd for c in ssh.calls)
+
+
+def test_bootstrap_valkyrie_writes_headless_cfg(tmp_path: Path):
+    """configure_headless step writes X11_FORWARDING_ENABLED=0 to remote .container.cfg."""
+    ssh = _FakeSSH(
+        replies={"docker inspect": 0},
+        reply_stdout={"docker inspect": "running"},
+    )
+    rsync = _FakeRsync()
+    bootstrap_valkyrie(_host(), tmp_path, ssh=ssh, rsync=rsync)
+    cfg_calls = [c for c in ssh.calls if ".container.cfg" in c.cmd]
+    assert len(cfg_calls) == 1, f"expected exactly one .container.cfg write, got {len(cfg_calls)}"
+    assert "X11_FORWARDING_ENABLED = 0" in cfg_calls[0].cmd
+    assert "docker/.container.cfg" in cfg_calls[0].cmd
+
+
+def test_bootstrap_valkyrie_configure_headless_failure(tmp_path: Path):
+    """When the .container.cfg write fails, bootstrap stops before container.py start."""
+    ssh = _FakeSSH(
+        replies={".container.cfg": 1},
+        reply_stderr={".container.cfg": "permission denied"},
+    )
+    rsync = _FakeRsync()
+    result = bootstrap_valkyrie(_host(), tmp_path, ssh=ssh, rsync=rsync)
+    assert result.ok is False
+    assert "headless .container.cfg" in result.message
     assert not any("container.py start" in c.cmd for c in ssh.calls)
 
 

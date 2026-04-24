@@ -202,6 +202,11 @@ _PUSH_EXCLUDES = [
     # needed at runtime on a Valkyrie; can grow to several hundred MB with
     # the full built site.
     "--exclude=docs/",
+    # docker/.container.cfg is dev-machine-specific (X11 forwarding state,
+    # tmp xauth paths). Bootstrap writes a headless version on the remote
+    # after rsync so Valkyries (which have no DISPLAY) can start the
+    # container cleanly.
+    "--exclude=docker/.container.cfg",
 ]
 
 

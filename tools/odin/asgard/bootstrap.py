@@ -144,6 +144,29 @@ def bootstrap_valkyrie(
             step_durations_s=step_durations_s,
         )
 
+    # 4b. Write headless docker/.container.cfg. Valkyries have no DISPLAY;
+    # container.py's x11_check would either crash on missing DISPLAY or prompt
+    # interactively on the SSH session (no TTY → EOFError). The statefile is
+    # an INI file with ``[X11] X11_FORWARDING_ENABLED = 0`` — write it on the
+    # remote before starting the container. .container.cfg itself is excluded
+    # from the rsync push (see transport.py _PUSH_EXCLUDES).
+    t0 = _time_step()
+    cfg_body = "[X11]\\nX11_FORWARDING_ENABLED = 0\\n"
+    r = ssh.run(
+        host,
+        f'printf "{cfg_body}" > {host.isaaclab_path}/docker/.container.cfg',
+        timeout_s=15,
+    )
+    step_durations_s["configure_headless"] = _time_step() - t0
+    if r.exit_code != 0:
+        return BootstrapResult(
+            host=host.host,
+            ok=False,
+            message=f"failed to write headless .container.cfg: {r.stderr.strip() or 'non-zero exit'}",
+            commit_sha=commit_sha,
+            step_durations_s=step_durations_s,
+        )
+
     # 5. Container start.
     t0 = _time_step()
     started = _container_start(host, ssh, timeout_s=build_timeout_s)
