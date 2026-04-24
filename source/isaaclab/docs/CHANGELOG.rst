@@ -1,6 +1,29 @@
 Changelog
 ---------
 
+4.6.17 (2026-04-24)
+~~~~~~~~~~~~~~~~~~~
+
+Changed
+^^^^^^^
+
+* Installed a shim over :func:`warp.to_torch` that accepts
+  :class:`~isaaclab.utils.warp.ProxyArray` inputs transparently.
+  Previously, legacy code using ``wp.to_torch(asset.data.<field>)``
+  after the ProxyArray migration raised
+  ``AttributeError: 'ProxyArray' object has no attribute 'requires_grad'``
+  because ``ProxyArray`` does not replicate the full ``wp.array``
+  attribute surface. The shim now routes ``ProxyArray`` inputs to
+  their zero-copy ``.torch`` view and emits a one-shot
+  :class:`DeprecationWarning` pointing callers to the explicit
+  ``.torch`` accessor. Non-``ProxyArray`` inputs fall through to the
+  original ``warp.to_torch`` unchanged. The shim is installed once at
+  ``isaaclab.utils.warp`` import time on both ``wp.to_torch`` and
+  ``wp._src.torch.to_torch`` so ``import warp as wp`` and
+  ``from warp._src.torch import to_torch`` call sites are both
+  covered.
+
+
 4.6.16 (2026-04-24)
 ~~~~~~~~~~~~~~~~~~~
 
