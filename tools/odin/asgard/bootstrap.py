@@ -166,7 +166,15 @@ def bootstrap_valkyrie(
     )
     step_durations_s["container_verify"] = _time_step() - t0
     status = r.stdout.strip()
-    if r.exit_code != 0 or status != "running":
+    if r.exit_code != 0:
+        return BootstrapResult(
+            host=host.host,
+            ok=False,
+            message=(f"docker inspect failed for {host.container_name!r}: {r.stderr.strip() or 'non-zero exit'}"),
+            commit_sha=commit_sha,
+            step_durations_s=step_durations_s,
+        )
+    if status != "running":
         return BootstrapResult(
             host=host.host,
             ok=False,

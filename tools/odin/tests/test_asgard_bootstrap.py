@@ -10,11 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pytest
-
 from tools.odin.asgard.bootstrap import BootstrapResult, bootstrap_valkyrie
 from tools.odin.asgard.fleet import ValkyrieConfig
-
 
 # --- Fakes -----------------------------------------------------------------
 
@@ -208,3 +205,16 @@ def test_bootstrap_valkyrie_wipe_failure(tmp_path: Path):
     assert "failed to wipe" in result.message
     assert "/opt/IsaacLab" in result.message
     assert rsync.calls == [], "rsync.push must not run when wipe failed"
+
+
+def test_bootstrap_valkyrie_container_inspect_fails_surfaces_stderr(tmp_path: Path):
+    """When docker inspect returns non-zero (e.g. no such container), stderr must surface."""
+    ssh = _FakeSSH(
+        replies={"docker inspect": 1},
+        reply_stderr={"docker inspect": "Error: No such object: isaac-lab-base"},
+    )
+    rsync = _FakeRsync()
+    result = bootstrap_valkyrie(_host(), tmp_path, ssh=ssh, rsync=rsync)
+    assert result.ok is False
+    assert "docker inspect failed" in result.message
+    assert "No such object" in result.message
