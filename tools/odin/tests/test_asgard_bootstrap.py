@@ -43,17 +43,20 @@ class _FakeSSH:
     replies: dict[str, int] = field(default_factory=dict)
     reply_stdout: dict[str, str] = field(default_factory=dict)
     reply_stderr: dict[str, str] = field(default_factory=dict)
+    reply_timed_out: dict[str, bool] = field(default_factory=dict)
 
     def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
         self.calls.append(_SSHCall(cmd=cmd, timeout_s=timeout_s))
         exit_code = 0
         stdout = ""
         stderr = ""
+        timed_out = False
         for key, code in self.replies.items():
             if key in cmd:
                 exit_code = code
                 stdout = self.reply_stdout.get(key, "")
                 stderr = self.reply_stderr.get(key, "")
+                timed_out = self.reply_timed_out.get(key, False)
                 break
 
         class R:
@@ -63,6 +66,7 @@ class _FakeSSH:
         R.stdout = stdout
         R.stderr = stderr
         R.duration_s = 0.01
+        R.timed_out = timed_out
         return R()
 
 
@@ -232,18 +236,41 @@ def test_bootstrap_valkyrie_wipe_always_runs(tmp_path: Path):
     assert len(wipe_calls) == 1
 
 
-def test_bootstrap_valkyrie_wipe_failure(tmp_path: Path):
-    """Wipe-step failure (e.g. permission issue) halts the pipeline before rsync."""
+def test_bootstrap_valkyrie_wipe_is_best_effort(tmp_path: Path):
+    """Per-file permission errors must NOT fail the wipe step.
+
+    Prior container runs leave root-owned ``__pycache__/`` dirs that the
+    horde user can't delete; the remote shell swallows rm's stderr and the
+    wipe command always exits 0. rsync's ``--exclude=__pycache__/`` then
+    leaves the leftover pyc files alone.
+    """
     ssh = _FakeSSH(
-        replies={"rm -rf": 1},
-        reply_stderr={"rm -rf": "Permission denied"},
+        replies={"docker inspect": 0},
+        reply_stdout={"docker inspect": "running"},
+    )
+    rsync = _FakeRsync()
+    result = bootstrap_valkyrie(_host(), tmp_path, ssh=ssh, rsync=rsync)
+    wipe_calls = [c for c in ssh.calls if "rm -rf" in c.cmd]
+    assert len(wipe_calls) == 1
+    # The command must swallow rm's stderr and force a zero exit so permission
+    # errors on root-owned files don't abort the bootstrap.
+    assert "2>/dev/null" in wipe_calls[0].cmd
+    assert "; true" in wipe_calls[0].cmd
+    assert result.ok is True
+
+
+def test_bootstrap_valkyrie_wipe_timeout(tmp_path: Path):
+    """SSH-level timeout on wipe still halts the pipeline before rsync."""
+    ssh = _FakeSSH(
+        replies={"rm -rf": -15},
+        reply_timed_out={"rm -rf": True},
     )
     rsync = _FakeRsync()
     result = bootstrap_valkyrie(_host(), tmp_path, ssh=ssh, rsync=rsync)
     assert result.ok is False
-    assert "failed to wipe" in result.message
+    assert "wipe timed out" in result.message
     assert "/opt/IsaacLab" in result.message
-    assert rsync.calls == [], "rsync.push must not run when wipe failed"
+    assert rsync.calls == [], "rsync.push must not run when wipe timed out"
 
 
 def test_bootstrap_valkyrie_container_inspect_fails_surfaces_stderr(tmp_path: Path):

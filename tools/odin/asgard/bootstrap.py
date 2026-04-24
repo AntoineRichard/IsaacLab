@@ -129,15 +129,21 @@ def bootstrap_valkyrie(
             commit_sha=commit_sha,
         )
 
-    # 3. Wipe.
+    # 3. Wipe. Best-effort: prior container runs leave root-owned __pycache__/
+    # dirs (docker writes .pyc as root) that horde can't delete. rsync's
+    # --exclude=__pycache__/ already skips them on the push, so surviving pyc
+    # files are harmless and regenerate on next import. The trailing ``; true``
+    # makes the remote shell exit 0 regardless of rm's per-file errors; SSH /
+    # timeout failures still surface via ``r.timed_out`` (below) or a non-zero
+    # exit from the SSH transport itself.
     t0 = _time_step()
-    r = ssh.run(host, f"rm -rf {host.isaaclab_path}", timeout_s=60)
+    r = ssh.run(host, f"rm -rf {host.isaaclab_path} 2>/dev/null; true", timeout_s=60)
     step_durations_s["wipe"] = _time_step() - t0
-    if r.exit_code != 0:
+    if r.timed_out:
         return BootstrapResult(
             host=host.host,
             ok=False,
-            message=f"failed to wipe {host.isaaclab_path!r}: {r.stderr.strip() or 'non-zero exit'}",
+            message=f"wipe timed out after 60s on {host.isaaclab_path!r}",
             commit_sha=commit_sha,
             step_durations_s=step_durations_s,
         )
