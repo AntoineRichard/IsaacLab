@@ -78,8 +78,17 @@ def bootstrap_valkyrie(
       2. Docker daemon reach — a 15 s ``docker ps`` probe.
       3. Wipe — ``rm -rf {isaaclab_path}`` (always, for idempotent re-runs).
       4. Rsync — push ``working_tree`` to ``{isaaclab_path}``.
+      4b. Configure headless — write ``docker/.container.cfg`` with
+          ``X11_FORWARDING_ENABLED = 0`` so Valkyries without a DISPLAY
+          can start the container cleanly.
+      4c. Create bundle dir — ``mkdir -p {isaaclab_path}/odin_runs`` so the
+          docker-compose bind-mount source exists and is owned by the SSH
+          user (not root-via-``create_host_path``).
       5. Container start — ``./docker/container.py start`` with
          ``build_timeout_s``.
+      5b. Fix ``_isaac_sim`` symlink — ``docker exec`` retargets
+          ``/workspace/isaaclab/_isaac_sim → /isaac-sim`` inside the
+          running container.
       6. Container verify — ``docker inspect`` must report ``"running"``.
 
     Args:
@@ -91,9 +100,11 @@ def bootstrap_valkyrie(
             (default 1800 = 30 min; covers a cold first-time docker build).
 
     Returns:
-        :class:`BootstrapResult` with ``ok=True`` iff all six steps passed.
-        ``step_durations_s`` records wall-clock seconds for steps 3-6 (the
-        ones that actually do work). Probe steps 1-2 are not included.
+        :class:`BootstrapResult` with ``ok=True`` iff all steps passed.
+        ``step_durations_s`` records wall-clock seconds for every step
+        that ran (``wipe``, ``rsync``, ``configure_headless``,
+        ``create_odin_runs``, ``container_start``, ``fix_isaac_sim_symlink``,
+        ``container_verify``). Probe steps 1-2 are not included.
     """
     commit_sha = _resolve_local_sha(working_tree)
     step_durations_s: dict[str, float] = {}
