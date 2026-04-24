@@ -120,6 +120,46 @@ Reads your filtered `physx_envs.yaml`, writes:
    (what's missing, count of affected envs, unlock value) followed by a
    per-env appendix table.
 
+## Bootstrapping a fresh fleet
+
+Fresh Valkyries — machines with only SSH, Docker, and a GPU — need to be
+brought to T3.1-preflight-ready state before `odin-dispatch` will run
+against them. `odin-bootstrap` handles this:
+
+```bash
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/asgard/bootstrap_cli.py \
+    --fleet fleet.yaml \
+    [--build-timeout 1800] \
+    [--sequential] \
+    [--verbose]
+```
+
+For each host in `fleet.yaml`:
+
+1. SSH reach + Docker daemon probes (fast).
+2. `rm -rf {isaaclab_path}` (always — keeps re-runs idempotent).
+3. `rsync` the controller's working tree to `{isaaclab_path}`.
+4. `./docker/container.py start` with `--build-timeout` (default 1800 s
+   = 30 min — covers a first-time docker image build).
+5. `docker inspect` must report the container as `running`.
+
+Hosts bootstrap in parallel by default (one thread per host); pass
+`--sequential` if shared network bandwidth can't support simultaneous
+rsyncs. Exit code is `0` iff every host succeeded.
+
+After `odin-bootstrap` returns green, the T3.1 dispatch path works:
+
+```bash
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/asgard/cli.py \
+    --fleet fleet.yaml \
+    --physx-yaml tools/odin/config/physx_envs.yaml \
+    --seeds 42
+```
+
+Re-bootstrapping wipes and re-rsyncs — useful after long host idle (image
+cache evicted), container drift, or as a belt-and-braces maintenance
+pass. Don't re-bootstrap mid-dispatch: stop the dispatch first.
+
 ## Dispatching across a fleet (T3.1 — Asgard)
 
 `tools/odin/asgard/cli.py` (the `odin-dispatch` entry point) ingests
