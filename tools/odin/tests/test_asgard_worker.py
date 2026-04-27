@@ -272,6 +272,42 @@ def test_build_docker_exec_cmd_includes_run_id():
     assert "--runs_root odin_runs" in cmd
 
 
+def test_worker_classifies_preset_unsupported(tmp_path: Path):
+    """Stderr containing 'preset_unsupported:' maps to its own kind, not hugin_crash."""
+    ssh = _FakeSSH(
+        scripted={
+            "hugin/run.py": SSHResult(
+                exit_code=2,
+                stdout="",
+                stderr=(
+                    "[ERROR] preset_unsupported: task 'Isaac-Foo-v0' has no "
+                    "'physx' preset. Inspect raw_cfg.sim.physics.\n"
+                ),
+                duration_s=3.0,
+            )
+        }
+    )
+    rsync = _FakeRsync(materialize_bundle=False)
+    w = _make_worker(tmp_path, ssh, rsync)
+    events = _spin_worker(w, [_job()])
+    failed = next(e for e in events if e.transition == "failed")
+    assert failed.failure is not None
+    assert failed.failure.kind == "preset_unsupported"
+    assert "missing preset" in failed.failure.message.lower()
+
+
+def test_worker_falls_back_to_hugin_crash_without_marker(tmp_path: Path):
+    """Regression: stderr without the marker still classifies as hugin_crash."""
+    ssh = _FakeSSH(
+        scripted={"hugin/run.py": SSHResult(exit_code=1, stdout="", stderr="generic crash\n", duration_s=2.0)}
+    )
+    rsync = _FakeRsync(materialize_bundle=False)
+    w = _make_worker(tmp_path, ssh, rsync)
+    events = _spin_worker(w, [_job()])
+    failed = next(e for e in events if e.transition == "failed")
+    assert failed.failure.kind == "hugin_crash"
+
+
 def test_preferred_not_fallback_no_other_worker(tmp_path: Path):
     """When a job's preferred_not lists our host but NO other worker is around,
     the worker eventually accepts and runs it (we can't leave it stuck)."""

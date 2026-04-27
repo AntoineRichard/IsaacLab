@@ -268,6 +268,16 @@ class ValkyrieWorker(threading.Thread):
                 },
             )
         if r.exit_code != 0:
+            stderr_text = r.stderr or ""
+            if "preset_unsupported:" in stderr_text:
+                return FailureInfo(
+                    kind="preset_unsupported",
+                    message="benchmark script reported missing preset",
+                    details={
+                        "exit_code": r.exit_code,
+                        "log_tail_path": str(ssh_tail.relative_to(self._dispatch_dir)),
+                    },
+                )
             _last_line = r.stderr.strip().splitlines()[-1] if r.stderr.strip() else None
             _stderr_tail = repr(_last_line) if _last_line is not None else "(empty)"
             return FailureInfo(
