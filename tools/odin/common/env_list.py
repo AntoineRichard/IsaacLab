@@ -43,6 +43,18 @@ __all__ = [
 _ISAACLAB_TASKS_PREFIX = "isaaclab_tasks."
 
 
+def _default_raw_cfg_loader(task_id: str):
+    """Default raw-cfg loader for ``build_entry_from_task_spec``.
+
+    Deferred import — isaaclab_tasks must be importable, which requires
+    the Kit app to be up. Caller's responsibility (matches the contract
+    of :func:`load_shipped_training_defaults`).
+    """
+    from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+
+    return load_cfg_from_registry(task_id, "env_cfg_entry_point")
+
+
 def derive_group(entry_point: str) -> str:
     """Derive a directory-style group key from a gym ``entry_point`` string.
 
@@ -507,6 +519,8 @@ def build_entry_from_task_spec(
     task_spec: Any,
     *,
     defaults_loader=load_shipped_training_defaults,
+    raw_cfg_loader=_default_raw_cfg_loader,
+    has_physics_preset_fn=None,
 ) -> EnvEntry:
     """Construct an :class:`EnvEntry` from a gym ``EnvSpec``-like object.
 
@@ -516,10 +530,27 @@ def build_entry_from_task_spec(
         defaults_loader: Callable taking ``(task_id, framework)`` and returning
             ``(num_envs, max_iterations)``. Defaults to the real
             :func:`load_shipped_training_defaults`; tests pass a stub.
+        raw_cfg_loader: Callable taking ``task_id`` and returning the task's
+            raw env cfg (the unresolved-PresetCfg form expected by
+            :func:`~tools.odin.common.presets.has_physics_preset`). Defaults
+            to a thin wrapper around ``load_cfg_from_registry``; tests pass
+            a stub. A loader that raises results in
+            ``presets_available=[]`` (the row falls through to the runtime
+            safety net).
+        has_physics_preset_fn: Callable matching
+            :func:`~tools.odin.common.presets.has_physics_preset`'s signature.
+            Defaults to the real function; tests pass a stub.
 
     Returns:
-        A freshly-built :class:`EnvEntry` with ``status="current"``.
+        A freshly-built :class:`EnvEntry` with ``status="current"`` and
+        ``presets_available`` populated (empty list if no preset query
+        was possible).
     """
+    if has_physics_preset_fn is None:
+        from tools.odin.common.presets import has_physics_preset as _real_hpp
+
+        has_physics_preset_fn = _real_hpp
+
     kwargs = task_spec.kwargs or {}
     has_rsl_rl = "rsl_rl_cfg_entry_point" in kwargs
     has_skrl = "skrl_cfg_entry_point" in kwargs
@@ -562,6 +593,27 @@ def build_entry_from_task_spec(
 
     keep = framework is not None and num_envs is not None and max_iterations is not None
 
+    presets_available: list[str] = []
+    try:
+        raw_cfg = raw_cfg_loader(task_spec.id)
+    except Exception as exc:  # noqa: BLE001 — preset query never aborts row construction
+        print(
+            f"WARNING env_list: raw_cfg_loader raised for {task_spec.id}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        raw_cfg = None
+    if raw_cfg is not None:
+        for name in ("physx", "newton"):
+            try:
+                if has_physics_preset_fn(raw_cfg, name):
+                    presets_available.append(name)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"WARNING env_list: has_physics_preset raised for {task_spec.id} / {name}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
     return EnvEntry(
         task_id=task_spec.id,
         entry_point=task_spec.entry_point or "",
@@ -577,6 +629,7 @@ def build_entry_from_task_spec(
         status="current",
         notes=notes,
         suspected_gap=None,
+        presets_available=presets_available,
     )
 
 

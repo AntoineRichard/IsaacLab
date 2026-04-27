@@ -532,6 +532,101 @@ def test_build_entry_manager_based_derives_group_from_env_cfg_entry_point():
     assert e.group == "manager_based/locomotion/velocity"
 
 
+class _StubRawCfg:
+    """Sentinel object passed to the stub has_physics_preset."""
+
+    def __init__(self, supports: set[str]):
+        self.supports = supports
+
+
+def _stub_raw_cfg_loader(supports: set[str]):
+    def _loader(task_id: str):
+        return _StubRawCfg(supports)
+
+    return _loader
+
+
+def _stub_has_physics_preset(raw_cfg, name: str) -> bool:
+    return name in raw_cfg.supports
+
+
+def test_build_entry_presets_available_both():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Dual-v0",
+        entry_point="isaaclab_tasks.direct.dual:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "isaaclab_tasks.direct.dual.cfg:Cfg",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=_stub_raw_cfg_loader({"physx", "newton"}),
+        has_physics_preset_fn=_stub_has_physics_preset,
+    )
+    assert e.presets_available == ["physx", "newton"]
+
+
+def test_build_entry_presets_available_physx_only():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-PhysxOnly-v0",
+        entry_point="isaaclab_tasks.direct.po:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "isaaclab_tasks.direct.po.cfg:Cfg",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=_stub_raw_cfg_loader({"physx"}),
+        has_physics_preset_fn=_stub_has_physics_preset,
+    )
+    assert e.presets_available == ["physx"]
+
+
+def test_build_entry_presets_available_none():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-NoPresets-v0",
+        entry_point="isaaclab_tasks.direct.np:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "isaaclab_tasks.direct.np.cfg:Cfg",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=_stub_raw_cfg_loader(set()),
+        has_physics_preset_fn=_stub_has_physics_preset,
+    )
+    assert e.presets_available == []
+
+
+def test_build_entry_skips_preset_query_when_loader_raises():
+    """A failure to load raw_cfg leaves presets_available empty (silent fall-through)."""
+
+    def _raises(task_id: str):
+        raise RuntimeError("load failed")
+
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Crashy-v0",
+        entry_point="isaaclab_tasks.direct.cr:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "isaaclab_tasks.direct.cr.cfg:Cfg",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=_raises,
+        has_physics_preset_fn=_stub_has_physics_preset,
+    )
+    assert e.presets_available == []
+
+
 # -----------------------------------------------------------------------------
 # classify_for_newton (used by enumerate_newton_envs.py)
 # -----------------------------------------------------------------------------
