@@ -21,6 +21,7 @@ def _env(
     keep: bool = True,
     status: str = "current",
     presets_available: list[str] | None = None,
+    native_backend: str | None = None,
 ) -> EnvEntry:
     return EnvEntry(
         task_id=task_id,
@@ -36,6 +37,7 @@ def _env(
         keep=keep,
         status=status,
         presets_available=list(presets_available) if presets_available is not None else [],
+        native_backend=native_backend,
     )
 
 
@@ -232,3 +234,87 @@ def test_include_filter_runs_before_preset_filter(tmp_path: Path):
     assert len(jobs) == 1
     assert jobs[0].task_id == "Isaac-Ant-Direct-v0"
     assert skipped == []  # NewtonOnly filtered out before preset gate
+
+
+def test_native_mismatch_skips_with_telemetry(tmp_path: Path):
+    """presets_available=[] AND native_backend != requested → skipped with reason='native_backend_mismatch'."""
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [_env("Isaac-Quadcopter-Direct-v0", presets_available=[], native_backend="physx")],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=None,
+        newton_yaml=physx,
+        seeds=[42, 43, 44],
+        dispatch_id="20260427-100000",
+    )
+    assert jobs == []
+    assert len(skipped) == 3
+    s = skipped[0]
+    assert s.task_id == "Isaac-Quadcopter-Direct-v0"
+    assert s.framework == "rsl_rl"
+    assert s.backend == "newton"
+    assert s.reason == "native_backend_mismatch"
+    assert s.presets_available == []
+    assert s.native_backend == "physx"
+
+
+def test_native_match_passes_through_to_runtime(tmp_path: Path):
+    """presets_available=[] AND native_backend == requested → JobEntry created (runtime injects)."""
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [_env("Isaac-Quadcopter-Direct-v0", presets_available=[], native_backend="physx")],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=physx,
+        newton_yaml=None,
+        seeds=[42],
+        dispatch_id="20260427-100000",
+    )
+    assert len(jobs) == 1
+    assert skipped == []
+
+
+def test_unknown_native_passes_through(tmp_path: Path):
+    """presets_available=[] AND native_backend=None (truly unknown) → JobEntry created (runtime catches)."""
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [_env("Isaac-Unknown-Native-v0", presets_available=[], native_backend=None)],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=physx,
+        newton_yaml=None,
+        seeds=[42],
+        dispatch_id="20260427-100000",
+    )
+    assert len(jobs) == 1
+    assert skipped == []
+
+
+def test_preset_unsupported_takes_precedence_over_native(tmp_path: Path):
+    """When BOTH rules could fire (presets_available populated + native mismatch), rule 1 wins.
+
+    Theoretically a task could have a PresetCfg with no physx alternative
+    but default to physx internally.  Rule 1 (preset_unsupported) is the
+    correct classification — the task explicitly opts INTO the preset
+    system and excludes physx from the menu.
+    """
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [_env("Isaac-Edge-v0", presets_available=["newton"], native_backend="physx")],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=physx,
+        newton_yaml=None,
+        seeds=[42],
+        dispatch_id="20260427-100000",
+    )
+    assert jobs == []
+    assert len(skipped) == 1
+    assert skipped[0].reason == "preset_unsupported"
+    # native_backend telemetry still populated for rule 1 entries.
+    assert skipped[0].native_backend == "physx"

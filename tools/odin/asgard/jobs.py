@@ -115,8 +115,7 @@ def _expand_env_list(
                 continue
             if row.framework is None or row.num_envs is None or row.max_iterations is None:
                 continue
-            # Preset-support gate. Empty list = unknown → pass through;
-            # populated list with backend missing → skip.
+            # Rule 1: preset system says backend not supported.
             if row.presets_available and backend not in row.presets_available:
                 for seed in seeds:
                     skipped.append(
@@ -127,9 +126,28 @@ def _expand_env_list(
                             seed=seed,
                             reason="preset_unsupported",
                             presets_available=list(row.presets_available),
+                            native_backend=row.native_backend,
                         )
                     )
                 continue
+
+            # Rule 2: no preset system, native_backend known and mismatching
+            # the requested backend → silent-swap prevention.
+            if not row.presets_available and row.native_backend is not None and row.native_backend != backend:
+                for seed in seeds:
+                    skipped.append(
+                        SkippedEntry(
+                            task_id=row.task_id,
+                            framework=row.framework,
+                            backend=backend,
+                            seed=seed,
+                            reason="native_backend_mismatch",
+                            presets_available=[],
+                            native_backend=row.native_backend,
+                        )
+                    )
+                continue
+
             for seed in seeds:
                 run_id = _make_run_id(row.framework, backend, row.task_id, dispatch_id, seed)
                 jobs.append(
@@ -169,9 +187,12 @@ def build_queue_from_env_lists(
         ``(jobs, skipped)``. ``jobs`` is a list of :class:`JobEntry` rows in
         insertion order (PhysX first, then Newton). ``skipped`` is the list
         of :class:`SkippedEntry` rows for ``(task, backend, seed)`` triples
-        that didn't match the row's ``presets_available`` — each
-        ``--include``-passing seed of an unsupported task contributes one
-        ``SkippedEntry``.
+        rejected by the queue filter — either because the row's
+        ``presets_available`` excludes the requested backend
+        (``reason="preset_unsupported"``) or because the row has no
+        preset system and its ``native_backend`` doesn't match the request
+        (``reason="native_backend_mismatch"``). Each ``--include``-passing
+        seed contributes one ``SkippedEntry``.
 
     Raises:
         ValueError: If neither YAML is provided or seeds is empty.
