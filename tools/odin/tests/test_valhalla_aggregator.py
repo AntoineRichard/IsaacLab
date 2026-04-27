@@ -221,6 +221,38 @@ def test_mixed_completed_and_failed_seeds(tmp_path: Path):
     assert f["failure_message"] == "RSL-RL subprocess exited 1"
 
 
+def test_aggregator_passes_through_preset_unsupported_kind(tmp_path: Path):
+    """A job with failure.kind=preset_unsupported flows into failures[] cleanly.
+
+    Pins the contract that ``_classify_failure`` passes ``job.failure.kind``
+    through verbatim — no whitelist exists today and none should be added
+    silently. Guards against a future regression where ``preset_unsupported``
+    might be swallowed as ``malformed_bundle`` or similar.
+    """
+    dispatch = tmp_path / "20260427-130000"
+    dispatch.mkdir()
+    _make_dispatch_json(
+        dispatch,
+        [
+            _job(
+                "rsl-rl_physx_Isaac-Foo-v0_20260427-130000_seed42",
+                task="Isaac-Foo-v0",
+                seed=42,
+                status="failed",
+                failure={
+                    "kind": "preset_unsupported",
+                    "message": "benchmark script reported missing preset",
+                    "details": {"exit_code": 2},
+                },
+            ),
+        ],
+    )
+    agg = aggregate_dispatch(dispatch)
+    assert agg["totals"]["failed"] == 1
+    f = next(f for f in agg["failures"] if f["seed"] == 42)
+    assert f["failure_kind"] == "preset_unsupported"
+
+
 def test_all_seeds_failed_row_has_null_aggregate(tmp_path: Path):
     dispatch = tmp_path / "20260423-100000"
     dispatch.mkdir()
