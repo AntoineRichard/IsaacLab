@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tools.odin.asgard.cuda_install import (
@@ -632,3 +634,42 @@ def test_install_fleet_verbose_prints_per_host(capsys):
     out = capsys.readouterr().out
     assert "v-only" in out
     assert "skipped" in out or "ok" in out
+
+
+# --- find_running_dispatches ----------------------------------------------
+
+import json
+
+from tools.odin.asgard.cuda_install import find_running_dispatches
+
+
+def _write_dispatch_json(dispatch_dir: Path, *, ended: bool) -> None:
+    dispatch_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "1",
+        "dispatch_id": dispatch_dir.name,
+        "started_at": "2026-04-27T10:00:00+00:00",
+        "ended_at": "2026-04-27T10:30:00+00:00" if ended else None,
+        "seeds": [42],
+        "commit_sha": "abcdef0",
+        "fleet": [],
+        "jobs": [],
+        "skipped": [],
+    }
+    (dispatch_dir / "dispatch.json").write_text(json.dumps(payload))
+
+
+def test_find_running_dispatches_finds_inflight(tmp_path: Path):
+    _write_dispatch_json(tmp_path / "20260427-running", ended=False)
+    _write_dispatch_json(tmp_path / "20260427-finished", ended=True)
+    ids = find_running_dispatches(tmp_path)
+    assert ids == ["20260427-running"]
+
+
+def test_find_running_dispatches_empty_when_runs_root_missing(tmp_path: Path):
+    assert find_running_dispatches(tmp_path / "nonexistent") == []
+
+
+def test_find_running_dispatches_ignores_dirs_without_dispatch_json(tmp_path: Path):
+    (tmp_path / "stray").mkdir()
+    assert find_running_dispatches(tmp_path) == []

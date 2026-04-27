@@ -16,9 +16,11 @@ import contextlib
 import re
 import time as _time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.provisioner import _container_start, _container_stop
+from tools.odin.asgard.state import read_dispatch_state
 from tools.odin.asgard.transport import SSHRunner
 
 __all__ = [
@@ -28,6 +30,7 @@ __all__ = [
     "check_cuda_valkyrie",
     "check_fleet",
     "cuda_at_or_above",
+    "find_running_dispatches",
     "install_cuda_valkyrie",
     "install_fleet",
     "parse_nvidia_smi",
@@ -592,3 +595,33 @@ def _wait_for_ssh(
             return True
         sleep(poll_interval_s)
     return False
+
+
+def find_running_dispatches(runs_root: Path) -> list[str]:
+    """Return the dispatch_ids of any in-flight dispatches under ``runs_root``.
+
+    A dispatch is considered "running" if its ``dispatch.json`` exists and
+    ``ended_at is None``. Order: ascending dispatch_id (the directory name).
+
+    Args:
+        runs_root: Root directory that contains per-dispatch subdirectories
+            (e.g. ``odin_runs/``). Returns ``[]`` if the path does not exist.
+
+    Returns:
+        Sorted list of dispatch_id strings for dispatches that have not yet
+        ended (``ended_at is None``).
+    """
+    if not runs_root.exists() or not runs_root.is_dir():
+        return []
+    running: list[str] = []
+    for child in sorted(runs_root.iterdir()):
+        if not child.is_dir():
+            continue
+        if not (child / "dispatch.json").exists():
+            continue
+        state = read_dispatch_state(child)
+        if state is None:
+            continue
+        if state.ended_at is None:
+            running.append(state.dispatch_id)
+    return running
