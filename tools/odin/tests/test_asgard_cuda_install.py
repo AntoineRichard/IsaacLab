@@ -467,6 +467,7 @@ def test_install_reboot_timeout_is_hard_failure():
 
 def test_install_post_verify_failure_when_cuda_still_below_floor():
     """Reboot succeeds but driver kmod didn't load; nvidia-smi still reports 12.2."""
+    _DMESG_LINE = "[   12.345] NVRM: GPU-0000:01:00.0: RmInitAdapter failed!"
     ssh = _FakeSSH(
         replies={
             "echo cuda-check-ok": 0,
@@ -478,17 +479,22 @@ def test_install_post_verify_failure_when_cuda_still_below_floor():
             "apt-get install": 0,
             "systemctl reboot": 0,
             "echo cuda-install-ok": 0,
+            "dmesg": 0,
             "container.py start": 0,
         },
         reply_stdout={
             "nvidia-smi": _NVIDIA_SMI_OK_122,  # never flips
             "/etc/os-release": _OS_2404,
+            "dmesg": _DMESG_LINE,
         },
     )
     clock, sleep = _stub_clock_and_sleep()
     result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9", clock=clock, sleep=sleep)
     assert result.ok is False
     assert "verify" in result.message.lower()
+    # dmesg output must be in dmesg_tail, not in message.
+    assert result.dmesg_tail == _DMESG_LINE
+    assert _DMESG_LINE not in result.message
 
 
 def test_install_container_stop_failure_is_non_fatal():

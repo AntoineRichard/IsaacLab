@@ -279,3 +279,29 @@ def test_main_install_prompt_yes_proceeds(tmp_path: Path, monkeypatch: pytest.Mo
     code = main(["install", "--fleet", str(fleet_path)])
     assert code == 0
     assert captured.get("called") is True
+
+
+def test_main_install_dmesg_tail_printed_indented_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """dmesg_tail lines are printed indented after the host failure line."""
+    fleet_path = _write_fleet_yaml(tmp_path)
+    _DMESG = "[ 1.234] NVRM: GPU-0000:01:00.0: RmInitAdapter failed!\n[ 1.235] NVRM: see dmesg"
+    monkeypatch.setattr(
+        "tools.odin.asgard.cuda_install_cli.install_fleet",
+        lambda fleet, **kw: [
+            CudaInstallResult(
+                host="v2.internal",
+                ok=False,
+                message="verify-failed: cuda 12.2 < floor 12.4 (container left stopped)",
+                dmesg_tail=_DMESG,
+            ),
+        ],
+    )
+    code = main(["install", "--fleet", str(fleet_path), "--yes"])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "v2.internal" in out
+    # Both dmesg lines must appear, each indented with leading spaces.
+    for line in _DMESG.splitlines():
+        assert f"      {line}" in out

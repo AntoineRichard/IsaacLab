@@ -267,6 +267,8 @@ class CudaInstallResult:
         driver_after: Driver version after install (``""`` when skipped or failed).
         cuda_after: CUDA version after install (``""`` when skipped or failed).
         message: Human-readable diagnostic; populated for failures and placeholders.
+        dmesg_tail: Last few lines of ``dmesg | grep -i nvidia`` captured on the
+            post-verify failure path; ``""`` otherwise.
         step_durations_s: Wall-clock seconds per named pipeline step.
     """
 
@@ -278,6 +280,7 @@ class CudaInstallResult:
     driver_after: str = ""
     cuda_after: str = ""
     message: str = ""
+    dmesg_tail: str = ""
     step_durations_s: dict[str, float] = field(default_factory=dict)
 
 
@@ -477,7 +480,8 @@ def install_cuda_valkyrie(
                 cuda_before=pre.cuda,
                 driver_after=driver_after,
                 cuda_after=cuda_after,
-                message=f"verify-failed: cuda {cuda_after} < floor {floor}\n{dmesg} {_RECOVERY_HINT}",
+                message=f"verify-failed: cuda {cuda_after} < floor {floor} {_RECOVERY_HINT}",
+                dmesg_tail=dmesg.strip(),
                 step_durations_s=step_durations_s,
             )
         if not driver_after.startswith(driver_major + "."):

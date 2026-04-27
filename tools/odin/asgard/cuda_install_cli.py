@@ -159,6 +159,9 @@ def _run_install(args: argparse.Namespace) -> int:
         for r in results:
             if not r.ok:
                 print(f"  {r.host}: {r.message}")
+                if r.dmesg_tail:
+                    for line in r.dmesg_tail.splitlines():
+                        print(f"      {line}")
     return 0 if ok_count == total else 1
 
 
