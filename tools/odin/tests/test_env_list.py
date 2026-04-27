@@ -220,6 +220,61 @@ def test_merge_refreshes_derived_fields():
     assert entry.entry_point == "isaaclab_tasks.direct.ant:AntEnv"
 
 
+def test_merge_refreshes_presets_available_on_existing_row():
+    """presets_available is derived from runtime introspection — refresh it."""
+    old = EnvEntry(
+        task_id="Isaac-Ant-Direct-v0",
+        entry_point="ep:E",
+        env_cfg_entry_point="ec:E",
+        group="direct/ant",
+        has_rsl_rl=True,
+        has_skrl=True,
+        framework="rsl_rl",
+        num_envs=4096,
+        max_iterations=300,
+        keep=True,
+        presets_available=["physx"],  # stale: task gained newton support
+    )
+    new = EnvEntry(
+        task_id="Isaac-Ant-Direct-v0",
+        entry_point="ep:E",
+        env_cfg_entry_point="ec:E",
+        group="direct/ant",
+        has_rsl_rl=True,
+        has_skrl=True,
+        framework="rsl_rl",
+        num_envs=4096,
+        max_iterations=300,
+        keep=True,
+        presets_available=["physx", "newton"],
+    )
+    existing = EnvList()
+    existing.groups["direct/ant"] = [old]
+    merged = merge(existing, [new])
+    row = merged.groups["direct/ant"][0]
+    assert row.presets_available == ["physx", "newton"]
+
+
+def test_merge_carries_presets_available_for_new_row():
+    new = EnvEntry(
+        task_id="Isaac-NewTask-Direct-v0",
+        entry_point="ep:E",
+        env_cfg_entry_point="ec:E",
+        group="direct/newtask",
+        has_rsl_rl=True,
+        has_skrl=False,
+        framework="rsl_rl",
+        num_envs=1024,
+        max_iterations=100,
+        keep=True,
+        presets_available=["newton"],
+    )
+    merged = merge(EnvList(), [new])
+    row = merged.groups["direct/newtask"][0]
+    assert row.status == "new"
+    assert row.presets_available == ["newton"]
+
+
 def test_merge_marks_vanished_rows_stale_and_does_not_delete():
     existing = _existing_list_with("Isaac-Ant-Direct-v0", keep=True)
     discovered: list[EnvEntry] = []  # registry removed the task
