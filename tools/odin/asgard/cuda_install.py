@@ -15,6 +15,7 @@ import concurrent.futures as _cf
 import contextlib
 import re
 import time as _time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,7 +47,7 @@ _NVIDIA_SMI_HEADER_RE = re.compile(
 class _StepCtx:
     """Context manager that records ``perf_counter`` deltas into a dict."""
 
-    def __init__(self, name: str, sink: dict[str, float], clock) -> None:
+    def __init__(self, name: str, sink: dict[str, float], clock: Callable[[], float]) -> None:
         self._name = name
         self._sink = sink
         self._clock = clock
@@ -287,8 +288,8 @@ def install_cuda_valkyrie(
     floor: str = "12.4",
     target: str = "12.9",
     reboot_timeout_s: float = 600.0,
-    clock=None,
-    sleep=None,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> CudaInstallResult:
     """Bring ``host`` to ``cuda >= floor`` by installing ``cuda-{target}``.
 
@@ -520,8 +521,8 @@ def install_fleet(
     reboot_timeout_s: float = 600.0,
     parallel: bool = True,
     verbose: bool = False,
-    clock=None,
-    sleep=None,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> list[CudaInstallResult]:
     """Run :func:`install_cuda_valkyrie` against every host in ``fleet``.
 
@@ -532,7 +533,7 @@ def install_fleet(
         target: Apt meta-package version key (e.g. ``"12.9"``).
         reboot_timeout_s: Per-host reboot wait budget.
         parallel: Thread-per-host concurrency. ``False`` runs sequentially.
-        verbose: Print one summary line per host as each finishes.
+        verbose: Print one summary line per host after the fleet finishes.
         clock: Optional ``time.monotonic`` replacement (test injection).
         sleep: Optional ``time.sleep`` replacement (test injection).
     """
@@ -573,8 +574,8 @@ def _wait_for_ssh(
     *,
     timeout_s: float,
     poll_interval_s: float,
-    clock,
-    sleep,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
 ) -> bool:
     """Poll ``echo cuda-install-ok`` until it succeeds or ``timeout_s`` elapses.
 

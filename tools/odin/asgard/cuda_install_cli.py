@@ -23,11 +23,12 @@ import sys
 from pathlib import Path
 
 from tools.odin.asgard.cuda_install import (
+    CheckResult,
     check_fleet,
     find_running_dispatches,
     install_fleet,
 )
-from tools.odin.asgard.fleet import load_fleet
+from tools.odin.asgard.fleet import Fleet, load_fleet
 from tools.odin.asgard.transport import ShellSSHRunner
 
 __all__ = ["main", "parse_args"]
@@ -92,7 +93,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _print_check_table(results) -> None:
+def _print_check_table(results: list[CheckResult]) -> None:
     """Print per-host CUDA status as a fixed-width table."""
     width = max(len(r.host) for r in results) if results else 4
     header = f"{'host':<{width}}  {'driver':<14}  {'cuda':<6}  status"
@@ -112,7 +113,7 @@ def _run_check(args: argparse.Namespace) -> int:
     return 0 if all(r.status == "ok" for r in results) else 1
 
 
-def _confirm_install(args: argparse.Namespace, fleet) -> bool:
+def _confirm_install(args: argparse.Namespace, fleet: Fleet) -> bool:
     """Print plan + read y/N from stdin. Returns True iff the user agreed."""
     print(
         f"odin-cuda install: target=cuda-{args.target.replace('.', '-')} "
@@ -151,7 +152,7 @@ def _run_install(args: argparse.Namespace) -> int:
         verbose=args.verbose,
     )
     ok_count = sum(1 for r in results if r.ok)
-    skipped_count = sum(1 for r in results if r.ok and r.skipped)
+    skipped_count = sum(1 for r in results if r.skipped)
     total = len(results)
     print(f"odin-cuda install: {ok_count}/{total} hosts ok ({skipped_count} skipped)")
     if ok_count < total:

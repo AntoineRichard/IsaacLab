@@ -7,11 +7,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
-from tools.odin.asgard.cuda_install import CheckResult
+from tools.odin.asgard.cuda_install import CheckResult, CudaInstallResult
 from tools.odin.asgard.cuda_install_cli import main, parse_args
 
 
@@ -87,11 +88,6 @@ def test_main_check_exit_one_when_any_below_floor(
     assert code == 1
     assert "needs-upgrade" in out
     assert "v2" in out
-
-
-import json
-
-from tools.odin.asgard.cuda_install import CudaInstallResult
 
 
 def _write_running_dispatch(runs_root: Path, dispatch_id: str) -> None:
@@ -266,3 +262,20 @@ def test_main_install_exit_one_when_any_failed(
     out = capsys.readouterr().out
     assert "1/2" in out
     assert "v2.internal" in out
+
+
+def test_main_install_prompt_yes_proceeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """When the prompt is shown and the user answers 'y', install_fleet runs."""
+    fleet_path = _write_fleet_yaml(tmp_path)
+
+    captured = {}
+
+    def _fake_install_fleet(fleet, **kw):
+        captured["called"] = True
+        return [CudaInstallResult(host="v1.internal", ok=True, skipped=True)]
+
+    monkeypatch.setattr("tools.odin.asgard.cuda_install_cli.install_fleet", _fake_install_fleet)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    code = main(["install", "--fleet", str(fleet_path)])
+    assert code == 0
+    assert captured.get("called") is True

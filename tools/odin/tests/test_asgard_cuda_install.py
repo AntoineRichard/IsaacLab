@@ -7,15 +7,26 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from tools.odin.asgard.cuda_install import (
+    TARGET_TO_DRIVER_MAJOR,
+    CheckResult,
+    CudaInstallResult,
+    check_cuda_valkyrie,
+    check_fleet,
     cuda_at_or_above,
+    find_running_dispatches,
+    install_cuda_valkyrie,
+    install_fleet,
     parse_nvidia_smi,
     parse_os_release,
 )
+from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 
 # --- parse_nvidia_smi -------------------------------------------------------
 
@@ -106,11 +117,6 @@ def test_cuda_at_or_above_rejects_garbage():
 
 
 # --- check_cuda_valkyrie ---------------------------------------------------
-
-from dataclasses import dataclass, field
-
-from tools.odin.asgard.cuda_install import CheckResult, check_cuda_valkyrie
-from tools.odin.asgard.fleet import ValkyrieConfig
 
 
 @dataclass
@@ -243,9 +249,6 @@ def test_check_unsupported_os_short_circuits():
 
 # --- check_fleet ----------------------------------------------------------
 
-from tools.odin.asgard.cuda_install import check_fleet
-from tools.odin.asgard.fleet import Fleet
-
 
 def test_check_fleet_returns_results_in_fleet_order():
     fleet = Fleet(
@@ -291,12 +294,6 @@ def test_check_fleet_parallel_runs_concurrently():
 
 
 # --- install_cuda_valkyrie skip path --------------------------------------
-
-from tools.odin.asgard.cuda_install import (
-    TARGET_TO_DRIVER_MAJOR,
-    CudaInstallResult,
-    install_cuda_valkyrie,
-)
 
 
 def test_target_to_driver_major_has_pinned_default():
@@ -562,8 +559,6 @@ def test_install_os_slug_refetch_failure_returns_clean_error():
 
 # --- install_fleet --------------------------------------------------------
 
-from tools.odin.asgard.cuda_install import install_fleet
-
 
 def test_install_fleet_returns_results_in_fleet_order():
     fleet = Fleet(
@@ -637,10 +632,6 @@ def test_install_fleet_verbose_prints_per_host(capsys):
 
 
 # --- find_running_dispatches ----------------------------------------------
-
-import json
-
-from tools.odin.asgard.cuda_install import find_running_dispatches
 
 
 def _write_dispatch_json(dispatch_dir: Path, *, ended: bool) -> None:
