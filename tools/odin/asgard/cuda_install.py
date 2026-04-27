@@ -12,8 +12,14 @@ function and a fleet driver per phase (``check`` / ``install``).
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+
+from tools.odin.asgard.fleet import ValkyrieConfig
+from tools.odin.asgard.transport import SSHRunner
 
 __all__ = [
+    "CheckResult",
+    "check_cuda_valkyrie",
     "cuda_at_or_above",
     "parse_nvidia_smi",
     "parse_os_release",
@@ -94,3 +100,87 @@ def _parse_cuda(s: str) -> tuple[int, int]:
         return (int(parts[0]), int(parts[1]))
     except ValueError as e:
         raise ValueError(f"expected 'major.minor' CUDA string, got {s!r}") from e
+
+
+@dataclass
+class CheckResult:
+    """Outcome of a single-host CUDA check.
+
+    Attributes:
+        host: Host string from :class:`ValkyrieConfig`.
+        status: One of ``"ok"``, ``"needs-upgrade"``, ``"unreachable"``,
+            ``"no-gpu"``, ``"unsupported-os"``.
+        driver: Driver version (e.g. ``"535.161.07"``) when known, ``""`` otherwise.
+        cuda: Driver-advertised max CUDA (e.g. ``"12.2"``) when known, ``""`` otherwise.
+        message: Human-readable diagnostic; populated for non-ok statuses.
+    """
+
+    host: str
+    status: str
+    driver: str = ""
+    cuda: str = ""
+    message: str = ""
+
+
+def check_cuda_valkyrie(
+    host: ValkyrieConfig,
+    *,
+    ssh: SSHRunner,
+    floor: str = "12.4",
+) -> CheckResult:
+    """Read-only CUDA + OS check on ``host``.
+
+    Pipeline (short-circuits):
+
+      1. SSH reach (``echo cuda-check-ok``) → ``unreachable`` on non-zero.
+      2. ``nvidia-smi`` → ``no-gpu`` if missing or unparsable.
+      3. ``cat /etc/os-release`` → ``unsupported-os`` if not Ubuntu 22.04 / 24.04.
+      4. CUDA-vs-floor → ``ok`` or ``needs-upgrade``.
+
+    Args:
+        host: Target Valkyrie.
+        ssh: SSH runner.
+        floor: CUDA floor as ``"<major>.<minor>"`` (default ``"12.4"``).
+    """
+    # 1. SSH reach.
+    r = ssh.run(host, "echo cuda-check-ok", timeout_s=15.0)
+    if r.exit_code != 0:
+        return CheckResult(
+            host=host.host,
+            status="unreachable",
+            message=f"ssh unreachable: {r.stderr.strip() or r.stdout.strip() or 'non-zero exit'}",
+        )
+
+    # 2. nvidia-smi.
+    r = ssh.run(host, "nvidia-smi 2>&1", timeout_s=15.0)
+    parsed = parse_nvidia_smi(r.stdout) if r.exit_code == 0 else None
+    if parsed is None:
+        return CheckResult(
+            host=host.host,
+            status="no-gpu",
+            message=f"nvidia-smi unavailable or unparsable: {r.stderr.strip() or r.stdout.strip()[:120]}",
+        )
+    driver, cuda = parsed
+
+    # 3. /etc/os-release.
+    r = ssh.run(host, "cat /etc/os-release", timeout_s=15.0)
+    os_slug = parse_os_release(r.stdout) if r.exit_code == 0 else None
+    if os_slug is None:
+        return CheckResult(
+            host=host.host,
+            status="unsupported-os",
+            driver=driver,
+            cuda=cuda,
+            message="host is not Ubuntu 22.04 or 24.04",
+        )
+
+    # 4. floor comparison.
+    if cuda_at_or_above(cuda, floor):
+        return CheckResult(host=host.host, status="ok", driver=driver, cuda=cuda)
+    return CheckResult(
+        host=host.host,
+        status="needs-upgrade",
+        driver=driver,
+        cuda=cuda,
+        message=f"cuda {cuda} below floor {floor}",
+    )
