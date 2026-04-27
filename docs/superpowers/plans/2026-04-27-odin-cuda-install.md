@@ -489,7 +489,7 @@ def check_cuda_valkyrie(
     Pipeline (short-circuits):
 
       1. SSH reach (``echo cuda-check-ok``) → ``unreachable`` on non-zero.
-      2. ``nvidia-smi`` → ``no-gpu`` if missing or unparseable.
+      2. ``nvidia-smi`` → ``no-gpu`` if missing or unparsable.
       3. ``cat /etc/os-release`` → ``unsupported-os`` if not Ubuntu 22.04 / 24.04.
       4. CUDA-vs-floor → ``ok`` or ``needs-upgrade``.
 
@@ -514,7 +514,7 @@ def check_cuda_valkyrie(
         return CheckResult(
             host=host.host,
             status="no-gpu",
-            message=f"nvidia-smi unavailable or unparseable: {r.stderr.strip() or r.stdout.strip()[:120]}",
+            message=f"nvidia-smi unavailable or unparsable: {r.stderr.strip() or r.stdout.strip()[:120]}",
         )
     driver, cuda = parsed
 
@@ -1245,7 +1245,7 @@ def _wait_for_ssh(
                 ok=False,
                 driver_before=pre.driver,
                 cuda_before=pre.cuda,
-                message="post_verify: nvidia-smi unparseable after reboot",
+                message="post_verify: nvidia-smi unparsable after reboot",
                 step_durations_s=step_durations_s,
             )
         driver_after, cuda_after = parsed
