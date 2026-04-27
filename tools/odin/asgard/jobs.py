@@ -13,16 +13,48 @@ from pathlib import Path
 
 from tools.odin.common.env_list import load_env_list
 
-__all__ = ["JobEntry", "FailureInfo", "build_queue_from_env_lists"]
+__all__ = ["JobEntry", "FailureInfo", "SkippedEntry", "build_queue_from_env_lists"]
 
 
 @dataclass
 class FailureInfo:
-    """Classified failure attached to a :class:`JobEntry` when ``status == 'failed'``."""
+    """Classified failure attached to a :class:`JobEntry` when ``status == 'failed'``.
 
-    kind: str  # "infrastructure" | "hugin_crash" | "hugin_malformed_bundle" | "timeout"
+    ``kind`` values:
+
+    - ``infrastructure``: docker / SSH transport failure (retried).
+    - ``hugin_crash``: training process exited non-zero with no
+      Odin-recognised stderr signal.
+    - ``hugin_malformed_bundle``: SSH succeeded, rsync pulled, but the
+      bundle's manifest is missing or invalid.
+    - ``timeout``: SSH wall-clock timeout fired.
+    - ``preset_unsupported``: training process exited non-zero with a
+      stderr line beginning ``preset_unsupported:`` — the requested
+      preset doesn't exist for the task. Caught by the runtime safety
+      net when yaml-stamped ``presets_available`` is stale.
+    """
+
+    kind: str
     message: str
     details: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class SkippedEntry:
+    """An (task, framework, backend, seed) pair that the queue builder rejected.
+
+    Lives next to :class:`JobEntry` because both are persisted into
+    ``dispatch.json`` (jobs[] and skipped[] respectively).  The current
+    only ``reason`` is ``"preset_unsupported"``, but the type is open
+    to additional reasons (e.g. future ``"capability_mismatch"``).
+    """
+
+    task_id: str
+    framework: str
+    backend: str
+    seed: int
+    reason: str
+    presets_available: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -67,9 +99,10 @@ def _expand_env_list(
     seeds: list[int],
     dispatch_id: str,
     include_filter: list[str] | None,
-) -> list[JobEntry]:
+) -> tuple[list[JobEntry], list[SkippedEntry]]:
     env_list = load_env_list(yaml_path)
     jobs: list[JobEntry] = []
+    skipped: list[SkippedEntry] = []
     for group_rows in env_list.groups.values():
         for row in group_rows:
             if not row.keep or row.status == "stale":
@@ -77,6 +110,21 @@ def _expand_env_list(
             if not _apply_include_filter(row.task_id, include_filter):
                 continue
             if row.framework is None or row.num_envs is None or row.max_iterations is None:
+                continue
+            # Preset-support gate. Empty list = unknown → pass through;
+            # populated list with backend missing → skip.
+            if row.presets_available and backend not in row.presets_available:
+                for seed in seeds:
+                    skipped.append(
+                        SkippedEntry(
+                            task_id=row.task_id,
+                            framework=row.framework,
+                            backend=backend,
+                            seed=seed,
+                            reason="preset_unsupported",
+                            presets_available=list(row.presets_available),
+                        )
+                    )
                 continue
             for seed in seeds:
                 run_id = _make_run_id(row.framework, backend, row.task_id, dispatch_id, seed)
@@ -92,7 +140,7 @@ def _expand_env_list(
                         bundle_dir_name=run_id,
                     )
                 )
-    return jobs
+    return jobs, skipped
 
 
 def build_queue_from_env_lists(
@@ -101,8 +149,8 @@ def build_queue_from_env_lists(
     seeds: list[int],
     dispatch_id: str,
     include_filter: list[str] | None = None,
-) -> list[JobEntry]:
-    """Expand curated env YAMLs across seeds into a flat job list.
+) -> tuple[list[JobEntry], list[SkippedEntry]]:
+    """Expand curated env YAMLs across seeds into a flat ``(jobs, skipped)`` pair.
 
     Args:
         physx_yaml: Path to ``physx_envs.yaml`` (T2.1); ``None`` to skip PhysX.
@@ -114,9 +162,12 @@ def build_queue_from_env_lists(
             must match at least one pattern to be queued. Unset = keep all.
 
     Returns:
-        List of :class:`JobEntry` rows in insertion order (PhysX first, then
-        Newton; within a backend, YAML-group order; within a group,
-        insertion order; within a row, seed order).
+        ``(jobs, skipped)``. ``jobs`` is a list of :class:`JobEntry` rows in
+        insertion order (PhysX first, then Newton). ``skipped`` is the list
+        of :class:`SkippedEntry` rows for ``(task, backend, seed)`` triples
+        that didn't match the row's ``presets_available`` — each
+        ``--include``-passing seed of an unsupported task contributes one
+        ``SkippedEntry``.
 
     Raises:
         ValueError: If neither YAML is provided or seeds is empty.
@@ -127,8 +178,13 @@ def build_queue_from_env_lists(
         raise ValueError("build_queue_from_env_lists needs a non-empty seed list")
 
     jobs: list[JobEntry] = []
+    skipped: list[SkippedEntry] = []
     if physx_yaml is not None:
-        jobs.extend(_expand_env_list(physx_yaml, "physx", seeds, dispatch_id, include_filter))
+        j, s = _expand_env_list(physx_yaml, "physx", seeds, dispatch_id, include_filter)
+        jobs.extend(j)
+        skipped.extend(s)
     if newton_yaml is not None:
-        jobs.extend(_expand_env_list(newton_yaml, "newton", seeds, dispatch_id, include_filter))
-    return jobs
+        j, s = _expand_env_list(newton_yaml, "newton", seeds, dispatch_id, include_filter)
+        jobs.extend(j)
+        skipped.extend(s)
+    return jobs, skipped

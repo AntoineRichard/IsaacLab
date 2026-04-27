@@ -15,7 +15,13 @@ from tools.odin.asgard.jobs import build_queue_from_env_lists
 from tools.odin.common.env_list import EnvEntry, EnvList, write_env_list
 
 
-def _env(task_id: str, framework: str = "rsl_rl", keep: bool = True, status: str = "current") -> EnvEntry:
+def _env(
+    task_id: str,
+    framework: str = "rsl_rl",
+    keep: bool = True,
+    status: str = "current",
+    presets_available: list[str] | None = None,
+) -> EnvEntry:
     return EnvEntry(
         task_id=task_id,
         entry_point="isaaclab_tasks.direct.ant:AntEnv",
@@ -29,6 +35,7 @@ def _env(task_id: str, framework: str = "rsl_rl", keep: bool = True, status: str
         max_iterations=300,
         keep=keep,
         status=status,
+        presets_available=list(presets_available) if presets_available is not None else [],
     )
 
 
@@ -43,7 +50,7 @@ def _write_env_list(tmp_path: Path, name: str, entries: list[EnvEntry]) -> Path:
 
 def test_expand_one_row_one_seed(tmp_path: Path):
     physx = _write_env_list(tmp_path, "physx.yaml", [_env("Isaac-Ant-Direct-v0")])
-    jobs = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
+    jobs, _ = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
     assert len(jobs) == 1
     j = jobs[0]
     assert j.task_id == "Isaac-Ant-Direct-v0"
@@ -60,7 +67,7 @@ def test_expand_one_row_one_seed(tmp_path: Path):
 
 def test_expand_multiple_seeds(tmp_path: Path):
     physx = _write_env_list(tmp_path, "physx.yaml", [_env("Isaac-Ant-Direct-v0")])
-    jobs = build_queue_from_env_lists(
+    jobs, _ = build_queue_from_env_lists(
         physx_yaml=physx, newton_yaml=None, seeds=[42, 43, 44], dispatch_id="20260422-220000"
     )
     assert len(jobs) == 3
@@ -71,7 +78,9 @@ def test_expand_multiple_seeds(tmp_path: Path):
 def test_combines_physx_and_newton(tmp_path: Path):
     physx = _write_env_list(tmp_path, "physx.yaml", [_env("Isaac-Ant-Direct-v0")])
     newton = _write_env_list(tmp_path, "newton.yaml", [_env("Isaac-Ant-Direct-v0")])
-    jobs = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=newton, seeds=[42], dispatch_id="20260422-220000")
+    jobs, _ = build_queue_from_env_lists(
+        physx_yaml=physx, newton_yaml=newton, seeds=[42], dispatch_id="20260422-220000"
+    )
     assert len(jobs) == 2
     assert {j.backend for j in jobs} == {"physx", "newton"}
 
@@ -82,7 +91,7 @@ def test_skips_keep_false_rows(tmp_path: Path):
         "physx.yaml",
         [_env("Isaac-Ant-Direct-v0"), _env("Isaac-Keep-False-v0", keep=False)],
     )
-    jobs = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
+    jobs, _ = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
     assert [j.task_id for j in jobs] == ["Isaac-Ant-Direct-v0"]
 
 
@@ -92,7 +101,7 @@ def test_skips_stale_rows(tmp_path: Path):
         "physx.yaml",
         [_env("Isaac-Ant-Direct-v0"), _env("Isaac-Stale-v0", status="stale")],
     )
-    jobs = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
+    jobs, _ = build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[42], dispatch_id="20260422-220000")
     assert [j.task_id for j in jobs] == ["Isaac-Ant-Direct-v0"]
 
 
@@ -102,7 +111,7 @@ def test_include_filter_fnmatch(tmp_path: Path):
         "physx.yaml",
         [_env("Isaac-Ant-Direct-v0"), _env("Isaac-Humanoid-Direct-v0"), _env("Isaac-Cartpole-Direct-v0")],
     )
-    jobs = build_queue_from_env_lists(
+    jobs, _ = build_queue_from_env_lists(
         physx_yaml=physx,
         newton_yaml=None,
         seeds=[42],
@@ -121,3 +130,105 @@ def test_empty_seeds_raises(tmp_path: Path):
     physx = _write_env_list(tmp_path, "physx.yaml", [_env("Isaac-Ant-Direct-v0")])
     with pytest.raises(ValueError, match="seed"):
         build_queue_from_env_lists(physx_yaml=physx, newton_yaml=None, seeds=[], dispatch_id="20260422-220000")
+
+
+def test_supported_pair_produces_jobs(tmp_path: Path):
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [_env("Isaac-Ant-Direct-v0", presets_available=["physx", "newton"])],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=physx,
+        newton_yaml=None,
+        seeds=[42, 43, 44],
+        dispatch_id="20260427-100000",
+    )
+    assert len(jobs) == 3
+    assert skipped == []
+
+
+def test_unsupported_pair_skips_with_telemetry(tmp_path: Path):
+    # Empty list = unknown → pass through (not skipped). Use [newton] to
+    # exercise the actual skip path against the physx backend.
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [_env("Isaac-NewtonOnly-v0", presets_available=["newton"])],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=physx,
+        newton_yaml=None,
+        seeds=[42, 43, 44],
+        dispatch_id="20260427-100000",
+    )
+    assert jobs == []
+    assert len(skipped) == 3
+    s = skipped[0]
+    assert s.task_id == "Isaac-NewtonOnly-v0"
+    assert s.framework == "rsl_rl"
+    assert s.backend == "physx"
+    assert s.seed in {42, 43, 44}
+    assert s.reason == "preset_unsupported"
+    assert s.presets_available == ["newton"]
+
+
+def test_empty_presets_available_passes_through(tmp_path: Path):
+    """Unknown preset support (empty list) must NOT trigger the skip path."""
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [_env("Isaac-Unknown-Presets-v0", presets_available=[])],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=physx,
+        newton_yaml=None,
+        seeds=[42],
+        dispatch_id="20260427-100000",
+    )
+    assert len(jobs) == 1
+    assert skipped == []
+
+
+def test_dual_preset_supports_both_backends(tmp_path: Path):
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [_env("Isaac-Dual-v0", presets_available=["physx", "newton"])],
+    )
+    newton = _write_env_list(
+        tmp_path,
+        "newton.yaml",
+        [_env("Isaac-Dual-v0", presets_available=["physx", "newton"])],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=physx,
+        newton_yaml=newton,
+        seeds=[42],
+        dispatch_id="20260427-100000",
+    )
+    assert len(jobs) == 2
+    assert {j.backend for j in jobs} == {"physx", "newton"}
+    assert skipped == []
+
+
+def test_include_filter_runs_before_preset_filter(tmp_path: Path):
+    """Rows excluded by --include must NOT appear in skipped[]."""
+    physx = _write_env_list(
+        tmp_path,
+        "physx.yaml",
+        [
+            _env("Isaac-Ant-Direct-v0", presets_available=["physx"]),
+            _env("Isaac-NewtonOnly-v0", presets_available=["newton"]),
+        ],
+    )
+    jobs, skipped = build_queue_from_env_lists(
+        physx_yaml=physx,
+        newton_yaml=None,
+        seeds=[42],
+        dispatch_id="20260427-100000",
+        include_filter=["Isaac-Ant-*"],
+    )
+    assert len(jobs) == 1
+    assert jobs[0].task_id == "Isaac-Ant-Direct-v0"
+    assert skipped == []  # NewtonOnly filtered out before preset gate
