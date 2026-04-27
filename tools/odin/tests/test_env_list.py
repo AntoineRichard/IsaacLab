@@ -902,6 +902,35 @@ def test_build_entry_native_backend_none_when_preset_cfg():
     assert e.presets_available == ["physx", "newton"]
 
 
+def test_build_entry_native_backend_none_when_sim_is_preset_cfg():
+    """Tasks where sim itself is a PresetCfg subclass (not just sim.physics) → native_backend=None."""
+    import isaaclab_tasks.utils.hydra as _hydra_mod
+
+    class _SimPresetCfg(_hydra_mod.PresetCfg):
+        """Minimal stand-in for a PresetCfg sim wrapper."""
+
+    class _RawCfg:
+        sim = _SimPresetCfg()
+
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Cabinet-Style-v0",
+        entry_point="ep:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "ec:E",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=lambda task_id: _RawCfg(),
+        has_physics_preset_fn=lambda raw, name: name in ("physx", "newton"),
+        # Use the REAL _derive_native_backend to exercise the fix end-to-end.
+    )
+    assert e.native_backend is None
+    assert e.presets_available == ["physx", "newton"]
+
+
 def test_build_entry_native_backend_loader_failure_yields_none():
     """A raw_cfg_loader that raises leaves native_backend=None (matches presets_available behaviour)."""
 

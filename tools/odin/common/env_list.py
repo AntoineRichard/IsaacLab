@@ -64,12 +64,24 @@ def _derive_native_backend(raw_cfg) -> str | None:
           means ``PhysxCfg()``) or an instance of :class:`PhysxCfg`.
         - ``"newton"`` if ``sim.physics`` is a :class:`NewtonCfg`.
         - ``"ovphysx"`` if ``sim.physics`` is a :class:`OvPhysxCfg`.
-        - ``None`` if ``sim.physics`` is a :class:`PresetCfg` subclass
-          (preset system handles backend selection — ``presets_available``
-          is the source of truth) or an unrecognised type.
+        - ``None`` if ``sim`` itself is a :class:`PresetCfg` subclass (the
+          preset system wraps the whole ``SimulationCfg``, not just
+          ``physics``), if ``sim.physics`` is a :class:`PresetCfg`
+          subclass, or if ``sim.physics`` is an unrecognised type.
+          ``presets_available`` is the source of truth for preset-driven
+          tasks.
     """
     sim = getattr(raw_cfg, "sim", None)
     if sim is None:
+        return None
+    from isaaclab_tasks.utils.hydra import PresetCfg
+
+    # Some tasks wrap the entire SimulationCfg in a PresetCfg subclass
+    # (e.g. cabinet tasks: ``class CabinetSimCfg(PresetCfg)`` with
+    # different ``SimulationCfg`` instances per backend).  In that case
+    # the preset system handles backend selection at the sim level —
+    # presets_available is the source of truth, native_backend is None.
+    if isinstance(sim, PresetCfg):
         return None
     physics = getattr(sim, "physics", None)
     if physics is None:
@@ -81,7 +93,6 @@ def _derive_native_backend(raw_cfg) -> str | None:
         from isaaclab_ovphysx.physics import OvPhysxCfg
     except ImportError:
         OvPhysxCfg = None
-    from isaaclab_tasks.utils.hydra import PresetCfg
 
     if isinstance(physics, PhysxCfg):
         return "physx"
