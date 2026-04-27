@@ -157,3 +157,81 @@ def test_loopback_dispatch_against_localhost(tmp_path: Path, stub_ssh_runner, st
     # dispatch.json must record success.
     dj = json.loads((dispatch_dir / "dispatch.json").read_text())
     assert dj["jobs"][0]["status"] == "completed"
+
+
+def test_unsupported_pair_lands_in_skipped_array(tmp_path: Path, stub_ssh_runner, stub_provisioner):
+    """End-to-end: a (task, backend) the task doesn't support → skipped[]."""
+    if not _ssh_localhost_works():
+        pytest.skip("ssh localhost does not work without a password; skipping integration test")
+
+    # Build a physx yaml with one supported and one unsupported task.
+    el = EnvList()
+    el.groups["direct/ant"] = [
+        EnvEntry(
+            task_id="Isaac-Ant-Direct-v0",
+            entry_point="ep:E",
+            env_cfg_entry_point="ec:E",
+            group="direct/ant",
+            has_rsl_rl=True,
+            has_skrl=True,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=10,
+            keep=True,
+            presets_available=["physx", "newton"],
+        ),
+        EnvEntry(
+            task_id="Isaac-NewtonOnly-v0",
+            entry_point="ep:N",
+            env_cfg_entry_point="ec:N",
+            group="direct/ant",
+            has_rsl_rl=True,
+            has_skrl=True,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=10,
+            keep=True,
+            presets_available=["newton"],
+        ),
+    ]
+    physx_yaml = tmp_path / "physx.yaml"
+    write_env_list(physx_yaml, el, generator="test")
+
+    # One-host fleet targeting localhost; same loopback shape as the
+    # success-path test above.
+    repo_root = Path.cwd()
+    host = ValkyrieConfig(
+        host="localhost",
+        ssh_user=os.environ.get("USER", "root"),
+        isaaclab_path=str(repo_root),
+    )
+    fleet = Fleet(fleet_name="loopback-test", hosts=[host])
+    dispatch_dir = tmp_path / "odin_runs" / "20260427-140000"
+    dispatch_dir.mkdir(parents=True)
+
+    state = run_dispatch(
+        fleet=fleet,
+        physx_yaml=physx_yaml,
+        newton_yaml=None,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42, 43], per_job_timeout_s=60, skip_aggregate=True),
+        ssh=ShellSSHRunner(),
+        rsync=ShellRsyncRunner(),
+    )
+
+    # Ant ran (2 seeds); NewtonOnly skipped (2 seeds).
+    assert {j.task_id for j in state.jobs} == {"Isaac-Ant-Direct-v0"}
+    assert len(state.jobs) == 2
+    assert {sk.task_id for sk in state.skipped} == {"Isaac-NewtonOnly-v0"}
+    assert len(state.skipped) == 2
+    assert all(sk.reason == "preset_unsupported" for sk in state.skipped)
+    assert all(sk.backend == "physx" for sk in state.skipped)
+    assert {sk.seed for sk in state.skipped} == {42, 43}
+
+    # And dispatch.json on disk reflects the same.
+    from tools.odin.asgard.state import read_dispatch_state
+
+    reloaded = read_dispatch_state(dispatch_dir)
+    assert reloaded is not None
+    assert len(reloaded.skipped) == 2
+    assert reloaded.skipped[0].presets_available == ["newton"]
