@@ -13,16 +13,19 @@ from __future__ import annotations
 
 import concurrent.futures as _cf
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.transport import SSHRunner
 
 __all__ = [
     "CheckResult",
+    "CudaInstallResult",
+    "TARGET_TO_DRIVER_MAJOR",
     "check_cuda_valkyrie",
     "check_fleet",
     "cuda_at_or_above",
+    "install_cuda_valkyrie",
     "parse_nvidia_smi",
     "parse_os_release",
 ]
@@ -212,3 +215,107 @@ def check_fleet(
             futures = [pool.submit(check_cuda_valkyrie, h, ssh=ssh, floor=floor) for h in fleet.hosts]
             return [f.result() for f in futures]
     return [check_cuda_valkyrie(h, ssh=ssh, floor=floor) for h in fleet.hosts]
+
+
+# Pinned `cuda-X-Y` apt meta-package -> matching cuda-drivers major.
+# Keep this small and explicit. Add entries as new targets are validated.
+TARGET_TO_DRIVER_MAJOR: dict[str, str] = {
+    "12.4": "550",
+    "12.5": "555",
+    "12.6": "560",
+    "12.7": "565",
+    "12.8": "570",
+    "12.9": "575",
+}
+
+
+@dataclass
+class CudaInstallResult:
+    """Outcome of a single-host install attempt.
+
+    Attributes:
+        host: Host string from :class:`ValkyrieConfig`.
+        ok: ``True`` when the host is at or above floor after this call.
+        skipped: ``True`` when host was already at floor (no changes made).
+        driver_before: Driver version seen at pre-check (``""`` if unreachable).
+        cuda_before: CUDA version seen at pre-check (``""`` if unreachable).
+        driver_after: Driver version after install (``""`` when skipped or failed).
+        cuda_after: CUDA version after install (``""`` when skipped or failed).
+        message: Human-readable diagnostic; populated for failures and placeholders.
+        step_durations_s: Wall-clock seconds per named pipeline step.
+    """
+
+    host: str
+    ok: bool
+    skipped: bool = False
+    driver_before: str = ""
+    cuda_before: str = ""
+    driver_after: str = ""
+    cuda_after: str = ""
+    message: str = ""
+    step_durations_s: dict[str, float] = field(default_factory=dict)
+
+
+def install_cuda_valkyrie(
+    host: ValkyrieConfig,
+    *,
+    ssh: SSHRunner,
+    floor: str = "12.4",
+    target: str = "12.9",
+    reboot_timeout_s: float = 600.0,
+    clock=None,
+    sleep=None,
+) -> CudaInstallResult:
+    """Bring ``host`` to ``cuda >= floor`` by installing ``cuda-{target}``.
+
+    Pipeline lives in subsequent steps; this Task implements only the
+    pre-check + skip + unsupported-os branches. Full apt + reboot + verify
+    arrives in Task 5.
+
+    Args:
+        host: Target Valkyrie.
+        ssh: SSH runner.
+        floor: CUDA threshold; hosts at or above this are skipped.
+        target: Apt meta-package version key (e.g. ``"12.9"``); must be in
+            :data:`TARGET_TO_DRIVER_MAJOR`.
+        reboot_timeout_s: Wall-clock budget for the post-reboot SSH wait.
+        clock: Optional ``time.monotonic`` replacement (test injection).
+        sleep: Optional ``time.sleep`` replacement (test injection).
+
+    Raises:
+        ValueError: If ``target`` is not in :data:`TARGET_TO_DRIVER_MAJOR`.
+    """
+    if target not in TARGET_TO_DRIVER_MAJOR:
+        raise ValueError(f"unknown target {target!r}; known: {sorted(TARGET_TO_DRIVER_MAJOR)}")
+
+    # Pre-check (mirrors check_cuda_valkyrie, but populates the install-result
+    # type so callers see consistent driver_before / cuda_before fields).
+    pre = check_cuda_valkyrie(host, ssh=ssh, floor=floor)
+    if pre.status == "unreachable":
+        return CudaInstallResult(host=host.host, ok=False, message=pre.message)
+    if pre.status == "no-gpu":
+        return CudaInstallResult(host=host.host, ok=False, message=pre.message)
+    if pre.status == "unsupported-os":
+        return CudaInstallResult(
+            host=host.host,
+            ok=False,
+            driver_before=pre.driver,
+            cuda_before=pre.cuda,
+            message="host is not Ubuntu 22.04 or 24.04 (refusing to install)",
+        )
+    if pre.status == "ok":
+        return CudaInstallResult(
+            host=host.host,
+            ok=True,
+            skipped=True,
+            driver_before=pre.driver,
+            cuda_before=pre.cuda,
+        )
+    # status == "needs-upgrade" — full pipeline is added in Task 5.
+    return CudaInstallResult(
+        host=host.host,
+        ok=False,
+        driver_before=pre.driver,
+        cuda_before=pre.cuda,
+        message="install pipeline not yet implemented",
+    )

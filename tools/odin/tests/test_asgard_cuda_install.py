@@ -286,3 +286,62 @@ def test_check_fleet_parallel_runs_concurrently():
     elapsed = _t.perf_counter() - t0
     assert all(r.status == "ok" for r in results)
     assert elapsed < 0.25, f"parallel check_fleet elapsed={elapsed:.3f}s"
+
+
+# --- install_cuda_valkyrie skip path --------------------------------------
+
+from tools.odin.asgard.cuda_install import (
+    TARGET_TO_DRIVER_MAJOR,
+    CudaInstallResult,
+    install_cuda_valkyrie,
+)
+
+
+def test_target_to_driver_major_has_pinned_default():
+    # The default install target must be present.
+    assert TARGET_TO_DRIVER_MAJOR["12.9"] == "575"
+
+
+def test_install_skip_when_already_at_floor():
+    ssh = _FakeSSH(
+        replies={"nvidia-smi": 0, "/etc/os-release": 0},
+        reply_stdout={"nvidia-smi": _NVIDIA_SMI_OK_129, "/etc/os-release": _OS_2404},
+    )
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9")
+    assert isinstance(result, CudaInstallResult)
+    assert result.ok is True
+    assert result.skipped is True
+    assert result.driver_before == "575.51.03"
+    assert result.cuda_before == "12.9"
+    # Skip path must not run apt or reboot.
+    assert not any("apt-get install" in c.cmd for c in ssh.calls)
+    assert not any("systemctl reboot" in c.cmd for c in ssh.calls)
+
+
+def test_install_skip_unreachable_propagates_as_failure():
+    ssh = _FakeSSH(
+        replies={"echo cuda-check-ok": 255},
+        reply_stderr={"echo cuda-check-ok": "ssh: conn refused"},
+    )
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9")
+    assert result.ok is False
+    assert result.skipped is False
+    assert "ssh unreachable" in result.message
+
+
+def test_install_unsupported_os_refuses():
+    ssh = _FakeSSH(
+        replies={"nvidia-smi": 0, "/etc/os-release": 0},
+        reply_stdout={"nvidia-smi": _NVIDIA_SMI_OK_122, "/etc/os-release": 'ID=rhel\nVERSION_ID="9.4"\n'},
+    )
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9")
+    assert result.ok is False
+    assert "Ubuntu" in result.message
+    # No install attempt.
+    assert not any("apt-get" in c.cmd for c in ssh.calls)
+
+
+def test_install_unknown_target_raises():
+    ssh = _FakeSSH()
+    with pytest.raises(ValueError, match="unknown target"):
+        install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="99.99")
