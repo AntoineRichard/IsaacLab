@@ -55,6 +55,45 @@ def _default_raw_cfg_loader(task_id: str):
     return load_cfg_from_registry(task_id, "env_cfg_entry_point")
 
 
+def _derive_native_backend(raw_cfg) -> str | None:
+    """Inspect ``raw_cfg.sim.physics`` to determine the task's native backend.
+
+    Returns:
+        - ``"physx"`` if ``sim.physics`` is ``None`` (per
+          :class:`~isaaclab.sim.SimulationCfg`'s docstring, ``physics=None``
+          means ``PhysxCfg()``) or an instance of :class:`PhysxCfg`.
+        - ``"newton"`` if ``sim.physics`` is a :class:`NewtonCfg`.
+        - ``"ovphysx"`` if ``sim.physics`` is a :class:`OvPhysxCfg`.
+        - ``None`` if ``sim.physics`` is a :class:`PresetCfg` subclass
+          (preset system handles backend selection — ``presets_available``
+          is the source of truth) or an unrecognised type.
+    """
+    sim = getattr(raw_cfg, "sim", None)
+    if sim is None:
+        return None
+    physics = getattr(sim, "physics", None)
+    if physics is None:
+        return "physx"
+    from isaaclab_newton.physics import NewtonCfg
+    from isaaclab_physx.physics import PhysxCfg
+
+    try:
+        from isaaclab_ovphysx.physics import OvPhysxCfg
+    except ImportError:
+        OvPhysxCfg = None
+    from isaaclab_tasks.utils.hydra import PresetCfg
+
+    if isinstance(physics, PhysxCfg):
+        return "physx"
+    if isinstance(physics, NewtonCfg):
+        return "newton"
+    if OvPhysxCfg is not None and isinstance(physics, OvPhysxCfg):
+        return "ovphysx"
+    if isinstance(physics, PresetCfg):
+        return None
+    return None
+
+
 def derive_group(entry_point: str) -> str:
     """Derive a directory-style group key from a gym ``entry_point`` string.
 
@@ -526,6 +565,7 @@ def build_entry_from_task_spec(
     defaults_loader=load_shipped_training_defaults,
     raw_cfg_loader=_default_raw_cfg_loader,
     has_physics_preset_fn=None,
+    native_backend_fn=None,
 ) -> EnvEntry:
     """Construct an :class:`EnvEntry` from a gym ``EnvSpec``-like object.
 
@@ -545,16 +585,23 @@ def build_entry_from_task_spec(
         has_physics_preset_fn: Callable matching
             :func:`~tools.odin.common.presets.has_physics_preset`'s signature.
             Defaults to the real function; tests pass a stub.
+        native_backend_fn: Callable taking the loaded raw cfg and returning
+            ``"physx"`` / ``"newton"`` / ``"ovphysx"`` / ``None``. Defaults
+            to :func:`_derive_native_backend`; tests pass a stub. A
+            derivation that raises leaves ``native_backend=None``.
 
     Returns:
-        A freshly-built :class:`EnvEntry` with ``status="current"`` and
-        ``presets_available`` populated (empty list if no preset query
-        was possible).
+        A freshly-built :class:`EnvEntry` with ``status="current"``,
+        ``presets_available`` populated (empty list if no preset query was
+        possible), and ``native_backend`` stamped from the raw cfg
+        (``None`` when no derivation was possible).
     """
     if has_physics_preset_fn is None:
         from tools.odin.common.presets import has_physics_preset as _real_hpp
 
         has_physics_preset_fn = _real_hpp
+    if native_backend_fn is None:
+        native_backend_fn = _derive_native_backend
 
     kwargs = task_spec.kwargs or {}
     has_rsl_rl = "rsl_rl_cfg_entry_point" in kwargs
@@ -599,6 +646,7 @@ def build_entry_from_task_spec(
     keep = framework is not None and num_envs is not None and max_iterations is not None
 
     presets_available: list[str] = []
+    native_backend: str | None = None
     try:
         raw_cfg = raw_cfg_loader(task_spec.id)
     except Exception as exc:  # noqa: BLE001 — preset query never aborts row construction
@@ -618,6 +666,13 @@ def build_entry_from_task_spec(
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
+        try:
+            native_backend = native_backend_fn(raw_cfg)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"WARNING env_list: native_backend_fn raised for {task_spec.id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
 
     return EnvEntry(
         task_id=task_spec.id,
@@ -635,6 +690,7 @@ def build_entry_from_task_spec(
         notes=notes,
         suspected_gap=None,
         presets_available=presets_available,
+        native_backend=native_backend,
     )
 
 

@@ -830,3 +830,98 @@ groups:
     p.write_text(yaml_text)
     el = load_env_list(p)
     assert el.groups["direct/quadcopter"][0].native_backend is None
+
+
+def test_build_entry_native_backend_physx_when_physics_is_none():
+    """SimulationCfg defaults sim.physics to None which means PhysxCfg() — treat as physx-native."""
+
+    class _Sim:
+        physics = None
+
+    class _RawCfg:
+        sim = _Sim()
+
+    def _stub_raw_cfg_loader(task_id: str):
+        return _RawCfg()
+
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Quadcopter-Direct-v0",
+        entry_point="isaaclab_tasks.direct.quadcopter:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "isaaclab_tasks.direct.quadcopter.cfg:Cfg",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=_stub_raw_cfg_loader,
+        has_physics_preset_fn=lambda raw, name: False,
+        native_backend_fn=lambda raw: "physx",
+    )
+    assert e.native_backend == "physx"
+
+
+def test_build_entry_native_backend_newton():
+    spec = _FakeTaskSpec(
+        task_id="Isaac-NewtonNative-v0",
+        entry_point="ep:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "ec:E",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=lambda task_id: object(),
+        has_physics_preset_fn=lambda raw, name: False,
+        native_backend_fn=lambda raw: "newton",
+    )
+    assert e.native_backend == "newton"
+
+
+def test_build_entry_native_backend_none_when_preset_cfg():
+    """Tasks with PresetCfg sim.physics → native_backend=None (presets_available is the source of truth)."""
+    spec = _FakeTaskSpec(
+        task_id="Isaac-PresetTask-v0",
+        entry_point="ep:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "ec:E",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=lambda task_id: object(),
+        has_physics_preset_fn=lambda raw, name: name in ("physx", "newton"),
+        native_backend_fn=lambda raw: None,
+    )
+    assert e.native_backend is None
+    assert e.presets_available == ["physx", "newton"]
+
+
+def test_build_entry_native_backend_loader_failure_yields_none():
+    """A raw_cfg_loader that raises leaves native_backend=None (matches presets_available behaviour)."""
+
+    def _raises(task_id: str):
+        raise RuntimeError("load failed")
+
+    spec = _FakeTaskSpec(
+        task_id="Isaac-Crashy-v0",
+        entry_point="ep:E",
+        kwargs={
+            "rsl_rl_cfg_entry_point": "x",
+            "env_cfg_entry_point": "ec:E",
+        },
+    )
+    e = build_entry_from_task_spec(
+        spec,
+        defaults_loader=_noop_defaults_loader,
+        raw_cfg_loader=_raises,
+        has_physics_preset_fn=lambda raw, name: False,
+        native_backend_fn=lambda raw: "physx",  # never called because loader raises
+    )
+    assert e.native_backend is None
+    assert e.presets_available == []
