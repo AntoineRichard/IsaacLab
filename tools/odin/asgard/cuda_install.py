@@ -14,6 +14,7 @@ from __future__ import annotations
 import concurrent.futures as _cf
 import contextlib
 import re
+import sys
 import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -624,8 +625,19 @@ def find_running_dispatches(runs_root: Path) -> list[str]:
             continue
         if not (child / "dispatch.json").exists():
             continue
-        state = read_dispatch_state(child)
+        try:
+            state = read_dispatch_state(child)
+        except Exception:
+            print(
+                f"warning: skipping {child.name}: dispatch.json unreadable",
+                file=sys.stderr,
+            )
+            continue
         if state is None:
+            print(
+                f"warning: skipping {child.name}: dispatch.json unreadable",
+                file=sys.stderr,
+            )
             continue
         if state.ended_at is None:
             running.append(state.dispatch_id)

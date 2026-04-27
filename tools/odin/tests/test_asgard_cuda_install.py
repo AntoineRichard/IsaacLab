@@ -670,3 +670,14 @@ def test_find_running_dispatches_empty_when_runs_root_missing(tmp_path: Path):
 def test_find_running_dispatches_ignores_dirs_without_dispatch_json(tmp_path: Path):
     (tmp_path / "stray").mkdir()
     assert find_running_dispatches(tmp_path) == []
+
+
+def test_find_running_dispatches_warns_on_corrupt_json(tmp_path: Path, capsys):
+    """Corrupt dispatch.json yields a stderr warning, not a silent skip."""
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "dispatch.json").write_text("not valid json")
+    result = find_running_dispatches(tmp_path)
+    assert result == []
+    err = capsys.readouterr().err
+    assert "broken" in err
+    assert "unreadable" in err
