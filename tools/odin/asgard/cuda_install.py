@@ -29,6 +29,7 @@ __all__ = [
     "check_fleet",
     "cuda_at_or_above",
     "install_cuda_valkyrie",
+    "install_fleet",
     "parse_nvidia_smi",
     "parse_os_release",
 ]
@@ -505,6 +506,62 @@ def install_cuda_valkyrie(
         message=soft_message,
         step_durations_s=step_durations_s,
     )
+
+
+def install_fleet(
+    fleet: Fleet,
+    *,
+    ssh: SSHRunner,
+    floor: str = "12.4",
+    target: str = "12.9",
+    reboot_timeout_s: float = 600.0,
+    parallel: bool = True,
+    verbose: bool = False,
+    clock=None,
+    sleep=None,
+) -> list[CudaInstallResult]:
+    """Run :func:`install_cuda_valkyrie` against every host in ``fleet``.
+
+    Args:
+        fleet: Loaded :class:`Fleet`.
+        ssh: SSH runner shared across hosts.
+        floor: CUDA floor — hosts at or above are skipped.
+        target: Apt meta-package version key (e.g. ``"12.9"``).
+        reboot_timeout_s: Per-host reboot wait budget.
+        parallel: Thread-per-host concurrency. ``False`` runs sequentially.
+        verbose: Print one summary line per host as each finishes.
+        clock: Optional ``time.monotonic`` replacement (test injection).
+        sleep: Optional ``time.sleep`` replacement (test injection).
+    """
+
+    def _one(h: ValkyrieConfig) -> CudaInstallResult:
+        return install_cuda_valkyrie(
+            h,
+            ssh=ssh,
+            floor=floor,
+            target=target,
+            reboot_timeout_s=reboot_timeout_s,
+            clock=clock,
+            sleep=sleep,
+        )
+
+    if parallel and len(fleet.hosts) > 1:
+        with _cf.ThreadPoolExecutor(max_workers=len(fleet.hosts)) as pool:
+            futures = [pool.submit(_one, h) for h in fleet.hosts]
+            results = [f.result() for f in futures]
+    else:
+        results = [_one(h) for h in fleet.hosts]
+
+    if verbose:
+        for r in results:
+            if r.ok and r.skipped:
+                tag = "skipped"
+            elif r.ok:
+                tag = "ok"
+            else:
+                tag = f"FAILED: {r.message}"
+            print(f"[{r.host}] {tag}")
+    return results
 
 
 def _wait_for_ssh(

@@ -556,3 +556,79 @@ def test_install_os_slug_refetch_failure_returns_clean_error():
     assert "os_slug" in result.message
     # No apt activity.
     assert not any("apt-get" in c.cmd for c in ssh.calls)
+
+
+# --- install_fleet --------------------------------------------------------
+
+from tools.odin.asgard.cuda_install import install_fleet
+
+
+def test_install_fleet_returns_results_in_fleet_order():
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[
+            ValkyrieConfig(host="v1", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+            ValkyrieConfig(host="v2", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+        ],
+    )
+    # Both hosts already at 12.9 -> both skip.
+    ssh = _FakeSSH(
+        replies={"nvidia-smi": 0, "/etc/os-release": 0},
+        reply_stdout={"nvidia-smi": _NVIDIA_SMI_OK_129, "/etc/os-release": _OS_2404},
+    )
+    clock, sleep = _stub_clock_and_sleep()
+    results = install_fleet(fleet, ssh=ssh, floor="12.4", target="12.9", parallel=False, clock=clock, sleep=sleep)
+    assert [r.host for r in results] == ["v1", "v2"]
+    assert all(r.ok and r.skipped for r in results)
+
+
+def test_install_fleet_parallel_runs_concurrently():
+    import time as _t
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[ValkyrieConfig(host=f"v{i}", ssh_user="u", ssh_key=None, isaaclab_path="/p") for i in (1, 2, 3)],
+    )
+
+    class _SlowSSH(_FakeSSH):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            if "nvidia-smi" in cmd:
+                _t.sleep(0.1)
+            return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+
+    ssh = _SlowSSH(
+        replies={"nvidia-smi": 0, "/etc/os-release": 0},
+        reply_stdout={"nvidia-smi": _NVIDIA_SMI_OK_129, "/etc/os-release": _OS_2404},
+    )
+    clock, sleep = _stub_clock_and_sleep()
+    t0 = _t.perf_counter()
+    install_fleet(fleet, ssh=ssh, floor="12.4", target="12.9", parallel=True, clock=clock, sleep=sleep)
+    elapsed = _t.perf_counter() - t0
+    # Skip path runs check_cuda_valkyrie which calls nvidia-smi (slept 0.1s
+    # per host). Serial would be >= 0.3s; parallel should be < 0.25s.
+    assert elapsed < 0.25, f"parallel install_fleet elapsed={elapsed:.3f}s"
+
+
+def test_install_fleet_verbose_prints_per_host(capsys):
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[ValkyrieConfig(host="v-only", ssh_user="u", ssh_key=None, isaaclab_path="/p")],
+    )
+    ssh = _FakeSSH(
+        replies={"nvidia-smi": 0, "/etc/os-release": 0},
+        reply_stdout={"nvidia-smi": _NVIDIA_SMI_OK_129, "/etc/os-release": _OS_2404},
+    )
+    clock, sleep = _stub_clock_and_sleep()
+    install_fleet(
+        fleet,
+        ssh=ssh,
+        floor="12.4",
+        target="12.9",
+        parallel=False,
+        verbose=True,
+        clock=clock,
+        sleep=sleep,
+    )
+    out = capsys.readouterr().out
+    assert "v-only" in out
+    assert "skipped" in out or "ok" in out
