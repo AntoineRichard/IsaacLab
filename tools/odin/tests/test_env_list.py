@@ -718,3 +718,57 @@ groups:
     p.write_text(yaml_text)
     el = load_env_list(p)
     assert el.groups["direct/ant"][0].presets_available == []
+
+
+def test_roundtrip_preserves_native_backend(tmp_path: Path):
+    """native_backend list survives load + dump."""
+    el = EnvList()
+    el.groups["direct/quadcopter"] = [
+        EnvEntry(
+            task_id="Isaac-Quadcopter-Direct-v0",
+            entry_point="ep:E",
+            env_cfg_entry_point="ec:E",
+            group="direct/quadcopter",
+            has_rsl_rl=True,
+            has_skrl=True,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=300,
+            keep=True,
+            presets_available=[],
+            native_backend="physx",
+        )
+    ]
+    out = tmp_path / "envs.yaml"
+    write_env_list(out, el, generator="test")
+    reloaded = load_env_list(out)
+    assert reloaded.groups["direct/quadcopter"][0].native_backend == "physx"
+
+
+def test_load_yaml_without_native_backend_defaults_to_none(tmp_path: Path):
+    """Pre-fix yaml that doesn't carry the field reads as None."""
+    yaml_text = """\
+schema_version: '1.0'
+generator: legacy
+groups:
+  direct/quadcopter:
+    - task_id: Isaac-Quadcopter-Direct-v0
+      entry_point: ep:E
+      env_cfg_entry_point: ec:E
+      group: direct/quadcopter
+      has_rsl_rl: true
+      has_skrl: true
+      has_rl_games: false
+      framework: rsl_rl
+      num_envs: 4096
+      max_iterations: 300
+      keep: true
+      status: current
+      suspected_gap: null
+      presets_available: []
+      notes: ''
+"""
+    p = tmp_path / "legacy.yaml"
+    p.write_text(yaml_text)
+    el = load_env_list(p)
+    assert el.groups["direct/quadcopter"][0].native_backend is None
