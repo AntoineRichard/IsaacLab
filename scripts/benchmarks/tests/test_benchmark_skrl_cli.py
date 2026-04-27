@@ -115,6 +115,75 @@ def test_validation_skipped_when_explicit_preset_present(capsys):
     assert "ignored" in capsys.readouterr().out
 
 
+def _inject_preset_with_validation_v2(
+    args_cli,
+    hydra_args: list[str],
+    has_physics_preset_fn,
+    native_backend_matches_fn,
+) -> list[str]:
+    """Mirror of the new gated injection in benchmark_skrl.py (post native-backend fix).
+
+    Two stub injection points:
+      - has_physics_preset_fn(name) -> bool (existing)
+      - native_backend_matches_fn(name) -> bool (new)
+    """
+    import sys
+
+    if args_cli.backend is None:
+        return hydra_args
+    existing = [a for a in hydra_args if a.startswith("presets=")]
+    if existing:
+        print(f"[WARNING] --backend={args_cli.backend} ignored; explicit {existing[0]} wins.")
+        return hydra_args
+    if has_physics_preset_fn(args_cli.backend):
+        return [f"presets={args_cli.backend}"] + hydra_args
+    if native_backend_matches_fn(args_cli.backend):
+        print(
+            f"[INFO] task {args_cli.task!r} has no '{args_cli.backend}' preset; "
+            f"running on native {args_cli.backend} backend (no injection).",
+            file=sys.stderr,
+        )
+        return hydra_args
+    sys.stderr.write(
+        f"[ERROR] preset_unsupported: task {args_cli.task!r} has no "
+        f"{args_cli.backend!r} preset. Inspect raw_cfg.sim.physics or "
+        f"re-enumerate {{physx,newton}}_envs.yaml.\n"
+    )
+    raise SystemExit(2)
+
+
+def test_validation_skips_injection_when_native_matches(capsys):
+    """No preset, but cfg type matches request → run with no injection + [INFO] log."""
+    args = _build_parser().parse_args(["--task", "Isaac-Quadcopter-Direct-v0", "--backend", "physx"])
+    out = _inject_preset_with_validation_v2(
+        args,
+        ["env.x=1"],
+        has_physics_preset_fn=lambda name: False,
+        native_backend_matches_fn=lambda name: True,
+    )
+    assert out == ["env.x=1"]
+    captured = capsys.readouterr()
+    assert "running on native physx" in captured.err
+    assert "no injection" in captured.err
+
+
+def test_validation_still_blocks_when_native_mismatches(capsys):
+    """No preset AND cfg type doesn't match → existing exit-2 + preset_unsupported: stderr (regression)."""
+    args = _build_parser().parse_args(["--task", "Isaac-NewtonOnly-v0", "--backend", "physx"])
+    import pytest
+
+    with pytest.raises(SystemExit) as exc_info:
+        _inject_preset_with_validation_v2(
+            args,
+            ["env.x=1"],
+            has_physics_preset_fn=lambda name: False,
+            native_backend_matches_fn=lambda name: False,
+        )
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "preset_unsupported:" in captured.err
+
+
 def _compose_experiment_dir(directory: str, experiment_name: str, agent_classname: str = "PPO") -> str:
     """Mirror of SKRL BaseAgent.__init__'s experiment-dir composition.
 

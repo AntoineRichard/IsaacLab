@@ -17,6 +17,42 @@ from isaaclab.app import AppLauncher
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
 import scripts.reinforcement_learning.rsl_rl.cli_args as cli_args  # isort: skip
 
+
+def _native_backend_matches(raw_cfg, requested: str) -> bool:
+    """Return True iff raw_cfg.sim.physics' type matches the requested backend.
+
+    Mirrors the introspection logic in
+    :func:`tools.odin.common.env_list._derive_native_backend`, including the
+    sim-level :class:`PresetCfg` early-return so yaml drift can't bypass the
+    validator's preset_unsupported safety net.
+    """
+    sim = getattr(raw_cfg, "sim", None)
+    if sim is None:
+        return False
+    from isaaclab_tasks.utils.hydra import PresetCfg
+
+    if isinstance(sim, PresetCfg):
+        return False  # preset system handles it; presets_available is the source of truth
+    physics = getattr(sim, "physics", None)
+    # SimulationCfg.physics defaults to None which means PhysxCfg().
+    if physics is None:
+        return requested == "physx"
+    from isaaclab_newton.physics import NewtonCfg
+    from isaaclab_physx.physics import PhysxCfg
+
+    try:
+        from isaaclab_ovphysx.physics import OvPhysxCfg
+    except ImportError:
+        OvPhysxCfg = None
+    if isinstance(physics, PhysxCfg):
+        return requested == "physx"
+    if isinstance(physics, NewtonCfg):
+        return requested == "newton"
+    if OvPhysxCfg is not None and isinstance(physics, OvPhysxCfg):
+        return requested == "ovphysx"
+    return False
+
+
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
@@ -136,14 +172,23 @@ if args_cli.backend is not None:
             )
             hydra_args = [f"presets={args_cli.backend}"] + hydra_args
         else:
-            if not has_physics_preset(_raw_cfg, args_cli.backend):
+            if has_physics_preset(_raw_cfg, args_cli.backend):
+                hydra_args = [f"presets={args_cli.backend}"] + hydra_args
+            elif _native_backend_matches(_raw_cfg, args_cli.backend):
+                print(
+                    f"[INFO] task {args_cli.task!r} has no '{args_cli.backend}' "
+                    f"preset; running on native {args_cli.backend} backend (no "
+                    f"injection).",
+                    file=sys.stderr,
+                )
+                # No injection — hydra_args unchanged.
+            else:
                 sys.stderr.write(
                     f"[ERROR] preset_unsupported: task {args_cli.task!r} has no "
                     f"{args_cli.backend!r} preset. Inspect raw_cfg.sim.physics or "
                     f"re-enumerate {{physx,newton}}_envs.yaml.\n"
                 )
                 sys.exit(2)
-            hydra_args = [f"presets={args_cli.backend}"] + hydra_args
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
