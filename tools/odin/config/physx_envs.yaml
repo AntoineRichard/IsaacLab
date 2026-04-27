@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 schema_version: '1.0'
-generated_at: '2026-04-27T08:34:50Z'
+generated_at: '2026-04-27T13:23:32Z'
 generator: enumerate_physx_envs.py
 groups:
   direct/allegro_hand:
@@ -24,6 +24,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   direct/ant:
   - task_id: Isaac-Ant-Direct-v0
@@ -42,6 +43,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   direct/anymal_c:
   - task_id: Isaac-Velocity-Flat-Anymal-C-Direct-v0
@@ -58,6 +60,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-C-Direct-v0
     entry_point: isaaclab_tasks.direct.anymal_c.anymal_c_env:AnymalCEnv
@@ -73,6 +76,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   direct/automate:
   - task_id: Isaac-AutoMate-Assembly-Direct-v0
@@ -89,6 +93,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-AutoMate-Disassembly-Direct-v0
     entry_point: isaaclab_tasks.direct.automate.disassembly_env:DisassemblyEnv
@@ -104,6 +109,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   direct/cart_double_pendulum:
   - task_id: Isaac-Cart-Double-Pendulum-Direct-v0
@@ -120,6 +126,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   direct/cartpole:
   - task_id: Isaac-Cartpole-Albedo-Camera-Direct-v0
@@ -136,6 +143,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Presets-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
@@ -153,6 +161,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
   - task_id: Isaac-Cartpole-Depth-Camera-Direct-v0
@@ -169,6 +178,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_env:CartpoleEnv
@@ -186,6 +196,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-RGB-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
@@ -201,6 +212,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-SimpleShading-Constant-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
@@ -216,6 +228,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-SimpleShading-Diffuse-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
@@ -231,6 +244,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-SimpleShading-Full-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
@@ -246,6 +260,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   direct/cartpole_showcase:
   - task_id: Isaac-Cartpole-Camera-Showcase-Box-Box-Direct-v0
@@ -262,6 +277,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Showcase-Box-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -277,6 +293,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Showcase-Box-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -292,6 +309,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Showcase-Dict-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -307,6 +325,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Showcase-Dict-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -322,6 +341,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Showcase-Dict-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -337,6 +357,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -352,6 +373,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -367,6 +389,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Camera-Showcase-Tuple-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole_camera.cartpole_camera_env:CartpoleCameraShowcaseEnv
@@ -382,6 +405,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Box-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -399,6 +423,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Box-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -416,6 +441,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Box-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -433,6 +459,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Dict-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -450,6 +477,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Dict-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -467,6 +495,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Dict-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -484,6 +513,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Discrete-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -501,6 +531,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Discrete-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -518,6 +549,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Discrete-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -535,6 +567,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -552,6 +585,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -569,6 +603,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -586,6 +621,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Tuple-Box-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -603,6 +639,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Tuple-Discrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -620,6 +657,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Cartpole-Showcase-Tuple-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
@@ -637,6 +675,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   direct/factory:
   - task_id: Isaac-Factory-GearMesh-Direct-v0
@@ -653,6 +692,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Factory-NutThread-Direct-v0
     entry_point: isaaclab_tasks.direct.factory.factory_env:FactoryEnv
@@ -668,6 +708,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Factory-PegInsert-Direct-v0
     entry_point: isaaclab_tasks.direct.factory.factory_env:FactoryEnv
@@ -683,6 +724,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   direct/forge:
   - task_id: Isaac-Forge-GearMesh-Direct-v0
@@ -699,6 +741,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Forge-NutThread-Direct-v0
     entry_point: isaaclab_tasks.direct.forge.forge_env:ForgeEnv
@@ -714,6 +757,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Forge-PegInsert-Direct-v0
     entry_point: isaaclab_tasks.direct.forge.forge_env:ForgeEnv
@@ -729,6 +773,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   direct/franka_cabinet:
   - task_id: Isaac-Franka-Cabinet-Direct-v0
@@ -745,6 +790,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   direct/humanoid:
   - task_id: Isaac-Humanoid-Direct-v0
@@ -763,6 +809,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   direct/humanoid_amp:
   - task_id: Isaac-Humanoid-AMP-Dance-Direct-v0
@@ -779,6 +826,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Humanoid-AMP-Run-Direct-v0
     entry_point: isaaclab_tasks.direct.humanoid_amp.humanoid_amp_env:HumanoidAmpEnv
@@ -794,6 +842,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Humanoid-AMP-Walk-Direct-v0
     entry_point: isaaclab_tasks.direct.humanoid_amp.humanoid_amp_env:HumanoidAmpEnv
@@ -809,6 +858,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   direct/quadcopter:
   - task_id: Isaac-Quadcopter-Direct-v0
@@ -825,6 +875,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   direct/shadow_hand:
   - task_id: Isaac-Repose-Cube-Shadow-Direct-v0
@@ -843,6 +894,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
   - task_id: Isaac-Repose-Cube-Shadow-OpenAI-FF-Direct-v0
@@ -861,6 +913,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
   - task_id: Isaac-Repose-Cube-Shadow-OpenAI-LSTM-Direct-v0
@@ -879,6 +932,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Repose-Cube-Shadow-Vision-Benchmark-Direct-v0
     entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
@@ -896,6 +950,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Repose-Cube-Shadow-Vision-Direct-Play-v0
     entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
@@ -911,6 +966,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Repose-Cube-Shadow-Vision-Direct-v0
     entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
@@ -928,6 +984,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   direct/shadow_hand_over:
   - task_id: Isaac-Shadow-Hand-Over-Direct-v0
@@ -944,6 +1001,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   manager_based/classic/ant:
   - task_id: Isaac-Ant-v0
@@ -962,6 +1020,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   manager_based/classic/cartpole:
   - task_id: Isaac-Cartpole-Depth-v0
@@ -980,6 +1039,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Cartpole-RGB-ResNet18-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -997,6 +1057,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Cartpole-RGB-TheiaTiny-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1014,6 +1075,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Cartpole-RGB-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1031,6 +1093,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Cartpole-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1048,6 +1111,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   manager_based/classic/humanoid:
   - task_id: Isaac-Humanoid-v0
@@ -1066,6 +1130,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   manager_based/drone_arl/track_position_state_based:
   - task_id: Isaac-TrackPositionNoObstacles-ARL-Robot-1-Play-v0
@@ -1082,6 +1147,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-TrackPositionNoObstacles-ARL-Robot-1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1097,6 +1163,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   manager_based/locomanipulation/pick_place:
   - task_id: Isaac-PickPlace-FixedBaseUpperBodyIK-G1-Abs-v0
@@ -1113,6 +1180,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-PickPlace-Locomanipulation-G1-Abs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1128,6 +1196,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   manager_based/locomanipulation/tracking:
   - task_id: Isaac-Tracking-LocoManip-Digit-Play-v0
@@ -1144,6 +1213,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Tracking-LocoManip-Digit-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1159,6 +1229,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   manager_based/locomotion/velocity:
   - task_id: Isaac-Velocity-Flat-Anymal-B-Play-v0
@@ -1175,6 +1246,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Anymal-B-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1192,6 +1264,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Anymal-C-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1207,6 +1280,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Anymal-C-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1224,6 +1298,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Anymal-D-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1239,6 +1314,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Anymal-D-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1256,6 +1332,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Cassie-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1271,6 +1348,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Cassie-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1288,6 +1366,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Digit-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1303,6 +1382,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Digit-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1318,6 +1398,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Flat-G1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1333,6 +1414,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-G1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1349,6 +1431,7 @@ groups:
     suspected_gap: null
     presets_available:
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-H1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1364,6 +1447,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-H1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1381,6 +1465,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Spot-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1396,6 +1481,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Spot-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1412,6 +1498,7 @@ groups:
     suspected_gap: null
     presets_available:
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-A1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1427,6 +1514,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-A1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1444,6 +1532,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-Go1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1459,6 +1548,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-Go1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1475,6 +1565,7 @@ groups:
     suspected_gap: null
     presets_available:
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-Go2-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1490,6 +1581,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-Go2-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1507,6 +1599,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-B-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1522,6 +1615,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-B-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1537,6 +1631,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-C-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1552,6 +1647,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-C-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1567,6 +1663,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-D-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1582,6 +1679,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Anymal-D-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1597,6 +1695,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-Cassie-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1612,6 +1711,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Cassie-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1627,6 +1727,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-Digit-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1642,6 +1743,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Digit-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1657,6 +1759,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-G1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1672,6 +1775,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-G1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1687,6 +1791,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-H1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1702,6 +1807,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-H1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1717,6 +1823,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-A1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1732,6 +1839,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-A1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1747,6 +1855,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-Go1-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1762,6 +1871,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-Go1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1777,6 +1887,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-Go2-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1792,6 +1903,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Rough-Unitree-Go2-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1808,6 +1920,7 @@ groups:
     suspected_gap: null
     presets_available:
     - physx
+    native_backend: null
     notes: ''
   manager_based/manipulation/cabinet:
   - task_id: Isaac-Open-Drawer-Franka-IK-Abs-v0
@@ -1824,6 +1937,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Open-Drawer-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1839,6 +1953,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Open-Drawer-Franka-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1854,6 +1969,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Open-Drawer-Franka-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1869,6 +1985,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Open-Drawer-OpenArm-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1884,6 +2001,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Open-Drawer-OpenArm-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1899,6 +2017,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   manager_based/manipulation/deploy:
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F140-Play-v0
@@ -1915,6 +2034,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F140-ROS-Inference-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1930,6 +2050,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F140-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1945,6 +2066,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F85-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1960,6 +2082,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F85-ROS-Inference-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1975,6 +2098,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Deploy-GearAssembly-UR10e-2F85-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -1990,6 +2114,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Deploy-Reach-Rizon4s-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2005,6 +2130,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Deploy-Reach-Rizon4s-ROS-Inference-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2020,6 +2146,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Deploy-Reach-Rizon4s-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2035,6 +2162,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Deploy-Reach-UR10e-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2050,6 +2178,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Deploy-Reach-UR10e-ROS-Inference-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2065,6 +2194,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Deploy-Reach-UR10e-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2080,6 +2210,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   manager_based/manipulation/dexsuite:
   - task_id: Isaac-Dexsuite-Kuka-Allegro-Lift-Play-v0
@@ -2096,6 +2227,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
   - task_id: Isaac-Dexsuite-Kuka-Allegro-Lift-v0
@@ -2114,6 +2246,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
   - task_id: Isaac-Dexsuite-Kuka-Allegro-Reorient-Play-v0
@@ -2130,6 +2263,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
   - task_id: Isaac-Dexsuite-Kuka-Allegro-Reorient-v0
@@ -2148,6 +2282,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
   manager_based/manipulation/inhand:
@@ -2165,6 +2300,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Repose-Cube-Allegro-NoVelObs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2180,6 +2316,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Repose-Cube-Allegro-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2195,6 +2332,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Repose-Cube-Allegro-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2210,6 +2348,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   manager_based/manipulation/lift:
   - task_id: Isaac-Lift-Cube-Franka-IK-Abs-v0
@@ -2226,6 +2365,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Lift-Cube-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2241,6 +2381,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Lift-Cube-Franka-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2256,6 +2397,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Lift-Cube-Franka-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2271,6 +2413,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Lift-Cube-OpenArm-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2286,6 +2429,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Lift-Cube-OpenArm-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2301,6 +2445,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Lift-Teddy-Bear-Franka-IK-Abs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2316,6 +2461,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   manager_based/manipulation/pick_place:
   - task_id: Isaac-ExhaustPipe-GR1T2-Pink-IK-Abs-v0
@@ -2332,6 +2478,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-NutPour-GR1T2-Pink-IK-Abs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2347,6 +2494,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-PickPlace-G1-InspireFTP-Abs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2362,6 +2510,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-PickPlace-GR1T2-Abs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2377,6 +2526,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-PickPlace-GR1T2-WaistEnabled-Abs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2392,6 +2542,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   manager_based/manipulation/place:
   - task_id: Isaac-Place-Mug-Agibot-Left-Arm-RmpFlow-v0
@@ -2408,6 +2559,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Place-Toy2Box-Agibot-Right-Arm-RmpFlow-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2423,6 +2575,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   manager_based/manipulation/reach:
   - task_id: Isaac-Reach-Franka-IK-Abs-v0
@@ -2439,6 +2592,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Reach-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2454,6 +2608,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Reach-Franka-OSC-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2469,6 +2624,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Reach-Franka-OSC-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2484,6 +2640,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Reach-Franka-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2499,6 +2656,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Reach-Franka-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2516,6 +2674,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   - task_id: Isaac-Reach-OpenArm-Bi-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2531,6 +2690,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Reach-OpenArm-Bi-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2546,6 +2706,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Reach-OpenArm-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2561,6 +2722,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Reach-OpenArm-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2576,6 +2738,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Reach-UR10-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2591,6 +2754,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Reach-UR10-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2608,6 +2772,7 @@ groups:
     presets_available:
     - physx
     - newton
+    native_backend: null
     notes: ''
   manager_based/manipulation/stack:
   - task_id: Isaac-Stack-Cube-Bin-Franka-IK-Rel-Mimic-v0
@@ -2624,6 +2789,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-BlueGreen-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2639,6 +2805,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-BlueGreenRed-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2654,6 +2821,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Franka-IK-Abs-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2669,6 +2837,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Franka-IK-Rel-Blueprint-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2684,6 +2853,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Franka-IK-Rel-Skillgen-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2699,6 +2869,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Cosmos-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2714,6 +2885,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2729,6 +2901,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2744,6 +2917,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Franka-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2759,6 +2933,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Galbot-Left-Arm-Gripper-RmpFlow-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2774,6 +2949,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Galbot-Left-Arm-Gripper-Visuomotor-Joint-Position-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2789,6 +2965,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Galbot-Left-Arm-Gripper-Visuomotor-RmpFlow-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2804,6 +2981,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Galbot-Left-Arm-Gripper-Visuomotor-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2819,6 +2997,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Galbot-Right-Arm-Suction-RmpFlow-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2834,6 +3013,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Instance-Randomize-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2849,6 +3029,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-Instance-Randomize-Franka-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2864,6 +3045,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-RedGreen-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2879,6 +3061,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-RedGreenBlue-Franka-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2894,6 +3077,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-UR10-Long-Suction-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2909,6 +3093,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   - task_id: Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2924,6 +3109,7 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: No rsl_rl or skrl entry point registered.
   manager_based/navigation/config:
   - task_id: Isaac-Navigation-Flat-Anymal-C-Play-v0
@@ -2940,6 +3126,7 @@ groups:
     status: stale
     suspected_gap: null
     presets_available: []
+    native_backend: null
     notes: ''
   - task_id: Isaac-Navigation-Flat-Anymal-C-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2955,4 +3142,5 @@ groups:
     status: current
     suspected_gap: null
     presets_available: []
+    native_backend: physx
     notes: ''
