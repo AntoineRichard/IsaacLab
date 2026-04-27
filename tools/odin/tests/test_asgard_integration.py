@@ -235,3 +235,71 @@ def test_unsupported_pair_lands_in_skipped_array(tmp_path: Path, stub_ssh_runner
     assert reloaded is not None
     assert len(reloaded.skipped) == 2
     assert reloaded.skipped[0].presets_available == ["newton"]
+
+
+def test_native_match_runs_unsupported_pair_routes_to_skipped(tmp_path: Path, stub_ssh_runner, stub_provisioner):
+    """End-to-end: presets_available=[] AND native_backend != requested → skipped[]."""
+    if not _ssh_localhost_works():
+        pytest.skip("ssh localhost not configured")
+
+    el = EnvList()
+    el.groups["direct/quadcopter"] = [
+        EnvEntry(
+            task_id="Isaac-Quadcopter-Direct-v0",
+            entry_point="ep:E",
+            env_cfg_entry_point="ec:E",
+            group="direct/quadcopter",
+            has_rsl_rl=True,
+            has_skrl=True,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=10,
+            keep=True,
+            presets_available=[],
+            native_backend="physx",
+        ),
+    ]
+    yaml_path = tmp_path / "envs.yaml"
+    write_env_list(yaml_path, el, generator="test")
+
+    dispatch_dir = tmp_path / "20260427-160000"
+    dispatch_dir.mkdir()
+    fleet = Fleet(
+        fleet_name="loopback-test",
+        hosts=[
+            ValkyrieConfig(
+                host="localhost",
+                ssh_user=os.environ.get("USER") or "root",
+                ssh_key=None,
+                isaaclab_path=str(tmp_path / "remote_isaaclab"),
+                container_name="loopback-container",
+            ),
+        ],
+    )
+    state = run_dispatch(
+        fleet=fleet,
+        physx_yaml=None,
+        newton_yaml=yaml_path,  # request newton on a physx-native task
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42, 43], skip_aggregate=True, per_job_timeout_s=60),
+        ssh=ShellSSHRunner(),
+        rsync=ShellRsyncRunner(),
+    )
+
+    # Quadcopter never queued; landed in skipped[] with the new reason.
+    assert state.jobs == []
+    assert len(state.skipped) == 2
+    assert {sk.task_id for sk in state.skipped} == {"Isaac-Quadcopter-Direct-v0"}
+    assert all(sk.reason == "native_backend_mismatch" for sk in state.skipped)
+    assert all(sk.backend == "newton" for sk in state.skipped)
+    assert all(sk.native_backend == "physx" for sk in state.skipped)
+    assert {sk.seed for sk in state.skipped} == {42, 43}
+
+    # And dispatch.json on disk reflects the same.
+    from tools.odin.asgard.state import read_dispatch_state
+
+    reloaded = read_dispatch_state(dispatch_dir)
+    assert reloaded is not None
+    assert reloaded.schema_version == "1.2"
+    assert len(reloaded.skipped) == 2
+    assert reloaded.skipped[0].native_backend == "physx"
