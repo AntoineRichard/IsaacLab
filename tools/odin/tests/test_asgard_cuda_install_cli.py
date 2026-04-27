@@ -87,3 +87,182 @@ def test_main_check_exit_one_when_any_below_floor(
     assert code == 1
     assert "needs-upgrade" in out
     assert "v2" in out
+
+
+import json
+
+from tools.odin.asgard.cuda_install import CudaInstallResult
+
+
+def _write_running_dispatch(runs_root: Path, dispatch_id: str) -> None:
+    runs_root.mkdir(parents=True, exist_ok=True)
+    d = runs_root / dispatch_id
+    d.mkdir()
+    (d / "dispatch.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "dispatch_id": dispatch_id,
+                "started_at": "2026-04-27T10:00:00+00:00",
+                "ended_at": None,
+                "seeds": [42],
+                "commit_sha": "abc1234",
+                "fleet": [],
+                "jobs": [],
+                "skipped": [],
+            }
+        )
+    )
+
+
+def test_parse_args_install_minimal(tmp_path: Path):
+    fleet_path = _write_fleet_yaml(tmp_path)
+    args = parse_args(["install", "--fleet", str(fleet_path)])
+    assert args.subcommand == "install"
+    assert args.target == "12.9"
+    assert args.floor == "12.4"
+    assert args.sequential is False
+    assert args.yes is False
+    assert args.force is False
+    assert args.reboot_timeout == 600
+    assert args.runs_root == Path("odin_runs")
+
+
+def test_parse_args_install_all_flags(tmp_path: Path):
+    fleet_path = _write_fleet_yaml(tmp_path)
+    args = parse_args(
+        [
+            "install",
+            "--fleet",
+            str(fleet_path),
+            "--floor",
+            "12.6",
+            "--target",
+            "12.8",
+            "--sequential",
+            "--yes",
+            "--force",
+            "--reboot-timeout",
+            "900",
+            "--runs-root",
+            "/tmp/runs",
+            "--verbose",
+        ]
+    )
+    assert args.target == "12.8"
+    assert args.floor == "12.6"
+    assert args.sequential is True
+    assert args.yes is True
+    assert args.force is True
+    assert args.reboot_timeout == 900
+    assert args.runs_root == Path("/tmp/runs")
+
+
+def test_main_install_refuses_with_active_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fleet_path = _write_fleet_yaml(tmp_path)
+    runs_root = tmp_path / "odin_runs"
+    _write_running_dispatch(runs_root, "20260427-active")
+
+    # install_fleet must NOT be called.
+    def _explode(*args, **kwargs):
+        raise AssertionError("install_fleet must not run when dispatch is active")
+
+    monkeypatch.setattr("tools.odin.asgard.cuda_install_cli.install_fleet", _explode)
+    code = main(
+        [
+            "install",
+            "--fleet",
+            str(fleet_path),
+            "--runs-root",
+            str(runs_root),
+            "--yes",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "20260427-active" in out
+    assert "--force" in out  # tells the user how to override
+
+
+def test_main_install_force_overrides_dispatch_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    fleet_path = _write_fleet_yaml(tmp_path)
+    runs_root = tmp_path / "odin_runs"
+    _write_running_dispatch(runs_root, "20260427-active")
+
+    captured = {}
+
+    def _fake_install_fleet(fleet, *, ssh, floor, target, reboot_timeout_s, parallel, verbose):
+        captured["called"] = True
+        return [
+            CudaInstallResult(host="v1.internal", ok=True, skipped=True),
+            CudaInstallResult(host="v2.internal", ok=True, skipped=True),
+        ]
+
+    monkeypatch.setattr("tools.odin.asgard.cuda_install_cli.install_fleet", _fake_install_fleet)
+    code = main(
+        [
+            "install",
+            "--fleet",
+            str(fleet_path),
+            "--runs-root",
+            str(runs_root),
+            "--yes",
+            "--force",
+        ]
+    )
+    assert code == 0
+    assert captured.get("called") is True
+
+
+def test_main_install_yes_skips_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fleet_path = _write_fleet_yaml(tmp_path)
+
+    monkeypatch.setattr(
+        "tools.odin.asgard.cuda_install_cli.install_fleet",
+        lambda fleet, **kw: [
+            CudaInstallResult(host="v1.internal", ok=True),
+            CudaInstallResult(host="v2.internal", ok=True),
+        ],
+    )
+    code = main(["install", "--fleet", str(fleet_path), "--yes"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Proceed? [y/N]" not in out
+
+
+def test_main_install_prompt_no_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fleet_path = _write_fleet_yaml(tmp_path)
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("install_fleet must not run after a 'no' answer")
+
+    monkeypatch.setattr("tools.odin.asgard.cuda_install_cli.install_fleet", _explode)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    code = main(["install", "--fleet", str(fleet_path)])
+    out = capsys.readouterr().out
+    assert code == 3
+    assert "aborted" in out.lower()
+
+
+def test_main_install_exit_one_when_any_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fleet_path = _write_fleet_yaml(tmp_path)
+    monkeypatch.setattr(
+        "tools.odin.asgard.cuda_install_cli.install_fleet",
+        lambda fleet, **kw: [
+            CudaInstallResult(host="v1.internal", ok=True),
+            CudaInstallResult(host="v2.internal", ok=False, message="apt-get install failed"),
+        ],
+    )
+    code = main(["install", "--fleet", str(fleet_path), "--yes"])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "1/2" in out
+    assert "v2.internal" in out

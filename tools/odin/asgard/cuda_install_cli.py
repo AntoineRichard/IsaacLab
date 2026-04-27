@@ -24,6 +24,8 @@ from pathlib import Path
 
 from tools.odin.asgard.cuda_install import (
     check_fleet,
+    find_running_dispatches,
+    install_fleet,
 )
 from tools.odin.asgard.fleet import load_fleet
 from tools.odin.asgard.transport import ShellSSHRunner
@@ -110,13 +112,63 @@ def _run_check(args: argparse.Namespace) -> int:
     return 0 if all(r.status == "ok" for r in results) else 1
 
 
+def _confirm_install(args: argparse.Namespace, fleet) -> bool:
+    """Print plan + read y/N from stdin. Returns True iff the user agreed."""
+    print(
+        f"odin-cuda install: target=cuda-{args.target.replace('.', '-')} "
+        f"(floor={args.floor}) on {len(fleet.hosts)} host(s):"
+    )
+    for h in fleet.hosts:
+        print(f"  - {h.host}")
+    print("Each host will reboot. This is disruptive.")
+    answer = input("Proceed? [y/N] ").strip().lower()
+    return answer in ("y", "yes")
+
+
+def _run_install(args: argparse.Namespace) -> int:
+    """Run the fleet-wide CUDA install; return exit code."""
+    running = find_running_dispatches(args.runs_root)
+    if running and not args.force:
+        print(
+            f"odin-cuda install: refusing — running dispatch(es) under "
+            f"{args.runs_root}: {', '.join(running)}\n"
+            "  Pass --force to override (will reboot mid-dispatch)."
+        )
+        return 2
+
+    fleet = load_fleet(args.fleet)
+    if not args.yes and not _confirm_install(args, fleet):
+        print("odin-cuda install: aborted by user.")
+        return 3
+
+    results = install_fleet(
+        fleet,
+        ssh=ShellSSHRunner(),
+        floor=args.floor,
+        target=args.target,
+        reboot_timeout_s=args.reboot_timeout,
+        parallel=not args.sequential,
+        verbose=args.verbose,
+    )
+    ok_count = sum(1 for r in results if r.ok)
+    skipped_count = sum(1 for r in results if r.ok and r.skipped)
+    total = len(results)
+    print(f"odin-cuda install: {ok_count}/{total} hosts ok ({skipped_count} skipped)")
+    if ok_count < total:
+        for r in results:
+            if not r.ok:
+                print(f"  {r.host}: {r.message}")
+    return 0 if ok_count == total else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the odin-cuda CLI; return 0 on success."""
     args = parse_args(argv if argv is not None else sys.argv[1:])
     if args.subcommand == "check":
         return _run_check(args)
-    # install handler arrives in Task 9.
-    raise NotImplementedError(args.subcommand)
+    if args.subcommand == "install":
+        return _run_install(args)
+    raise AssertionError(f"unknown subcommand {args.subcommand!r}")
 
 
 if __name__ == "__main__":
