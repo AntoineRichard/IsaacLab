@@ -237,3 +237,52 @@ def test_check_unsupported_os_short_circuits():
     # We still report observed driver/cuda for context.
     assert result.driver == "535.161.07"
     assert result.cuda == "12.2"
+
+
+# --- check_fleet ----------------------------------------------------------
+
+from tools.odin.asgard.cuda_install import check_fleet
+from tools.odin.asgard.fleet import Fleet
+
+
+def test_check_fleet_returns_results_in_fleet_order():
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[
+            ValkyrieConfig(host="v1", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+            ValkyrieConfig(host="v2", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+            ValkyrieConfig(host="v3", ssh_user="u", ssh_key=None, isaaclab_path="/p"),
+        ],
+    )
+    ssh = _FakeSSH(
+        replies={"nvidia-smi": 0, "/etc/os-release": 0},
+        reply_stdout={"nvidia-smi": _NVIDIA_SMI_OK_129, "/etc/os-release": _OS_2404},
+    )
+    results = check_fleet(fleet, ssh=ssh, floor="12.4", parallel=False)
+    assert [r.host for r in results] == ["v1", "v2", "v3"]
+    assert all(r.status == "ok" for r in results)
+
+
+def test_check_fleet_parallel_runs_concurrently():
+    import time as _t
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[ValkyrieConfig(host=f"v{i}", ssh_user="u", ssh_key=None, isaaclab_path="/p") for i in (1, 2, 3)],
+    )
+
+    class _SlowSSH(_FakeSSH):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            if "nvidia-smi" in cmd:
+                _t.sleep(0.1)
+            return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+
+    ssh = _SlowSSH(
+        replies={"nvidia-smi": 0, "/etc/os-release": 0},
+        reply_stdout={"nvidia-smi": _NVIDIA_SMI_OK_129, "/etc/os-release": _OS_2404},
+    )
+    t0 = _t.perf_counter()
+    results = check_fleet(fleet, ssh=ssh, floor="12.4", parallel=True)
+    elapsed = _t.perf_counter() - t0
+    assert all(r.status == "ok" for r in results)
+    assert elapsed < 0.25, f"parallel check_fleet elapsed={elapsed:.3f}s"

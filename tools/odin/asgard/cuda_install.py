@@ -11,15 +11,17 @@ function and a fleet driver per phase (``check`` / ``install``).
 
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import re
 from dataclasses import dataclass
 
-from tools.odin.asgard.fleet import ValkyrieConfig
+from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.transport import SSHRunner
 
 __all__ = [
     "CheckResult",
     "check_cuda_valkyrie",
+    "check_fleet",
     "cuda_at_or_above",
     "parse_nvidia_smi",
     "parse_os_release",
@@ -184,3 +186,29 @@ def check_cuda_valkyrie(
         cuda=cuda,
         message=f"cuda {cuda} below floor {floor}",
     )
+
+
+def check_fleet(
+    fleet: Fleet,
+    *,
+    ssh: SSHRunner,
+    floor: str = "12.4",
+    parallel: bool = True,
+) -> list[CheckResult]:
+    """Run :func:`check_cuda_valkyrie` against every host in ``fleet``.
+
+    Args:
+        fleet: Loaded :class:`Fleet` (via :func:`~tools.odin.asgard.fleet.load_fleet`).
+        ssh: SSH runner shared across hosts.
+        floor: CUDA floor passed through to each per-host check.
+        parallel: When ``True`` (default), one thread per host. ``False`` runs
+            sequentially.
+
+    Returns:
+        :class:`CheckResult` list in fleet order.
+    """
+    if parallel and len(fleet.hosts) > 1:
+        with _cf.ThreadPoolExecutor(max_workers=len(fleet.hosts)) as pool:
+            futures = [pool.submit(check_cuda_valkyrie, h, ssh=ssh, floor=floor) for h in fleet.hosts]
+            return [f.result() for f in futures]
+    return [check_cuda_valkyrie(h, ssh=ssh, floor=floor) for h in fleet.hosts]
