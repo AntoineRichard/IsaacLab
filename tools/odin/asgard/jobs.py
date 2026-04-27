@@ -44,9 +44,12 @@ class SkippedEntry:
     """An (task, framework, backend, seed) pair that the queue builder rejected.
 
     Lives next to :class:`JobEntry` because both are persisted into
-    ``dispatch.json`` (jobs[] and skipped[] respectively).  The current
-    only ``reason`` is ``"preset_unsupported"``, but the type is open
-    to additional reasons (e.g. future ``"capability_mismatch"``).
+    ``dispatch.json`` (jobs[] and skipped[] respectively).  ``reason``
+    values today: ``"preset_unsupported"`` (yaml's
+    ``presets_available`` excludes the requested backend) and
+    ``"native_backend_mismatch"`` (no preset system, native backend
+    doesn't match request).  Optional ``native_backend`` carries
+    additional telemetry when ``reason="native_backend_mismatch"``.
     """
 
     task_id: str
@@ -55,6 +58,7 @@ class SkippedEntry:
     seed: int
     reason: str
     presets_available: list[str] = field(default_factory=list)
+    native_backend: str | None = None
 
 
 @dataclass

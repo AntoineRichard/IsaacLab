@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 _DISPATCH_FILENAME = "dispatch.json"
 
 
@@ -126,6 +126,7 @@ def _skipped_to_dict(s: SkippedEntry) -> dict[str, Any]:
         "seed": s.seed,
         "reason": s.reason,
         "presets_available": list(s.presets_available),
+        "native_backend": s.native_backend,
     }
 
 
@@ -137,6 +138,7 @@ def _skipped_from_dict(d: dict[str, Any]) -> SkippedEntry:
         seed=int(d["seed"]),
         reason=str(d.get("reason", "preset_unsupported")),
         presets_available=list(d.get("presets_available") or []),
+        native_backend=d.get("native_backend"),
     )
 
 

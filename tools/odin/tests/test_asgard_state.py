@@ -13,6 +13,7 @@ import pytest
 
 from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry
 from tools.odin.asgard.state import (
+    SCHEMA_VERSION,
     DispatchState,
     FleetSnapshot,
     read_dispatch_state,
@@ -138,7 +139,7 @@ def test_read_missing_returns_none(tmp_path: Path):
 
 def _state_with_skipped(jobs: list[JobEntry], skipped: list[SkippedEntry]) -> DispatchState:
     return DispatchState(
-        schema_version="1.1",
+        schema_version=SCHEMA_VERSION,
         dispatch_id="20260427-100000",
         started_at="2026-04-27T10:00:00Z",
         ended_at=None,
@@ -171,7 +172,7 @@ def test_roundtrip_skipped_array(tmp_path: Path):
     ]
     write_dispatch_state(tmp_path, _state_with_skipped([_job("run-a")], skipped))
     reloaded = read_dispatch_state(tmp_path)
-    assert reloaded.schema_version == "1.1"
+    assert reloaded.schema_version == SCHEMA_VERSION
     assert len(reloaded.skipped) == 2
     s0 = reloaded.skipped[0]
     assert s0.task_id == "Isaac-Velocity-Flat-Anymal-C-Direct-v0"
@@ -204,3 +205,46 @@ def test_read_rejects_major_version_2(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="schema_version"):
         read_dispatch_state(tmp_path)
+
+
+def test_roundtrip_skipped_with_native_backend(tmp_path: Path):
+    """SkippedEntry.native_backend round-trips through dispatch.json."""
+    skipped = [
+        SkippedEntry(
+            task_id="Isaac-Quadcopter-Direct-v0",
+            framework="rsl_rl",
+            backend="newton",
+            seed=42,
+            reason="native_backend_mismatch",
+            presets_available=[],
+            native_backend="physx",
+        ),
+    ]
+    write_dispatch_state(tmp_path, _state_with_skipped([_job("run-a")], skipped))
+    reloaded = read_dispatch_state(tmp_path)
+    assert reloaded.skipped[0].native_backend == "physx"
+    assert reloaded.skipped[0].reason == "native_backend_mismatch"
+
+
+def test_read_skipped_without_native_backend_defaults_to_none(tmp_path: Path):
+    """Skipped entries written by an older writer (no native_backend key) read with native_backend=None."""
+    path = tmp_path / "dispatch.json"
+    path.write_text(
+        '{"schema_version": "1.1", "dispatch_id": "old", '
+        '"started_at": "2026-01-01T00:00:00Z", "ended_at": null, '
+        '"seeds": [42], "commit_sha": "", "fleet": [], "jobs": [], '
+        '"skipped": [{"task_id": "T", "framework": "rsl_rl", "backend": "physx", '
+        '"seed": 42, "reason": "preset_unsupported", "presets_available": []}]}'
+    )
+    s = read_dispatch_state(tmp_path)
+    assert s is not None
+    assert s.skipped[0].native_backend is None
+
+
+def test_schema_version_writes_1_2(tmp_path: Path):
+    """New dispatches write schema_version='1.2'."""
+    write_dispatch_state(tmp_path, _state_with_skipped([_job("run-a")], []))
+    import json
+
+    payload = json.loads((tmp_path / "dispatch.json").read_text())
+    assert payload["schema_version"] == "1.2"
