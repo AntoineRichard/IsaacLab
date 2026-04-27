@@ -109,13 +109,37 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
 # Map --backend X to hydra presets=X so the physics preset is applied
-# at config-resolve time. An explicit presets=... on the CLI wins.
+# at config-resolve time.  Validate the request first: if the task does
+# not have an X preset, exit fast with a stable stderr prefix the
+# Asgard worker classifier matches on.  An explicit presets=... on
+# the CLI bypasses validation (operator override).
 if args_cli.backend is not None:
     existing_presets = [a for a in hydra_args if a.startswith("presets=")]
     if existing_presets:
         print(f"[WARNING] --backend={args_cli.backend} ignored because {existing_presets[0]} was explicitly passed.")
     else:
-        hydra_args = [f"presets={args_cli.backend}"] + hydra_args
+        from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+        from isaaclab_tasks.utils.presets import has_physics_preset
+
+        try:
+            _raw_cfg = load_cfg_from_registry(args_cli.task, "env_cfg_entry_point")
+        except Exception as exc:  # noqa: BLE001 — fall through to original behaviour
+            print(
+                f"[WARNING] could not load raw cfg for {args_cli.task!r} "
+                f"to validate preset support ({type(exc).__name__}: {exc}); "
+                f"injecting presets={args_cli.backend} unchecked.",
+                file=sys.stderr,
+            )
+            hydra_args = [f"presets={args_cli.backend}"] + hydra_args
+        else:
+            if not has_physics_preset(_raw_cfg, args_cli.backend):
+                sys.stderr.write(
+                    f"[ERROR] preset_unsupported: task {args_cli.task!r} has no "
+                    f"{args_cli.backend!r} preset. Inspect raw_cfg.sim.physics or "
+                    f"re-enumerate {{physx,newton}}_envs.yaml.\n"
+                )
+                sys.exit(2)
+            hydra_args = [f"presets={args_cli.backend}"] + hydra_args
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args

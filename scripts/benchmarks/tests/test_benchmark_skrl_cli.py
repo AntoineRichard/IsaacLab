@@ -60,6 +60,61 @@ def test_backend_unset_is_noop():
     assert _inject_preset(args, ["env.decimation=4"]) == ["env.decimation=4"]
 
 
+def _inject_preset_with_validation(args_cli, hydra_args: list[str], has_physics_preset_fn) -> list[str]:
+    """Mirror of the new gated injection in benchmark_skrl.py.
+
+    has_physics_preset_fn is the only injection point — the test passes
+    a stub returning True / False; the production caller passes the real
+    has_physics_preset(raw_cfg, name) closure.
+    """
+    import sys
+
+    if args_cli.backend is None:
+        return hydra_args
+    existing = [a for a in hydra_args if a.startswith("presets=")]
+    if existing:
+        print(f"[WARNING] --backend={args_cli.backend} ignored; explicit {existing[0]} wins.")
+        return hydra_args
+    if not has_physics_preset_fn(args_cli.backend):
+        sys.stderr.write(
+            f"[ERROR] preset_unsupported: task {args_cli.task!r} has no "
+            f"{args_cli.backend!r} preset. Inspect raw_cfg.sim.physics or "
+            f"re-enumerate {{physx,newton}}_envs.yaml.\n"
+        )
+        sys.exit(2)
+    return [f"presets={args_cli.backend}"] + hydra_args
+
+
+def test_validation_blocks_unsupported_preset(capsys):
+    args = _build_parser().parse_args(["--task", "Isaac-Foo-v0", "--backend", "physx"])
+    import pytest
+
+    with pytest.raises(SystemExit) as exc_info:
+        _inject_preset_with_validation(args, ["env.x=1"], has_physics_preset_fn=lambda name: False)
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "preset_unsupported:" in captured.err
+    assert "Isaac-Foo-v0" in captured.err
+
+
+def test_validation_passes_when_supported():
+    args = _build_parser().parse_args(["--task", "Isaac-Bar-v0", "--backend", "newton"])
+    out = _inject_preset_with_validation(args, ["env.x=1"], has_physics_preset_fn=lambda name: True)
+    assert out == ["presets=newton", "env.x=1"]
+
+
+def test_validation_skipped_when_explicit_preset_present(capsys):
+    """Explicit presets= in hydra_args bypasses validation (operator override)."""
+    args = _build_parser().parse_args(["--task", "Isaac-Foo-v0", "--backend", "physx"])
+
+    def _bomb(name: str) -> bool:
+        raise AssertionError("validator must not run when explicit preset is present")
+
+    out = _inject_preset_with_validation(args, ["presets=custom", "env.x=1"], has_physics_preset_fn=_bomb)
+    assert out == ["presets=custom", "env.x=1"]
+    assert "ignored" in capsys.readouterr().out
+
+
 def _compose_experiment_dir(directory: str, experiment_name: str, agent_classname: str = "PPO") -> str:
     """Mirror of SKRL BaseAgent.__init__'s experiment-dir composition.
 
