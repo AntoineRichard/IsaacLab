@@ -161,6 +161,7 @@ _ENTRY_FIELD_ORDER = [
     "keep",
     "status",
     "suspected_gap",
+    "presets_available",
     "notes",
 ]
 
@@ -190,6 +191,7 @@ class EnvEntry:
     has_rl_games: bool = False
     status: str = "current"  # "current" | "new" | "stale"
     suspected_gap: str | None = None
+    presets_available: list[str] = field(default_factory=list)
     notes: str = ""
 
 
@@ -228,6 +230,7 @@ def _entry_from_dict(d: dict[str, Any]) -> EnvEntry:
     known.setdefault("max_iterations", None)
     known.setdefault("keep", True)
     known.setdefault("status", "current")
+    known.setdefault("presets_available", [])
     known.setdefault("notes", "")
     known.setdefault("suspected_gap", None)
     unknown = set(d) - set(_ENTRY_FIELD_ORDER)

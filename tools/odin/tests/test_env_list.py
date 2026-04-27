@@ -516,3 +516,55 @@ def test_classify_gap_when_no_newton_preset():
 def test_classify_gap_when_no_physics_at_all():
     cfg = _FakeRawCfg(None)
     assert classify_for_newton(cfg) == "gap"
+
+
+def test_roundtrip_preserves_presets_available(tmp_path: Path):
+    """presets_available list survives load + dump."""
+    el = EnvList()
+    el.groups["direct/ant"] = [
+        EnvEntry(
+            task_id="Isaac-Ant-Direct-v0",
+            entry_point="ep:E",
+            env_cfg_entry_point="ec:E",
+            group="direct/ant",
+            has_rsl_rl=True,
+            has_skrl=True,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=300,
+            keep=True,
+            presets_available=["physx", "newton"],
+        )
+    ]
+    out = tmp_path / "envs.yaml"
+    write_env_list(out, el, generator="test")
+    reloaded = load_env_list(out)
+    assert reloaded.groups["direct/ant"][0].presets_available == ["physx", "newton"]
+
+
+def test_load_yaml_without_presets_available_defaults_to_empty(tmp_path: Path):
+    """Backward-compat: pre-1.0 yaml that doesn't carry the field reads as []."""
+    yaml_text = """\
+schema_version: '1.0'
+generator: legacy
+groups:
+  direct/ant:
+    - task_id: Isaac-Ant-Direct-v0
+      entry_point: ep:E
+      env_cfg_entry_point: ec:E
+      group: direct/ant
+      has_rsl_rl: true
+      has_skrl: true
+      has_rl_games: false
+      framework: rsl_rl
+      num_envs: 4096
+      max_iterations: 300
+      keep: true
+      status: current
+      suspected_gap: null
+      notes: ''
+"""
+    p = tmp_path / "legacy.yaml"
+    p.write_text(yaml_text)
+    el = load_env_list(p)
+    assert el.groups["direct/ant"][0].presets_available == []
