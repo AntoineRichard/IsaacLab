@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import concurrent.futures as _cf
 import re
+import time as _time
 from dataclasses import dataclass, field
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
+from tools.odin.asgard.provisioner import _container_start, _container_stop
 from tools.odin.asgard.transport import SSHRunner
 
 __all__ = [
@@ -34,6 +36,23 @@ __all__ = [
 _NVIDIA_SMI_HEADER_RE = re.compile(
     r"NVIDIA-SMI\s+\S+\s+Driver Version:\s+(?P<driver>\d+\.\d+(?:\.\d+)?)\s+CUDA Version:\s+(?P<cuda>\d+\.\d+)"
 )
+
+
+class _StepCtx:
+    """Context manager that records ``perf_counter`` deltas into a dict."""
+
+    def __init__(self, name: str, sink: dict[str, float], clock) -> None:
+        self._name = name
+        self._sink = sink
+        self._clock = clock
+        self._t0 = 0.0
+
+    def __enter__(self) -> _StepCtx:
+        self._t0 = self._clock()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._sink[self._name] = self._clock() - self._t0
 
 
 def parse_nvidia_smi(stdout: str) -> tuple[str, str] | None:
@@ -311,11 +330,184 @@ def install_cuda_valkyrie(
             driver_before=pre.driver,
             cuda_before=pre.cuda,
         )
-    # status == "needs-upgrade" — full pipeline is added in Task 5.
+    # status == "needs-upgrade" — run the full apt + reboot + verify pipeline.
+    if clock is None:
+        clock = _time.monotonic
+    if sleep is None:
+        sleep = _time.sleep
+
+    driver_major = TARGET_TO_DRIVER_MAJOR[target]
+    apt_pkg = f"cuda-{target.replace('.', '-')}"
+    os_slug = parse_os_release(ssh.run(host, "cat /etc/os-release", timeout_s=15.0).stdout)
+    keyring_url = (
+        f"https://developer.download.nvidia.com/compute/cuda/repos/{os_slug}/x86_64/cuda-keyring_1.1-1_all.deb"
+    )
+
+    step_durations_s: dict[str, float] = {}
+
+    def _step(name: str) -> _StepCtx:
+        return _StepCtx(name, step_durations_s, clock)
+
+    # 2. Best-effort container stop.
+    with _step("container_stop"):
+        _container_stop(host, ssh)
+
+    # 3. Add NVIDIA apt repo (idempotent — keyring deb is no-op if installed).
+    with _step("add_repo"):
+        r = ssh.run(
+            host,
+            (f"set -e; cd /tmp && wget -q -O cuda-keyring.deb {keyring_url} && sudo dpkg -i cuda-keyring.deb"),
+            timeout_s=120.0,
+        )
+        if r.exit_code != 0:
+            return CudaInstallResult(
+                host=host.host,
+                ok=False,
+                driver_before=pre.driver,
+                cuda_before=pre.cuda,
+                message=f"add_repo failed: {r.stderr.strip() or r.stdout.strip()[:200]}",
+                step_durations_s=step_durations_s,
+            )
+
+    # 4. apt-get update.
+    with _step("apt_update"):
+        r = ssh.run(
+            host,
+            "sudo apt-get update -o Acquire::Retries=3",
+            timeout_s=300.0,
+        )
+        if r.exit_code != 0:
+            return CudaInstallResult(
+                host=host.host,
+                ok=False,
+                driver_before=pre.driver,
+                cuda_before=pre.cuda,
+                message=f"apt-get update failed: {r.stderr.strip() or r.stdout.strip()[:200]}",
+                step_durations_s=step_durations_s,
+            )
+
+    # 5. apt-get install cuda-{target}.
+    with _step("apt_install"):
+        r = ssh.run(
+            host,
+            (f"sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::=--force-confnew {apt_pkg}"),
+            timeout_s=1800.0,
+        )
+        if r.exit_code != 0:
+            return CudaInstallResult(
+                host=host.host,
+                ok=False,
+                driver_before=pre.driver,
+                cuda_before=pre.cuda,
+                message=f"apt-get install {apt_pkg} failed: {r.stderr.strip() or r.stdout.strip()[:200]}",
+                step_durations_s=step_durations_s,
+            )
+
+    # 6. Reboot. SSH connection drops; non-zero is expected.
+    with _step("reboot"):
+        ssh.run(host, "sudo systemctl reboot", timeout_s=30.0)
+
+    # 7. Wait for SSH to come back.
+    with _step("wait_for_ssh"):
+        if not _wait_for_ssh(
+            host,
+            ssh,
+            timeout_s=reboot_timeout_s,
+            poll_interval_s=10.0,
+            clock=clock,
+            sleep=sleep,
+        ):
+            return CudaInstallResult(
+                host=host.host,
+                ok=False,
+                driver_before=pre.driver,
+                cuda_before=pre.cuda,
+                message=f"reboot timed out after {reboot_timeout_s:.0f}s",
+                step_durations_s=step_durations_s,
+            )
+
+    # 8. Post-verify nvidia-smi.
+    with _step("post_verify"):
+        r = ssh.run(host, "nvidia-smi 2>&1", timeout_s=30.0)
+        parsed = parse_nvidia_smi(r.stdout) if r.exit_code == 0 else None
+        if parsed is None:
+            return CudaInstallResult(
+                host=host.host,
+                ok=False,
+                driver_before=pre.driver,
+                cuda_before=pre.cuda,
+                message="post_verify: nvidia-smi unparsable after reboot",
+                step_durations_s=step_durations_s,
+            )
+        driver_after, cuda_after = parsed
+        if not cuda_at_or_above(cuda_after, floor):
+            dmesg = ssh.run(host, "dmesg | grep -i nvidia | tail -5", timeout_s=15.0).stdout
+            return CudaInstallResult(
+                host=host.host,
+                ok=False,
+                driver_before=pre.driver,
+                cuda_before=pre.cuda,
+                driver_after=driver_after,
+                cuda_after=cuda_after,
+                message=f"verify-failed: cuda {cuda_after} < floor {floor}\n{dmesg}",
+                step_durations_s=step_durations_s,
+            )
+        if not driver_after.startswith(driver_major + "."):
+            return CudaInstallResult(
+                host=host.host,
+                ok=False,
+                driver_before=pre.driver,
+                cuda_before=pre.cuda,
+                driver_after=driver_after,
+                cuda_after=cuda_after,
+                message=f"verify-failed: driver {driver_after} not in target family {driver_major}.x",
+                step_durations_s=step_durations_s,
+            )
+
+    # 9. Best-effort container restart.
+    soft_message = ""
+    with _step("container_start"):
+        if not _container_start(host, ssh, timeout_s=600):
+            soft_message = "post-install container restart failed (run odin-bootstrap to recover)"
+
     return CudaInstallResult(
         host=host.host,
-        ok=False,
+        ok=True,
+        skipped=False,
         driver_before=pre.driver,
         cuda_before=pre.cuda,
-        message="install pipeline not yet implemented",
+        driver_after=driver_after,
+        cuda_after=cuda_after,
+        message=soft_message,
+        step_durations_s=step_durations_s,
     )
+
+
+def _wait_for_ssh(
+    host: ValkyrieConfig,
+    ssh: SSHRunner,
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+    clock,
+    sleep,
+) -> bool:
+    """Poll ``echo cuda-install-ok`` until it succeeds or ``timeout_s`` elapses.
+
+    Args:
+        host: Target Valkyrie.
+        ssh: SSH runner.
+        timeout_s: Total budget in seconds.
+        poll_interval_s: Seconds between probes.
+        clock: Monotonic clock callable (injectable for tests).
+        sleep: Sleep callable (injectable for tests).
+    """
+    deadline = clock() + timeout_s
+    # Tiny initial grace so the host has actually rebooted before we probe.
+    sleep(min(poll_interval_s, 5.0))
+    while clock() < deadline:
+        r = ssh.run(host, "echo cuda-install-ok", timeout_s=10.0)
+        if r.exit_code == 0:
+            return True
+        sleep(poll_interval_s)
+    return False

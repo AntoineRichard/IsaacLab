@@ -345,3 +345,168 @@ def test_install_unknown_target_raises():
     ssh = _FakeSSH()
     with pytest.raises(ValueError, match="unknown target"):
         install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="99.99")
+
+
+# --- install_cuda_valkyrie full pipeline ----------------------------------
+
+
+def _stub_clock_and_sleep():
+    """Return ``(clock, sleep)`` injectables that advance a fake monotonic
+    counter without ever calling time.sleep — tests stay sub-second."""
+    now = [0.0]
+
+    def _clock() -> float:
+        return now[0]
+
+    def _sleep(delta: float) -> None:
+        now[0] += delta
+
+    return _clock, _sleep
+
+
+def _install_happy_path_ssh() -> _FakeSSH:
+    """SSH fake where pre-check sees 12.2, post-verify sees 12.9."""
+
+    @dataclass
+    class _PrePostSSH(_FakeSSH):
+        post_phase: bool = False
+
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            r = super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+            # Flip to "post" the moment the install asks for the reboot.
+            if "systemctl reboot" in cmd:
+                self.post_phase = True
+            return r
+
+        # Override stdout for nvidia-smi based on phase.
+        def __post_init__(self):
+            self.replies.setdefault("echo cuda-check-ok", 0)
+            self.replies.setdefault("/etc/os-release", 0)
+            self.replies.setdefault("nvidia-smi", 0)
+            self.replies.setdefault("container.py stop", 0)
+            self.replies.setdefault("cuda-keyring", 0)
+            self.replies.setdefault("apt-get update", 0)
+            self.replies.setdefault("apt-get install", 0)
+            self.replies.setdefault("systemctl reboot", 0)
+            self.replies.setdefault("echo cuda-install-ok", 0)
+            self.replies.setdefault("container.py start", 0)
+            self.reply_stdout.setdefault("/etc/os-release", _OS_2404)
+
+    ssh = _PrePostSSH()
+    # Phase-dependent nvidia-smi stdout.
+    base_run = ssh.run
+
+    def _phased_run(host, cmd, *, timeout_s=None, stdout_tee=None):
+        if "nvidia-smi" in cmd:
+            ssh.reply_stdout["nvidia-smi"] = _NVIDIA_SMI_OK_129 if ssh.post_phase else _NVIDIA_SMI_OK_122
+        return base_run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+
+    ssh.run = _phased_run  # type: ignore[assignment]
+    return ssh
+
+
+def test_install_full_happy_path_runs_all_steps():
+    ssh = _install_happy_path_ssh()
+    clock, sleep = _stub_clock_and_sleep()
+    result = install_cuda_valkyrie(
+        _host(),
+        ssh=ssh,
+        floor="12.4",
+        target="12.9",
+        reboot_timeout_s=600.0,
+        clock=clock,
+        sleep=sleep,
+    )
+    assert result.ok is True
+    assert result.skipped is False
+    assert result.cuda_before == "12.2"
+    assert result.cuda_after == "12.9"
+    assert result.driver_after.startswith("575.")
+    # Step set must include the install pipeline phases.
+    assert {
+        "container_stop",
+        "add_repo",
+        "apt_update",
+        "apt_install",
+        "reboot",
+        "wait_for_ssh",
+        "post_verify",
+        "container_start",
+    } <= set(result.step_durations_s)
+
+
+def test_install_apt_install_failure_short_circuits():
+    ssh = _install_happy_path_ssh()
+    ssh.replies["apt-get install"] = 100
+    ssh.reply_stderr["apt-get install"] = "E: Unable to locate package cuda-12-9"
+    clock, sleep = _stub_clock_and_sleep()
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9", clock=clock, sleep=sleep)
+    assert result.ok is False
+    assert "apt" in result.message.lower()
+    assert not any("systemctl reboot" in c.cmd for c in ssh.calls)
+
+
+def test_install_reboot_timeout_is_hard_failure():
+    ssh = _install_happy_path_ssh()
+    # Make every "echo cuda-install-ok" probe non-zero to simulate the host
+    # never coming back.
+    ssh.replies["echo cuda-install-ok"] = 255
+    clock, sleep = _stub_clock_and_sleep()
+    result = install_cuda_valkyrie(
+        _host(),
+        ssh=ssh,
+        floor="12.4",
+        target="12.9",
+        reboot_timeout_s=30.0,
+        clock=clock,
+        sleep=sleep,
+    )
+    assert result.ok is False
+    assert "reboot timed out" in result.message
+    assert not any("container.py start" in c.cmd for c in ssh.calls if "stop" not in c.cmd)
+
+
+def test_install_post_verify_failure_when_cuda_still_below_floor():
+    """Reboot succeeds but driver kmod didn't load; nvidia-smi still reports 12.2."""
+    ssh = _FakeSSH(
+        replies={
+            "echo cuda-check-ok": 0,
+            "/etc/os-release": 0,
+            "nvidia-smi": 0,
+            "container.py stop": 0,
+            "cuda-keyring": 0,
+            "apt-get update": 0,
+            "apt-get install": 0,
+            "systemctl reboot": 0,
+            "echo cuda-install-ok": 0,
+            "container.py start": 0,
+        },
+        reply_stdout={
+            "nvidia-smi": _NVIDIA_SMI_OK_122,  # never flips
+            "/etc/os-release": _OS_2404,
+        },
+    )
+    clock, sleep = _stub_clock_and_sleep()
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9", clock=clock, sleep=sleep)
+    assert result.ok is False
+    assert "verify" in result.message.lower()
+
+
+def test_install_container_stop_failure_is_non_fatal():
+    """A failed container.py stop must not block the install."""
+    ssh = _install_happy_path_ssh()
+    ssh.replies["container.py stop"] = 1
+    clock, sleep = _stub_clock_and_sleep()
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9", clock=clock, sleep=sleep)
+    assert result.ok is True
+
+
+def test_install_container_start_failure_is_soft_warning():
+    """A failed container.py start after install yields ok=True with a message."""
+    ssh = _install_happy_path_ssh()
+    ssh.replies["container.py start"] = 1
+    ssh.reply_stderr["container.py start"] = "image build error"
+    clock, sleep = _stub_clock_and_sleep()
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9", clock=clock, sleep=sleep)
+    assert result.ok is True
+    assert "container restart" in result.message
