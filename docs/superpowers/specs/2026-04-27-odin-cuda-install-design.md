@@ -116,9 +116,14 @@ Steps short-circuit on first failure. Pattern matches `bootstrap.py`.
    then `sudo dpkg -i cuda-keyring_1.1-1_all.deb`. The keyring `.deb` is a
    no-op if already installed.
 4. **`sudo apt-get update -o Acquire::Retries=3`.**
-5. **`sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-{target}`.**
-   Target string is e.g. `cuda-12-9`. Single apt transaction so partial
-   failures roll back cleanly.
+5. **`sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-{target} cuda-drivers-{driver_major}`.**
+   Both packages are needed: on Ubuntu 24.04 `cuda-12-9` ships only the
+   toolkit + userspace libs (`libnvidia-compute-575`), not the kernel
+   module. `cuda-drivers-575` brings in `nvidia-dkms-575` which builds the
+   matching kmod and updates the initramfs so the new module loads on the
+   next reboot. Without it the host comes back with userspace 575 +
+   kernel 535 and `nvidia-smi` reports "Driver/library version mismatch".
+   Single apt transaction so partial failures roll back cleanly.
 6. **Reboot.** `sudo systemctl reboot`. The SSH connection is expected to
    drop with a non-zero exit; that is treated as success for this step.
 7. **Wait for SSH.** Poll `ssh host echo cuda-install-ok` every 10 s up
@@ -201,7 +206,7 @@ Hard failures (ok=False; surfaces in CLI exit code):
 | `unreachable`       | SSH probe fails.                                                     |
 | `no-gpu`            | `nvidia-smi` missing or non-zero. Hard fail for `install`.           |
 | `unsupported-os`    | Not Ubuntu 22.04 / 24.04. No install attempt.                        |
-| `apt-failed`        | Either `apt-get update` or `apt-get install cuda-{target}` non-zero. |
+| `apt-failed`        | Either `apt-get update` or `apt-get install cuda-{target} cuda-drivers-{driver_major}` non-zero. |
 | `reboot-timeout`    | SSH did not return within `--reboot-timeout` after `reboot`.         |
 | `verify-failed`     | Post-reboot `nvidia-smi` reports `cuda < floor`, or driver major     |
 |                     | doesn't match target family.                                         |

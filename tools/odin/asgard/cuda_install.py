@@ -347,7 +347,12 @@ def install_cuda_valkyrie(
         sleep = _time.sleep
 
     driver_major = TARGET_TO_DRIVER_MAJOR[target]
-    apt_pkg = f"cuda-{target.replace('.', '-')}"
+    # On Ubuntu 24.04 the ``cuda-X-Y`` meta only ships the toolkit + userspace
+    # libs; the matching kernel module lives in ``cuda-drivers-NNN``. Installing
+    # both keeps userspace and the DKMS kmod on the same major after reboot.
+    toolkit_pkg = f"cuda-{target.replace('.', '-')}"
+    drivers_pkg = f"cuda-drivers-{driver_major}"
+    apt_pkgs = f"{toolkit_pkg} {drivers_pkg}"
     os_slug = parse_os_release(ssh.run(host, "cat /etc/os-release", timeout_s=15.0).stdout)
     if os_slug is None:
         return CudaInstallResult(
@@ -413,11 +418,11 @@ def install_cuda_valkyrie(
                 step_durations_s=step_durations_s,
             )
 
-    # 5. apt-get install cuda-{target}.
+    # 5. apt-get install cuda-{target} + cuda-drivers-{driver_major}.
     with _step("apt_install"):
         r = ssh.run(
             host,
-            (f"sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::=--force-confnew {apt_pkg}"),
+            (f"sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::=--force-confnew {apt_pkgs}"),
             timeout_s=1800.0,
         )
         if r.exit_code != 0:
@@ -428,7 +433,7 @@ def install_cuda_valkyrie(
                 driver_before=pre.driver,
                 cuda_before=pre.cuda,
                 message=(
-                    f"apt-get install {apt_pkg} failed: {r.stderr.strip() or r.stdout.strip()[:200]} {_RECOVERY_HINT}"
+                    f"apt-get install {apt_pkgs} failed: {r.stderr.strip() or r.stdout.strip()[:200]} {_RECOVERY_HINT}"
                 ),
                 step_durations_s=step_durations_s,
             )

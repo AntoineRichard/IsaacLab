@@ -434,6 +434,29 @@ def test_install_full_happy_path_runs_all_steps():
     } <= set(result.step_durations_s)
 
 
+def test_install_apt_install_pulls_both_toolkit_and_drivers():
+    """Regression: cuda-X-Y on Ubuntu only ships the toolkit; the matching
+    cuda-drivers-NNN must also be installed so the kernel module ends up
+    on the same major as the userspace libs.
+    """
+    ssh = _install_happy_path_ssh()
+    clock, sleep = _stub_clock_and_sleep()
+    install_cuda_valkyrie(
+        _host(),
+        ssh=ssh,
+        floor="12.4",
+        target="12.9",
+        reboot_timeout_s=600.0,
+        clock=clock,
+        sleep=sleep,
+    )
+    apt_install_cmds = [c.cmd for c in ssh.calls if "apt-get install" in c.cmd]
+    assert len(apt_install_cmds) == 1
+    cmd = apt_install_cmds[0]
+    assert "cuda-12-9" in cmd
+    assert "cuda-drivers-575" in cmd
+
+
 def test_install_apt_install_failure_short_circuits():
     ssh = _install_happy_path_ssh()
     ssh.replies["apt-get install"] = 100
