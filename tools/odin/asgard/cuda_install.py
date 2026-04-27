@@ -12,6 +12,7 @@ function and a fleet driver per phase (``check`` / ``install``).
 from __future__ import annotations
 
 import concurrent.futures as _cf
+import contextlib
 import re
 import time as _time
 from dataclasses import dataclass, field
@@ -339,6 +340,14 @@ def install_cuda_valkyrie(
     driver_major = TARGET_TO_DRIVER_MAJOR[target]
     apt_pkg = f"cuda-{target.replace('.', '-')}"
     os_slug = parse_os_release(ssh.run(host, "cat /etc/os-release", timeout_s=15.0).stdout)
+    if os_slug is None:
+        return CudaInstallResult(
+            host=host.host,
+            ok=False,
+            driver_before=pre.driver,
+            cuda_before=pre.cuda,
+            message="os_slug refetch returned None (transient SSH error?)",
+        )
     keyring_url = (
         f"https://developer.download.nvidia.com/compute/cuda/repos/{os_slug}/x86_64/cuda-keyring_1.1-1_all.deb"
     )
@@ -347,6 +356,13 @@ def install_cuda_valkyrie(
 
     def _step(name: str) -> _StepCtx:
         return _StepCtx(name, step_durations_s, clock)
+
+    _RECOVERY_HINT = "(container left stopped — run odin-bootstrap if recovery fails)"
+
+    def _try_recover_container() -> None:
+        """Best-effort container start on a failure path. Failure ignored."""
+        with contextlib.suppress(Exception):
+            _container_start(host, ssh, timeout_s=600)
 
     # 2. Best-effort container stop.
     with _step("container_stop"):
@@ -360,12 +376,13 @@ def install_cuda_valkyrie(
             timeout_s=120.0,
         )
         if r.exit_code != 0:
+            _try_recover_container()
             return CudaInstallResult(
                 host=host.host,
                 ok=False,
                 driver_before=pre.driver,
                 cuda_before=pre.cuda,
-                message=f"add_repo failed: {r.stderr.strip() or r.stdout.strip()[:200]}",
+                message=f"add_repo failed: {r.stderr.strip() or r.stdout.strip()[:200]} {_RECOVERY_HINT}",
                 step_durations_s=step_durations_s,
             )
 
@@ -377,12 +394,13 @@ def install_cuda_valkyrie(
             timeout_s=300.0,
         )
         if r.exit_code != 0:
+            _try_recover_container()
             return CudaInstallResult(
                 host=host.host,
                 ok=False,
                 driver_before=pre.driver,
                 cuda_before=pre.cuda,
-                message=f"apt-get update failed: {r.stderr.strip() or r.stdout.strip()[:200]}",
+                message=f"apt-get update failed: {r.stderr.strip() or r.stdout.strip()[:200]} {_RECOVERY_HINT}",
                 step_durations_s=step_durations_s,
             )
 
@@ -394,12 +412,15 @@ def install_cuda_valkyrie(
             timeout_s=1800.0,
         )
         if r.exit_code != 0:
+            _try_recover_container()
             return CudaInstallResult(
                 host=host.host,
                 ok=False,
                 driver_before=pre.driver,
                 cuda_before=pre.cuda,
-                message=f"apt-get install {apt_pkg} failed: {r.stderr.strip() or r.stdout.strip()[:200]}",
+                message=(
+                    f"apt-get install {apt_pkg} failed: {r.stderr.strip() or r.stdout.strip()[:200]} {_RECOVERY_HINT}"
+                ),
                 step_durations_s=step_durations_s,
             )
 
@@ -431,17 +452,19 @@ def install_cuda_valkyrie(
         r = ssh.run(host, "nvidia-smi 2>&1", timeout_s=30.0)
         parsed = parse_nvidia_smi(r.stdout) if r.exit_code == 0 else None
         if parsed is None:
+            _try_recover_container()
             return CudaInstallResult(
                 host=host.host,
                 ok=False,
                 driver_before=pre.driver,
                 cuda_before=pre.cuda,
-                message="post_verify: nvidia-smi unparsable after reboot",
+                message=f"post_verify: nvidia-smi unparsable after reboot {_RECOVERY_HINT}",
                 step_durations_s=step_durations_s,
             )
         driver_after, cuda_after = parsed
         if not cuda_at_or_above(cuda_after, floor):
             dmesg = ssh.run(host, "dmesg | grep -i nvidia | tail -5", timeout_s=15.0).stdout
+            _try_recover_container()
             return CudaInstallResult(
                 host=host.host,
                 ok=False,
@@ -449,10 +472,11 @@ def install_cuda_valkyrie(
                 cuda_before=pre.cuda,
                 driver_after=driver_after,
                 cuda_after=cuda_after,
-                message=f"verify-failed: cuda {cuda_after} < floor {floor}\n{dmesg}",
+                message=f"verify-failed: cuda {cuda_after} < floor {floor}\n{dmesg} {_RECOVERY_HINT}",
                 step_durations_s=step_durations_s,
             )
         if not driver_after.startswith(driver_major + "."):
+            _try_recover_container()
             return CudaInstallResult(
                 host=host.host,
                 ok=False,
@@ -460,7 +484,7 @@ def install_cuda_valkyrie(
                 cuda_before=pre.cuda,
                 driver_after=driver_after,
                 cuda_after=cuda_after,
-                message=f"verify-failed: driver {driver_after} not in target family {driver_major}.x",
+                message=f"verify-failed: driver {driver_after} not in target family {driver_major}.x {_RECOVERY_HINT}",
                 step_durations_s=step_durations_s,
             )
 

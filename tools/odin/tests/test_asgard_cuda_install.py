@@ -510,3 +510,49 @@ def test_install_container_start_failure_is_soft_warning():
     result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9", clock=clock, sleep=sleep)
     assert result.ok is True
     assert "container restart" in result.message
+
+
+def test_install_apt_install_failure_attempts_container_recovery():
+    """When apt-get install fails, the function tries to start the container before returning."""
+    ssh = _install_happy_path_ssh()
+    ssh.replies["apt-get install"] = 100
+    ssh.reply_stderr["apt-get install"] = "E: package not found"
+    clock, sleep = _stub_clock_and_sleep()
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9", clock=clock, sleep=sleep)
+    assert result.ok is False
+    # Container start was attempted as recovery (after the apt failure, before return).
+    container_starts_after_apt = [c for c in ssh.calls if "container.py start" in c.cmd]
+    assert len(container_starts_after_apt) >= 1, "expected container.py start on the recovery path"
+    # Message points the operator at odin-bootstrap.
+    assert "odin-bootstrap" in result.message
+
+
+def test_install_os_slug_refetch_failure_returns_clean_error():
+    """If the os_slug refetch returns None, fail cleanly without hitting apt."""
+
+    # Pre-check sees Ubuntu (passes). Refetch returns garbage so parse_os_release returns None.
+    @dataclass
+    class _OSRefetchFailSSH(_FakeSSH):
+        os_release_call_count: int = 0
+
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            if "/etc/os-release" in cmd:
+                self.os_release_call_count += 1
+                if self.os_release_call_count == 1:
+                    # Pre-check sees ubuntu 24.04
+                    self.reply_stdout["/etc/os-release"] = _OS_2404
+                else:
+                    # Refetch returns something unparsable.
+                    self.reply_stdout["/etc/os-release"] = "(garbled)"
+            return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+
+    ssh = _OSRefetchFailSSH(
+        replies={"echo cuda-check-ok": 0, "/etc/os-release": 0, "nvidia-smi": 0},
+        reply_stdout={"nvidia-smi": _NVIDIA_SMI_OK_122},
+    )
+    clock, sleep = _stub_clock_and_sleep()
+    result = install_cuda_valkyrie(_host(), ssh=ssh, floor="12.4", target="12.9", clock=clock, sleep=sleep)
+    assert result.ok is False
+    assert "os_slug" in result.message
+    # No apt activity.
+    assert not any("apt-get" in c.cmd for c in ssh.calls)
