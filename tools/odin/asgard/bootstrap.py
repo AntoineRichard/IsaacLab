@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
-from tools.odin.asgard.provisioner import _container_start
+from tools.odin.asgard.provisioner import container_start
 from tools.odin.asgard.transport import RsyncRunner, SSHRunner
 
 __all__ = ["BootstrapResult", "bootstrap_valkyrie", "bootstrap_fleet"]
@@ -209,7 +209,7 @@ def bootstrap_valkyrie(
 
     # 5. Container start.
     t0 = _time_step()
-    started = _container_start(host, ssh, timeout_s=build_timeout_s)
+    started = container_start(host, ssh, timeout_s=build_timeout_s)
     step_durations_s["container_start"] = _time_step() - t0
     if not started:
         return BootstrapResult(

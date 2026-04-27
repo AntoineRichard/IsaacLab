@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
-from tools.odin.asgard.provisioner import _container_start, _container_stop
+from tools.odin.asgard.provisioner import container_start, container_stop
 from tools.odin.asgard.state import read_dispatch_state
 from tools.odin.asgard.transport import SSHRunner
 
@@ -367,11 +367,11 @@ def install_cuda_valkyrie(
     def _try_recover_container() -> None:
         """Best-effort container start on a failure path. Failure ignored."""
         with contextlib.suppress(Exception):
-            _container_start(host, ssh, timeout_s=600)
+            container_start(host, ssh, timeout_s=600)
 
     # 2. Best-effort container stop.
     with _step("container_stop"):
-        _container_stop(host, ssh)
+        container_stop(host, ssh)
 
     # 3. Add NVIDIA apt repo (idempotent — keyring deb is no-op if installed).
     with _step("add_repo"):
@@ -496,7 +496,7 @@ def install_cuda_valkyrie(
     # 9. Best-effort container restart.
     soft_message = ""
     with _step("container_start"):
-        if not _container_start(host, ssh, timeout_s=600):
+        if not container_start(host, ssh, timeout_s=600):
             soft_message = "post-install container restart failed (run odin-bootstrap to recover)"
 
     return CudaInstallResult(

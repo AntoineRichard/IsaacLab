@@ -135,10 +135,10 @@ def test_provision_result_records_commit_sha(tmp_path: Path, monkeypatch):
     assert r.commit_sha == "abc123d"
 
 
-def test_container_start_respects_custom_timeout():
-    """`_container_start(timeout_s=1800)` must reach the SSH call as timeout_s=1800."""
+def testcontainer_start_respects_custom_timeout():
+    """`container_start(timeout_s=1800)` must reach the SSH call as timeout_s=1800."""
     from tools.odin.asgard.fleet import ValkyrieConfig
-    from tools.odin.asgard.provisioner import _container_start
+    from tools.odin.asgard.provisioner import container_start
 
     recorded: list[dict] = []
 
@@ -160,17 +160,17 @@ def test_container_start_respects_custom_timeout():
         ssh_key=None,
         isaaclab_path="/opt/IsaacLab",
     )
-    ok = _container_start(host, _RecordingSSH(), timeout_s=1800)
+    ok = container_start(host, _RecordingSSH(), timeout_s=1800)
     assert ok is True
     assert len(recorded) == 1
     assert recorded[0]["timeout_s"] == 1800
     assert "container.py start" in recorded[0]["cmd"]
 
 
-def test_container_start_default_timeout_is_300():
-    """Calling `_container_start(host, ssh)` without `timeout_s` keeps the warm-path default."""
+def testcontainer_start_default_timeout_is_300():
+    """Calling `container_start(host, ssh)` without `timeout_s` keeps the warm-path default."""
     from tools.odin.asgard.fleet import ValkyrieConfig
-    from tools.odin.asgard.provisioner import _container_start
+    from tools.odin.asgard.provisioner import container_start
 
     recorded: list[dict] = []
 
@@ -192,5 +192,5 @@ def test_container_start_default_timeout_is_300():
         ssh_key=None,
         isaaclab_path="/opt/IsaacLab",
     )
-    _container_start(host, _RecordingSSH())
+    container_start(host, _RecordingSSH())
     assert recorded[0]["timeout_s"] == 300

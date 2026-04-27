@@ -14,7 +14,7 @@ from pathlib import Path
 from tools.odin.asgard.fleet import ValkyrieConfig
 from tools.odin.asgard.transport import RsyncRunner, SSHRunner
 
-__all__ = ["ProvisionResult", "provision_valkyrie"]
+__all__ = ["ProvisionResult", "container_start", "container_stop", "provision_valkyrie"]
 
 
 @dataclass
@@ -56,7 +56,7 @@ def _container_status(host: ValkyrieConfig, ssh: SSHRunner) -> str:
     return r.stdout.strip()
 
 
-def _container_start(host: ValkyrieConfig, ssh: SSHRunner, *, timeout_s: int = 300) -> bool:
+def container_start(host: ValkyrieConfig, ssh: SSHRunner, *, timeout_s: int = 300) -> bool:
     """Run ``./docker/container.py start`` on ``host`` and return True on success.
 
     The warm-path default of 300 s suits subsequent dispatches where the
@@ -72,7 +72,8 @@ def _container_start(host: ValkyrieConfig, ssh: SSHRunner, *, timeout_s: int = 3
     return r.exit_code == 0
 
 
-def _container_stop(host: ValkyrieConfig, ssh: SSHRunner) -> bool:
+def container_stop(host: ValkyrieConfig, ssh: SSHRunner) -> bool:
+    """Run ``./docker/container.py stop`` on ``host`` and return True on success."""
     r = ssh.run(
         host,
         f"cd {host.isaaclab_path} && ./docker/container.py stop",
@@ -136,8 +137,8 @@ def provision_valkyrie(
 
     if fresh:
         # Best-effort stop (may fail if container didn't exist yet — that's fine).
-        _container_stop(host, ssh)
-        if not _container_start(host, ssh):
+        container_stop(host, ssh)
+        if not container_start(host, ssh):
             return ProvisionResult(
                 host=host.host,
                 ok=False,
@@ -147,7 +148,7 @@ def provision_valkyrie(
     else:
         status = _container_status(host, ssh)
         if status != "running":
-            if not _container_start(host, ssh):
+            if not container_start(host, ssh):
                 return ProvisionResult(
                     host=host.host,
                     ok=False,
