@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.odin.asgard.jobs import FailureInfo, JobEntry
+from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry
 from tools.odin.asgard.state import (
     DispatchState,
     FleetSnapshot,
@@ -134,3 +134,73 @@ def test_reset_in_flight_flips_running_and_assigned(tmp_path: Path):
 
 def test_read_missing_returns_none(tmp_path: Path):
     assert read_dispatch_state(tmp_path) is None
+
+
+def _state_with_skipped(jobs: list[JobEntry], skipped: list[SkippedEntry]) -> DispatchState:
+    return DispatchState(
+        schema_version="1.1",
+        dispatch_id="20260427-100000",
+        started_at="2026-04-27T10:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc123",
+        fleet=[FleetSnapshot(host="h1", status="idle", current_run_id=None, last_error=None)],
+        jobs=jobs,
+        skipped=skipped,
+    )
+
+
+def test_roundtrip_skipped_array(tmp_path: Path):
+    skipped = [
+        SkippedEntry(
+            task_id="Isaac-Velocity-Flat-Anymal-C-Direct-v0",
+            framework="rsl_rl",
+            backend="physx",
+            seed=42,
+            reason="preset_unsupported",
+            presets_available=[],
+        ),
+        SkippedEntry(
+            task_id="Isaac-NewtonOnly-v0",
+            framework="rsl_rl",
+            backend="physx",
+            seed=43,
+            reason="preset_unsupported",
+            presets_available=["newton"],
+        ),
+    ]
+    write_dispatch_state(tmp_path, _state_with_skipped([_job("run-a")], skipped))
+    reloaded = read_dispatch_state(tmp_path)
+    assert reloaded.schema_version == "1.1"
+    assert len(reloaded.skipped) == 2
+    s0 = reloaded.skipped[0]
+    assert s0.task_id == "Isaac-Velocity-Flat-Anymal-C-Direct-v0"
+    assert s0.reason == "preset_unsupported"
+    assert s0.presets_available == []
+    assert reloaded.skipped[1].presets_available == ["newton"]
+
+
+def test_read_v1_0_dispatch_json_loads_with_empty_skipped(tmp_path: Path):
+    """Reading a 1.0 file with no skipped key returns DispatchState.skipped == []."""
+    path = tmp_path / "dispatch.json"
+    path.write_text(
+        '{"schema_version": "1.0", "dispatch_id": "old", '
+        '"started_at": "2026-01-01T00:00:00Z", "ended_at": null, '
+        '"seeds": [42], "commit_sha": "", "fleet": [], "jobs": []}'
+    )
+    s = read_dispatch_state(tmp_path)
+    assert s is not None
+    assert s.schema_version == "1.0"
+    assert s.skipped == []
+
+
+def test_read_rejects_major_version_2(tmp_path: Path):
+    """Major-version mismatch is still a hard error."""
+    path = tmp_path / "dispatch.json"
+    path.write_text(
+        '{"schema_version": "2.0", "dispatch_id": "future", '
+        '"started_at": "x", "ended_at": null, "seeds": [], "commit_sha": "", '
+        '"fleet": [], "jobs": []}'
+    )
+    with pytest.raises(ValueError, match="schema_version"):
+        read_dispatch_state(tmp_path)

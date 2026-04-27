@@ -242,3 +242,60 @@ def test_run_dispatch_skip_aggregate_leaves_no_file(tmp_path: Path):
         rsync=_FakeRsync(),
     )
     assert not (dispatch_dir / "aggregate.json").exists()
+
+
+def test_resume_preserves_skipped_array(tmp_path: Path):
+    """A prior dispatch.json's skipped[] survives --resume verbatim.
+
+    Even if the on-disk yaml has changed in the meantime, resume must
+    not re-evaluate skipped — the dispatch's identity is fixed at
+    first-write.
+    """
+    from tools.odin.asgard.jobs import SkippedEntry
+    from tools.odin.asgard.state import (
+        SCHEMA_VERSION,
+        DispatchState,
+        FleetSnapshot,
+        write_dispatch_state,
+    )
+
+    fleet = _write_fleet(tmp_path)
+    physx = _write_env_list(tmp_path)
+    dispatch_dir = tmp_path / "odin_runs" / "20260427-120000"
+    dispatch_dir.mkdir(parents=True)
+
+    seed_skipped = [
+        SkippedEntry(
+            task_id="Isaac-Foo-v0",
+            framework="rsl_rl",
+            backend="physx",
+            seed=42,
+            reason="preset_unsupported",
+            presets_available=[],
+        ),
+    ]
+    prior = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260427-120000",
+        started_at="2026-04-27T12:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="",
+        fleet=[FleetSnapshot(host="v1", status="idle")],
+        jobs=[],
+        skipped=seed_skipped,
+    )
+    write_dispatch_state(dispatch_dir, prior)
+
+    state = run_dispatch(
+        fleet=fleet,
+        physx_yaml=physx,
+        newton_yaml=None,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42], skip_aggregate=True),
+        ssh=_FakeSSH(),
+        rsync=_FakeRsync(),
+    )
+    assert len(state.skipped) == 1
+    assert state.skipped[0].task_id == "Isaac-Foo-v0"
+    assert state.skipped[0].reason == "preset_unsupported"

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
-from tools.odin.asgard.jobs import JobEntry, build_queue_from_env_lists
+from tools.odin.asgard.jobs import JobEntry, SkippedEntry, build_queue_from_env_lists
 from tools.odin.asgard.preflight import preflight_valkyrie
 from tools.odin.asgard.provisioner import provision_valkyrie
 from tools.odin.asgard.state import (
@@ -266,7 +266,7 @@ def run_dispatch(
     rsync = rsync or ShellRsyncRunner()
     dispatch_id = dispatch_dir.name
 
-    fresh_jobs = build_queue_from_env_lists(
+    fresh_jobs, fresh_skipped = build_queue_from_env_lists(
         physx_yaml=physx_yaml,
         newton_yaml=newton_yaml,
         seeds=options.seeds,
@@ -280,6 +280,8 @@ def run_dispatch(
         # Flip in-flight → pending first, then merge.
         reset_in_flight_to_pending(prior_state)
         merged_jobs = _merge_jobs(prior_state.jobs, fresh_jobs)
+        # Resume preserves the prior skipped[] verbatim; we don't re-evaluate.
+        merged_skipped = list(prior_state.skipped)
         started_at = prior_state.started_at
         # Re-attempt specific failed jobs on explicit request.
         if options.retry_failed:
@@ -290,7 +292,22 @@ def run_dispatch(
                     j.failure = None
     else:
         merged_jobs = fresh_jobs
+        merged_skipped = fresh_skipped
         started_at = _utc_now_iso()
+
+    # Pre-dispatch summary of skipped (task, backend) pairs. One block per
+    # (task_id, backend) combination, with all affected seeds collapsed.
+    if merged_skipped:
+        from collections import defaultdict
+
+        grouped: dict[tuple[str, str], list[SkippedEntry]] = defaultdict(list)
+        for sk in merged_skipped:
+            grouped[(sk.task_id, sk.backend)].append(sk)
+        print(f"[INFO] Skipping {len(merged_skipped)} (task, backend) pairs with no preset support:")
+        for (task_id, backend), rows in sorted(grouped.items()):
+            seeds_str = ", ".join(str(r.seed) for r in sorted(rows, key=lambda r: r.seed))
+            avail = rows[0].presets_available
+            print(f"[INFO]   {task_id} × {backend} (seeds {seeds_str}) — available: {avail}")
 
     # Snapshot fleet.yaml.
     _snapshot_fleet_yaml(fleet, dispatch_dir)
@@ -325,6 +342,7 @@ def run_dispatch(
                 for h in fleet.hosts
             ],
             jobs=merged_jobs,
+            skipped=merged_skipped,
         )
         write_dispatch_state(dispatch_dir, state)
         raise RuntimeError(f"preflight failed for all {len(fleet.hosts)} hosts; see preflight.json")
@@ -346,6 +364,7 @@ def run_dispatch(
                 for h in fleet.hosts
             ],
             jobs=merged_jobs,
+            skipped=merged_skipped,
         )
         write_dispatch_state(dispatch_dir, state)
         raise RuntimeError(
@@ -381,6 +400,7 @@ def run_dispatch(
             for h in fleet.hosts
         ],
         jobs=merged_jobs,
+        skipped=merged_skipped,
     )
     write_dispatch_state(dispatch_dir, state)
 
@@ -435,6 +455,17 @@ def run_dispatch(
 
     state.ended_at = _utc_now_iso()
     write_dispatch_state(dispatch_dir, state)
+
+    completed_n = sum(1 for j in state.jobs if j.status == "completed")
+    failed_n = sum(1 for j in state.jobs if j.status == "failed")
+    pending_n = sum(1 for j in state.jobs if j.status == "pending")
+    skipped_n = len(state.skipped)
+    skip_kinds = ", ".join(sorted({s.reason for s in state.skipped})) or "-"
+    print(
+        f"odin-dispatch: {completed_n} completed, {failed_n} failed, "
+        f"{skipped_n} skipped ({skip_kinds}), {pending_n} pending out of "
+        f"{len(state.jobs) + skipped_n} total"
+    )
 
     if not options.skip_aggregate:
         try:

@@ -15,11 +15,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tools.odin.asgard.jobs import FailureInfo, JobEntry
+from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry
 
 __all__ = [
     "DispatchState",
@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 _DISPATCH_FILENAME = "dispatch.json"
 
 
@@ -57,6 +57,7 @@ class DispatchState:
     commit_sha: str
     fleet: list[FleetSnapshot]
     jobs: list[JobEntry]
+    skipped: list[SkippedEntry] = field(default_factory=list)
 
 
 # --- Serialization -----------------------------------------------------------
@@ -117,6 +118,28 @@ def _job_from_dict(d: dict[str, Any]) -> JobEntry:
     )
 
 
+def _skipped_to_dict(s: SkippedEntry) -> dict[str, Any]:
+    return {
+        "task_id": s.task_id,
+        "framework": s.framework,
+        "backend": s.backend,
+        "seed": s.seed,
+        "reason": s.reason,
+        "presets_available": list(s.presets_available),
+    }
+
+
+def _skipped_from_dict(d: dict[str, Any]) -> SkippedEntry:
+    return SkippedEntry(
+        task_id=str(d["task_id"]),
+        framework=str(d["framework"]),
+        backend=str(d["backend"]),
+        seed=int(d["seed"]),
+        reason=str(d.get("reason", "preset_unsupported")),
+        presets_available=list(d.get("presets_available") or []),
+    )
+
+
 def _state_to_dict(s: DispatchState) -> dict[str, Any]:
     return {
         "schema_version": s.schema_version,
@@ -135,13 +158,32 @@ def _state_to_dict(s: DispatchState) -> dict[str, Any]:
             for f in s.fleet
         ],
         "jobs": [_job_to_dict(j) for j in s.jobs],
+        "skipped": [_skipped_to_dict(sk) for sk in s.skipped],
     }
+
+
+def _schema_version_compatible(got: str, expected: str) -> bool:
+    """Return True iff ``got`` and ``expected`` share the same major version.
+
+    Additive minor-version bumps (e.g. 1.0 → 1.1) must be tolerated by
+    readers per Odin's schema rules in ``docs/odin/architecture.md`` §5;
+    a major-version change (1.x → 2.x) is breaking and rejected.
+    """
+    if not got:
+        return False
+    try:
+        return got.split(".", 1)[0] == expected.split(".", 1)[0]
+    except (AttributeError, IndexError):
+        return False
 
 
 def _state_from_dict(d: dict[str, Any]) -> DispatchState:
     got_schema = str(d.get("schema_version", ""))
-    if got_schema != SCHEMA_VERSION:
-        raise ValueError(f"Unsupported dispatch.json schema_version {got_schema!r} (expected {SCHEMA_VERSION!r})")
+    if not _schema_version_compatible(got_schema, SCHEMA_VERSION):
+        raise ValueError(
+            f"Unsupported dispatch.json schema_version {got_schema!r} "
+            f"(expected major-compatible with {SCHEMA_VERSION!r})"
+        )
     return DispatchState(
         schema_version=got_schema,
         dispatch_id=str(d["dispatch_id"]),
@@ -159,6 +201,7 @@ def _state_from_dict(d: dict[str, Any]) -> DispatchState:
             for f in (d.get("fleet") or [])
         ],
         jobs=[_job_from_dict(j) for j in (d.get("jobs") or [])],
+        skipped=[_skipped_from_dict(s) for s in (d.get("skipped") or [])],
     )
 
 
