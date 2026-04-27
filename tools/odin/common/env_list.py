@@ -389,6 +389,7 @@ def merge(existing: EnvList, discovered: list[EnvEntry]) -> EnvList:
                 notes=new.notes,
                 suspected_gap=new.suspected_gap,
                 presets_available=new.presets_available,
+                native_backend=new.native_backend,
             )
         else:
             merged_entry = EnvEntry(
@@ -401,6 +402,7 @@ def merge(existing: EnvList, discovered: list[EnvEntry]) -> EnvList:
                 has_skrl=new.has_skrl,
                 has_rl_games=new.has_rl_games,
                 presets_available=new.presets_available,
+                native_backend=new.native_backend,
                 # Preserved from user edits:
                 framework=old.framework,
                 num_envs=old.num_envs,

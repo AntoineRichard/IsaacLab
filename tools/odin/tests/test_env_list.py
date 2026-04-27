@@ -275,6 +275,64 @@ def test_merge_carries_presets_available_for_new_row():
     assert row.presets_available == ["newton"]
 
 
+def test_merge_refreshes_native_backend_on_existing_row():
+    """native_backend is derived from runtime introspection — refresh it."""
+    old = EnvEntry(
+        task_id="Isaac-Quadcopter-Direct-v0",
+        entry_point="ep:E",
+        env_cfg_entry_point="ec:E",
+        group="direct/quadcopter",
+        has_rsl_rl=True,
+        has_skrl=True,
+        framework="rsl_rl",
+        num_envs=4096,
+        max_iterations=300,
+        keep=True,
+        presets_available=[],
+        native_backend="newton",  # stale
+    )
+    new = EnvEntry(
+        task_id="Isaac-Quadcopter-Direct-v0",
+        entry_point="ep:E",
+        env_cfg_entry_point="ec:E",
+        group="direct/quadcopter",
+        has_rsl_rl=True,
+        has_skrl=True,
+        framework="rsl_rl",
+        num_envs=4096,
+        max_iterations=300,
+        keep=True,
+        presets_available=[],
+        native_backend="physx",
+    )
+    existing = EnvList()
+    existing.groups["direct/quadcopter"] = [old]
+    merged = merge(existing, [new])
+    row = merged.groups["direct/quadcopter"][0]
+    assert row.native_backend == "physx"
+
+
+def test_merge_carries_native_backend_for_new_row():
+    new = EnvEntry(
+        task_id="Isaac-NewTask-Direct-v0",
+        entry_point="ep:E",
+        env_cfg_entry_point="ec:E",
+        group="direct/newtask",
+        has_rsl_rl=True,
+        has_skrl=False,
+        framework="rsl_rl",
+        num_envs=1024,
+        max_iterations=100,
+        keep=True,
+        presets_available=[],
+        native_backend="newton",
+    )
+    merged = merge(EnvList(), [new])
+    row = merged.groups["direct/newtask"][0]
+    assert row.status == "new"
+    assert row.native_backend == "newton"
+
+
 def test_merge_marks_vanished_rows_stale_and_does_not_delete():
     existing = _existing_list_with("Isaac-Ant-Direct-v0", keep=True)
     discovered: list[EnvEntry] = []  # registry removed the task
