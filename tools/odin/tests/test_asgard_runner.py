@@ -13,6 +13,8 @@ verify dispatch orchestration, dispatch.json rewrite, and resume.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,7 +23,8 @@ import pytest
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.runner import DispatchOptions, resolve_dispatch_dir, run_dispatch
 from tools.odin.asgard.state import read_dispatch_state
-from tools.odin.asgard.transport import RsyncResult, SSHResult
+from tools.odin.asgard.transport import RsyncResult, ShellRsyncRunner, ShellSSHRunner, SSHResult
+from tools.odin.common.env_list import EnvEntry, EnvList, write_env_list
 
 
 @dataclass
@@ -299,3 +302,125 @@ def test_resume_preserves_skipped_array(tmp_path: Path):
     assert len(state.skipped) == 1
     assert state.skipped[0].task_id == "Isaac-Foo-v0"
     assert state.skipped[0].reason == "preset_unsupported"
+
+
+def _ssh_localhost_works() -> bool:
+    """Probe: can we `ssh localhost "echo ok"` without a password?"""
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "localhost", "echo ok"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return r.returncode == 0 and "ok" in r.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+@pytest.fixture
+def stub_ssh_runner(monkeypatch, tmp_path: Path):
+    """Replace ShellSSHRunner.run's docker-exec command with a local stub that
+    materialises a valid bundle and exits 0."""
+    from tools.odin.asgard import worker as worker_mod
+
+    real_build = worker_mod._build_docker_exec_cmd
+
+    def _fake_build(host: ValkyrieConfig, job) -> str:
+        bundle_dir = f"{host.isaaclab_path}/odin_runs/{job.bundle_dir_name}"
+        manifest = {
+            "schema_version": "1.0",
+            "phases": {"training": {"status": "completed"}, "startup": {"status": "completed"}},
+        }
+        training = {"schema_version": "1.0"}
+        startup = {"schema_version": "1.0"}
+        manifest_s = json.dumps(manifest).replace("'", r"\'")
+        training_s = json.dumps(training).replace("'", r"\'")
+        startup_s = json.dumps(startup).replace("'", r"\'")
+        return (
+            f"mkdir -p {bundle_dir} && "
+            f"printf '%s' '{manifest_s}' > {bundle_dir}/manifest.json && "
+            f"printf '%s' '{training_s}' > {bundle_dir}/training.json && "
+            f"printf '%s' '{startup_s}' > {bundle_dir}/startup.json"
+        )
+
+    monkeypatch.setattr(worker_mod, "_build_docker_exec_cmd", _fake_build)
+    yield
+    monkeypatch.setattr(worker_mod, "_build_docker_exec_cmd", real_build)
+
+
+@pytest.fixture
+def stub_provisioner(monkeypatch):
+    """Preflight (docker ps / docker inspect) would fail on vanilla localhost.
+    Short-circuit preflight and provisioner to always pass."""
+    from tools.odin.asgard import preflight as pf
+    from tools.odin.asgard import provisioner as pv
+
+    def _fake_pf(host, *, ssh):
+        return pf.PreflightResult(
+            host=host.host,
+            ok=True,
+            checks={"ssh_reach": True, "docker_running": True, "container_up": True, "isaaclab_present": True},
+            message="",
+        )
+
+    def _fake_pv(host, working_tree, *, fresh, ssh, rsync):
+        return pv.ProvisionResult(host=host.host, ok=True, commit_sha="integration-stub")
+
+    monkeypatch.setattr("tools.odin.asgard.runner.preflight_valkyrie", _fake_pf)
+    monkeypatch.setattr("tools.odin.asgard.runner.provision_valkyrie", _fake_pv)
+
+
+@pytest.mark.slow
+def test_pre_dispatch_summary_renders_native_mismatch_line(tmp_path: Path, stub_ssh_runner, stub_provisioner, capsys):
+    """The [INFO] block grouped by reason shows 'native: <X>' for native_backend_mismatch."""
+    if not _ssh_localhost_works():
+        pytest.skip("ssh localhost not configured")
+
+    el = EnvList()
+    el.groups["direct/quadcopter"] = [
+        EnvEntry(
+            task_id="Isaac-Quadcopter-Direct-v0",
+            entry_point="ep:E",
+            env_cfg_entry_point="ec:E",
+            group="direct/quadcopter",
+            has_rsl_rl=True,
+            has_skrl=True,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=10,
+            keep=True,
+            presets_available=[],
+            native_backend="physx",
+        ),
+    ]
+    physx_yaml = tmp_path / "physx.yaml"
+    write_env_list(physx_yaml, el, generator="test")
+
+    dispatch_dir = tmp_path / "20260427-150000"
+    dispatch_dir.mkdir()
+    fleet = Fleet(
+        fleet_name="loopback-test",
+        hosts=[
+            ValkyrieConfig(
+                host="localhost",
+                ssh_user=os.environ.get("USER") or "root",
+                ssh_key=None,
+                isaaclab_path=str(tmp_path / "remote_isaaclab"),
+                container_name="loopback-container",
+            ),
+        ],
+    )
+    run_dispatch(
+        fleet=fleet,
+        physx_yaml=None,
+        newton_yaml=physx_yaml,  # request newton on a physx-native task
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42], skip_aggregate=True, per_job_timeout_s=60),
+        ssh=ShellSSHRunner(),
+        rsync=ShellRsyncRunner(),
+    )
+    captured = capsys.readouterr()
+    out = captured.out
+    assert "native_backend_mismatch" in out
+    assert "native: physx" in out

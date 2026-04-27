@@ -296,18 +296,23 @@ def run_dispatch(
         started_at = _utc_now_iso()
 
     # Pre-dispatch summary of skipped (task, backend) pairs. One block per
-    # (task_id, backend) combination, with all affected seeds collapsed.
+    # (task_id, backend, reason) combination, with all affected seeds collapsed.
     if merged_skipped:
         from collections import defaultdict
 
-        grouped: dict[tuple[str, str], list[SkippedEntry]] = defaultdict(list)
+        grouped: dict[tuple[str, str, str], list[SkippedEntry]] = defaultdict(list)
         for sk in merged_skipped:
-            grouped[(sk.task_id, sk.backend)].append(sk)
-        print(f"[INFO] Skipping {len(merged_skipped)} (task, backend) pairs with no preset support:")
-        for (task_id, backend), rows in sorted(grouped.items()):
+            grouped[(sk.task_id, sk.backend, sk.reason)].append(sk)
+        print(f"[INFO] Skipping {len(merged_skipped)} (task, backend) pairs:")
+        for (task_id, backend, reason), rows in sorted(grouped.items()):
             seeds_str = ", ".join(str(r.seed) for r in sorted(rows, key=lambda r: r.seed))
-            avail = rows[0].presets_available
-            print(f"[INFO]   {task_id} × {backend} (seeds {seeds_str}) — available: {avail}")
+            if reason == "native_backend_mismatch":
+                native = rows[0].native_backend
+                detail = f"native: {native}"
+            else:
+                avail = rows[0].presets_available
+                detail = f"available: {avail}"
+            print(f"[INFO]   {task_id} × {backend} (seeds {seeds_str}) — {reason} ({detail})")
 
     # Snapshot fleet.yaml.
     _snapshot_fleet_yaml(fleet, dispatch_dir)
