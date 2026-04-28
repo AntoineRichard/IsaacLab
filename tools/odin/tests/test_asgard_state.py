@@ -39,7 +39,7 @@ def _job(run_id: str, status: str = "pending", **kw) -> JobEntry:
 
 def _state(jobs: list[JobEntry]) -> DispatchState:
     return DispatchState(
-        schema_version="1.0",
+        schema_version=SCHEMA_VERSION,
         dispatch_id="20260422-220000",
         started_at="2026-04-22T22:00:00Z",
         ended_at=None,
@@ -241,10 +241,58 @@ def test_read_skipped_without_native_backend_defaults_to_none(tmp_path: Path):
     assert s.skipped[0].native_backend is None
 
 
-def test_schema_version_writes_1_2(tmp_path: Path):
-    """New dispatches write schema_version='1.2'."""
+def test_schema_version_writes_1_3(tmp_path: Path):
+    """New dispatches write schema_version='1.3'."""
     write_dispatch_state(tmp_path, _state_with_skipped([_job("run-a")], []))
     import json
 
     payload = json.loads((tmp_path / "dispatch.json").read_text())
-    assert payload["schema_version"] == "1.2"
+    assert payload["schema_version"] == "1.3"
+
+
+def test_schema_version_is_1_3():
+    """Module-level SCHEMA_VERSION constant is bumped to '1.3'."""
+    assert SCHEMA_VERSION == "1.3"
+
+
+def test_resume_from_1_2_state_works(tmp_path: Path):
+    """A 1.2 dispatch.json on disk is readable by the 1.3 reader (major-match)."""
+    import json
+
+    payload = {
+        "schema_version": "1.2",
+        "dispatch_id": "20260424-160119",
+        "started_at": "2026-04-24T16:01:19Z",
+        "ended_at": None,
+        "seeds": [42],
+        "commit_sha": "abc123",
+        "fleet": [{"host": "v1", "status": "idle", "current_run_id": None, "last_error": None}],
+        "jobs": [],
+        "skipped": [],
+    }
+    (tmp_path / "dispatch.json").write_text(json.dumps(payload, indent=2))
+    state = read_dispatch_state(tmp_path)
+    assert state.dispatch_id == "20260424-160119"
+    assert state.schema_version == "1.2"
+
+
+def test_failure_kind_gpu_lost_round_trips(tmp_path: Path):
+    """JobEntry.failure with kind='gpu_lost' survives write→read."""
+    j = _job("run-gl", status="failed")
+    j.failure = FailureInfo(
+        kind="gpu_lost",
+        message="GPU-loss signature in stderr",
+        details={
+            "exit_code": 1,
+            "log_tail_path": "run-gl/logs/ssh-tail.log",
+        },
+    )
+    j.attempts = 2
+    write_dispatch_state(tmp_path, _state([j]))
+
+    reloaded = read_dispatch_state(tmp_path)
+    rj = reloaded.jobs[0]
+    assert rj.failure is not None
+    assert rj.failure.kind == "gpu_lost"
+    assert rj.failure.details["exit_code"] == 1
+    assert rj.attempts == 2

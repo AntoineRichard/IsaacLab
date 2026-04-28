@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 _DISPATCH_FILENAME = "dispatch.json"
 
 
