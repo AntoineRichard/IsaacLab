@@ -17,6 +17,7 @@ from pathlib import Path
 
 from tools.odin.asgard.fleet import ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry
+from tools.odin.asgard.recovery import recover_valkyrie_gpu
 from tools.odin.asgard.transport import RsyncRunner, SSHResult, SSHRunner
 
 __all__ = ["StateEvent", "ValkyrieWorker", "WorkerOptions"]
@@ -30,11 +31,22 @@ class WorkerOptions:
 
 @dataclass
 class StateEvent:
-    """Message posted by a worker to the state channel on every transition."""
+    """Message posted by a worker to the state channel on every transition.
+
+    ``transition`` values:
+
+    - ``running``: job dispatched to host; ``started_at`` set.
+    - ``completed``: job finished, bundle pulled, manifest validated.
+    - ``failed``: terminal failure for this job; ``failure`` set.
+    - ``recovered``: GPU loss detected, recovery succeeded; retry follows.
+    - ``host_down``: GPU loss detected, recovery failed; host transitions
+      to ``status="down"``; runner removes it from the worker pool.
+    - ``shutdown_idle``: worker received its sentinel and exited cleanly.
+    """
 
     run_id: str
     host: str
-    transition: str  # "running" | "completed" | "failed" | "shutdown_idle"
+    transition: str
     failure: FailureInfo | None = None
     started_at: str | None = None
     ended_at: str | None = None
@@ -182,8 +194,32 @@ class ValkyrieWorker(threading.Thread):
                     # Stay in the retry loop: try again on this host.
                     continue
                 # Exhausted retries → emit terminal failure below.
+            elif failure is not None and failure.kind == "gpu_lost":
+                rec = recover_valkyrie_gpu(self.host, ssh=self._ssh)
+                if rec.recovered:
+                    self._state_chan.put(
+                        StateEvent(
+                            run_id=job.run_id,
+                            host=self.host.host,
+                            transition="recovered",
+                        )
+                    )
+                    if job.attempts <= self._options.max_infrastructure_retries:
+                        continue
+                    # Retries exhausted on this host even after successful recovery.
+                else:
+                    self._state_chan.put(
+                        StateEvent(
+                            run_id=job.run_id,
+                            host=self.host.host,
+                            transition="host_down",
+                            failure=failure,
+                        )
+                    )
+                    job.preferred_not = set(job.preferred_not) | {self.host.host}
+                # Fall through to terminal failure emission below.
 
-            break  # non-infrastructure result or retries exhausted
+            break  # non-recoverable result or retries exhausted
 
         if failure is not None:
             job.status = "failed"

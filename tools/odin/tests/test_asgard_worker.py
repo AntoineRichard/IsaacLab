@@ -553,3 +553,227 @@ def test_classify_timeout_wins_over_gpu_signature(tmp_path):
     failure = worker._classify(r, job, ssh_tail)
     assert failure is not None
     assert failure.kind == "timeout"
+
+
+def test_worker_gpu_lost_recovery_succeeds_retries_same_host(tmp_path, monkeypatch):
+    """First attempt: gpu_lost stderr → recover succeeds → second attempt succeeds."""
+    import queue
+    import threading
+
+    from tools.odin.asgard import worker as worker_mod
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.recovery import RecoveryResult
+    from tools.odin.asgard.transport import SSHResult
+
+    # Scripted SSH: first call (Hugin) fails with NVML; second call (Hugin
+    # retry) succeeds with exit 0 + valid bundle.
+    ssh_responses = [
+        SSHResult(
+            exit_code=1,
+            stdout="",
+            stderr="Failed to initialize NVML: Unknown Error\n",
+            duration_s=12.0,
+        ),
+        SSHResult(exit_code=0, stdout="ok", stderr="", duration_s=600.0),
+    ]
+
+    class _SeqSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            return ssh_responses.pop(0)
+
+    # Build a minimal valid bundle so _validate_bundle passes after retry.
+    job = JobEntry(
+        run_id="rsl-rl_physx_R_seed42",
+        task_id="R",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_R_seed42",
+    )
+    bundle = tmp_path / job.bundle_dir_name
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.json").write_text('{"schema_version": "1.0"}')
+
+    class _FakeRsync:
+        def pull(self, host, remote, local):
+            return SSHResult(exit_code=0, stdout="", stderr="", duration_s=0.1)
+
+    recover_calls = {"n": 0}
+
+    def _fake_recover(host, *, ssh):
+        recover_calls["n"] += 1
+        return RecoveryResult(
+            host=host.host,
+            container_name=host.container_name,
+            attempted=True,
+            recovered=True,
+            duration_s=12.0,
+            message="recovered_via_container_restart",
+            details={},
+        )
+
+    monkeypatch.setattr(worker_mod, "recover_valkyrie_gpu", _fake_recover)
+
+    state_chan: queue.Queue = queue.Queue()
+    worker = worker_mod.ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=state_chan,
+        dispatch_dir=tmp_path,
+        options=worker_mod.WorkerOptions(),
+        ssh=_SeqSSH(),
+        rsync=_FakeRsync(),
+        shutdown_event=threading.Event(),
+    )
+    worker._execute(job)
+
+    assert job.status == "completed"
+    assert job.attempts == 2
+    assert recover_calls["n"] == 1
+    transitions = []
+    while not state_chan.empty():
+        transitions.append(state_chan.get_nowait().transition)
+    assert "recovered" in transitions
+    assert "completed" in transitions
+
+
+def test_worker_gpu_lost_recovery_fails_marks_host_down(tmp_path, monkeypatch):
+    """First attempt: gpu_lost → recover returns recovered=False → host_down + terminal failure."""
+    import queue
+    import threading
+
+    from tools.odin.asgard import worker as worker_mod
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.recovery import RecoveryResult
+    from tools.odin.asgard.transport import SSHResult
+
+    class _SingleSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            return SSHResult(
+                exit_code=1,
+                stdout="",
+                stderr="CUDA error: no CUDA-capable device is detected\n",
+                duration_s=10.0,
+            )
+
+    def _fake_recover(host, *, ssh):
+        return RecoveryResult(
+            host=host.host,
+            container_name=host.container_name,
+            attempted=True,
+            recovered=False,
+            duration_s=2.0,
+            message="docker_restart_failed: daemon down",
+            details={},
+        )
+
+    monkeypatch.setattr(worker_mod, "recover_valkyrie_gpu", _fake_recover)
+
+    state_chan: queue.Queue = queue.Queue()
+    job = JobEntry(
+        run_id="rsl-rl_physx_F_seed42",
+        task_id="F",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_F_seed42",
+    )
+    (tmp_path / job.bundle_dir_name / "logs").mkdir(parents=True)
+    (tmp_path / job.bundle_dir_name / "logs" / "ssh-tail.log").write_text("")
+
+    worker = worker_mod.ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=state_chan,
+        dispatch_dir=tmp_path,
+        options=worker_mod.WorkerOptions(),
+        ssh=_SingleSSH(),
+        rsync=None,
+        shutdown_event=threading.Event(),
+    )
+    worker._execute(job)
+
+    assert job.status == "failed"
+    assert job.failure is not None
+    assert job.failure.kind == "gpu_lost"
+    assert "v1" in job.preferred_not
+    transitions = []
+    while not state_chan.empty():
+        transitions.append(state_chan.get_nowait().transition)
+    assert "host_down" in transitions
+    assert "failed" in transitions
+
+
+def test_worker_gpu_lost_three_in_a_row_terminal_failure(tmp_path, monkeypatch):
+    """Three consecutive gpu_lost + recovery=True → terminal fail at attempt 3."""
+    import queue
+    import threading
+
+    from tools.odin.asgard import worker as worker_mod
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.recovery import RecoveryResult
+    from tools.odin.asgard.transport import SSHResult
+
+    nvml_fail = SSHResult(
+        exit_code=1,
+        stdout="",
+        stderr="Failed to initialize NVML: Unknown Error\n",
+        duration_s=10.0,
+    )
+    ssh_responses = [nvml_fail, nvml_fail, nvml_fail]
+
+    class _SeqSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            return ssh_responses.pop(0)
+
+    def _fake_recover(host, *, ssh):
+        return RecoveryResult(
+            host=host.host,
+            container_name=host.container_name,
+            attempted=True,
+            recovered=True,
+            duration_s=10.0,
+            message="recovered_via_container_restart",
+            details={},
+        )
+
+    monkeypatch.setattr(worker_mod, "recover_valkyrie_gpu", _fake_recover)
+
+    state_chan: queue.Queue = queue.Queue()
+    job = JobEntry(
+        run_id="rsl-rl_physx_T_seed42",
+        task_id="T",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_T_seed42",
+    )
+    (tmp_path / job.bundle_dir_name / "logs").mkdir(parents=True)
+    (tmp_path / job.bundle_dir_name / "logs" / "ssh-tail.log").write_text("")
+
+    worker = worker_mod.ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=state_chan,
+        dispatch_dir=tmp_path,
+        # max_infrastructure_retries=2 → up to 3 attempts.
+        options=worker_mod.WorkerOptions(max_infrastructure_retries=2),
+        ssh=_SeqSSH(),
+        rsync=None,
+        shutdown_event=threading.Event(),
+    )
+    worker._execute(job)
+
+    assert job.status == "failed"
+    assert job.failure is not None
+    assert job.failure.kind == "gpu_lost"
+    assert job.attempts == 3
