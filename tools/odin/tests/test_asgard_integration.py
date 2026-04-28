@@ -158,6 +158,18 @@ def test_loopback_dispatch_against_localhost(tmp_path: Path, stub_ssh_runner, st
     dj = json.loads((dispatch_dir / "dispatch.json").read_text())
     assert dj["jobs"][0]["status"] == "completed"
 
+    # Spec 0 / Task 7: aggregator now also writes hardware.json.
+    # The loopback _build_docker_exec stub doesn't populate
+    # training.json.hardware on every kernel, so accept absence —
+    # but if present, validate the schema shape.
+    hw_path = dispatch_dir / "hardware.json"
+    if hw_path.exists():
+        hw = json.loads(hw_path.read_text())
+        assert hw["schema_version"] == "1.0"
+        assert hw["dispatch_id"] == dispatch_dir.name
+        assert hw["fingerprint"].startswith("gpu:")
+        assert isinstance(hw["hosts"], dict)
+
 
 def test_unsupported_pair_lands_in_skipped_array(tmp_path: Path, stub_ssh_runner, stub_provisioner):
     """End-to-end: a (task, backend) the task doesn't support → skipped[]."""
