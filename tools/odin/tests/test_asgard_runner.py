@@ -182,10 +182,13 @@ def test_run_dispatch_resume_preserves_completed(tmp_path: Path):
     first = read_dispatch_state(dispatch_dir)
     assert first.jobs[0].status == "completed"
 
-    # Second run (resume) MUST NOT re-run a completed job.
+    # Second run (resume) MUST NOT re-run a completed job. Match Hugin/Munin
+    # dispatch shape ('hugin/run.py' or 'munin/run.py') rather than any
+    # 'docker exec' — preflight's gpu_present probe legitimately uses
+    # docker exec nvidia-smi -L without dispatching a job.
     class _AssertNoDispatch(_FakeSSH):
         def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
-            if "docker exec" in cmd:
+            if "hugin/run.py" in cmd or "munin/run.py" in cmd:
                 raise AssertionError(f"resume should not re-dispatch completed jobs; cmd={cmd!r}")
             return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
 
