@@ -47,6 +47,7 @@ def test_create_app_layout_is_non_empty(tmp_path):
 def test_route_pathname_landing(tmp_path):
     """Empty path returns the landing component."""
     from tools.odin.valhalla.dashboard.data import DataLayer
+
     data = DataLayer(tmp_path)
     component = route_pathname("/", data)
     assert _has_id(component, "landing-root")
@@ -56,6 +57,7 @@ def test_route_pathname_dispatch_redirects_to_tab_a(tmp_path):
     """`/<id>/` returns a redirect (Location component) to /<id>/dispatch-fleet."""
     _write_dispatch(tmp_path, "20260427-141302")
     from tools.odin.valhalla.dashboard.data import DataLayer
+
     data = DataLayer(tmp_path)
     component = route_pathname("/20260427-141302/", data)
     assert _has_id(component, "redirect-to-tab-a") or _is_redirect_to(component, "/20260427-141302/dispatch-fleet")
@@ -63,6 +65,7 @@ def test_route_pathname_dispatch_redirects_to_tab_a(tmp_path):
 
 def test_route_pathname_unknown_dispatch_returns_404(tmp_path):
     from tools.odin.valhalla.dashboard.data import DataLayer
+
     data = DataLayer(tmp_path)
     component = route_pathname("/does-not-exist/dispatch-fleet", data)
     assert _has_id(component, "not-found-root")
@@ -70,6 +73,7 @@ def test_route_pathname_unknown_dispatch_returns_404(tmp_path):
 
 def test_route_pathname_unknown_path_returns_404(tmp_path):
     from tools.odin.valhalla.dashboard.data import DataLayer
+
     data = DataLayer(tmp_path)
     component = route_pathname("/garbage/route/here", data)
     assert _has_id(component, "not-found-root")
@@ -79,6 +83,7 @@ def test_route_pathname_known_tab_renders_placeholder(tmp_path):
     """Tab path on a real dispatch renders the placeholder (Spec 0 has no tab content)."""
     _write_dispatch(tmp_path, "20260427-141302")
     from tools.odin.valhalla.dashboard.data import DataLayer
+
     data = DataLayer(tmp_path)
     component = route_pathname("/20260427-141302/dispatch-fleet", data)
     assert _has_id(component, "tab-placeholder")
@@ -104,10 +109,7 @@ def _walk(component):
 
 
 def _has_id(component, target_id: str) -> bool:
-    for c in _walk(component):
-        if getattr(c, "id", None) == target_id:
-            return True
-    return False
+    return any(getattr(c, "id", None) == target_id for c in _walk(component))
 
 
 def _is_redirect_to(component, expected_href: str) -> bool:

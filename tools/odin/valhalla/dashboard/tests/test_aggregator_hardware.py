@@ -75,30 +75,39 @@ def test_aggregate_dispatch_writes_hardware_json(tmp_path):
     """A successful aggregate run produces hardware.json next to aggregate.json."""
     d = tmp_path / "20260427-141302"
     d.mkdir()
-    _write_dispatch_json(d, [{
-        "run_id": "rsl-rl_physx_Ant_seed42",
-        "task_id": "Isaac-Ant-Direct-v0",
-        "framework": "rsl_rl",
-        "backend": "physx",
-        "num_envs": 4096,
-        "max_iterations": 300,
-        "seed": 42,
-        "bundle_dir_name": "rsl-rl_physx_Ant_seed42",
-        "status": "completed",
-        "assigned_to": "v1",
-        "attempts": 1,
-        "started_at": "2026-04-27T14:13:02Z",
-        "ended_at": "2026-04-27T14:30:00Z",
-        "preferred_not": [],
-        "failure": None,
-    }])
-    _write_bundle(d, "rsl-rl_physx_Ant_seed42", hardware={
-        "hostname": "Odin-Runner-5",
-        "gpu_devices": [{"name": "NVIDIA L40", "mem_gb": 44.32, "compute_cap": "8.9"}],
-        "cpu_name": "Intel Xeon Processor (Icelake)",
-        "cpu_count": 16,
-        "ram_gb": 62.79,
-    })
+    _write_dispatch_json(
+        d,
+        [
+            {
+                "run_id": "rsl-rl_physx_Ant_seed42",
+                "task_id": "Isaac-Ant-Direct-v0",
+                "framework": "rsl_rl",
+                "backend": "physx",
+                "num_envs": 4096,
+                "max_iterations": 300,
+                "seed": 42,
+                "bundle_dir_name": "rsl-rl_physx_Ant_seed42",
+                "status": "completed",
+                "assigned_to": "v1",
+                "attempts": 1,
+                "started_at": "2026-04-27T14:13:02Z",
+                "ended_at": "2026-04-27T14:30:00Z",
+                "preferred_not": [],
+                "failure": None,
+            }
+        ],
+    )
+    _write_bundle(
+        d,
+        "rsl-rl_physx_Ant_seed42",
+        hardware={
+            "hostname": "Odin-Runner-5",
+            "gpu_devices": [{"name": "NVIDIA L40", "mem_gb": 44.32, "compute_cap": "8.9"}],
+            "cpu_name": "Intel Xeon Processor (Icelake)",
+            "cpu_count": 16,
+            "ram_gb": 62.79,
+        },
+    )
 
     aggregate_dispatch(d)
 
@@ -123,23 +132,28 @@ def test_aggregate_dispatch_skips_hardware_when_no_completed_bundles(tmp_path):
     """No completed bundles → no hardware.json (warning logged, aggregate still written)."""
     d = tmp_path / "20260427-141302"
     d.mkdir()
-    _write_dispatch_json(d, [{
-        "run_id": "rsl-rl_physx_Ant_seed42",
-        "task_id": "Isaac-Ant-Direct-v0",
-        "framework": "rsl_rl",
-        "backend": "physx",
-        "num_envs": 4096,
-        "max_iterations": 300,
-        "seed": 42,
-        "bundle_dir_name": "rsl-rl_physx_Ant_seed42",
-        "status": "failed",
-        "assigned_to": "v1",
-        "attempts": 1,
-        "started_at": "2026-04-27T14:13:02Z",
-        "ended_at": "2026-04-27T14:30:00Z",
-        "preferred_not": [],
-        "failure": {"kind": "hugin_crash", "message": "x", "details": {}},
-    }])
+    _write_dispatch_json(
+        d,
+        [
+            {
+                "run_id": "rsl-rl_physx_Ant_seed42",
+                "task_id": "Isaac-Ant-Direct-v0",
+                "framework": "rsl_rl",
+                "backend": "physx",
+                "num_envs": 4096,
+                "max_iterations": 300,
+                "seed": 42,
+                "bundle_dir_name": "rsl-rl_physx_Ant_seed42",
+                "status": "failed",
+                "assigned_to": "v1",
+                "attempts": 1,
+                "started_at": "2026-04-27T14:13:02Z",
+                "ended_at": "2026-04-27T14:30:00Z",
+                "preferred_not": [],
+                "failure": {"kind": "hugin_crash", "message": "x", "details": {}},
+            }
+        ],
+    )
 
     aggregate_dispatch(d)
 
@@ -150,23 +164,28 @@ def test_aggregate_dispatch_skips_hardware_when_training_lacks_block(tmp_path):
     """Bundle exists but training.json has no .hardware → no hardware.json."""
     d = tmp_path / "20260427-141302"
     d.mkdir()
-    _write_dispatch_json(d, [{
-        "run_id": "rsl-rl_physx_Ant_seed42",
-        "task_id": "Isaac-Ant-Direct-v0",
-        "framework": "rsl_rl",
-        "backend": "physx",
-        "num_envs": 4096,
-        "max_iterations": 300,
-        "seed": 42,
-        "bundle_dir_name": "rsl-rl_physx_Ant_seed42",
-        "status": "completed",
-        "assigned_to": "v1",
-        "attempts": 1,
-        "started_at": "2026-04-27T14:13:02Z",
-        "ended_at": "2026-04-27T14:30:00Z",
-        "preferred_not": [],
-        "failure": None,
-    }])
+    _write_dispatch_json(
+        d,
+        [
+            {
+                "run_id": "rsl-rl_physx_Ant_seed42",
+                "task_id": "Isaac-Ant-Direct-v0",
+                "framework": "rsl_rl",
+                "backend": "physx",
+                "num_envs": 4096,
+                "max_iterations": 300,
+                "seed": 42,
+                "bundle_dir_name": "rsl-rl_physx_Ant_seed42",
+                "status": "completed",
+                "assigned_to": "v1",
+                "attempts": 1,
+                "started_at": "2026-04-27T14:13:02Z",
+                "ended_at": "2026-04-27T14:30:00Z",
+                "preferred_not": [],
+                "failure": None,
+            }
+        ],
+    )
     _write_bundle(d, "rsl-rl_physx_Ant_seed42", hardware=None)
 
     aggregate_dispatch(d)
