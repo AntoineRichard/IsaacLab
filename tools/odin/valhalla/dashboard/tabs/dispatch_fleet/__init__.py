@@ -19,11 +19,8 @@ def register(app, data):
     """Spec 0 registry hook — wire Tab A's callbacks at app startup.
 
     Lazy-imported to avoid pulling Dash callbacks into the module graph at
-    test collection time when only `render` is needed. Until T9 lands the
-    callbacks module, this is a no-op.
+    test collection time when only `render` is needed.
     """
-    try:
-        from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.callbacks import register_callbacks
-    except ModuleNotFoundError:
-        return
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.callbacks import register_callbacks
+
     register_callbacks(app, data)
