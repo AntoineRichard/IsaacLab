@@ -1,0 +1,120 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Plotly Dash app factory for the Odin dashboard.
+
+Builds the SPA shell: header (logo + dispatch dropdown + live/done pill),
+tab strip, page-content area. Routing lives in :func:`route_pathname` so it
+can be unit-tested without the live Dash callback machinery.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import dash
+from dash import Input, Output, dcc, html
+
+from tools.odin.valhalla.dashboard.data import DataLayer
+
+__all__ = ["create_app", "route_pathname"]
+
+
+_DISPATCH_ID_RE = re.compile(r"^\d{8}-\d{6}$")
+_TAB_IDS = {"dispatch-fleet", "task-drilldown", "startup"}
+
+
+def create_app(runs_root: Path, initial_dispatch: Path | None = None) -> dash.Dash:
+    """Build the Dash app. Pure factory — no global state."""
+    app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    app.title = "Odin"
+    data = DataLayer(runs_root)
+    app.layout = _build_layout(initial_dispatch)
+    _register_callbacks(app, data)
+    return app
+
+
+def _build_layout(initial_dispatch: Path | None) -> html.Div:
+    initial_path = "/"
+    if initial_dispatch is not None:
+        initial_path = f"/{initial_dispatch.name}/dispatch-fleet"
+    return html.Div(
+        id="app-root",
+        children=[
+            dcc.Location(id="url", refresh=False, pathname=initial_path),
+            dcc.Store(id="active-dispatch", storage_type="memory"),
+            html.Div(id="page-content"),
+        ],
+    )
+
+
+def _register_callbacks(app: dash.Dash, data: DataLayer) -> None:
+    @app.callback(Output("page-content", "children"), Input("url", "pathname"))
+    def _on_url(pathname: str):
+        return route_pathname(pathname or "/", data)
+
+
+def route_pathname(pathname: str, data: DataLayer):
+    """Map a URL pathname to the Dash component tree to render at /page-content.
+
+    Pulled out as a free function so unit tests can drive routing without
+    spinning up the Dash callback graph.
+    """
+    parts = [p for p in pathname.split("/") if p]
+    if not parts:
+        return _landing(data)
+    dispatch_id = parts[0]
+    if not _DISPATCH_ID_RE.match(dispatch_id):
+        return _not_found(pathname)
+    # Verify the dispatch actually exists.
+    try:
+        data.load_dispatch(dispatch_id)
+    except FileNotFoundError:
+        return _not_found(pathname)
+    if len(parts) == 1:
+        # /<id>/ → redirect to default tab
+        return html.Div(
+            id="redirect-to-tab-a",
+            children=[
+                dcc.Location(id="redirect-loc", href=f"/{dispatch_id}/dispatch-fleet", refresh=True),
+            ],
+        )
+    tab_id = parts[1]
+    if tab_id not in _TAB_IDS:
+        return _not_found(pathname)
+    return _render_tab(dispatch_id, tab_id, data)
+
+
+def _landing(data: DataLayer) -> html.Div:
+    """Multi-dispatch landing: minimal stub.
+
+    Spec 0 ships a real table here in Task 9; this stub satisfies the
+    routing test only.
+    """
+    return html.Div(id="landing-root", children=[html.H2("Odin dashboard"), html.Div(id="landing-table")])
+
+
+def _not_found(pathname: str) -> html.Div:
+    return html.Div(
+        id="not-found-root",
+        children=[
+            html.H2("Not found"),
+            html.P(f"No route for {pathname!r}."),
+            dcc.Link("Back to dashboard", href="/"),
+        ],
+    )
+
+
+def _render_tab(dispatch_id: str, tab_id: str, data: DataLayer) -> html.Div:
+    """Render the tab body for /<id>/<tab_id>.
+
+    Spec 0 returns the placeholder for every tab. Tab-specific specs (1/2/3)
+    add their own modules under ``dashboard/tabs/`` that override this via
+    a registry; but Spec 0 doesn't depend on that wiring being present.
+    """
+    from tools.odin.valhalla.dashboard.tabs import _placeholder
+
+    return _placeholder.render(dispatch_id, tab_id)
