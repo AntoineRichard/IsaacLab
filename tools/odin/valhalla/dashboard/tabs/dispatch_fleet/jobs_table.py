@@ -3,10 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Render the Tab A jobs section: filter row + table.
-
-Inline expansion + ssh-tail rendering land in Task 7.
-"""
+"""Render the Tab A jobs section: filter row + table + inline expand rows."""
 
 from __future__ import annotations
 
@@ -42,15 +39,89 @@ def render_jobs_section(
     status_filter: list[str] | None = None,
     kind_filter: list[str] | None = None,
     task_text: str = "",
+    expanded_run_ids: set[str] | None = None,
+    ssh_tail_store: dict[str, list[str]] | None = None,
 ) -> html.Div:
-    """Build the jobs section: filter row + filtered table.
+    """Build the jobs section: filter row + table + inline expand rows.
 
-    Spec 1 Task 6 — no expand row support yet (added in Task 7).
+    expanded_run_ids: which failed-row expansions are currently open.
+    ssh_tail_store: keyed by run_id; values are the lines from ssh-tail.log
+        (loaded on demand via the tab's load_ssh_tail callback).
     """
     jobs = dispatch_payload.get("jobs", []) or []
+    expanded_run_ids = expanded_run_ids or set()
+    ssh_tail_store = ssh_tail_store or {}
+
+    if not jobs:
+        return html.Div(
+            id="tab-a-jobs-section-content",
+            children=[
+                _filter_row(status_filter, kind_filter, task_text),
+                html.Div(
+                    id="tab-a-jobs-empty-zero",
+                    className="tab-a-empty-state",
+                    children=[html.P("No jobs queued for this dispatch yet.")],
+                ),
+            ],
+        )
+
     visible = filter_jobs(jobs, status_filter=status_filter, kind_filter=kind_filter, task_text=task_text)
 
-    filter_row = html.Div(
+    if not visible:
+        return html.Div(
+            id="tab-a-jobs-section-content",
+            children=[
+                _filter_row(status_filter, kind_filter, task_text),
+                html.Div(
+                    id="tab-a-jobs-empty",
+                    className="tab-a-empty-state",
+                    children=[
+                        html.P("No jobs match the current filters."),
+                        html.Button(
+                            "Clear",
+                            id="tab-a-clear-filters",
+                            n_clicks=0,
+                            className="tab-a-clear-button",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    header = html.Tr(
+        children=[
+            html.Th("Task"),
+            html.Th("Framework × Backend"),
+            html.Th("Seed"),
+            html.Th("Status"),
+            html.Th("Failure"),
+            html.Th("Host"),
+            html.Th("Started / Ended"),
+        ]
+    )
+
+    body_rows: list = []
+    for j in visible:
+        body_rows.append(_data_row(j))
+        if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
+            body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
+
+    table = html.Table(
+        className="tab-a-jobs-table",
+        children=[
+            html.Thead(children=[header]),
+            html.Tbody(id="tab-a-jobs-rows", children=body_rows),
+        ],
+    )
+
+    return html.Div(
+        id="tab-a-jobs-section-content",
+        children=[_filter_row(status_filter, kind_filter, task_text), table],
+    )
+
+
+def _filter_row(status_filter, kind_filter, task_text):
+    return html.Div(
         className="tab-a-jobs-filter-row",
         children=[
             html.Span("Status", className="tab-a-filter-label"),
@@ -83,32 +154,6 @@ def render_jobs_section(
         ],
     )
 
-    header = html.Tr(
-        children=[
-            html.Th("Task"),
-            html.Th("Framework × Backend"),
-            html.Th("Seed"),
-            html.Th("Status"),
-            html.Th("Failure"),
-            html.Th("Host"),
-            html.Th("Started / Ended"),
-        ]
-    )
-    rows = [_data_row(j) for j in visible]
-
-    table = html.Table(
-        className="tab-a-jobs-table",
-        children=[
-            html.Thead(children=[header]),
-            html.Tbody(id="tab-a-jobs-rows", children=rows),
-        ],
-    )
-
-    return html.Div(
-        id="tab-a-jobs-section-content",
-        children=[filter_row, table],
-    )
-
 
 def _data_row(job: dict) -> html.Tr:
     status = str(job.get("status", "unknown"))
@@ -125,13 +170,21 @@ def _data_row(job: dict) -> html.Tr:
     if attempts > 1:
         status_children.append(html.Span(f"×{attempts}", className="tab-a-attempts-badge"))
 
-    failure_cell = (
-        html.Span(kind, className=f"tab-a-kind-pill tab-a-kind-pill-{kind}") if kind else "—"
-    )
+    if kind:
+        failure_cell = [
+            html.Span(kind, className=f"tab-a-kind-pill tab-a-kind-pill-{kind}"),
+            html.Button(
+                "▸",
+                id={"type": "tab-a-expand-toggle", "run_id": job.get("run_id", "")},
+                n_clicks=0,
+                className="tab-a-expand-toggle",
+                title="Show / hide failure details",
+            ),
+        ]
+    else:
+        failure_cell = "—"
 
-    started_ended_text = (
-        f"{started} · {ended}" if ended else (f"{started} · —" if started != "—" else "— · —")
-    )
+    started_ended_text = f"{started} · {ended}" if ended else (f"{started} · —" if started != "—" else "— · —")
 
     return html.Tr(
         children=[
@@ -143,6 +196,51 @@ def _data_row(job: dict) -> html.Tr:
             html.Td(host, className="tab-a-mono"),
             html.Td(started_ended_text, className="tab-a-muted"),
         ]
+    )
+
+
+def _expand_row(job: dict, ssh_tail_lines: list[str] | None) -> html.Tr:
+    """Inline expansion row for a failed job: kind, attempts, message, ssh-tail."""
+    failure = job.get("failure") or {}
+    kind = failure.get("kind", "unknown")
+    message = failure.get("message")
+    attempts = int(job.get("attempts", 1) or 1)
+    run_id = job.get("run_id", "")
+
+    body: list = [
+        html.Span("Kind ", className="tab-a-expand-label"),
+        html.Span(kind, className=f"tab-a-kind-pill tab-a-kind-pill-{kind}"),
+        html.Span(f"  Attempts {attempts}", className="tab-a-expand-label"),
+        html.Br(),
+        html.Br(),
+        html.Span("Message", className="tab-a-expand-label"),
+        html.Br(),
+        html.Pre(
+            message if message else "(no failure message recorded)",
+            className="tab-a-failure-message",
+        ),
+        html.Button(
+            "▸ Show ssh-tail.log (last 50 lines)",
+            id={"type": "tab-a-ssh-tail-button", "run_id": run_id},
+            n_clicks=0,
+            className="tab-a-ssh-tail-button",
+        ),
+    ]
+
+    if ssh_tail_lines is not None:
+        if ssh_tail_lines:
+            body.append(html.Pre("\n".join(ssh_tail_lines), className="tab-a-ssh-tail-pre"))
+        else:
+            body.append(
+                html.P(
+                    f"ssh-tail.log not found at {run_id}/logs/ssh-tail.log (or unreadable)",
+                    className="tab-a-ssh-tail-empty",
+                )
+            )
+
+    return html.Tr(
+        className="tab-a-expand-row",
+        children=[html.Td(colSpan=7, children=body)],
     )
 
 

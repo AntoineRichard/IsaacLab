@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Unit tests for the Tab A jobs table (rendering only; expand row in T7)."""
+"""Unit tests for the Tab A jobs table: rendering, filters, expand row, ssh-tail, empty states."""
 
 from __future__ import annotations
 
@@ -36,8 +36,17 @@ def _has_class(component, cls) -> bool:
     return False
 
 
-def _job(*, run_id="r", task="Isaac-Ant-Direct-v0", status="completed", kind=None,
-         attempts=1, started_at="2026-04-27T14:13:02Z", ended_at=None, host="v1"):
+def _job(
+    *,
+    run_id="r",
+    task="Isaac-Ant-Direct-v0",
+    status="completed",
+    kind=None,
+    attempts=1,
+    started_at="2026-04-27T14:13:02Z",
+    ended_at=None,
+    host="v1",
+):
     j = {
         "run_id": run_id,
         "task_id": task,
@@ -122,3 +131,121 @@ def test_jobs_attempts_badge_only_when_gt_1():
     component_two = render_jobs_section(_payload([_job(attempts=2)]))
     assert not _has_class(component_one, "tab-a-attempts-badge")
     assert _has_class(component_two, "tab-a-attempts-badge")
+
+
+def test_jobs_expanded_row_for_failed_in_expanded_set():
+    job = _job(status="failed", kind="hugin_crash", run_id="rid-1")
+    component = render_jobs_section(
+        _payload([job]),
+        expanded_run_ids={"rid-1"},
+    )
+    # The expand row exists.
+    assert _has_class(component, "tab-a-expand-row")
+
+
+def test_jobs_expanded_row_not_rendered_when_collapsed():
+    job = _job(status="failed", kind="hugin_crash", run_id="rid-2")
+    component = render_jobs_section(_payload([job]), expanded_run_ids=set())
+    assert not _has_class(component, "tab-a-expand-row")
+
+
+def test_jobs_expanded_row_ssh_tail_button_present():
+    job = _job(status="failed", kind="hugin_crash", run_id="rid-3")
+    component = render_jobs_section(_payload([job]), expanded_run_ids={"rid-3"})
+    button_ids = [
+        getattr(c, "id", None)
+        for c in _walk(component)
+        if isinstance(getattr(c, "id", None), dict) and getattr(c, "id", {}).get("type") == "tab-a-ssh-tail-button"
+    ]
+    assert button_ids == [{"type": "tab-a-ssh-tail-button", "run_id": "rid-3"}]
+
+
+def test_jobs_expand_toggle_button_on_failed_rows():
+    job = _job(status="failed", kind="hugin_crash", run_id="rid-4")
+    component = render_jobs_section(_payload([job]))
+    button_ids = [
+        getattr(c, "id", None)
+        for c in _walk(component)
+        if isinstance(getattr(c, "id", None), dict) and getattr(c, "id", {}).get("type") == "tab-a-expand-toggle"
+    ]
+    assert button_ids == [{"type": "tab-a-expand-toggle", "run_id": "rid-4"}]
+
+
+def test_jobs_expanded_row_ssh_tail_lines_rendered():
+    job = _job(status="failed", kind="hugin_crash", run_id="rid-5")
+    component = render_jobs_section(
+        _payload([job]),
+        expanded_run_ids={"rid-5"},
+        ssh_tail_store={"rid-5": ["line one", "line two"]},
+    )
+    pre_blocks = [c for c in _walk(component) if type(c).__name__ == "Pre"]
+    # There may be 1 (failure.message <pre>) or 2 (failure.message + ssh-tail) <pre> blocks.
+    assert len(pre_blocks) >= 1
+    # At least one of them contains the ssh-tail content.
+    found = False
+    for pre in pre_blocks:
+        text = getattr(pre, "children", "")
+        if isinstance(text, list):
+            text = "".join(t for t in text if isinstance(t, str))
+        if "line one" in text and "line two" in text:
+            found = True
+            break
+    assert found
+
+
+def test_jobs_expanded_row_ssh_tail_lines_empty_renders_not_found():
+    job = _job(status="failed", kind="hugin_crash", run_id="rid-6")
+    component = render_jobs_section(
+        _payload([job]),
+        expanded_run_ids={"rid-6"},
+        ssh_tail_store={"rid-6": []},
+    )
+    blob = " ".join(
+        getattr(c, "children", "") for c in _walk(component) if isinstance(getattr(c, "children", None), str)
+    )
+    assert "ssh-tail.log not found" in blob
+
+
+def test_jobs_expanded_row_no_message_renders_friendly_text():
+    job = {
+        "run_id": "rid-7",
+        "task_id": "x",
+        "framework": "rsl_rl",
+        "backend": "physx",
+        "seed": 42,
+        "status": "failed",
+        "assigned_to": "v1",
+        "attempts": 1,
+        "started_at": None,
+        "ended_at": None,
+        "preferred_not": [],
+        "failure": {"kind": "hugin_crash", "message": None, "details": {}},
+    }
+    component = render_jobs_section(_payload([job]), expanded_run_ids={"rid-7"})
+    blob = " ".join(
+        getattr(c, "children", "") for c in _walk(component) if isinstance(getattr(c, "children", None), str)
+    )
+    assert "(no failure message recorded)" in blob
+
+
+def test_jobs_empty_state_when_filters_match_nothing():
+    jobs = [_job(status="completed", run_id="c")]
+    component = render_jobs_section(_payload(jobs), status_filter=["failed"])
+    assert _has_id(component, "tab-a-jobs-empty")
+    blob = " ".join(
+        getattr(c, "children", "") for c in _walk(component) if isinstance(getattr(c, "children", None), str)
+    )
+    assert "No jobs match" in blob
+    # Has a Clear button.
+    assert _has_id(component, "tab-a-clear-filters")
+
+
+def test_jobs_empty_state_when_dispatch_has_no_jobs():
+    component = render_jobs_section(_payload([]))
+    assert _has_id(component, "tab-a-jobs-empty-zero")
+    blob = " ".join(
+        getattr(c, "children", "") for c in _walk(component) if isinstance(getattr(c, "children", None), str)
+    )
+    assert "No jobs queued" in blob
+    # No clear button when there are zero jobs at all.
+    assert not _has_id(component, "tab-a-clear-filters")
