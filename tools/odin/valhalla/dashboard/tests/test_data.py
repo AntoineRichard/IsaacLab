@@ -171,3 +171,93 @@ def test_load_hardware_returns_none_when_missing(tmp_path):
     _write_dispatch(tmp_path, "20260427-141302")
     layer = DataLayer(tmp_path)
     assert layer.load_hardware("20260427-141302") is None
+
+
+def _write_bundle(dispatch_dir: Path, run_id: str, *, hardware: dict | None = None) -> Path:
+    bundle = dispatch_dir / run_id
+    bundle.mkdir(parents=True, exist_ok=True)
+    training = {"schema_version": "1.0", "hardware": hardware} if hardware else {"schema_version": "1.0"}
+    (bundle / "training.json").write_text(json.dumps(training))
+    return bundle
+
+
+def test_lookup_hardware_returns_first_hit(tmp_path):
+    """First newer dispatch wins when both have a bundle for the host."""
+    older = _write_dispatch(
+        tmp_path,
+        "20260424-160119",
+        jobs=[{"run_id": "old-r1", "status": "completed", "assigned_to": "v1"}],
+    )
+    _write_bundle(
+        older,
+        "old-r1",
+        hardware={
+            "hostname": "Host-Old",
+            "gpu_devices": [{"name": "NVIDIA L40", "mem_gb": 44.32, "compute_cap": "8.9"}],
+            "cpu_name": "Xeon",
+            "cpu_count": 16,
+            "ram_gb": 62.0,
+        },
+    )
+    newer = _write_dispatch(
+        tmp_path,
+        "20260427-141302",
+        jobs=[{"run_id": "new-r1", "status": "completed", "assigned_to": "v1"}],
+    )
+    _write_bundle(
+        newer,
+        "new-r1",
+        hardware={
+            "hostname": "Host-New",
+            "gpu_devices": [{"name": "NVIDIA L40", "mem_gb": 44.32, "compute_cap": "8.9"}],
+            "cpu_name": "Xeon",
+            "cpu_count": 16,
+            "ram_gb": 62.79,
+        },
+    )
+    layer = DataLayer(tmp_path)
+    info = layer.lookup_hardware("v1")
+    assert info is not None
+    assert info.hostname == "Host-New"
+    assert info.sourced_from == "20260427-141302/new-r1"
+    assert info.gpu_devices[0]["name"] == "NVIDIA L40"
+
+
+def test_lookup_hardware_returns_none_when_unknown(tmp_path):
+    """Host that never ran any bundle → None."""
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    assert layer.lookup_hardware("never-seen") is None
+
+
+def test_lookup_hardware_skips_bundles_without_hardware_block(tmp_path):
+    """training.json without .hardware → skipped; falls through to next."""
+    older = _write_dispatch(
+        tmp_path,
+        "20260424-160119",
+        jobs=[{"run_id": "old-r1", "status": "completed", "assigned_to": "v1"}],
+    )
+    _write_bundle(
+        older,
+        "old-r1",
+        hardware={
+            "hostname": "Host-Old",
+            "gpu_devices": [],
+            "cpu_name": "Xeon",
+            "cpu_count": 8,
+            "ram_gb": 32.0,
+        },
+    )
+    newer = _write_dispatch(
+        tmp_path,
+        "20260427-141302",
+        jobs=[{"run_id": "new-r1", "status": "completed", "assigned_to": "v1"}],
+    )
+    _write_bundle(newer, "new-r1", hardware=None)  # no .hardware block
+
+    layer = DataLayer(tmp_path)
+    info = layer.lookup_hardware("v1")
+    assert info is not None
+    # Newer bundle had no hardware → fell through to older.
+    assert info.hostname == "Host-Old"
+    assert info.sourced_from == "20260424-160119/old-r1"

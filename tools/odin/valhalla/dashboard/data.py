@@ -113,6 +113,47 @@ class DataLayer:
             return None
         return json.loads(path.read_text())
 
+    # -- cross-dispatch lookup ----------------------------------------------
+
+    def lookup_hardware(self, host: str) -> HardwareInfo | None:
+        """Walk dispatches newest-first; return the first hardware block
+        from any bundle whose ``assigned_to == host``.
+
+        Used as a fall-back when a dispatch's own ``hardware.json`` is
+        missing or doesn't list the host (e.g. for pre-feature dispatches).
+        """
+        for summary in self.list_dispatches():
+            try:
+                payload = self.load_dispatch(summary.dispatch_id)
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+            jobs = payload.get("jobs", []) or []
+            for job in jobs:
+                if job.get("assigned_to") != host:
+                    continue
+                run_id = job.get("run_id")
+                if not run_id:
+                    continue
+                training_path = self._runs_root / summary.dispatch_id / run_id / "training.json"
+                if not training_path.exists():
+                    continue
+                try:
+                    training = json.loads(training_path.read_text())
+                except json.JSONDecodeError:
+                    continue
+                hw = training.get("hardware")
+                if not hw:
+                    continue
+                return HardwareInfo(
+                    hostname=str(hw.get("hostname", "")),
+                    gpu_devices=list(hw.get("gpu_devices") or []),
+                    cpu_name=str(hw.get("cpu_name", "")),
+                    cpu_count=int(hw.get("cpu_count", 0)),
+                    ram_gb=float(hw.get("ram_gb", 0.0)),
+                    sourced_from=f"{summary.dispatch_id}/{run_id}",
+                )
+        return None
+
 
 def _summary_from_dispatch(payload: dict[str, Any]) -> DispatchSummary:
     jobs = payload.get("jobs", []) or []
