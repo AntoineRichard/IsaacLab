@@ -119,3 +119,39 @@ def _is_redirect_to(component, expected_href: str) -> bool:
             if getattr(c, "href", None) == expected_href and getattr(c, "refresh", False):
                 return True
     return False
+
+
+def test_placeholder_mentions_target_spec(tmp_path):
+    """Placeholder text names which spec implements the tab."""
+    _write_dispatch(tmp_path, "20260427-141302")
+    from tools.odin.valhalla.dashboard.data import DataLayer
+
+    data = DataLayer(tmp_path)
+    component = route_pathname("/20260427-141302/task-drilldown", data)
+    blobs = [c.children for c in _walk(component) if isinstance(getattr(c, "children", None), str)]
+    text = " ".join(blobs)
+    assert "Spec 2" in text
+
+
+def test_real_tab_module_overrides_placeholder(tmp_path, monkeypatch):
+    """If `tabs/dispatch_fleet.py` exists with render(), it's used in place of placeholder."""
+    import sys
+    import types
+
+    fake_module = types.ModuleType("tools.odin.valhalla.dashboard.tabs.dispatch_fleet")
+
+    def _render(dispatch_id, tab_id):
+        from dash import html
+
+        return html.Div(id="real-tab-a", children=[html.P(f"Real Tab A for {dispatch_id}")])
+
+    fake_module.render = _render
+    monkeypatch.setitem(sys.modules, "tools.odin.valhalla.dashboard.tabs.dispatch_fleet", fake_module)
+
+    _write_dispatch(tmp_path, "20260427-141302")
+    from tools.odin.valhalla.dashboard.data import DataLayer
+
+    data = DataLayer(tmp_path)
+    component = route_pathname("/20260427-141302/dispatch-fleet", data)
+    assert _has_id(component, "real-tab-a")
+    assert not _has_id(component, "tab-placeholder")

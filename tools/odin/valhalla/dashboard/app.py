@@ -151,10 +151,24 @@ def _not_found(pathname: str) -> html.Div:
 def _render_tab(dispatch_id: str, tab_id: str, data: DataLayer) -> html.Div:
     """Render the tab body for /<id>/<tab_id>.
 
-    Spec 0 returns the placeholder for every tab. Tab-specific specs (1/2/3)
-    add their own modules under ``dashboard/tabs/`` that override this via
-    a registry; but Spec 0 doesn't depend on that wiring being present.
+    Looks for a real tab module under ``tools.odin.valhalla.dashboard.tabs``
+    matching ``tab_id``; falls back to the placeholder when the module is
+    absent. Specs 1/2/3 add their modules; Spec 0 only ships ``_placeholder``.
     """
+    import importlib
+
+    module_name = {
+        "dispatch-fleet": "tools.odin.valhalla.dashboard.tabs.dispatch_fleet",
+        "task-drilldown": "tools.odin.valhalla.dashboard.tabs.task_drilldown",
+        "startup": "tools.odin.valhalla.dashboard.tabs.startup",
+    }.get(tab_id)
+    if module_name is not None:
+        try:
+            tab_module = importlib.import_module(module_name)
+            if hasattr(tab_module, "render"):
+                return tab_module.render(dispatch_id, tab_id)
+        except ModuleNotFoundError:
+            pass
     from tools.odin.valhalla.dashboard.tabs import _placeholder
 
     return _placeholder.render(dispatch_id, tab_id)
