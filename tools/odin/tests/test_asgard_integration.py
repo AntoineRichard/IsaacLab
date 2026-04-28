@@ -300,6 +300,143 @@ def test_native_match_runs_unsupported_pair_routes_to_skipped(tmp_path: Path, st
 
     reloaded = read_dispatch_state(dispatch_dir)
     assert reloaded is not None
-    assert reloaded.schema_version == "1.2"
+    assert reloaded.schema_version == "1.3"
     assert len(reloaded.skipped) == 2
     assert reloaded.skipped[0].native_backend == "physx"
+
+
+@pytest.fixture
+def stub_ssh_runner_first_job_nvml(monkeypatch, tmp_path: Path):
+    """Like ``stub_ssh_runner``, but the FIRST docker-exec call per host fails
+    with NVML stderr; subsequent calls succeed and materialise a valid bundle.
+
+    Yields the ``seen_per_host`` counter so the test can assert that the second
+    attempt landed on the same host after a successful recovery.
+    """
+    from tools.odin.asgard import worker as worker_mod
+
+    real_build = worker_mod._build_docker_exec_cmd
+    seen_per_host: dict[str, int] = {}
+
+    def _fake_build(host: ValkyrieConfig, job) -> str:
+        seen = seen_per_host.get(host.host, 0)
+        seen_per_host[host.host] = seen + 1
+        if seen == 0:
+            # First call on this host: emit a recognised NVML signature on stderr
+            # and exit non-zero. Worker._classify maps this to gpu_lost.
+            return "echo 'Failed to initialize NVML: Unknown Error' 1>&2 && exit 1"
+        # Subsequent calls: materialise a valid bundle and exit 0.
+        bundle_dir = f"{host.isaaclab_path}/odin_runs/{job.bundle_dir_name}"
+        manifest = {
+            "schema_version": "1.0",
+            "phases": {"training": {"status": "completed"}, "startup": {"status": "completed"}},
+        }
+        training = {"schema_version": "1.0"}
+        startup = {"schema_version": "1.0"}
+        manifest_s = json.dumps(manifest).replace("'", r"\'")
+        training_s = json.dumps(training).replace("'", r"\'")
+        startup_s = json.dumps(startup).replace("'", r"\'")
+        return (
+            f"mkdir -p {bundle_dir} && "
+            f"printf '%s' '{manifest_s}' > {bundle_dir}/manifest.json && "
+            f"printf '%s' '{training_s}' > {bundle_dir}/training.json && "
+            f"printf '%s' '{startup_s}' > {bundle_dir}/startup.json"
+        )
+
+    monkeypatch.setattr(worker_mod, "_build_docker_exec_cmd", _fake_build)
+    yield seen_per_host
+    monkeypatch.setattr(worker_mod, "_build_docker_exec_cmd", real_build)
+
+
+def test_loopback_dispatch_recovers_from_gpu_lost(
+    tmp_path: Path,
+    stub_ssh_runner_first_job_nvml,
+    stub_provisioner,
+    monkeypatch,
+):
+    """End-to-end: host's first job emits NVML stderr → ``_classify`` flags
+    ``gpu_lost`` → fake ``recover_valkyrie_gpu`` returns ``recovered=True`` →
+    second attempt completes the job. Final ``dispatch.json`` shows job
+    completed, attempts==2, and ``fleet[host].last_error == 'gpu_lost: recovered'``.
+    """
+    if not _ssh_localhost_works():
+        pytest.skip("ssh localhost does not work without a password; skipping integration test")
+
+    from tools.odin.asgard import worker as worker_mod
+    from tools.odin.asgard.recovery import RecoveryResult
+
+    recover_calls: list[str] = []
+
+    def _fake_recover(host, *, ssh):
+        recover_calls.append(host.host)
+        return RecoveryResult(
+            host=host.host,
+            container_name=host.container_name,
+            attempted=True,
+            recovered=True,
+            duration_s=10.0,
+            message="recovered_via_container_restart",
+            details={},
+        )
+
+    monkeypatch.setattr(worker_mod, "recover_valkyrie_gpu", _fake_recover)
+
+    # Build a one-row env list (mirror of the success-path test above).
+    el = EnvList()
+    el.groups["direct/ant"] = [
+        EnvEntry(
+            task_id="Isaac-Ant-Direct-v0",
+            entry_point="isaaclab_tasks.direct.ant:AntEnv",
+            env_cfg_entry_point="isaaclab_tasks.direct.ant.ant_env_cfg:AntEnvCfg",
+            group="direct/ant",
+            has_rsl_rl=True,
+            has_skrl=True,
+            has_rl_games=False,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=10,
+            keep=True,
+            status="current",
+        )
+    ]
+    physx_yaml = tmp_path / "physx.yaml"
+    write_env_list(physx_yaml, el, generator="test")
+
+    repo_root = Path.cwd()
+    host = ValkyrieConfig(
+        host="localhost",
+        ssh_user=os.environ.get("USER", "root"),
+        isaaclab_path=str(repo_root),
+    )
+    fleet = Fleet(fleet_name="loopback-recovery", hosts=[host])
+    dispatch_dir = tmp_path / "odin_runs" / "20260427-recover"
+    dispatch_dir.mkdir(parents=True)
+
+    state = run_dispatch(
+        fleet=fleet,
+        physx_yaml=physx_yaml,
+        newton_yaml=None,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42], per_job_timeout_s=60, skip_aggregate=True),
+        ssh=ShellSSHRunner(),
+        rsync=ShellRsyncRunner(),
+    )
+
+    # The job recovered and completed on its second attempt.
+    assert len(state.jobs) == 1
+    assert state.jobs[0].status == "completed", f"job failed: {state.jobs[0].failure}"
+    assert state.jobs[0].attempts == 2
+    fleet_entry = next(f for f in state.fleet if f.host == "localhost")
+    assert fleet_entry.last_error == "gpu_lost: recovered"
+    assert recover_calls == ["localhost"]
+
+    # On-disk dispatch.json mirrors the in-memory state.
+    dj = json.loads((dispatch_dir / "dispatch.json").read_text())
+    assert dj["jobs"][0]["status"] == "completed"
+    assert dj["jobs"][0]["attempts"] == 2
+    on_disk_fleet = next(f for f in dj["fleet"] if f["host"] == "localhost")
+    assert on_disk_fleet["last_error"] == "gpu_lost: recovered"
+
+    # Bundle was pulled back on the recovered attempt.
+    bundle = dispatch_dir / state.jobs[0].bundle_dir_name
+    assert (bundle / "manifest.json").exists()
