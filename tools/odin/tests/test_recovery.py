@@ -50,8 +50,8 @@ def _fail(stderr: str, exit_code: int = 1) -> SSHResult:
 def test_recovery_happy_path():
     ssh = _ScriptedSSH(
         responses=[
-            _ok("isaac-lab-base\n"),                         # docker restart
-            _ok("running\n"),                                # docker inspect (1st poll)
+            _ok("isaac-lab-base\n"),  # docker restart
+            _ok("running\n"),  # docker inspect (1st poll)
             _ok("GPU 0: NVIDIA A100 (UUID: GPU-abc...)\n"),  # nvidia-smi -L
         ]
     )
