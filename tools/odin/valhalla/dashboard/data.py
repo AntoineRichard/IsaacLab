@@ -196,6 +196,43 @@ class DataLayer:
                 break
         return matches
 
+    # -- per-bundle reads ---------------------------------------------------
+
+    def load_training(self, dispatch_id: str, run_id: str) -> dict[str, Any] | None:
+        """Read ``<runs_root>/<dispatch_id>/<run_id>/training.json``.
+
+        Returns ``None`` when the file is absent (failed bundle, pulled-in-progress, etc.).
+        """
+        path = self._runs_root / dispatch_id / run_id / "training.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+
+    def load_startup(self, dispatch_id: str, run_id: str) -> dict[str, Any] | None:
+        """Read ``<runs_root>/<dispatch_id>/<run_id>/startup.json``.
+
+        Returns ``None`` when the file is absent.
+        """
+        path = self._runs_root / dispatch_id / run_id / "startup.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+
+    # -- cache control ------------------------------------------------------
+
+    def invalidate(self, dispatch_id: str | None = None) -> None:
+        """Drop cached state for ``dispatch_id`` (or all if ``None``).
+
+        Callers (notably Tab A's poll on the live → done transition) call
+        this before re-reading so the freshly-written aggregate.json /
+        hardware.json is picked up. Spec 0 caches nothing yet — Specs 1+
+        wrap reads in :func:`functools.lru_cache` and add cache-clear
+        plumbing here. Defined now so callers don't need to be edited
+        when caching arrives.
+        """
+        # Intentionally empty in Spec 0. See docstring.
+        return
+
 
 def _summary_from_dispatch(payload: dict[str, Any]) -> DispatchSummary:
     jobs = payload.get("jobs", []) or []

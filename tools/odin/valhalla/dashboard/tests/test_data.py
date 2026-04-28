@@ -348,3 +348,53 @@ def test_trend_trims_to_n(tmp_path):
     layer = DataLayer(tmp_path)
     ids = layer.trend_dispatches_for("20260426-000000", "Isaac-Ant-Direct-v0", "rsl_rl", "physx", n=2)
     assert ids == ["20260426-000000", "20260425-000000"]
+
+
+def test_load_training_returns_payload(tmp_path):
+    d = _write_dispatch(tmp_path, "20260427-141302")
+    _write_bundle(
+        d,
+        "r1",
+        hardware={
+            "hostname": "h",
+            "gpu_devices": [],
+            "cpu_name": "x",
+            "cpu_count": 1,
+            "ram_gb": 1.0,
+        },
+    )
+    layer = DataLayer(tmp_path)
+    payload = layer.load_training("20260427-141302", "r1")
+    assert payload is not None
+    assert payload["schema_version"] == "1.0"
+
+
+def test_load_training_returns_none_when_missing(tmp_path):
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    assert layer.load_training("20260427-141302", "r-missing") is None
+
+
+def test_load_startup_returns_payload(tmp_path):
+    d = _write_dispatch(tmp_path, "20260427-141302")
+    bundle = d / "r1"
+    bundle.mkdir()
+    (bundle / "startup.json").write_text(json.dumps({"schema_version": "1.0", "phases": {}}))
+    layer = DataLayer(tmp_path)
+    payload = layer.load_startup("20260427-141302", "r1")
+    assert payload is not None
+    assert payload["schema_version"] == "1.0"
+
+
+def test_load_startup_returns_none_when_missing(tmp_path):
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    assert layer.load_startup("20260427-141302", "r-missing") is None
+
+
+def test_invalidate_is_callable(tmp_path):
+    """Smoke test: invalidate() with and without dispatch_id is a no-op
+    on disk but must not raise."""
+    layer = DataLayer(tmp_path)
+    layer.invalidate()
+    layer.invalidate("20260427-141302")
