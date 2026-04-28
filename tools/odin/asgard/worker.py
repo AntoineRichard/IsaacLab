@@ -48,6 +48,16 @@ def _utc_now_iso() -> str:
 # found, daemon unreachable). Treat those as infrastructure, not hugin_crash.
 _INFRASTRUCTURE_DOCKER_EXIT_CODES = {125, 126, 127}
 
+# GPU-loss stderr signatures recognised by ``_classify``.  Worker emits
+# FailureInfo(kind="gpu_lost") when the training process exited non-zero
+# AND its stderr contains any of these strings.  Recovery (T8) is then
+# attempted via container restart before retrying on the same host.
+_GPU_LOST_SIGNATURES = (
+    "Failed to initialize NVML",
+    "CUDA error: no CUDA-capable device is detected",
+    "Vulkan ERROR_INCOMPATIBLE_DRIVER",
+)
+
 
 def _build_docker_exec_cmd(host: ValkyrieConfig, job: JobEntry) -> str:
     """Return the remote shell command to run Hugin/Munin inside the container.
@@ -269,6 +279,15 @@ class ValkyrieWorker(threading.Thread):
             )
         if r.exit_code != 0:
             stderr_text = r.stderr or ""
+            if any(sig in stderr_text for sig in _GPU_LOST_SIGNATURES):
+                return FailureInfo(
+                    kind="gpu_lost",
+                    message="GPU-loss signature in stderr",
+                    details={
+                        "exit_code": r.exit_code,
+                        "log_tail_path": str(ssh_tail.relative_to(self._dispatch_dir)),
+                    },
+                )
             if "preset_unsupported:" in stderr_text:
                 return FailureInfo(
                     kind="preset_unsupported",

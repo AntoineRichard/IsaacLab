@@ -332,3 +332,224 @@ def test_preferred_not_fallback_no_other_worker(tmp_path: Path):
     transitions = [e.transition for e in events]
     assert "running" in transitions
     assert "completed" in transitions
+
+
+def test_classify_gpu_lost_signature_nvml(tmp_path):
+    """Stderr containing 'Failed to initialize NVML' → kind='gpu_lost'."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    worker = ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=queue.Queue(),
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(),
+        ssh=None,
+        rsync=None,
+        shutdown_event=threading.Event(),
+    )
+    job = JobEntry(
+        run_id="rsl-rl_physx_X_seed42",
+        task_id="X",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_X_seed42",
+    )
+    ssh_tail = tmp_path / "rsl-rl_physx_X_seed42" / "logs" / "ssh-tail.log"
+    ssh_tail.parent.mkdir(parents=True, exist_ok=True)
+    ssh_tail.write_text("")
+    r = SSHResult(
+        exit_code=1,
+        stdout="",
+        stderr="Failed to initialize NVML: Unknown Error\n",
+        duration_s=10.0,
+    )
+    failure = worker._classify(r, job, ssh_tail)
+    assert failure is not None
+    assert failure.kind == "gpu_lost"
+    assert "GPU-loss signature" in failure.message
+
+
+def test_classify_gpu_lost_signature_cuda(tmp_path):
+    """Stderr containing 'CUDA error: no CUDA-capable device' → kind='gpu_lost'."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    worker = ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=queue.Queue(),
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(),
+        ssh=None,
+        rsync=None,
+        shutdown_event=threading.Event(),
+    )
+    job = JobEntry(
+        run_id="rsl-rl_physx_Y_seed42",
+        task_id="Y",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_Y_seed42",
+    )
+    ssh_tail = tmp_path / "rsl-rl_physx_Y_seed42" / "logs" / "ssh-tail.log"
+    ssh_tail.parent.mkdir(parents=True, exist_ok=True)
+    ssh_tail.write_text("")
+    r = SSHResult(
+        exit_code=1,
+        stdout="",
+        stderr="RuntimeError: CUDA error: no CUDA-capable device is detected\n",
+        duration_s=10.0,
+    )
+    failure = worker._classify(r, job, ssh_tail)
+    assert failure is not None
+    assert failure.kind == "gpu_lost"
+
+
+def test_classify_gpu_lost_signature_vulkan(tmp_path):
+    """Stderr containing 'Vulkan ERROR_INCOMPATIBLE_DRIVER' → kind='gpu_lost'."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    worker = ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=queue.Queue(),
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(),
+        ssh=None,
+        rsync=None,
+        shutdown_event=threading.Event(),
+    )
+    job = JobEntry(
+        run_id="rsl-rl_physx_Z_seed42",
+        task_id="Z",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_Z_seed42",
+    )
+    ssh_tail = tmp_path / "rsl-rl_physx_Z_seed42" / "logs" / "ssh-tail.log"
+    ssh_tail.parent.mkdir(parents=True, exist_ok=True)
+    ssh_tail.write_text("")
+    r = SSHResult(
+        exit_code=1,
+        stdout="",
+        stderr="[error] Vulkan ERROR_INCOMPATIBLE_DRIVER: cannot create instance\n",
+        duration_s=10.0,
+    )
+    failure = worker._classify(r, job, ssh_tail)
+    assert failure is not None
+    assert failure.kind == "gpu_lost"
+
+
+def test_classify_no_false_positive_on_success(tmp_path):
+    """Exit 0 + signature in stderr (warning) → _classify returns None."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    worker = ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=queue.Queue(),
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(),
+        ssh=None,
+        rsync=None,
+        shutdown_event=threading.Event(),
+    )
+    job = JobEntry(
+        run_id="rsl-rl_physx_OK_seed42",
+        task_id="OK",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_OK_seed42",
+    )
+    ssh_tail = tmp_path / "rsl-rl_physx_OK_seed42" / "logs" / "ssh-tail.log"
+    ssh_tail.parent.mkdir(parents=True, exist_ok=True)
+    ssh_tail.write_text("")
+    r = SSHResult(
+        exit_code=0,
+        stdout="...",
+        stderr="warning: Failed to initialize NVML (recoverable)\n",
+        duration_s=10.0,
+    )
+    failure = worker._classify(r, job, ssh_tail)
+    assert failure is None
+
+
+def test_classify_timeout_wins_over_gpu_signature(tmp_path):
+    """timed_out=True + stderr has CUDA error → kind='timeout'."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    worker = ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=queue.Queue(),
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(per_job_timeout_s=14400),
+        ssh=None,
+        rsync=None,
+        shutdown_event=threading.Event(),
+    )
+    job = JobEntry(
+        run_id="rsl-rl_physx_TO_seed42",
+        task_id="TO",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_TO_seed42",
+    )
+    ssh_tail = tmp_path / "rsl-rl_physx_TO_seed42" / "logs" / "ssh-tail.log"
+    ssh_tail.parent.mkdir(parents=True, exist_ok=True)
+    ssh_tail.write_text("")
+    r = SSHResult(
+        exit_code=-15,
+        stdout="",
+        stderr="CUDA error: no CUDA-capable device is detected\n",
+        duration_s=14400.0,
+    )
+    r.timed_out = True
+    failure = worker._classify(r, job, ssh_tail)
+    assert failure is not None
+    assert failure.kind == "timeout"
