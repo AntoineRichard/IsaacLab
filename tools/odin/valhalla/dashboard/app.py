@@ -56,6 +56,32 @@ def _register_callbacks(app: dash.Dash, data: DataLayer) -> None:
     def _on_url(pathname: str):
         return route_pathname(pathname or "/", data)
 
+    _register_tab_callbacks(app, data)
+
+
+def _register_tab_callbacks(app: dash.Dash, data: DataLayer) -> None:
+    """Walk the three known tab module names; call register(app, data) if present.
+
+    Spec 0's placeholder has no register(); Specs 1/2/3 add modules that wire
+    their dcc.Interval / pattern-matching callbacks at app startup. Importing
+    a missing module is silently OK — that just means the tab spec hasn't
+    landed yet.
+    """
+    import importlib
+
+    for module_name in (
+        "tools.odin.valhalla.dashboard.tabs.dispatch_fleet",
+        "tools.odin.valhalla.dashboard.tabs.task_drilldown",
+        "tools.odin.valhalla.dashboard.tabs.startup",
+    ):
+        try:
+            tab_module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        register_fn = getattr(tab_module, "register", None)
+        if register_fn is not None:
+            register_fn(app, data)
+
 
 def route_pathname(pathname: str, data: DataLayer):
     """Map a URL pathname to the Dash component tree to render at /page-content.

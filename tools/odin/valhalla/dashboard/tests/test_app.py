@@ -155,3 +155,29 @@ def test_real_tab_module_overrides_placeholder(tmp_path, monkeypatch):
     component = route_pathname("/20260427-141302/dispatch-fleet", data)
     assert _has_id(component, "real-tab-a")
     assert not _has_id(component, "tab-placeholder")
+
+
+def test_create_app_calls_tab_register_when_present(monkeypatch, tmp_path):
+    """If a tab module exposes register(), create_app calls it once during startup."""
+    import sys
+    import types
+
+    fake_module = types.ModuleType("tools.odin.valhalla.dashboard.tabs.dispatch_fleet")
+    register_calls: list[tuple] = []
+
+    def _register(app, data):
+        register_calls.append((app, data))
+
+    fake_module.register = _register
+    monkeypatch.setitem(sys.modules, "tools.odin.valhalla.dashboard.tabs.dispatch_fleet", fake_module)
+
+    app = create_app(tmp_path)
+    assert len(register_calls) == 1
+    registered_app, _registered_data = register_calls[0]
+    assert registered_app is app
+
+
+def test_create_app_skips_tab_register_when_absent(tmp_path):
+    """If a tab module has no register() (e.g., Spec 0's _placeholder), startup must not raise."""
+    app = create_app(tmp_path)
+    assert app is not None
