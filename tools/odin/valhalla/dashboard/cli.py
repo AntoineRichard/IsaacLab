@@ -90,7 +90,14 @@ def main(argv: list[str] | None = None) -> int:
     if not ns.no_browser:
         webbrowser.open(url)
     try:
-        run = getattr(app, "run_server", None) or app.run
+        # dash 4.x renamed `run_server` to `run` and raises
+        # ObsoleteAttributeException (not AttributeError) on the old name,
+        # so a plain getattr() with a default still raises.  Catch broadly
+        # to support both 2.x and 4.x.
+        try:
+            run = app.run_server  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            run = app.run
         run(host=ns.host, port=ns.port, debug=ns.debug)
     except OSError as exc:
         if "in use" in str(exc).lower() or "Address already in use" in str(exc):
