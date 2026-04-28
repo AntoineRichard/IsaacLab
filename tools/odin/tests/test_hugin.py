@@ -157,3 +157,50 @@ def test_hugin_honors_run_id_override(tmp_path, monkeypatch):
     # No auto-generated run_id sibling directory.
     siblings = [d for d in os.listdir(bundle_root) if d != "dispatched-run-id-xyz"]
     assert siblings == [], f"unexpected sibling bundle dirs: {siblings}"
+
+
+def test_hugin_silent_exit_zero_no_output_marks_failed(tmp_path, monkeypatch):
+    """Subprocess exits 0 but writes no output JSON → phase status='failed'."""
+
+    def _silent_exit_zero(cmd, *args, **kwargs):
+        # Do NOT create the --schema_v1_output file.
+        class R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return R()
+
+    bundle_root = str(tmp_path)
+    monkeypatch.setattr(hugin_run, "_subprocess_run", _silent_exit_zero)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hugin",
+            "--task",
+            "Isaac-Ant-Direct-v0",
+            "--backend",
+            "physx",
+            "--seed",
+            "42",
+            "--num_envs",
+            "64",
+            "--max_iterations",
+            "5",
+            "--runs_root",
+            bundle_root,
+        ],
+    )
+    with pytest.raises(SystemExit) as ei:
+        hugin_run.main()
+    # Hugin exits non-zero because both phases were promoted to failed.
+    assert ei.value.code != 0
+
+    # Manifest should reflect the failure.
+    bundles = [d for d in os.listdir(bundle_root) if d.startswith("rsl-rl_physx_")]
+    assert len(bundles) == 1
+    bundle = os.path.join(bundle_root, bundles[0])
+    with open(os.path.join(bundle, "manifest.json")) as f:
+        m = json.load(f)
+    assert m["phases"]["training"]["status"] == "failed"
+    assert m["phases"]["training"]["exit_code"] != 0
