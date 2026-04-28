@@ -13,7 +13,7 @@ from dash import dcc, html
 
 from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.filters import filter_jobs
 
-__all__ = ["render_jobs_section"]
+__all__ = ["render_filter_row", "render_jobs_rows", "render_jobs_section"]
 
 
 _STATUS_OPTIONS = [
@@ -117,6 +117,81 @@ def render_jobs_section(
     return html.Div(
         id="tab-a-jobs-section-content",
         children=[_filter_row(status_filter, kind_filter, task_text), table],
+    )
+
+
+def render_filter_row(status_filter=None, kind_filter=None, task_text=""):
+    """Public alias of :func:`_filter_row` — used by the static layout so the
+    filter components exist at cold mount (callbacks reference their values
+    by id; without this they wouldn't be in the DOM yet)."""
+    return _filter_row(status_filter, kind_filter, task_text)
+
+
+def render_jobs_rows(
+    dispatch_payload: dict,
+    *,
+    status_filter: list[str] | None = None,
+    kind_filter: list[str] | None = None,
+    task_text: str = "",
+    expanded_run_ids: set[str] | None = None,
+    ssh_tail_store: dict[str, list[str]] | None = None,
+):
+    """Return just the rows portion (table-or-empty) of the jobs section.
+
+    Callable used by the live ``update_jobs`` callback — the filter row is
+    static (rendered once in the layout) so it doesn't get re-rendered each
+    tick (which would wipe filter state).
+    """
+    jobs = dispatch_payload.get("jobs", []) or []
+    expanded_run_ids = expanded_run_ids or set()
+    ssh_tail_store = ssh_tail_store or {}
+
+    if not jobs:
+        return html.Div(
+            id="tab-a-jobs-empty-zero",
+            className="tab-a-empty-state",
+            children=[html.P("No jobs queued for this dispatch yet.")],
+        )
+
+    visible = filter_jobs(jobs, status_filter=status_filter, kind_filter=kind_filter, task_text=task_text)
+
+    if not visible:
+        return html.Div(
+            id="tab-a-jobs-empty",
+            className="tab-a-empty-state",
+            children=[
+                html.P("No jobs match the current filters."),
+                html.Button(
+                    "Clear",
+                    id="tab-a-clear-filters",
+                    n_clicks=0,
+                    className="tab-a-clear-button",
+                ),
+            ],
+        )
+
+    header = html.Tr(
+        children=[
+            html.Th("Task"),
+            html.Th("Framework × Backend"),
+            html.Th("Seed"),
+            html.Th("Status"),
+            html.Th("Failure"),
+            html.Th("Host"),
+            html.Th("Started / Ended"),
+        ]
+    )
+    body_rows: list = []
+    for j in visible:
+        body_rows.append(_data_row(j))
+        if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
+            body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
+    return html.Table(
+        className="tab-a-jobs-table",
+        children=[
+            html.Thead(children=[header]),
+            html.Tbody(id="tab-a-jobs-rows", children=body_rows),
+        ],
     )
 
 

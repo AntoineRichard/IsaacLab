@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dash import dcc, html
 
+from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.jobs_table import render_filter_row
+
 __all__ = ["build_layout"]
 
 
@@ -23,7 +25,12 @@ def build_layout(dispatch_id: str) -> html.Div:
     """Return the Tab A static layout for ``dispatch_id``.
 
     Stores carry per-page state (filters, expansion set, ssh-tail cache).
-    Slots are empty Divs that callbacks populate on every tick.
+    The filter row is rendered statically so its component IDs exist at
+    cold mount — without that, the update_jobs callback's Inputs (which
+    reference the dropdown / input values) would point to nonexistent
+    components, and Dash with ``suppress_callback_exceptions=True`` would
+    silently never fire the callback.  All other dynamic content lives in
+    empty slots populated by callbacks on every tick.
     """
     return html.Div(
         id="tab-a-root",
@@ -35,6 +42,12 @@ def build_layout(dispatch_id: str) -> html.Div:
             dcc.Store(id="tab-a-ssh-tail-store", storage_type="memory", data={}),
             html.Div(id="tab-a-header"),
             html.Div(id="tab-a-fleet-table"),
-            html.Div(id="tab-a-jobs-section"),
+            html.Div(
+                id="tab-a-jobs-section",
+                children=[
+                    render_filter_row(),
+                    html.Div(id="tab-a-jobs-rows-content"),
+                ],
+            ),
         ],
     )

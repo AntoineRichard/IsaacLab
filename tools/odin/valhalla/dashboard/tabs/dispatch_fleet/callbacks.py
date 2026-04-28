@@ -15,7 +15,7 @@ from dash import ALL, Input, Output, State
 from tools.odin.valhalla.dashboard.data import DataLayer
 from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.fleet_table import render_fleet_table
 from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.header import render_header
-from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.jobs_table import render_jobs_section
+from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.jobs_table import render_jobs_rows
 
 __all__ = ["register_callbacks"]
 
@@ -52,7 +52,7 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
             return _error_banner("Failed to render fleet table", exc)
 
     @app.callback(
-        Output("tab-a-jobs-section", "children"),
+        Output("tab-a-jobs-rows-content", "children"),
         Input("tab-a-tick", "n_intervals"),
         Input("tab-a-dispatch-id", "data"),
         Input("tab-a-status-filter", "value"),
@@ -156,7 +156,7 @@ def _compute_jobs_children(
     effective_kind = list(kind_filter or [])
     if failure_filter and failure_filter not in effective_kind:
         effective_kind.append(failure_filter)
-    return render_jobs_section(
+    return render_jobs_rows(
         payload,
         status_filter=status_filter or None,
         kind_filter=effective_kind or None,
