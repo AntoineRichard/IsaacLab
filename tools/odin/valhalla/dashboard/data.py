@@ -154,6 +154,48 @@ class DataLayer:
                 )
         return None
 
+    # -- trend axis ---------------------------------------------------------
+
+    def trend_dispatches_for(
+        self,
+        current_dispatch_id: str,
+        task: str,
+        framework: str,
+        backend: str,
+        n: int = 10,
+    ) -> list[str]:
+        """Return the N most recent dispatch_ids that:
+
+        - have a ``hardware.json`` whose fingerprint matches ``current_dispatch_id``
+          (excludes pre-feature dispatches and mismatched-hardware dispatches), AND
+        - have an ``aggregate.json`` row for ``(task, framework, backend)``.
+
+        Sorted newest-first; trimmed to ``n``.
+        """
+        current_hw = self.load_hardware(current_dispatch_id)
+        if current_hw is None:
+            return []
+        target_fingerprint = current_hw.get("fingerprint")
+        if not target_fingerprint:
+            return []
+        matches: list[str] = []
+        for summary in self.list_dispatches():
+            hw = self.load_hardware(summary.dispatch_id)
+            if hw is None or hw.get("fingerprint") != target_fingerprint:
+                continue
+            agg = self.load_aggregate(summary.dispatch_id)
+            if agg is None:
+                continue
+            rows = agg.get("rows", []) or []
+            if not any(
+                r.get("task") == task and r.get("framework") == framework and r.get("backend") == backend for r in rows
+            ):
+                continue
+            matches.append(summary.dispatch_id)
+            if len(matches) >= n:
+                break
+        return matches
+
 
 def _summary_from_dispatch(payload: dict[str, Any]) -> DispatchSummary:
     jobs = payload.get("jobs", []) or []

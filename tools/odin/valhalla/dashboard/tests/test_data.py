@@ -261,3 +261,90 @@ def test_lookup_hardware_skips_bundles_without_hardware_block(tmp_path):
     # Newer bundle had no hardware → fell through to older.
     assert info.hostname == "Host-Old"
     assert info.sourced_from == "20260424-160119/old-r1"
+
+
+def _write_aggregate_with_row(dispatch_dir: Path, *, task: str, framework: str, backend: str) -> None:
+    payload = {
+        "schema_version": "1.0",
+        "rows": [{"task": task, "framework": framework, "backend": backend, "seeds": {}}],
+    }
+    (dispatch_dir / "aggregate.json").write_text(json.dumps(payload))
+
+
+def _write_hardware(dispatch_dir: Path, fingerprint: str) -> None:
+    payload = {
+        "schema_version": "1.0",
+        "dispatch_id": dispatch_dir.name,
+        "fingerprint": fingerprint,
+        "hosts": {},
+    }
+    (dispatch_dir / "hardware.json").write_text(json.dumps(payload))
+
+
+def test_trend_filters_by_fingerprint(tmp_path):
+    """Only dispatches with matching fingerprint appear in the trend."""
+    a = _write_dispatch(tmp_path, "20260424-160119")
+    _write_aggregate_with_row(a, task="Isaac-Ant-Direct-v0", framework="rsl_rl", backend="physx")
+    _write_hardware(a, "gpu:NVIDIA-L40")
+
+    b = _write_dispatch(tmp_path, "20260425-080000")
+    _write_aggregate_with_row(b, task="Isaac-Ant-Direct-v0", framework="rsl_rl", backend="physx")
+    _write_hardware(b, "gpu:NVIDIA-A100")
+
+    c = _write_dispatch(tmp_path, "20260427-141302")
+    _write_aggregate_with_row(c, task="Isaac-Ant-Direct-v0", framework="rsl_rl", backend="physx")
+    _write_hardware(c, "gpu:NVIDIA-L40")
+
+    layer = DataLayer(tmp_path)
+    ids = layer.trend_dispatches_for("20260427-141302", "Isaac-Ant-Direct-v0", "rsl_rl", "physx", n=10)
+    assert ids == ["20260427-141302", "20260424-160119"]
+
+
+def test_trend_filters_by_task(tmp_path):
+    """Dispatches without the requested (task, framework, backend) row are excluded."""
+    a = _write_dispatch(tmp_path, "20260424-160119")
+    _write_aggregate_with_row(a, task="Isaac-Cartpole-Direct-v0", framework="rsl_rl", backend="physx")
+    _write_hardware(a, "gpu:NVIDIA-L40")
+
+    b = _write_dispatch(tmp_path, "20260427-141302")
+    _write_aggregate_with_row(b, task="Isaac-Ant-Direct-v0", framework="rsl_rl", backend="physx")
+    _write_hardware(b, "gpu:NVIDIA-L40")
+
+    layer = DataLayer(tmp_path)
+    ids = layer.trend_dispatches_for("20260427-141302", "Isaac-Ant-Direct-v0", "rsl_rl", "physx", n=10)
+    assert ids == ["20260427-141302"]
+
+
+def test_trend_excludes_pre_feature_dispatches(tmp_path):
+    """A dispatch without hardware.json is excluded from trends."""
+    a = _write_dispatch(tmp_path, "20260424-160119")
+    _write_aggregate_with_row(a, task="Isaac-Ant-Direct-v0", framework="rsl_rl", backend="physx")
+    # NO hardware.json
+
+    b = _write_dispatch(tmp_path, "20260427-141302")
+    _write_aggregate_with_row(b, task="Isaac-Ant-Direct-v0", framework="rsl_rl", backend="physx")
+    _write_hardware(b, "gpu:NVIDIA-L40")
+
+    layer = DataLayer(tmp_path)
+    ids = layer.trend_dispatches_for("20260427-141302", "Isaac-Ant-Direct-v0", "rsl_rl", "physx", n=10)
+    assert ids == ["20260427-141302"]
+
+
+def test_trend_returns_empty_when_current_has_no_hardware(tmp_path):
+    """If the current dispatch has no hardware.json, trend is empty."""
+    a = _write_dispatch(tmp_path, "20260427-141302")
+    _write_aggregate_with_row(a, task="Isaac-Ant-Direct-v0", framework="rsl_rl", backend="physx")
+    layer = DataLayer(tmp_path)
+    ids = layer.trend_dispatches_for("20260427-141302", "Isaac-Ant-Direct-v0", "rsl_rl", "physx")
+    assert ids == []
+
+
+def test_trend_trims_to_n(tmp_path):
+    """N=2 → only the two newest matches."""
+    for did in ["20260423-000000", "20260424-000000", "20260425-000000", "20260426-000000"]:
+        d = _write_dispatch(tmp_path, did)
+        _write_aggregate_with_row(d, task="Isaac-Ant-Direct-v0", framework="rsl_rl", backend="physx")
+        _write_hardware(d, "gpu:NVIDIA-L40")
+    layer = DataLayer(tmp_path)
+    ids = layer.trend_dispatches_for("20260426-000000", "Isaac-Ant-Direct-v0", "rsl_rl", "physx", n=2)
+    assert ids == ["20260426-000000", "20260425-000000"]
