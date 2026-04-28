@@ -89,12 +89,52 @@ def route_pathname(pathname: str, data: DataLayer):
 
 
 def _landing(data: DataLayer) -> html.Div:
-    """Multi-dispatch landing: minimal stub.
-
-    Spec 0 ships a real table here in Task 9; this stub satisfies the
-    routing test only.
-    """
-    return html.Div(id="landing-root", children=[html.H2("Odin dashboard"), html.Div(id="landing-table")])
+    """Multi-dispatch landing: real table of dispatches sorted newest-first."""
+    summaries = data.list_dispatches()
+    if not summaries:
+        return html.Div(
+            id="landing-root",
+            children=[
+                html.H2("Odin dashboard"),
+                html.P("No dispatches under runs_root yet. Run odin-dispatch to create one."),
+            ],
+        )
+    header = html.Tr(
+        children=[
+            html.Th("Dispatch"),
+            html.Th("Started"),
+            html.Th("Ended"),
+            html.Th("Total"),
+            html.Th("Completed"),
+            html.Th("Failed"),
+            html.Th("Pending"),
+            html.Th("Skipped"),
+            html.Th("Hosts"),
+        ],
+    )
+    rows = [
+        html.Tr(
+            children=[
+                html.Td(html.A(s.dispatch_id, href=f"/{s.dispatch_id}/")),
+                html.Td(s.started_at or "—"),
+                html.Td(s.ended_at or "—"),
+                html.Td(str(s.jobs_total)),
+                html.Td(str(s.jobs_completed)),
+                html.Td(str(s.jobs_failed)),
+                html.Td(str(s.jobs_pending)),
+                html.Td(str(s.skipped_total)),
+                html.Td(", ".join(s.hostnames) or "—"),
+            ],
+        )
+        for s in summaries
+    ]
+    return html.Div(
+        id="landing-root",
+        children=[
+            html.H2("Odin dashboard"),
+            html.Table(children=[html.Thead(children=[header]), html.Tbody(children=rows)]),
+        ],
+    )
 
 
 def _not_found(pathname: str) -> html.Div:
