@@ -56,7 +56,38 @@ def _build_layout(initial_dispatch: Path | None) -> html.Div:
         children=[
             dcc.Location(**location_kwargs),
             dcc.Store(id="active-dispatch", storage_type="memory"),
+            _build_banner(),
             html.Div(id="page-content"),
+        ],
+    )
+
+
+def _build_banner() -> html.Div:
+    """Top branding banner — NVIDIA-green stripe + ODIN wordmark + tagline.
+
+    Renders on every page (landing + per-dispatch tabs). The NVIDIA logo
+    asset lives at ``assets/nvidia-logo.svg`` and is auto-served by Dash.
+    """
+    return html.Div(
+        id="odin-banner",
+        children=[
+            html.Div(className="odin-banner-stripe"),
+            html.Div(
+                className="odin-banner-row",
+                children=[
+                    html.Img(src="/assets/nvidia-logo.svg", className="odin-banner-nvidia-logo", alt="NVIDIA"),
+                    html.Div(
+                        className="odin-banner-titles",
+                        children=[
+                            html.Div("ODIN", className="odin-banner-name"),
+                            html.Div(
+                                "IsaacLab internal training evaluation harness",
+                                className="odin-banner-tagline",
+                            ),
+                        ],
+                    ),
+                ],
+            ),
         ],
     )
 

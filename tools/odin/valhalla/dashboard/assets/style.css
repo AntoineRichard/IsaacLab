@@ -15,7 +15,53 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   font-size: 13px;
   margin: 0;
+  padding: 0;
+}
+
+#app-root > #page-content {
   padding: 16px 24px;
+}
+
+/* ---------- top branding banner ---------- */
+
+#odin-banner {
+  background: #15191e;
+  border-bottom: 1px solid #2a2e35;
+}
+.odin-banner-stripe {
+  height: 4px;
+  background: linear-gradient(90deg, #76b900 0%, #5e9300 100%);
+}
+.odin-banner-row {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 16px 24px;
+}
+.odin-banner-nvidia-logo {
+  height: 36px;
+  width: auto;
+  flex-shrink: 0;
+}
+.odin-banner-titles {
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #2a2e35;
+  padding-left: 22px;
+}
+.odin-banner-name {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #e0e0e0;
+  line-height: 1.1;
+}
+.odin-banner-tagline {
+  color: #76b900;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin-top: 4px;
 }
 
 a {
