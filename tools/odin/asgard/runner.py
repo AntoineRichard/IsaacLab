@@ -140,10 +140,10 @@ def _write_preflight(results, dispatch_dir: Path, dispatch_id: str) -> None:
 
 
 def _apply_state_event(
-    ev: StateEvent,
     state: DispatchState,
-    jobs_by_id: dict[str, JobEntry],
-    verbose: bool,
+    ev: StateEvent,
+    jobs_by_id: dict[str, JobEntry] | None = None,
+    verbose: bool = False,
 ) -> int:
     """Apply one worker state event to the shared :class:`DispatchState`.
 
@@ -151,49 +151,71 @@ def _apply_state_event(
     and updates the matching :class:`FleetSnapshot`.
 
     Args:
-        ev: State event emitted by a :class:`ValkyrieWorker`.
         state: Shared dispatch state to mutate.
+        ev: State event emitted by a :class:`ValkyrieWorker`.
         jobs_by_id: ``run_id → JobEntry`` lookup rebuilt by the caller.
+            When ``None``, falls back to scanning ``state.jobs``; this
+            keeps unit tests that exercise host-only transitions
+            (``recovered`` / ``host_down``) ergonomic.
         verbose: When ``True``, print per-job completion/failure lines.
 
     Returns:
         ``1`` when the event advances the "remaining" counter
         (``completed`` or ``failed``), ``0`` otherwise.
     """
-    j = jobs_by_id[ev.run_id]
+    if jobs_by_id is None:
+        jobs_by_id = {jj.run_id: jj for jj in state.jobs}
+    j = jobs_by_id.get(ev.run_id)
     if ev.transition == "running":
-        j.status = "running"
-        j.started_at = ev.started_at
-        j.assigned_to = ev.host
+        if j is not None:
+            j.status = "running"
+            j.started_at = ev.started_at
+            j.assigned_to = ev.host
         for f in state.fleet:
             if f.host == ev.host:
                 f.status = "busy"
                 f.current_run_id = ev.run_id
         return 0
     if ev.transition == "completed":
-        j.status = "completed"
-        j.ended_at = ev.ended_at
+        if j is not None:
+            j.status = "completed"
+            j.ended_at = ev.ended_at
         for f in state.fleet:
             if f.host == ev.host:
                 f.status = "idle"
                 f.current_run_id = None
-        if verbose:
+        if verbose and j is not None:
             print(f"[{_utc_now_iso()}] COMPLETE {j.run_id} on {ev.host}")
         return 1
     if ev.transition == "failed":
-        j.status = "failed"
-        j.failure = ev.failure
-        j.ended_at = ev.ended_at
+        if j is not None:
+            j.status = "failed"
+            j.failure = ev.failure
+            j.ended_at = ev.ended_at
         for f in state.fleet:
             if f.host == ev.host:
                 f.status = "idle"
                 f.current_run_id = None
                 if ev.failure is not None:
                     f.last_error = ev.failure.message
-        if verbose:
+        if verbose and j is not None:
             kind = ev.failure.kind if ev.failure else "unknown"
             print(f"[{_utc_now_iso()}] FAIL     {j.run_id} on {ev.host} (kind={kind})")
         return 1
+    if ev.transition == "recovered":
+        for f in state.fleet:
+            if f.host == ev.host:
+                f.last_error = "gpu_lost: recovered"
+        return 0
+    if ev.transition == "host_down":
+        detail = ev.failure.message if ev.failure is not None else "unknown"
+        for f in state.fleet:
+            if f.host == ev.host:
+                f.status = "down"
+                f.last_error = f"gpu_lost: recovery_failed ({detail})"
+                # current_run_id stays — worker is about to emit terminal
+                # "failed" for the in-flight job in a follow-up event.
+        return 0
     return 0
 
 
@@ -451,7 +473,7 @@ def run_dispatch(
                 write_dispatch_state(dispatch_dir, state)
                 last_write = time.monotonic()
             continue
-        remaining -= _apply_state_event(ev, state, jobs_by_id, options.verbose)
+        remaining -= _apply_state_event(state, ev, jobs_by_id, options.verbose)
         write_dispatch_state(dispatch_dir, state)
         last_write = time.monotonic()
 

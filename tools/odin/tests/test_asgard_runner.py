@@ -424,3 +424,56 @@ def test_pre_dispatch_summary_renders_native_mismatch_line(tmp_path: Path, stub_
     out = captured.out
     assert "native_backend_mismatch" in out
     assert "native: physx" in out
+
+
+def test_runner_handles_recovered_event(tmp_path):
+    """Recovered event updates fleet[host].last_error but not status."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+    from tools.odin.asgard.worker import StateEvent
+
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260427-200000",
+        started_at="2026-04-27T20:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="busy", last_error=None)],
+        jobs=[],
+    )
+    ev = StateEvent(run_id="r1", host="v1", transition="recovered")
+    runner_mod._apply_state_event(state, ev)
+    fs = next(f for f in state.fleet if f.host == "v1")
+    assert fs.status == "busy"  # unchanged
+    assert fs.last_error == "gpu_lost: recovered"
+
+
+def test_runner_handles_host_down_event(tmp_path):
+    """host_down event marks host status='down' with structured last_error."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+    from tools.odin.asgard.worker import StateEvent
+
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260427-200000",
+        started_at="2026-04-27T20:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="busy", last_error=None)],
+        jobs=[],
+    )
+    ev = StateEvent(
+        run_id="r1",
+        host="v1",
+        transition="host_down",
+        failure=FailureInfo(kind="gpu_lost", message="docker_restart_failed: daemon down"),
+    )
+    runner_mod._apply_state_event(state, ev)
+    fs = next(f for f in state.fleet if f.host == "v1")
+    assert fs.status == "down"
+    assert "gpu_lost: recovery_failed" in fs.last_error
+    assert "docker_restart_failed" in fs.last_error
