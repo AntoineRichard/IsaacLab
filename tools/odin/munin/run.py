@@ -33,26 +33,37 @@ _ISAACLAB_SH = os.path.join(_REPO_ROOT, "isaaclab.sh")
 
 
 def _run_phase(cmd: list[str], bundle_dir: str, phase_name: str, output_json: str) -> ManifestPhase:
-    """Run one subprocess phase; capture exit code, duration, and log tails on failure."""
+    """Run one subprocess phase; capture exit code, duration, and log tails on failure.
+
+    Defines "completed" as: returncode == 0 AND ``output_json`` exists. A
+    silent-exit-0 (subprocess exits 0 but writes no output) is a known
+    failure mode for Isaac Sim crashes — promote it to ``status="failed"``
+    with a derived non-zero exit code so the worker's classifier and the
+    aggregator both pick it up.
+    """
     logs_dir = os.path.join(bundle_dir, "logs")
     os.makedirs(logs_dir, exist_ok=True)
     start = datetime.now(timezone.utc)
     completed = _subprocess_run(cmd, capture_output=True)
     end = datetime.now(timezone.utc)
     duration_s = (end - start).total_seconds()
-    if completed.returncode != 0:
+    output_exists = os.path.exists(output_json)
+    if completed.returncode != 0 or not output_exists:
         status = "failed"
+        # Promote silent-exit-0 to a non-zero exit code so main() exits non-zero.
+        exit_code = completed.returncode or 1
         with open(os.path.join(logs_dir, f"{phase_name}.stderr.log"), "wb") as f:
             f.write(tail_bytes(completed.stderr))
         with open(os.path.join(logs_dir, f"{phase_name}.stdout.log"), "wb") as f:
             f.write(tail_bytes(completed.stdout))
     else:
         status = "completed"
+        exit_code = completed.returncode
     return ManifestPhase(
         file=os.path.basename(output_json),
         status=status,
         duration_s=duration_s,
-        exit_code=completed.returncode,
+        exit_code=exit_code,
     )
 
 

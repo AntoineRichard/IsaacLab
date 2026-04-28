@@ -157,3 +157,48 @@ def test_munin_honors_run_id_override(tmp_path, monkeypatch):
     assert os.path.isdir(os.path.join(bundle_root, "dispatched-run-id-xyz"))
     siblings = [d for d in os.listdir(bundle_root) if d != "dispatched-run-id-xyz"]
     assert siblings == [], f"unexpected sibling bundle dirs: {siblings}"
+
+
+def test_munin_silent_exit_zero_no_output_marks_failed(tmp_path, monkeypatch):
+    """Subprocess exits 0 but writes no output JSON → phase status='failed'."""
+
+    def _silent_exit_zero(cmd, *args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return R()
+
+    bundle_root = str(tmp_path)
+    monkeypatch.setattr(munin_run, "_subprocess_run", _silent_exit_zero)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "munin",
+            "--task",
+            "Isaac-Ant-Direct-v0",
+            "--backend",
+            "physx",
+            "--seed",
+            "42",
+            "--num_envs",
+            "64",
+            "--max_iterations",
+            "5",
+            "--runs_root",
+            bundle_root,
+        ],
+    )
+
+    with pytest.raises(SystemExit) as ei:
+        munin_run.main()
+    assert ei.value.code != 0
+
+    bundles = [d for d in os.listdir(bundle_root) if d.startswith("skrl_physx_")]
+    assert len(bundles) == 1
+    bundle = os.path.join(bundle_root, bundles[0])
+    with open(os.path.join(bundle, "manifest.json")) as f:
+        m = json.load(f)
+    assert m["phases"]["training"]["status"] == "failed"
+    assert m["phases"]["training"]["exit_code"] != 0
