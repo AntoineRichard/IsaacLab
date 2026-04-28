@@ -44,6 +44,10 @@ INSTALL_REQUIRES = [
     # livestream
     "starlette==0.49.1",
     "omniverseclient",
+    # odin dashboard
+    "dash>=2.18.0",
+    "plotly>=5.24.0",
+    "pandas>=2.0.0",
     # testing
     "pytest",
     "pytest-mock",
