@@ -24,7 +24,9 @@ class FailureInfo:
 
     - ``infrastructure``: docker / SSH transport failure (retried).
     - ``hugin_crash``: training process exited non-zero with no
-      Odin-recognised stderr signal.
+      Odin-recognised stderr signal. Also covers Hugin's silent-exit-0
+      case (returncode 0 but no output JSON), which ``_run_phase``
+      promotes to a non-zero exit before ``main()`` returns.
     - ``hugin_malformed_bundle``: SSH succeeded, rsync pulled, but the
       bundle's manifest is missing or invalid.
     - ``timeout``: SSH wall-clock timeout fired.
@@ -32,6 +34,11 @@ class FailureInfo:
       stderr line beginning ``preset_unsupported:`` — the requested
       preset doesn't exist for the task. Caught by the runtime safety
       net when yaml-stamped ``presets_available`` is stale.
+    - ``gpu_lost``: training process exited non-zero with a GPU-loss
+      signature in stderr (NVML init failure, CUDA "no device", Vulkan
+      driver mismatch). Worker attempts container-restart-based
+      recovery before retrying on the same host. Counts against
+      ``max_infrastructure_retries``.
     """
 
     kind: str
