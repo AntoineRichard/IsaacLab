@@ -160,6 +160,30 @@ Re-bootstrapping wipes and re-rsyncs — useful after long host idle (image
 cache evicted), container drift, or as a belt-and-braces maintenance
 pass. Don't re-bootstrap mid-dispatch: stop the dispatch first.
 
+## Validating CUDA across the fleet
+
+Newton (warp) workloads need at least CUDA 12.4 advertised by the host
+NVIDIA driver. `odin-cuda` checks every Valkyrie and (optionally)
+upgrades hosts that fall below the floor.
+
+```bash
+# Read-only: prints a per-host driver/cuda/status table, exits 1 if any
+# host is below floor (default 12.4).
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/asgard/cuda_install_cli.py check \
+    --fleet fleet.yaml
+
+# Upgrade hosts below floor to cuda-12-9 (driver 575 + toolkit 12.9).
+# Reboots each host. Prompts before doing anything; pass --yes to skip
+# the prompt, --force to override the running-dispatch guard.
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/asgard/cuda_install_cli.py install \
+    --fleet fleet.yaml --target 12.9
+```
+
+`install` runs the full pipeline per host: stop container → add NVIDIA
+apt repo → `apt-get install cuda-12-9` → `systemctl reboot` → wait for
+SSH → re-run `nvidia-smi` to verify driver family + CUDA floor → restart
+container. Hosts already at-or-above floor are skipped without rebooting.
+
 ## Dispatching across a fleet (T3.1 — Asgard)
 
 `tools/odin/asgard/cli.py` (the `odin-dispatch` entry point) ingests
