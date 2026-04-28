@@ -13,8 +13,14 @@ from pathlib import Path
 from tools.odin.valhalla.dashboard.data import DataLayer, DispatchSummary
 
 
-def _write_dispatch(runs_root: Path, dispatch_id: str, *, jobs: list[dict] | None = None,
-                    started_at: str = "2026-04-27T14:13:02Z", ended_at: str | None = None) -> Path:
+def _write_dispatch(
+    runs_root: Path,
+    dispatch_id: str,
+    *,
+    jobs: list[dict] | None = None,
+    started_at: str = "2026-04-27T14:13:02Z",
+    ended_at: str | None = None,
+) -> Path:
     d = runs_root / dispatch_id
     d.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -108,3 +114,60 @@ def test_list_dispatches_counts_skipped_jobs(tmp_path):
     layer = DataLayer(tmp_path)
     s = layer.list_dispatches()[0]
     assert s.skipped_total == 2
+
+
+def test_load_dispatch_returns_payload(tmp_path):
+    """load_dispatch returns the parsed dispatch.json dict."""
+    _write_dispatch(tmp_path, "20260427-141302", ended_at="2026-04-27T14:30:00Z")
+    layer = DataLayer(tmp_path)
+    payload = layer.load_dispatch("20260427-141302")
+    assert payload["dispatch_id"] == "20260427-141302"
+    assert payload["ended_at"] == "2026-04-27T14:30:00Z"
+
+
+def test_load_dispatch_raises_when_missing(tmp_path):
+    """Unknown dispatch_id raises FileNotFoundError."""
+    import pytest as _pytest
+
+    layer = DataLayer(tmp_path)
+    with _pytest.raises(FileNotFoundError):
+        layer.load_dispatch("does-not-exist")
+
+
+def test_load_aggregate_returns_payload(tmp_path):
+    d = _write_dispatch(tmp_path, "20260427-141302")
+    (d / "aggregate.json").write_text(json.dumps({"schema_version": "1.0", "rows": []}))
+    layer = DataLayer(tmp_path)
+    payload = layer.load_aggregate("20260427-141302")
+    assert payload is not None
+    assert payload["schema_version"] == "1.0"
+
+
+def test_load_aggregate_returns_none_when_missing(tmp_path):
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    assert layer.load_aggregate("20260427-141302") is None
+
+
+def test_load_hardware_returns_payload(tmp_path):
+    d = _write_dispatch(tmp_path, "20260427-141302")
+    (d / "hardware.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "dispatch_id": "20260427-141302",
+                "fingerprint": "gpu:NVIDIA-L40",
+                "hosts": {},
+            }
+        )
+    )
+    layer = DataLayer(tmp_path)
+    payload = layer.load_hardware("20260427-141302")
+    assert payload is not None
+    assert payload["fingerprint"] == "gpu:NVIDIA-L40"
+
+
+def test_load_hardware_returns_none_when_missing(tmp_path):
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    assert layer.load_hardware("20260427-141302") is None

@@ -86,6 +86,33 @@ class DataLayer:
         results.sort(key=lambda s: s.dispatch_id, reverse=True)
         return results
 
+    # -- raw JSON readers ---------------------------------------------------
+
+    def load_dispatch(self, dispatch_id: str) -> dict[str, Any]:
+        """Read ``<runs_root>/<dispatch_id>/dispatch.json``.
+
+        Raises:
+            FileNotFoundError: if the file is absent.
+        """
+        path = self._runs_root / dispatch_id / "dispatch.json"
+        if not path.exists():
+            raise FileNotFoundError(f"dispatch.json missing for {dispatch_id} at {path}")
+        return json.loads(path.read_text())
+
+    def load_aggregate(self, dispatch_id: str) -> dict[str, Any] | None:
+        """Read ``aggregate.json`` for the dispatch; ``None`` if absent."""
+        path = self._runs_root / dispatch_id / "aggregate.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+
+    def load_hardware(self, dispatch_id: str) -> dict[str, Any] | None:
+        """Read ``hardware.json`` for the dispatch; ``None`` if absent."""
+        path = self._runs_root / dispatch_id / "hardware.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+
 
 def _summary_from_dispatch(payload: dict[str, Any]) -> DispatchSummary:
     jobs = payload.get("jobs", []) or []
