@@ -105,6 +105,27 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
                 return _handle_pill_click(ident["kind"])
         return dash.no_update, dash.no_update
 
+    @app.callback(
+        Output("tab-a-expanded-run-ids", "data"),
+        Input({"type": "tab-a-expand-toggle", "run_id": ALL}, "n_clicks"),
+        State({"type": "tab-a-expand-toggle", "run_id": ALL}, "id"),
+        State("tab-a-expanded-run-ids", "data"),
+    )
+    def _on_expand_toggle(n_clicks_list, ids_list, current):
+        return _on_expand_toggle_handler(n_clicks_list, ids_list, current=current)
+
+    @app.callback(
+        Output("tab-a-ssh-tail-store", "data"),
+        Input({"type": "tab-a-ssh-tail-button", "run_id": ALL}, "n_clicks"),
+        State({"type": "tab-a-ssh-tail-button", "run_id": ALL}, "id"),
+        State("tab-a-dispatch-id", "data"),
+        State("tab-a-ssh-tail-store", "data"),
+    )
+    def _on_ssh_tail(n_clicks_list, ids_list, dispatch_id, store):
+        return _on_ssh_tail_handler(
+            n_clicks_list, ids_list, data=dispatch_id, current_store=store, runs_root=data._runs_root
+        )
+
 
 # -- pure helpers (testable without the Dash callback graph) ----------------------
 
@@ -157,3 +178,52 @@ def _error_banner(message: str, exc: Exception):
         className="tab-a-error-banner",
         children=[html.Strong(message), f": {type(exc).__name__}: {exc}"],
     )
+
+
+def _on_expand_toggle_handler(n_clicks_list, ids_list, *, current):
+    if not n_clicks_list or not any(n_clicks_list):
+        return dash.no_update
+    # Find the latest non-zero click; toggle that run_id.
+    for n, ident in zip(reversed(n_clicks_list), reversed(ids_list)):
+        if n and n > 0:
+            return _toggle_run_id(current or [], ident["run_id"])
+    return dash.no_update
+
+
+def _toggle_run_id(current: list[str], run_id: str) -> list[str]:
+    """Add ``run_id`` to ``current`` (a list) if absent; remove if present."""
+    s = set(current)
+    if run_id in s:
+        s.remove(run_id)
+    else:
+        s.add(run_id)
+    return sorted(s)
+
+
+def _on_ssh_tail_handler(n_clicks_list, ids_list, *, data, current_store, runs_root=None):
+    if not n_clicks_list or not any(n_clicks_list):
+        return dash.no_update
+    for n, ident in zip(reversed(n_clicks_list), reversed(ids_list)):
+        if n and n > 0:
+            run_id = ident["run_id"]
+            from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.ssh_tail import load_ssh_tail
+
+            new_store = dict(current_store or {})
+            if runs_root is None:
+                # Test-mode shortcut for the phantom-click test.
+                return new_store
+            new_store[run_id] = load_ssh_tail(runs_root, data, run_id)
+            return new_store
+    return dash.no_update
+
+
+def _compute_ssh_tail_store(data, dispatch_id: str, run_id: str, *, current_store: dict):
+    """Test-friendly helper: load the tail and return the new store dict.
+
+    `data` is duck-typed — only `_runs_root` is required.
+    """
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.ssh_tail import load_ssh_tail
+
+    new_store = dict(current_store or {})
+    new_store[run_id] = load_ssh_tail(data._runs_root, dispatch_id, run_id)
+    return new_store

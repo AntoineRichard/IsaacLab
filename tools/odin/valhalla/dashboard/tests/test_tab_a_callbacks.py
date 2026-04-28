@@ -165,3 +165,47 @@ def test_failure_pill_click_writes_store_and_dropdown():
     store_value, dropdown_value = _handle_pill_click("gpu_lost")
     assert store_value == "gpu_lost"
     assert dropdown_value == ["gpu_lost"]
+
+
+def test_toggle_expand_row_adds_then_removes():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.callbacks import _toggle_run_id
+
+    out = _toggle_run_id([], "X")
+    assert out == ["X"]
+
+    out = _toggle_run_id(["X"], "X")
+    assert out == []
+
+
+def test_toggle_expand_row_ignores_phantom_click():
+    """n_clicks=0 list (Dash phantom fire) returns dash.no_update."""
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    out = cb_mod._on_expand_toggle_handler([], [], current=[])
+    import dash
+
+    assert out is dash.no_update
+
+
+def test_load_ssh_tail_callback_writes_store(tmp_path):
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    log_dir = tmp_path / "d" / "Y" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "ssh-tail.log").write_text("a\nb\n")
+
+    class _Data:
+        _runs_root = tmp_path
+
+    out = cb_mod._compute_ssh_tail_store(_Data(), "d", "Y", current_store={})
+    assert out == {"Y": ["a", "b"]}
+
+
+def test_load_ssh_tail_callback_ignores_phantom_click():
+    """n_clicks=0 list (no clicks yet) returns dash.no_update."""
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    out = cb_mod._on_ssh_tail_handler([], [], data=None, current_store={})
+    assert out is dash.no_update
