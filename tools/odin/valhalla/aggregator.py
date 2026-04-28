@@ -159,6 +159,78 @@ def _classify_failure_message(job: dict) -> str:
     return str(failure.get("message", ""))
 
 
+def _write_hardware_json(dispatch_dir: Path, dispatch_payload: dict) -> None:
+    """Emit ``<dispatch_dir>/hardware.json`` for the dashboard's hardware-fingerprint trend filter.
+
+    Reads ``training.json.hardware`` from the first completed bundle per host,
+    builds a per-host map, and computes a single ``fingerprint`` from the
+    first host's first GPU. Failures are logged and swallowed — aggregator
+    must continue regardless.
+    """
+    import os
+    import tempfile
+
+    try:
+        jobs = dispatch_payload.get("jobs", []) or []
+        if not jobs:
+            # Empty dispatch — nothing to fingerprint, no warning needed.
+            return
+        seen_hosts: dict[str, dict] = {}
+        for job in jobs:
+            if job.get("status") != "completed":
+                continue
+            host = job.get("assigned_to")
+            run_id = job.get("run_id")
+            if not host or not run_id or host in seen_hosts:
+                continue
+            training_path = dispatch_dir / run_id / "training.json"
+            if not training_path.exists():
+                continue
+            try:
+                training = json.loads(training_path.read_text())
+            except json.JSONDecodeError:
+                continue
+            hw = training.get("hardware")
+            if not hw:
+                continue
+            seen_hosts[host] = {
+                "hostname": str(hw.get("hostname", "")),
+                "gpu_devices": list(hw.get("gpu_devices") or []),
+                "cpu_name": str(hw.get("cpu_name", "")),
+                "cpu_count": int(hw.get("cpu_count", 0)),
+                "ram_gb": float(hw.get("ram_gb", 0.0)),
+                "sourced_from": run_id,
+            }
+        if not seen_hosts:
+            print(f"[WARNING] hardware.json: no completed bundle with .hardware block in {dispatch_dir}")
+            return
+        first_host_block = next(iter(seen_hosts.values()))
+        gpus = first_host_block["gpu_devices"]
+        if not gpus:
+            print(f"[WARNING] hardware.json: first host has no GPU devices in {dispatch_dir}")
+            return
+        gpu_name = str(gpus[0].get("name", "")).strip()
+        if not gpu_name:
+            print(f"[WARNING] hardware.json: GPU name empty in {dispatch_dir}")
+            return
+        fingerprint_name = gpu_name.replace(" ", "-")
+        payload = {
+            "schema_version": "1.0",
+            "dispatch_id": dispatch_payload.get("dispatch_id", dispatch_dir.name),
+            "generated_at": _utc_now_iso(),
+            "hosts": seen_hosts,
+            "fingerprint": f"gpu:{fingerprint_name}",
+        }
+        out = dispatch_dir / "hardware.json"
+        # Atomic write: temp + rename.
+        fd, tmp_path = tempfile.mkstemp(prefix="hardware.json.", dir=str(dispatch_dir))
+        with os.fdopen(fd, "w") as fh:
+            json.dump(payload, fh, indent=2)
+        os.replace(tmp_path, out)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never block aggregate
+        print(f"[WARNING] hardware.json: write failed in {dispatch_dir}: {exc}")
+
+
 def aggregate_dispatch(
     dispatch_dir: Path,
     options: AggregateOptions | None = None,
@@ -264,6 +336,8 @@ def aggregate_dispatch(
             f"falling back to directory name {dispatch_dir.name!r}"
         )
         dispatch_id = dispatch_dir.name
+
+    _write_hardware_json(dispatch_dir, dispatch)
 
     return {
         "schema_version": SCHEMA_VERSION,
