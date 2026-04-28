@@ -80,12 +80,13 @@ def test_route_pathname_unknown_path_returns_404(tmp_path):
 
 
 def test_route_pathname_known_tab_renders_placeholder(tmp_path):
-    """Tab path on a real dispatch renders the placeholder (Spec 0 has no tab content)."""
+    """Tab path on a real dispatch renders the placeholder when no real tab module exists."""
     _write_dispatch(tmp_path, "20260427-141302")
     from tools.odin.valhalla.dashboard.data import DataLayer
 
     data = DataLayer(tmp_path)
-    component = route_pathname("/20260427-141302/dispatch-fleet", data)
+    # task-drilldown still falls back to the placeholder (Spec 2 hasn't landed).
+    component = route_pathname("/20260427-141302/task-drilldown", data)
     assert _has_id(component, "tab-placeholder")
 
 
@@ -181,3 +182,39 @@ def test_create_app_skips_tab_register_when_absent(tmp_path):
     """If a tab module has no register() (e.g., Spec 0's _placeholder), startup must not raise."""
     app = create_app(tmp_path)
     assert app is not None
+
+
+def test_tab_a_render_returns_layout_with_expected_slots(tmp_path):
+    """Tab A's render() returns a Div with the expected dynamic slots and stores."""
+    _write_dispatch(tmp_path, "20260427-141302")
+    from tools.odin.valhalla.dashboard.tabs import dispatch_fleet
+
+    component = dispatch_fleet.render("20260427-141302", "dispatch-fleet")
+
+    # Top-level container.
+    assert _has_id(component, "tab-a-root")
+
+    # Stores (so callbacks can write to them).
+    assert _has_id(component, "tab-a-dispatch-id")
+    assert _has_id(component, "tab-a-failure-filter")
+    assert _has_id(component, "tab-a-expanded-run-ids")
+    assert _has_id(component, "tab-a-ssh-tail-store")
+
+    # Tick interval.
+    assert _has_id(component, "tab-a-tick")
+
+    # Empty content slots — populated by callbacks.
+    assert _has_id(component, "tab-a-header")
+    assert _has_id(component, "tab-a-fleet-table")
+    assert _has_id(component, "tab-a-jobs-section")
+
+
+def test_tab_a_layout_replaces_placeholder(tmp_path):
+    """When real tab module is present, route_pathname returns the real layout, not the placeholder."""
+    _write_dispatch(tmp_path, "20260427-141302")
+    from tools.odin.valhalla.dashboard.data import DataLayer
+
+    data = DataLayer(tmp_path)
+    component = route_pathname("/20260427-141302/dispatch-fleet", data)
+    assert _has_id(component, "tab-a-root")
+    assert not _has_id(component, "tab-placeholder")
