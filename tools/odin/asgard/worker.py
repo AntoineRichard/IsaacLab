@@ -40,7 +40,9 @@ class StateEvent:
     - ``failed``: terminal failure for this job; ``failure`` set.
     - ``recovered``: GPU loss detected, recovery succeeded; retry follows.
     - ``host_down``: GPU loss detected, recovery failed; host transitions
-      to ``status="down"``; runner removes it from the worker pool.
+      to ``status="down"``. The worker re-queues the in-flight job (so
+      another healthy worker can pick it up) and stops pulling further
+      jobs from the queue (its own ``_down_event`` is set).
     - ``shutdown_idle``: worker received its sentinel and exited cleanly.
     """
 
@@ -127,12 +129,15 @@ class ValkyrieWorker(threading.Thread):
         self._ssh = ssh
         self._rsync = rsync
         self._shutdown = shutdown_event
+        # Set when this worker's host is marked down (gpu_lost recovery
+        # failed). Causes ``run()`` to stop pulling new jobs.
+        self._down_event = threading.Event()
         self._preferred_not_seen: dict[str, int] = {}
 
     # -- public entry point -------------------------------------------------
 
     def run(self) -> None:
-        while not self._shutdown.is_set():
+        while not self._shutdown.is_set() and not self._down_event.is_set():
             try:
                 job = self._job_queue.get(timeout=0.5)
             except queue.Empty:
@@ -208,6 +213,12 @@ class ValkyrieWorker(threading.Thread):
                         continue
                     # Retries exhausted on this host even after successful recovery.
                 else:
+                    # Recovery failed: this host is down. Re-queue the job so
+                    # another healthy worker can pick it up via the existing
+                    # bounded-fallback (preferred_not) routing, mark this host
+                    # in preferred_not, and stop pulling further jobs from
+                    # this worker. The runner sweeps any still-pending jobs
+                    # at the end of the dispatch when no host can run them.
                     self._state_chan.put(
                         StateEvent(
                             run_id=job.run_id,
@@ -217,7 +228,9 @@ class ValkyrieWorker(threading.Thread):
                         )
                     )
                     job.preferred_not = set(job.preferred_not) | {self.host.host}
-                # Fall through to terminal failure emission below.
+                    self._job_queue.put(job)
+                    self._down_event.set()
+                    return  # Do not terminal-fail; job is back on the queue.
 
             break  # non-recoverable result or retries exhausted
 

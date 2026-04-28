@@ -641,7 +641,12 @@ def test_worker_gpu_lost_recovery_succeeds_retries_same_host(tmp_path, monkeypat
 
 
 def test_worker_gpu_lost_recovery_fails_marks_host_down(tmp_path, monkeypatch):
-    """First attempt: gpu_lost → recover returns recovered=False → host_down + terminal failure."""
+    """First attempt: gpu_lost → recover fails → host_down + re-queue + worker stops pulling.
+
+    Worker no longer terminal-fails the job here — it re-queues it so a
+    healthy worker can pick it up via bounded fallback. The runner sweeps
+    any still-pending job at dispatch end if no host can run it.
+    """
     import queue
     import threading
 
@@ -673,6 +678,7 @@ def test_worker_gpu_lost_recovery_fails_marks_host_down(tmp_path, monkeypatch):
 
     monkeypatch.setattr(worker_mod, "recover_valkyrie_gpu", _fake_recover)
 
+    job_queue: queue.Queue = queue.Queue()
     state_chan: queue.Queue = queue.Queue()
     job = JobEntry(
         run_id="rsl-rl_physx_F_seed42",
@@ -689,7 +695,7 @@ def test_worker_gpu_lost_recovery_fails_marks_host_down(tmp_path, monkeypatch):
 
     worker = worker_mod.ValkyrieWorker(
         host=ValkyrieConfig(host="v1", ssh_user="horde"),
-        job_queue=queue.Queue(),
+        job_queue=job_queue,
         state_chan=state_chan,
         dispatch_dir=tmp_path,
         options=worker_mod.WorkerOptions(),
@@ -699,15 +705,25 @@ def test_worker_gpu_lost_recovery_fails_marks_host_down(tmp_path, monkeypatch):
     )
     worker._execute(job)
 
-    assert job.status == "failed"
-    assert job.failure is not None
-    assert job.failure.kind == "gpu_lost"
+    # Job is re-queued, NOT terminal-failed. The runner sweeps stuck pending
+    # jobs at dispatch end when no healthy host remains.
+    assert job.status == "pending"
+    assert job.failure is None
     assert "v1" in job.preferred_not
+
+    # Worker has stopped pulling further jobs.
+    assert worker._down_event.is_set()
+
+    # Job is back on the queue for another worker.
+    requeued = job_queue.get_nowait()
+    assert requeued is job
+
+    # State channel got host_down but NOT a terminal "failed" event.
     transitions = []
     while not state_chan.empty():
         transitions.append(state_chan.get_nowait().transition)
     assert "host_down" in transitions
-    assert "failed" in transitions
+    assert "failed" not in transitions
 
 
 def test_worker_gpu_lost_three_in_a_row_terminal_failure(tmp_path, monkeypatch):

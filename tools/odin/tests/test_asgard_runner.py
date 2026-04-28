@@ -480,3 +480,78 @@ def test_runner_handles_host_down_event(tmp_path):
     assert fs.status == "down"
     assert "gpu_lost: recovery_failed" in fs.last_error
     assert "docker_restart_failed" in fs.last_error
+
+
+def test_sweep_pending_terminal_fails_when_all_hosts_down(tmp_path):
+    """Post-loop sweep marks pending jobs as gpu_lost when no host is healthy."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+
+    pending_job = JobEntry(
+        run_id="r-pending",
+        task_id="X",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="r-pending",
+        preferred_not={"v1", "v2"},
+    )
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260427-200000",
+        started_at="2026-04-27T20:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[
+            FleetSnapshot(host="v1", status="down", last_error="gpu_lost: recovery_failed (x)"),
+            FleetSnapshot(host="v2", status="down", last_error="gpu_lost: recovery_failed (y)"),
+        ],
+        jobs=[pending_job],
+    )
+
+    runner_mod._sweep_pending_after_dispatch(state)
+
+    j = state.jobs[0]
+    assert j.status == "failed"
+    assert j.failure is not None
+    assert j.failure.kind == "gpu_lost"
+    assert "no healthy host" in j.failure.message
+    assert j.failure.details["preferred_not"] == ["v1", "v2"]
+    assert j.ended_at is not None
+
+
+def test_sweep_pending_leaves_pending_when_fleet_healthy(tmp_path):
+    """Sweep is a no-op if no host is marked down."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+
+    pending_job = JobEntry(
+        run_id="r-pending",
+        task_id="X",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="r-pending",
+    )
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260427-200000",
+        started_at="2026-04-27T20:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="idle", last_error=None)],
+        jobs=[pending_job],
+    )
+
+    runner_mod._sweep_pending_after_dispatch(state)
+
+    assert state.jobs[0].status == "pending"
+    assert state.jobs[0].failure is None

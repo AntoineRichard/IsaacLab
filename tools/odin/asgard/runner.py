@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
-from tools.odin.asgard.jobs import JobEntry, SkippedEntry, build_queue_from_env_lists
+from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry, build_queue_from_env_lists
 from tools.odin.asgard.preflight import preflight_valkyrie
 from tools.odin.asgard.provisioner import provision_valkyrie
 from tools.odin.asgard.state import (
@@ -213,10 +213,36 @@ def _apply_state_event(
             if f.host == ev.host:
                 f.status = "down"
                 f.last_error = f"gpu_lost: recovery_failed ({detail})"
-                # current_run_id stays — worker is about to emit terminal
-                # "failed" for the in-flight job in a follow-up event.
+                f.current_run_id = None  # worker re-queued the job
         return 0
     return 0
+
+
+def _sweep_pending_after_dispatch(state: DispatchState) -> None:
+    """Terminal-fail pending jobs left behind when no healthy host remains.
+
+    Called after :func:`run_dispatch`'s main loop exits.  Pending jobs at
+    that point either (a) were re-queued from a ``host_down`` and never
+    picked up by another worker because every other host was already down,
+    or (b) fell through the sentinel race (see ``worker.py``).  Both cases:
+    no host can run them.  Mark each ``failed`` with ``kind="gpu_lost"``
+    so the dispatch report and aggregator account for them.
+
+    Only sweeps when at least one host is marked ``down``.  Pending jobs in
+    a fully-healthy fleet point to a different bug and should remain
+    visible (operator can ``--resume`` and investigate).
+    """
+    if not any(f.status == "down" for f in state.fleet):
+        return
+    for j in state.jobs:
+        if j.status == "pending":
+            j.status = "failed"
+            j.failure = FailureInfo(
+                kind="gpu_lost",
+                message="no healthy host available; all hosts marked down",
+                details={"preferred_not": sorted(j.preferred_not)},
+            )
+            j.ended_at = _utc_now_iso()
 
 
 def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntry]:
@@ -479,6 +505,8 @@ def run_dispatch(
 
     for w in workers:
         w.join(timeout=30.0)
+
+    _sweep_pending_after_dispatch(state)
 
     state.ended_at = _utc_now_iso()
     write_dispatch_state(dispatch_dir, state)
