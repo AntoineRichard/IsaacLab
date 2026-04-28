@@ -38,13 +38,23 @@ def create_app(runs_root: Path, initial_dispatch: Path | None = None) -> dash.Da
 
 
 def _build_layout(initial_dispatch: Path | None) -> html.Div:
-    initial_path = "/"
+    """Build the SPA shell.
+
+    When ``initial_dispatch`` is set (CLI invoked with a dispatch_id),
+    we explicitly push the URL to ``/<id>/dispatch-fleet`` so the page
+    opens directly on Tab A even if the user typed just ``/`` in the
+    browser.  When ``initial_dispatch`` is None, we leave the
+    ``pathname`` unset so ``dcc.Location`` picks up whatever URL the
+    browser is on — otherwise we'd force every URL back to ``/`` and
+    only the landing page would ever render.
+    """
+    location_kwargs: dict = {"id": "url", "refresh": False}
     if initial_dispatch is not None:
-        initial_path = f"/{initial_dispatch.name}/dispatch-fleet"
+        location_kwargs["pathname"] = f"/{initial_dispatch.name}/dispatch-fleet"
     return html.Div(
         id="app-root",
         children=[
-            dcc.Location(id="url", refresh=False, pathname=initial_path),
+            dcc.Location(**location_kwargs),
             dcc.Store(id="active-dispatch", storage_type="memory"),
             html.Div(id="page-content"),
         ],
