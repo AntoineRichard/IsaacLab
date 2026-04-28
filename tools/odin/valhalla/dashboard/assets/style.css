@@ -1,0 +1,381 @@
+/* Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md). */
+/* All rights reserved. */
+/* SPDX-License-Identifier: BSD-3-Clause */
+
+/* Odin dashboard — dark theme + Tab A component styles. Dash auto-loads
+ * everything under assets/. Class name conventions follow the mockup HTML
+ * files in .superpowers/brainstorm/.../content/ (fleet-row-vs-card.html,
+ * jobs-table.html). */
+
+/* ---------- base / dark theme ---------- */
+
+body {
+  background: #0e1115;
+  color: #e0e0e0;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  margin: 0;
+  padding: 16px 24px;
+}
+
+a {
+  color: #66b6ff;
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+h2 { color: #e0e0e0; font-weight: 600; margin-top: 0; }
+h3 { color: #d0d0d0; font-weight: 600; }
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* ---------- shared pills ---------- */
+
+.tab-a-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---------- live/done header pills ---------- */
+
+.tab-a-live-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255, 165, 0, 0.18);
+  color: #ffa500;
+  border: 1px solid rgba(255, 165, 0, 0.4);
+}
+.tab-a-done-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(160, 160, 160, 0.18);
+  color: #aaa;
+  border: 1px solid rgba(160, 160, 160, 0.4);
+}
+
+/* ---------- header strip ---------- */
+
+#tab-a-header-content {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+
+.tab-a-header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin-bottom: 6px;
+}
+.tab-a-header-pill-row { margin-bottom: 6px; }
+.tab-a-header-totals {
+  color: #aaa;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.tab-a-header-failure-pills {
+  border-top: 1px solid #2a2e35;
+  padding-top: 10px;
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.tab-a-header-failure-pills > span:first-child {
+  color: #888;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.tab-a-failure-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(220, 80, 80, 0.12);
+  color: #e16868;
+  border: 1px solid rgba(220, 80, 80, 0.3);
+  cursor: pointer;
+}
+.tab-a-failure-pill:hover { background: rgba(220, 80, 80, 0.22); }
+
+.tab-a-failure-pill-hugin_crash      { background: rgba(220, 80, 80, 0.12); color: #e16868; border-color: rgba(220, 80, 80, 0.3); }
+.tab-a-failure-pill-gpu_lost         { background: rgba(255, 165, 0, 0.12); color: #ffa500; border-color: rgba(255, 165, 0, 0.3); }
+.tab-a-failure-pill-preset_unsupported { background: rgba(190, 160, 255, 0.12); color: #beA0ff; border-color: rgba(190, 160, 255, 0.3); }
+.tab-a-failure-pill-timeout          { background: rgba(220, 180, 80, 0.12); color: #e8c068; border-color: rgba(220, 180, 80, 0.3); }
+.tab-a-failure-pill-infrastructure   { background: rgba(120, 120, 120, 0.12); color: #aaa; border-color: rgba(120, 120, 120, 0.3); }
+.tab-a-failure-pill-hugin_malformed_bundle { background: rgba(120, 120, 200, 0.12); color: #aab0e0; border-color: rgba(120, 120, 200, 0.3); }
+
+/* ---------- tables (shared) ---------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  border-bottom: 1px solid #2a2e35;
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+th {
+  background: #1a1d22;
+  color: #888;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+tbody tr:hover td { background: #1f242a; }
+
+.tab-a-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.tab-a-muted { color: #888; }
+
+/* ---------- fleet table ---------- */
+
+#tab-a-fleet-table-content {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.tab-a-fleet-host { font-family: ui-monospace, monospace; }
+
+.tab-a-fleet-status-idle  { background: rgba(120, 120, 120, 0.18); color: #aaa;    border: 1px solid rgba(120, 120, 120, 0.4); }
+.tab-a-fleet-status-busy  { background: rgba(255, 165, 0, 0.18);   color: #ffa500; border: 1px solid rgba(255, 165, 0, 0.4); }
+.tab-a-fleet-status-down  { background: rgba(220, 80, 80, 0.18);   color: #e16868; border: 1px solid rgba(220, 80, 80, 0.4); }
+.tab-a-fleet-status-unknown { background: rgba(120, 120, 200, 0.12); color: #aab0e0; border: 1px solid rgba(120, 120, 200, 0.3); }
+
+.tab-a-event-recovered       { background: rgba(80, 200, 140, 0.18); color: #50c88c; border: 1px solid rgba(80, 200, 140, 0.4); }
+.tab-a-event-recovery-failed { background: rgba(220, 80, 80, 0.18);  color: #e16868; border: 1px solid rgba(220, 80, 80, 0.4); }
+
+/* ---------- jobs section ---------- */
+
+#tab-a-jobs-section-content {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.tab-a-jobs-filter-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 16px;
+  background: #1a1d22;
+  border-bottom: 1px solid #2a2e35;
+  flex-wrap: wrap;
+}
+.tab-a-filter-label {
+  color: #888;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.tab-a-filter-dropdown { min-width: 180px; }
+.tab-a-filter-input {
+  background: #0e1115;
+  border: 1px solid #2a2e35;
+  border-radius: 4px;
+  padding: 6px 10px;
+  color: #d0d0d0;
+  font-size: 12px;
+  min-width: 200px;
+}
+.tab-a-filter-input::placeholder { color: #666; }
+
+/* Dash dcc.Dropdown ships its own React-rendered DOM. Override the
+ * default light theme so it fits the dark palette. Selectors are
+ * stable across Dash 4.x releases. */
+.tab-a-filter-dropdown .Select-control,
+.tab-a-filter-dropdown .Select-menu-outer,
+.tab-a-filter-dropdown .Select.is-focused > .Select-control {
+  background: #0e1115;
+  border-color: #2a2e35;
+  color: #d0d0d0;
+}
+.tab-a-filter-dropdown .Select-value-label,
+.tab-a-filter-dropdown .Select-input > input,
+.tab-a-filter-dropdown .Select-placeholder {
+  color: #d0d0d0 !important;
+}
+.tab-a-filter-dropdown .Select-menu-outer {
+  background: #15191e;
+  border-color: #2a2e35;
+}
+.tab-a-filter-dropdown .VirtualizedSelectOption {
+  background: #15191e;
+  color: #d0d0d0;
+}
+.tab-a-filter-dropdown .VirtualizedSelectFocusedOption {
+  background: #1f242a;
+}
+.tab-a-filter-dropdown .Select-multi-value-wrapper .Select-value {
+  background: #2a2e35;
+  border: 1px solid #404750;
+  color: #d0d0d0;
+}
+
+.tab-a-jobs-table { width: 100%; }
+
+.tab-a-job-status-pending   { background: rgba(160, 160, 160, 0.18); color: #aaa;    border: 1px solid rgba(160, 160, 160, 0.4); }
+.tab-a-job-status-running   { background: rgba(102, 182, 255, 0.18); color: #66b6ff; border: 1px solid rgba(102, 182, 255, 0.4); }
+.tab-a-job-status-completed { background: rgba(80, 200, 140, 0.18);  color: #50c88c; border: 1px solid rgba(80, 200, 140, 0.4); }
+.tab-a-job-status-failed    { background: rgba(220, 80, 80, 0.18);   color: #e16868; border: 1px solid rgba(220, 80, 80, 0.4); }
+
+.tab-a-attempts-badge {
+  display: inline-block;
+  padding: 0 5px;
+  margin-left: 6px;
+  background: rgba(255, 165, 0, 0.18);
+  color: #ffa500;
+  border-radius: 8px;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.tab-a-kind-pill {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tab-a-kind-pill-hugin_crash         { background: rgba(220, 80, 80, 0.12);    color: #e16868; border: 1px solid rgba(220, 80, 80, 0.3); }
+.tab-a-kind-pill-gpu_lost            { background: rgba(255, 165, 0, 0.12);    color: #ffa500; border: 1px solid rgba(255, 165, 0, 0.3); }
+.tab-a-kind-pill-preset_unsupported  { background: rgba(190, 160, 255, 0.12);  color: #beA0ff; border: 1px solid rgba(190, 160, 255, 0.3); }
+.tab-a-kind-pill-timeout             { background: rgba(220, 180, 80, 0.12);   color: #e8c068; border: 1px solid rgba(220, 180, 80, 0.3); }
+.tab-a-kind-pill-infrastructure      { background: rgba(120, 120, 120, 0.12);  color: #aaa;    border: 1px solid rgba(120, 120, 120, 0.3); }
+.tab-a-kind-pill-hugin_malformed_bundle { background: rgba(120, 120, 200, 0.12); color: #aab0e0; border: 1px solid rgba(120, 120, 200, 0.3); }
+
+.tab-a-expand-toggle {
+  background: transparent;
+  border: 1px solid #2a2e35;
+  color: #66b6ff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 8px;
+  font-size: 11px;
+}
+.tab-a-expand-toggle:hover { background: #1f242a; }
+
+.tab-a-expand-row {
+  background: #11141a !important;
+}
+.tab-a-expand-row td {
+  padding: 14px 18px;
+  font-size: 12px;
+}
+.tab-a-expand-label {
+  color: #888;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+.tab-a-failure-message {
+  background: #0a0c10;
+  border: 1px solid #2a2e35;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: #c0c0c0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.tab-a-ssh-tail-button {
+  background: transparent;
+  border: 1px solid #2a2e35;
+  color: #66b6ff;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  margin-top: 8px;
+}
+.tab-a-ssh-tail-button:hover { background: #1f242a; }
+.tab-a-ssh-tail-pre {
+  background: #0a0c10;
+  border: 1px solid #2a2e35;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: #b0b0b0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.tab-a-ssh-tail-empty {
+  color: #888;
+  font-style: italic;
+  margin-top: 8px;
+}
+
+/* ---------- empty states ---------- */
+
+.tab-a-empty-state {
+  padding: 40px 24px;
+  text-align: center;
+  color: #888;
+}
+.tab-a-empty-state p { margin: 0 0 12px 0; }
+.tab-a-clear-button {
+  background: transparent;
+  border: 1px solid #2a2e35;
+  color: #66b6ff;
+  border-radius: 4px;
+  padding: 6px 16px;
+  font-size: 12px;
+}
+.tab-a-clear-button:hover { background: #1f242a; }
+
+/* ---------- error banner (caught exceptions) ---------- */
+
+.tab-a-error-banner {
+  background: rgba(220, 180, 80, 0.12);
+  border: 1px solid rgba(220, 180, 80, 0.4);
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  color: #e8c068;
+  font-size: 12.5px;
+}
+.tab-a-error-banner strong { color: #e8c068; margin-right: 6px; }
+
+/* ---------- landing page (Spec 0) ---------- */
+
+#landing-root {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  padding: 16px 20px;
+  overflow: hidden;
+}
