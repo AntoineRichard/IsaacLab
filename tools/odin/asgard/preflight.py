@@ -24,9 +24,9 @@ class PreflightResult:
 
 
 def preflight_valkyrie(host: ValkyrieConfig, *, ssh: SSHRunner) -> PreflightResult:
-    """Run SSH + docker + container + IsaacLab-directory checks on one host.
+    """Run SSH + docker + container + IsaacLab-directory + GPU checks on one host.
 
-    Returns a :class:`PreflightResult` with ``ok=True`` iff all four checks
+    Returns a :class:`PreflightResult` with ``ok=True`` iff all five checks
     pass. Later checks short-circuit: if SSH is unreachable, downstream
     checks are reported as ``False`` and the first failing check's diagnostic
     lands in ``message``.
@@ -44,6 +44,7 @@ def preflight_valkyrie(host: ValkyrieConfig, *, ssh: SSHRunner) -> PreflightResu
         "docker_running": False,
         "container_up": False,
         "isaaclab_present": False,
+        "gpu_present": False,
     }
 
     # 1. ssh_reach — single round-trip echo.
@@ -94,5 +95,16 @@ def preflight_valkyrie(host: ValkyrieConfig, *, ssh: SSHRunner) -> PreflightResu
             message=f"IsaacLab path {host.isaaclab_path!r} missing on host",
         )
     checks["isaaclab_present"] = True
+
+    # 5. gpu_present — at least one GPU visible inside the running container.
+    r = ssh.run(host, f"docker exec {host.container_name} nvidia-smi -L", timeout_s=15.0)
+    if r.exit_code != 0 or not r.stdout.strip():
+        return PreflightResult(
+            host=host.host,
+            ok=False,
+            checks=checks,
+            message=f"GPU absent in container: {r.stderr.strip() or 'empty stdout'}",
+        )
+    checks["gpu_present"] = True
 
     return PreflightResult(host=host.host, ok=True, checks=checks, message="")

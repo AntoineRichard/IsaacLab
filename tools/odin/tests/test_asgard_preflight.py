@@ -46,6 +46,12 @@ def test_all_checks_pass():
             "docker ps": _ok(),
             "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
             "test -d": _ok(),
+            "nvidia-smi -L": SSHResult(
+                exit_code=0,
+                stdout="GPU 0: NVIDIA A100\n",
+                stderr="",
+                duration_s=0.01,
+            ),
         }
     )
     r = preflight_valkyrie(_host(), ssh=ssh)
@@ -56,6 +62,7 @@ def test_all_checks_pass():
         "docker_running": True,
         "container_up": True,
         "isaaclab_present": True,
+        "gpu_present": True,
     }
 
 
@@ -110,3 +117,76 @@ def test_isaaclab_missing():
     r = preflight_valkyrie(_host(), ssh=ssh)
     assert r.ok is False
     assert r.checks["isaaclab_present"] is False
+
+
+def test_all_checks_pass_with_gpu():
+    """Five-check happy path: ssh + docker + container + isaaclab + gpu."""
+    ssh = _FakeSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "nvidia-smi -L": SSHResult(
+                exit_code=0,
+                stdout="GPU 0: NVIDIA A100 (UUID: GPU-abc...)\n",
+                stderr="",
+                duration_s=0.01,
+            ),
+        }
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh)
+    assert r.ok is True
+    assert r.checks == {
+        "ssh_reach": True,
+        "docker_running": True,
+        "container_up": True,
+        "isaaclab_present": True,
+        "gpu_present": True,
+    }
+
+
+def test_gpu_absent_marks_host_down():
+    """nvidia-smi -L returns non-zero → preflight fails with gpu_present=False."""
+    ssh = _FakeSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "nvidia-smi -L": SSHResult(
+                exit_code=255,
+                stdout="",
+                stderr="Failed to initialize NVML: Unknown Error",
+                duration_s=0.01,
+            ),
+        }
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh)
+    assert r.ok is False
+    assert r.checks["gpu_present"] is False
+    assert "gpu" in r.message.lower()
+
+
+def test_gpu_present_short_circuits_on_container_down():
+    """If container_up fails, gpu_present stays False without probe call."""
+    call_count = {"n": 0}
+
+    class _CountingSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            call_count["n"] += 1
+            if "echo preflight-ok" in cmd:
+                return _ok()
+            if "docker ps" in cmd:
+                return _ok()
+            if "docker inspect" in cmd:
+                return SSHResult(exit_code=0, stdout="exited\n", stderr="", duration_s=0.01)
+            if "nvidia-smi -L" in cmd:
+                # Should never reach here.
+                raise AssertionError("nvidia-smi -L called despite container down")
+            return _ok()
+
+    r = preflight_valkyrie(_host(), ssh=_CountingSSH())
+    assert r.ok is False
+    assert r.checks["gpu_present"] is False
+    assert r.checks["container_up"] is False
