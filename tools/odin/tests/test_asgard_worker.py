@@ -870,9 +870,12 @@ def test_worker_quarantines_host_after_n_consecutive_failures(tmp_path):
             bundle_dir_name=f"r-{seed}",
         )
 
-    class _AlwaysFailSSH:
+    class _AlwaysInfraFailSSH:
+        # exit code 125 = docker exec: "container not found / daemon
+        # unreachable" — classified as 'infrastructure', a host-health
+        # failure that DOES count toward the consecutive-failure breaker.
         def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
-            return SSHResult(exit_code=1, stdout="", stderr="boom", duration_s=0.01)
+            return SSHResult(exit_code=125, stdout="", stderr="docker: cannot connect", duration_s=0.01)
 
     class _NoopRsync:
         def pull(self, host, remote_path, local_path):
@@ -897,8 +900,9 @@ def test_worker_quarantines_host_after_n_consecutive_failures(tmp_path):
         options=WorkerOptions(
             per_job_timeout_s=60,
             consecutive_failure_quarantine=3,
+            max_infrastructure_retries=0,  # let infrastructure failures terminal-fail immediately
         ),
-        ssh=_AlwaysFailSSH(),
+        ssh=_AlwaysInfraFailSSH(),
         rsync=_NoopRsync(),
         shutdown_event=shutdown,
     )
@@ -976,9 +980,10 @@ def test_worker_circuit_breaker_requeues_triggering_job(tmp_path):
             bundle_dir_name=f"cb-{seed}",
         )
 
-    class _AlwaysFailSSH:
+    class _AlwaysInfraFailSSH:
+        # exit 125 → 'infrastructure' kind, which counts toward the breaker.
         def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
-            return SSHResult(exit_code=1, stdout="", stderr="crash", duration_s=0.01)
+            return SSHResult(exit_code=125, stdout="", stderr="docker daemon down", duration_s=0.01)
 
     class _NoopRsync:
         def pull(self, host, remote_path, local_path):
@@ -1003,8 +1008,9 @@ def test_worker_circuit_breaker_requeues_triggering_job(tmp_path):
         options=WorkerOptions(
             per_job_timeout_s=60,
             consecutive_failure_quarantine=3,
+            max_infrastructure_retries=0,
         ),
-        ssh=_AlwaysFailSSH(),
+        ssh=_AlwaysInfraFailSSH(),
         rsync=_NoopRsync(),
         shutdown_event=shutdown,
     )
@@ -1042,3 +1048,77 @@ def test_worker_circuit_breaker_requeues_triggering_job(tmp_path):
     non_sentinel = [item for item in queue_items if item is not None]
     assert len(non_sentinel) == 1, f"expected exactly one re-queued job in the queue, got {non_sentinel}"
     assert non_sentinel[0] is triggering_job, "triggering job should be back on the queue"
+
+
+def test_worker_circuit_breaker_does_not_count_timeouts(tmp_path):
+    """Per-host quarantine reflects host health, not job behaviour. Repeated
+    timeouts mean the per-job budget is too tight, not that the host is bad —
+    so they MUST NOT trip the consecutive-failure breaker."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import RsyncResult, SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    host = ValkyrieConfig(host="t-host", ssh_user="odin", isaaclab_path="/h/t")
+
+    def _job(seed: int) -> JobEntry:
+        return JobEntry(
+            run_id=f"t-{seed}",
+            task_id="Isaac-Slow-v0",
+            framework="rsl_rl",
+            backend="physx",
+            num_envs=1024,
+            max_iterations=10,
+            seed=seed,
+            bundle_dir_name=f"t-{seed}",
+        )
+
+    class _AlwaysTimeoutSSH:
+        # timed_out=True → kind="timeout" → MUST NOT count toward breaker.
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            return SSHResult(exit_code=124, stdout="", stderr="", duration_s=0.01, timed_out=True)
+
+    class _NoopRsync:
+        def pull(self, host, remote_path, local_path):
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+        def push(self, host, local_path, remote_path):
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+    job_q: queue.Queue = queue.Queue()
+    jobs = [_job(s) for s in (1, 2, 3, 4, 5)]
+    for j in jobs:
+        job_q.put(j)
+    job_q.put(None)  # sentinel
+
+    state_chan: queue.Queue = queue.Queue()
+    shutdown = threading.Event()
+    worker = ValkyrieWorker(
+        host=host,
+        job_queue=job_q,
+        state_chan=state_chan,
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(
+            per_job_timeout_s=1,
+            consecutive_failure_quarantine=3,
+        ),
+        ssh=_AlwaysTimeoutSSH(),
+        rsync=_NoopRsync(),
+        shutdown_event=shutdown,
+    )
+    worker.start()
+    worker.join(timeout=10.0)
+    assert not worker.is_alive(), "worker should drain queue without quarantining"
+
+    events: list[StateEvent] = []
+    while not state_chan.empty():
+        events.append(state_chan.get_nowait())
+    failed = [e for e in events if e.transition == "failed"]
+    host_down = [e for e in events if e.transition == "host_down"]
+    # Every job should terminal-fail with kind=timeout; NO host_down.
+    assert len(failed) == 5, f"expected 5 timeout failures (one per job), got {len(failed)}"
+    assert all(e.failure is not None and e.failure.kind == "timeout" for e in failed)
+    assert host_down == [], "timeouts must NOT trip the per-host circuit breaker"

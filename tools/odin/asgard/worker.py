@@ -99,6 +99,14 @@ def _utc_now_iso() -> str:
 # found, daemon unreachable). Treat those as infrastructure, not hugin_crash.
 _INFRASTRUCTURE_DOCKER_EXIT_CODES = {125, 126, 127}
 
+# Failure kinds that count toward the per-host consecutive-failure circuit
+# breaker. Job-level failures (timeout, hugin_crash, preset_unsupported)
+# don't say anything about host health — a slow training task or a missing
+# preset is the same on every host — so they are excluded. Host-health
+# failures (stuck container, corrupt bundle pull, post-recovery GPU loss)
+# are the ones that suggest "this Valkyrie is wedged; route around it".
+_HOST_HEALTH_FAILURE_KINDS = frozenset({"infrastructure", "hugin_malformed_bundle", "gpu_lost"})
+
 # GPU-loss stderr signatures recognised by ``_classify``.  Worker emits
 # FailureInfo(kind="gpu_lost") when the training process exited non-zero
 # AND its stderr contains any of these strings.  Recovery (T8) is then
@@ -354,6 +362,11 @@ class ValkyrieWorker(threading.Thread):
         """Increment the failure tracker and, if quarantine triggers, emit
         host_down + re-queue the job + arm ``_down_event``.
 
+        Only host-health failures (see :data:`_HOST_HEALTH_FAILURE_KINDS`)
+        count toward the breaker; job-level failures (timeout, hugin_crash,
+        preset_unsupported) do not. This avoids cascading a slow training
+        task or a misconfigured preset into a host quarantine.
+
         If the threshold isn't reached, this method does NOT emit any
         event — caller is expected to post the regular ``failed`` event.
 
@@ -367,6 +380,8 @@ class ValkyrieWorker(threading.Thread):
             ``True`` iff the worker should exit (threshold reached).
             ``False`` if the worker should continue with the next job.
         """
+        if failure.kind not in _HOST_HEALTH_FAILURE_KINDS:
+            return False
         if not self._fail_tracker.note_failure():
             return False
         # Threshold reached: re-queue the triggering job so another healthy
