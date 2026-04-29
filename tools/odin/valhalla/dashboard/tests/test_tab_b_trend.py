@@ -186,4 +186,4 @@ def test_render_trend_chart_x_labels_short_sha():
     fig = graph.figure
     # Tick labels should use the short SHA (first 7).
     tick_text = list(fig.layout.xaxis.ticktext or [])
-    assert "abcdef1" in tick_text
+    assert any("abcdef1" in text for text in tick_text)

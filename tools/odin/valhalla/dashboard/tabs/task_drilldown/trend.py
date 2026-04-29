@@ -103,6 +103,9 @@ def render_trend_chart(points: list[dict], metric_label: str, *, mode: str = "ri
     short_shas = [(p["commit_sha"][:7] or "—") for p in points]
     labels = [f"{p['commit_sha'][:7] or '—'}<br>n={p['n_seeds_completed']}<br>{p['dispatch_id']}" for p in points]
 
+    # Mark the rightmost (newest) point as "current".
+    short_shas[-1] = short_shas[-1] + " ▲"
+
     fig = go.Figure()
     if mode == "bars":
         marker_colors = ["#66b6ff"] * (n - 1) + ["#76b900"]
