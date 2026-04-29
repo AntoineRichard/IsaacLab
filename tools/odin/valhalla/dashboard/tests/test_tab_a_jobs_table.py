@@ -249,3 +249,20 @@ def test_jobs_empty_state_when_dispatch_has_no_jobs():
     assert "No jobs queued" in blob
     # No clear button when there are zero jobs at all.
     assert not _has_id(component, "tab-a-clear-filters")
+
+
+def test_jobs_task_cell_links_to_tab_b():
+    """The Task cell renders as a dcc.Link to Tab B with task/framework/backend params."""
+    job = _job(
+        run_id="r1",
+        task="Isaac-Ant-Direct-v0",
+        status="completed",
+    )
+    payload = _payload([job])
+    payload["dispatch_id"] = "20260427-141302"
+    component = render_jobs_section(payload)
+
+    links = [c for c in _walk(component) if type(c).__name__ == "Link"]
+    hrefs = [getattr(link, "href", None) for link in links]
+    expected = "/20260427-141302/task-drilldown?task=Isaac-Ant-Direct-v0&framework=rsl_rl&backend=physx"
+    assert expected in hrefs

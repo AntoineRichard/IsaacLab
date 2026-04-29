@@ -88,6 +88,8 @@ def render_jobs_section(
             ],
         )
 
+    dispatch_id = str(dispatch_payload.get("dispatch_id", "") or "")
+
     header = html.Tr(
         children=[
             html.Th("Task"),
@@ -102,7 +104,7 @@ def render_jobs_section(
 
     body_rows: list = []
     for j in visible:
-        body_rows.append(_data_row(j))
+        body_rows.append(_data_row(j, dispatch_id))
         if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
             body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
 
@@ -170,6 +172,8 @@ def render_jobs_rows(
             ],
         )
 
+    dispatch_id = str(dispatch_payload.get("dispatch_id", "") or "")
+
     header = html.Tr(
         children=[
             html.Th("Task"),
@@ -183,7 +187,7 @@ def render_jobs_rows(
     )
     body_rows: list = []
     for j in visible:
-        body_rows.append(_data_row(j))
+        body_rows.append(_data_row(j, dispatch_id))
         if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
             body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
     return html.Table(
@@ -230,7 +234,7 @@ def _filter_row(status_filter, kind_filter, task_text):
     )
 
 
-def _data_row(job: dict) -> html.Tr:
+def _data_row(job: dict, dispatch_id: str) -> html.Tr:
     status = str(job.get("status", "unknown"))
     failure = job.get("failure") or {}
     kind = failure.get("kind")
@@ -261,10 +265,19 @@ def _data_row(job: dict) -> html.Tr:
 
     started_ended_text = f"{started} · {ended}" if ended else (f"{started} · —" if started != "—" else "— · —")
 
+    task_id = job.get("task_id", "")
+    framework = job.get("framework", "")
+    backend = job.get("backend", "")
+    task_link = dcc.Link(
+        task_id,
+        href=f"/{dispatch_id}/task-drilldown?task={task_id}&framework={framework}&backend={backend}",
+        className="tab-a-task-link",
+    )
+
     return html.Tr(
         children=[
-            html.Td(job.get("task_id", "")),
-            html.Td(f"{job.get('framework', '')} × {job.get('backend', '')}", className="tab-a-mono"),
+            html.Td(task_link),
+            html.Td(f"{framework} × {backend}", className="tab-a-mono"),
             html.Td(str(job.get("seed", ""))),
             html.Td(status_children),
             html.Td(failure_cell),
