@@ -85,8 +85,8 @@ def test_route_pathname_known_tab_renders_placeholder(tmp_path):
     from tools.odin.valhalla.dashboard.data import DataLayer
 
     data = DataLayer(tmp_path)
-    # task-drilldown still falls back to the placeholder (Spec 2 hasn't landed).
-    component = route_pathname("/20260427-141302/task-drilldown", data)
+    # startup still falls back to the placeholder (Spec 3 hasn't landed).
+    component = route_pathname("/20260427-141302/startup", data)
     assert _has_id(component, "tab-placeholder")
 
 
@@ -128,10 +128,10 @@ def test_placeholder_mentions_target_spec(tmp_path):
     from tools.odin.valhalla.dashboard.data import DataLayer
 
     data = DataLayer(tmp_path)
-    component = route_pathname("/20260427-141302/task-drilldown", data)
+    component = route_pathname("/20260427-141302/startup", data)
     blobs = [c.children for c in _walk(component) if isinstance(getattr(c, "children", None), str)]
     text = " ".join(blobs)
-    assert "Spec 2" in text
+    assert "Spec 3" in text
 
 
 def test_real_tab_module_overrides_placeholder(tmp_path, monkeypatch):
