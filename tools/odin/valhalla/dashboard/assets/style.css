@@ -425,3 +425,236 @@ tbody tr:hover td { background: #1f242a; }
   padding: 16px 20px;
   overflow: hidden;
 }
+
+/* ---------- Tab B — Task Drill-down ---------- */
+
+#tab-b-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* picker row */
+
+.tab-b-picker-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.tab-b-picker-label {
+  color: #888;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.tab-b-picker-dropdown {
+  flex: 1;
+  max-width: 540px;
+}
+.tab-b-picker-dropdown .Select-control,
+.tab-b-picker-dropdown .Select-menu-outer,
+.tab-b-picker-dropdown .Select.is-focused > .Select-control {
+  background: #0e1115;
+  border-color: #2a2e35;
+  color: #d0d0d0;
+}
+.tab-b-picker-dropdown .Select-value-label,
+.tab-b-picker-dropdown .Select-input > input,
+.tab-b-picker-dropdown .Select-placeholder {
+  color: #d0d0d0 !important;
+}
+.tab-b-picker-dropdown .Select-menu-outer {
+  background: #15191e;
+  border-color: #2a2e35;
+}
+.tab-b-picker-dropdown .VirtualizedSelectOption {
+  background: #15191e;
+  color: #d0d0d0;
+}
+.tab-b-picker-dropdown .VirtualizedSelectFocusedOption {
+  background: #1f242a;
+}
+
+/* curves */
+
+#tab-b-curves-content {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* stats */
+
+#tab-b-stats-content {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+}
+.tab-b-stats-card {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.tab-b-stats-card-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #2a2e35;
+}
+.tab-b-stat-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.tab-b-stat-label { color: #888; }
+.tab-b-stat-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #d0d0d0;
+}
+.tab-b-stat-value strong {
+  color: #e0e0e0;
+  font-weight: 600;
+}
+.tab-b-divergent-line {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2e35;
+}
+.tab-b-cv {
+  margin-left: 6px;
+  font-size: 11px;
+}
+.tab-b-cv-good { color: #76b900; }
+.tab-b-cv-warn { color: #ffa500; }
+.tab-b-cv-bad  { color: #e16868; }
+
+.tab-b-seeds-table-wrapper {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.tab-b-seeds-table { width: 100%; }
+.tab-b-seeds-table th, .tab-b-seeds-table td {
+  padding: 8px 10px;
+  text-align: right;
+  border-bottom: 1px solid #2a2e35;
+  font-size: 11.5px;
+}
+.tab-b-seeds-table th:first-child,
+.tab-b-seeds-table td:first-child {
+  text-align: left;
+}
+.tab-b-seeds-table tr:last-child td { border-bottom: none; }
+.tab-b-seeds-table tr:hover td { background: #1f242a; }
+.tab-b-seed-id {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #66b6ff;
+}
+.tab-b-mono { font-family: ui-monospace, SFMono-Regular, monospace; }
+.tab-b-muted { color: #888; }
+
+.tab-b-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tab-b-seed-status-completed {
+  background: rgba(80, 200, 140, 0.18);
+  color: #50c88c;
+  border: 1px solid rgba(80, 200, 140, 0.4);
+}
+.tab-b-seed-status-failed {
+  background: rgba(220, 80, 80, 0.18);
+  color: #e16868;
+  border: 1px solid rgba(220, 80, 80, 0.4);
+}
+
+/* trend */
+
+#tab-b-trend-content {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.tab-b-trend-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.tab-b-trend-label {
+  color: #888;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.tab-b-trend-metric-dropdown {
+  min-width: 240px;
+}
+.tab-b-trend-mode-toggle label {
+  margin-right: 12px;
+  color: #d0d0d0;
+  font-size: 12px;
+}
+.tab-b-trend-note {
+  color: #888;
+  font-size: 11px;
+  font-style: italic;
+  margin: 0;
+}
+
+/* empty / error states */
+
+.tab-b-empty-state {
+  background: #15191e;
+  border: 1px solid #2a2e35;
+  border-radius: 8px;
+  padding: 24px 28px;
+  color: #888;
+  text-align: center;
+}
+.tab-b-error-banner {
+  background: rgba(220, 180, 80, 0.12);
+  border: 1px solid rgba(220, 180, 80, 0.4);
+  border-radius: 4px;
+  padding: 10px 14px;
+  color: #e8c068;
+  font-size: 12.5px;
+}
+.tab-b-error-banner strong {
+  color: #e8c068;
+  margin-right: 6px;
+}
+
+/* Tab A → Tab B Task cell link styling */
+
+.tab-a-task-link {
+  color: #66b6ff;
+  text-decoration: none;
+}
+.tab-a-task-link:hover {
+  text-decoration: underline;
+}
