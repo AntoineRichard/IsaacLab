@@ -37,13 +37,21 @@ for the bundle layout and schema.
 
 ## Running tests
 
+Odin tests are pure-Python; run with plain `python3`:
+
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/ -v --confcutdir=tools/odin
+PYTHONPATH=. python3 -m pytest tools/odin/tests/ -v --confcutdir=tools/odin
 ```
 
 The `--confcutdir` flag bypasses the project-level `tools/conftest.py`,
 which is written for IsaacLab's main test collection pipeline and is not
 applicable here.
+
+Three test files (`test_hugin.py`, `test_munin.py`, `test_manifest.py`)
+import isaaclab/torch transitively and require the Isaac Sim environment:
+use `PYTHONPATH=.:source/isaaclab _isaac_sim/python.sh -m pytest
+tools/odin/tests/test_hugin.py ...` (or `./isaaclab.sh -p` if you don't
+mind the Kit/Rerun startup).
 
 ## Enumerating environments (T2.1)
 
