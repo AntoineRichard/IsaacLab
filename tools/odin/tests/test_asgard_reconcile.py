@@ -62,32 +62,38 @@ def _job(run_id: str = "r1", assigned_to: str | None = "v1") -> JobEntry:
 
 
 def _manifest_completed() -> str:
-    return json.dumps({
-        "run_id": "r1",
-        "phases": {
-            "startup": {"status": "completed", "exit_code": 0},
-            "training": {"status": "completed", "exit_code": 0},
-        },
-    })
+    return json.dumps(
+        {
+            "run_id": "r1",
+            "phases": {
+                "startup": {"status": "completed", "exit_code": 0},
+                "training": {"status": "completed", "exit_code": 0},
+            },
+        }
+    )
 
 
 def _manifest_failed() -> str:
-    return json.dumps({
-        "run_id": "r1",
-        "phases": {
-            "startup": {"status": "completed", "exit_code": 0},
-            "training": {"status": "failed", "exit_code": 1},
-        },
-    })
+    return json.dumps(
+        {
+            "run_id": "r1",
+            "phases": {
+                "startup": {"status": "completed", "exit_code": 0},
+                "training": {"status": "failed", "exit_code": 1},
+            },
+        }
+    )
 
 
 def test_reconcile_completed_manifest_adopts_bundle(tmp_path: Path):
     """Branch (a): manifest exists + both phases completed → rsync, mark completed."""
     fleet = Fleet(fleet_name="t", hosts=[_host()])
     job = _job()
-    ssh = _FakeSSH(scripted={
-        "cat ": SSHResult(exit_code=0, stdout=_manifest_completed(), stderr="", duration_s=0.0),
-    })
+    ssh = _FakeSSH(
+        scripted={
+            "cat ": SSHResult(exit_code=0, stdout=_manifest_completed(), stderr="", duration_s=0.0),
+        }
+    )
     rsync = _FakeRsync()
 
     outcomes = reconcile_orphans(fleet=fleet, jobs=[job], dispatch_dir=tmp_path, ssh=ssh, rsync=rsync)
@@ -101,9 +107,11 @@ def test_reconcile_failed_manifest_adopts_failure(tmp_path: Path):
     """Branch (b): manifest exists but a phase failed → rsync, mark failed."""
     fleet = Fleet(fleet_name="t", hosts=[_host()])
     job = _job()
-    ssh = _FakeSSH(scripted={
-        "cat ": SSHResult(exit_code=0, stdout=_manifest_failed(), stderr="", duration_s=0.0),
-    })
+    ssh = _FakeSSH(
+        scripted={
+            "cat ": SSHResult(exit_code=0, stdout=_manifest_failed(), stderr="", duration_s=0.0),
+        }
+    )
     rsync = _FakeRsync()
 
     outcomes = reconcile_orphans(fleet=fleet, jobs=[job], dispatch_dir=tmp_path, ssh=ssh, rsync=rsync)
@@ -118,11 +126,13 @@ def test_reconcile_alive_no_manifest_kills_and_pending(tmp_path: Path):
     """Branch (c): no manifest, process alive → kill, mark pending."""
     fleet = Fleet(fleet_name="t", hosts=[_host()])
     job = _job()
-    ssh = _FakeSSH(scripted={
-        "cat ": SSHResult(exit_code=1, stdout="", stderr="No such file", duration_s=0.0),  # no manifest
-        "pgrep ": SSHResult(exit_code=0, stdout="12345\n", stderr="", duration_s=0.0),  # alive
-        "pkill ": SSHResult(exit_code=0, stdout="", stderr="", duration_s=0.0),
-    })
+    ssh = _FakeSSH(
+        scripted={
+            "cat ": SSHResult(exit_code=1, stdout="", stderr="No such file", duration_s=0.0),  # no manifest
+            "pgrep ": SSHResult(exit_code=0, stdout="12345\n", stderr="", duration_s=0.0),  # alive
+            "pkill ": SSHResult(exit_code=0, stdout="", stderr="", duration_s=0.0),
+        }
+    )
     rsync = _FakeRsync()
 
     outcomes = reconcile_orphans(fleet=fleet, jobs=[job], dispatch_dir=tmp_path, ssh=ssh, rsync=rsync)
@@ -130,22 +140,27 @@ def test_reconcile_alive_no_manifest_kills_and_pending(tmp_path: Path):
     assert outcomes == [ReconcileOutcome(run_id="r1", action="killed_alive_orphan")]
     assert job.status == "pending"
     assert job.assigned_to is None
+    assert job.started_at is None
 
 
 def test_reconcile_dead_no_manifest_pending(tmp_path: Path):
     """Branch (d): no manifest, no process → mark pending."""
     fleet = Fleet(fleet_name="t", hosts=[_host()])
     job = _job()
-    ssh = _FakeSSH(scripted={
-        "cat ": SSHResult(exit_code=1, stdout="", stderr="No such file", duration_s=0.0),
-        "pgrep ": SSHResult(exit_code=1, stdout="", stderr="", duration_s=0.0),  # nothing matched
-    })
+    ssh = _FakeSSH(
+        scripted={
+            "cat ": SSHResult(exit_code=1, stdout="", stderr="No such file", duration_s=0.0),
+            "pgrep ": SSHResult(exit_code=1, stdout="", stderr="", duration_s=0.0),  # nothing matched
+        }
+    )
     rsync = _FakeRsync()
 
     outcomes = reconcile_orphans(fleet=fleet, jobs=[job], dispatch_dir=tmp_path, ssh=ssh, rsync=rsync)
 
     assert outcomes == [ReconcileOutcome(run_id="r1", action="dead_re_pending")]
     assert job.status == "pending"
+    assert job.assigned_to is None
+    assert job.started_at is None
 
 
 def test_reconcile_skips_jobs_without_assigned_host(tmp_path: Path):

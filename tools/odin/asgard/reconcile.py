@@ -61,10 +61,7 @@ def _host_by_name(fleet: Fleet, name: str | None) -> ValkyrieConfig | None:
 
 def _read_remote_manifest(host: ValkyrieConfig, run_id: str, ssh: SSHRunner) -> dict | None:
     """Cat the remote manifest.json. Return parsed dict or None if absent/invalid."""
-    cmd = (
-        f"docker exec {host.container_name} "
-        f"cat {_REMOTE_RUNS_ROOT}/{run_id}/manifest.json"
-    )
+    cmd = f"docker exec {host.container_name} cat {_REMOTE_RUNS_ROOT}/{run_id}/manifest.json"
     r = ssh.run(host, cmd, timeout_s=15.0)
     if r.exit_code != 0 or not r.stdout.strip():
         return None
@@ -78,10 +75,7 @@ def _manifest_indicates_clean_completion(manifest: dict) -> bool:
     phases = manifest.get("phases", {})
     if not phases:
         return False
-    for phase in phases.values():
-        if phase.get("status") != "completed" or phase.get("exit_code") != 0:
-            return False
-    return True
+    return all(phase.get("status") == "completed" and phase.get("exit_code") == 0 for phase in phases.values())
 
 
 def _process_alive(host: ValkyrieConfig, run_id: str, ssh: SSHRunner) -> bool:
@@ -91,16 +85,11 @@ def _process_alive(host: ValkyrieConfig, run_id: str, ssh: SSHRunner) -> bool:
 
 
 def _kill_remote(host: ValkyrieConfig, run_id: str, ssh: SSHRunner) -> None:
-    cmd = (
-        f"docker exec {host.container_name} "
-        f"pkill -9 -f -- '--run_id {run_id}' 2>/dev/null; true"
-    )
+    cmd = f"docker exec {host.container_name} pkill -9 -f -- '--run_id {run_id}' 2>/dev/null; true"
     ssh.run(host, cmd, timeout_s=10.0)
 
 
-def _pull_bundle(
-    host: ValkyrieConfig, run_id: str, dispatch_dir: Path, rsync: RsyncRunner
-) -> bool:
+def _pull_bundle(host: ValkyrieConfig, run_id: str, dispatch_dir: Path, rsync: RsyncRunner) -> bool:
     remote_path = f"{host.isaaclab_path}/odin_runs/{run_id}"
     local_path = dispatch_dir / run_id
     rr = rsync.pull(host, remote_path, local_path)
