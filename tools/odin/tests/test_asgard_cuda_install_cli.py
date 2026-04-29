@@ -216,6 +216,7 @@ def test_main_install_yes_skips_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     fleet_path = _write_fleet_yaml(tmp_path)
+    runs_root = tmp_path / "odin_runs"
 
     monkeypatch.setattr(
         "tools.odin.asgard.cuda_install_cli.install_fleet",
@@ -224,7 +225,7 @@ def test_main_install_yes_skips_prompt(
             CudaInstallResult(host="v2.internal", ok=True),
         ],
     )
-    code = main(["install", "--fleet", str(fleet_path), "--yes"])
+    code = main(["install", "--fleet", str(fleet_path), "--runs-root", str(runs_root), "--yes"])
     assert code == 0
     out = capsys.readouterr().out
     assert "Proceed? [y/N]" not in out
@@ -234,13 +235,14 @@ def test_main_install_prompt_no_aborts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     fleet_path = _write_fleet_yaml(tmp_path)
+    runs_root = tmp_path / "odin_runs"
 
     def _explode(*args, **kwargs):
         raise AssertionError("install_fleet must not run after a 'no' answer")
 
     monkeypatch.setattr("tools.odin.asgard.cuda_install_cli.install_fleet", _explode)
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
-    code = main(["install", "--fleet", str(fleet_path)])
+    code = main(["install", "--fleet", str(fleet_path), "--runs-root", str(runs_root)])
     out = capsys.readouterr().out
     assert code == 3
     assert "aborted" in out.lower()
@@ -250,6 +252,7 @@ def test_main_install_exit_one_when_any_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     fleet_path = _write_fleet_yaml(tmp_path)
+    runs_root = tmp_path / "odin_runs"
     monkeypatch.setattr(
         "tools.odin.asgard.cuda_install_cli.install_fleet",
         lambda fleet, **kw: [
@@ -257,7 +260,7 @@ def test_main_install_exit_one_when_any_failed(
             CudaInstallResult(host="v2.internal", ok=False, message="apt-get install failed"),
         ],
     )
-    code = main(["install", "--fleet", str(fleet_path), "--yes"])
+    code = main(["install", "--fleet", str(fleet_path), "--runs-root", str(runs_root), "--yes"])
     assert code == 1
     out = capsys.readouterr().out
     assert "1/2" in out
@@ -267,6 +270,7 @@ def test_main_install_exit_one_when_any_failed(
 def test_main_install_prompt_yes_proceeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """When the prompt is shown and the user answers 'y', install_fleet runs."""
     fleet_path = _write_fleet_yaml(tmp_path)
+    runs_root = tmp_path / "odin_runs"
 
     captured = {}
 
@@ -276,7 +280,7 @@ def test_main_install_prompt_yes_proceeds(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr("tools.odin.asgard.cuda_install_cli.install_fleet", _fake_install_fleet)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-    code = main(["install", "--fleet", str(fleet_path)])
+    code = main(["install", "--fleet", str(fleet_path), "--runs-root", str(runs_root)])
     assert code == 0
     assert captured.get("called") is True
 
@@ -286,6 +290,7 @@ def test_main_install_dmesg_tail_printed_indented_on_failure(
 ):
     """dmesg_tail lines are printed indented after the host failure line."""
     fleet_path = _write_fleet_yaml(tmp_path)
+    runs_root = tmp_path / "odin_runs"
     _DMESG = "[ 1.234] NVRM: GPU-0000:01:00.0: RmInitAdapter failed!\n[ 1.235] NVRM: see dmesg"
     monkeypatch.setattr(
         "tools.odin.asgard.cuda_install_cli.install_fleet",
@@ -298,7 +303,7 @@ def test_main_install_dmesg_tail_printed_indented_on_failure(
             ),
         ],
     )
-    code = main(["install", "--fleet", str(fleet_path), "--yes"])
+    code = main(["install", "--fleet", str(fleet_path), "--runs-root", str(runs_root), "--yes"])
     assert code == 1
     out = capsys.readouterr().out
     assert "v2.internal" in out
