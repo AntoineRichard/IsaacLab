@@ -793,3 +793,41 @@ def test_worker_gpu_lost_three_in_a_row_terminal_failure(tmp_path, monkeypatch):
     assert job.failure is not None
     assert job.failure.kind == "gpu_lost"
     assert job.attempts == 3
+
+
+def test_build_docker_exec_cmd_uses_python_sh_directly():
+    """Hugin invocation must bypass ./isaaclab.sh -p whose error_exit trap
+    swallows child stderr; call _isaac_sim/python.sh directly instead."""
+    host = _host()
+    job = JobEntry(
+        run_id="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
+        task_id="Isaac-Ant-Direct-v0",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1024,
+        max_iterations=100,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
+    )
+    cmd = _build_docker_exec_cmd(host, job)
+    assert "_isaac_sim/python.sh" in cmd
+    assert "./isaaclab.sh -p" not in cmd
+
+
+def test_build_docker_exec_cmd_redirects_streams_into_bundle():
+    """Child stdout / stderr must land in bundle-local log files so they
+    rsync back regardless of exit code."""
+    host = _host()
+    job = JobEntry(
+        run_id="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
+        task_id="Isaac-Ant-Direct-v0",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1024,
+        max_iterations=100,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
+    )
+    cmd = _build_docker_exec_cmd(host, job)
+    assert "odin_runs/rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42/logs/hugin-stdout.log" in cmd
+    assert "odin_runs/rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42/logs/hugin-stderr.log" in cmd

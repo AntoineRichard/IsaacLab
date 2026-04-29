@@ -76,24 +76,30 @@ _GPU_LOST_SIGNATURES = (
 def _build_docker_exec_cmd(host: ValkyrieConfig, job: JobEntry) -> str:
     """Return the remote shell command to run Hugin/Munin inside the container.
 
-    Shape: ``cd {isaaclab_path} && docker exec {container_name} bash -lc '...'``
-    where the inner command is the Hugin (rsl_rl) or Munin (skrl) wrapper
-    invocation with the job's CLI args.
+    Shape: ``cd {isaaclab_path} && docker exec {container_name} bash -lc '...'``.
+    Calls ``_isaac_sim/python.sh`` directly (not ``./isaaclab.sh -p``) — the
+    outer wrapper's ``set -e`` + ``error_exit`` trap discards child stderr
+    on non-zero exit, hiding real tracebacks from the bundle.
+
+    Stdout and stderr are redirected into bundle-local log files so they
+    survive the rsync-back regardless of exit code.
     """
     runner_script = "tools/odin/hugin/run.py" if job.framework == "rsl_rl" else "tools/odin/munin/run.py"
-    inner_parts = [
-        "cd /workspace/isaaclab",
-        "PYTHONPATH=.",
-        f"./isaaclab.sh -p {runner_script}",
-        f"--task {job.task_id}",
-        f"--backend {job.backend}",
-        f"--seed {job.seed}",
-        f"--num_envs {job.num_envs}",
-        f"--max_iterations {job.max_iterations}",
-        "--runs_root odin_runs",
-        f"--run_id {job.run_id}",
-    ]
-    inner = " && ".join(inner_parts[:1]) + " && " + " ".join(inner_parts[1:])
+    bundle_logs = f"odin_runs/{job.bundle_dir_name}/logs"
+    inner = (
+        f"cd /workspace/isaaclab "
+        f"&& mkdir -p {bundle_logs} "
+        f"&& PYTHONPATH=. _isaac_sim/python.sh {runner_script}"
+        f" --task {job.task_id}"
+        f" --backend {job.backend}"
+        f" --seed {job.seed}"
+        f" --num_envs {job.num_envs}"
+        f" --max_iterations {job.max_iterations}"
+        f" --runs_root odin_runs"
+        f" --run_id {job.run_id}"
+        f" > {bundle_logs}/hugin-stdout.log"
+        f" 2> {bundle_logs}/hugin-stderr.log"
+    )
     return f"cd {host.isaaclab_path} && docker exec {host.container_name} bash -lc '{inner}'"
 
 
