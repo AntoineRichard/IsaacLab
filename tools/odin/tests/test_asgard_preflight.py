@@ -162,7 +162,7 @@ def test_gpu_absent_marks_host_down():
             ),
         }
     )
-    r = preflight_valkyrie(_host(), ssh=ssh)
+    r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=False)
     assert r.ok is False
     assert r.checks["gpu_present"] is False
     assert "gpu" in r.message.lower()

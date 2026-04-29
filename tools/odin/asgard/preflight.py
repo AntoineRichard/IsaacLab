@@ -10,10 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from tools.odin.asgard.fleet import ValkyrieConfig
+from tools.odin.asgard.recovery import recover_valkyrie_gpu
 from tools.odin.asgard.transport import SSHRunner
 
 __all__ = ["PreflightResult", "preflight_valkyrie"]
 
+# Subset of worker._GPU_LOST_SIGNATURES that are fixable via container restart.
+# "Vulkan ERROR_INCOMPATIBLE_DRIVER" is excluded: that requires a host-level
+# driver fix that docker restart cannot resolve.
 _NVML_WEDGE_SIGNATURES = (
     "Failed to initialize NVML",
     "CUDA error: no CUDA-capable device is detected",
@@ -121,8 +125,6 @@ def preflight_valkyrie(host: ValkyrieConfig, *, ssh: SSHRunner, auto_restart: bo
 
     # GPU absent — try one container-restart recovery if allowed.
     if auto_restart and (_looks_wedged(r.stderr) or not r.stdout.strip()):
-        from tools.odin.asgard.recovery import recover_valkyrie_gpu
-
         rec = recover_valkyrie_gpu(host, ssh=ssh)
         if rec.recovered:
             checks["gpu_present"] = True
