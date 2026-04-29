@@ -44,8 +44,7 @@ def _walk(component):
 
 
 def test_list_row_options_one_per_row():
-    agg = _aggregate([_row("Isaac-Ant-Direct-v0"), _row("Isaac-Cartpole-Direct-v0"),
-                      _row("Isaac-Humanoid-Direct-v0")])
+    agg = _aggregate([_row("Isaac-Ant-Direct-v0"), _row("Isaac-Cartpole-Direct-v0"), _row("Isaac-Humanoid-Direct-v0")])
     assert len(list_row_options(agg)) == 3
 
 
@@ -62,8 +61,7 @@ def test_list_row_options_value_format():
 
 
 def test_list_row_options_sorted_by_task_name():
-    agg = _aggregate([_row("Isaac-Cartpole-Direct-v0"), _row("Isaac-Ant-Direct-v0"),
-                      _row("Isaac-Humanoid-Direct-v0")])
+    agg = _aggregate([_row("Isaac-Cartpole-Direct-v0"), _row("Isaac-Ant-Direct-v0"), _row("Isaac-Humanoid-Direct-v0")])
     labels = [o["label"] for o in list_row_options(agg)]
     assert labels[0].startswith("Isaac-Ant-Direct-v0")
     assert labels[1].startswith("Isaac-Cartpole-Direct-v0")
