@@ -53,6 +53,10 @@ class DispatchOptions:
         skip_aggregate: When ``True``, skip the automatic
             :func:`~tools.odin.valhalla.aggregate_dispatch` + write at the
             end of :func:`run_dispatch`. Default ``False``.
+        consecutive_failure_quarantine: Number of consecutive per-worker
+            failures that trigger host quarantine (``host_down`` +
+            worker exit). ``0`` disables the circuit-breaker. Default
+            ``3``.
     """
 
     seeds: list[int]
@@ -64,6 +68,7 @@ class DispatchOptions:
     verbose: bool = False
     retry_failed: list[str] | None = None
     skip_aggregate: bool = False
+    consecutive_failure_quarantine: int = 3
 
 
 def _utc_now_iso() -> str:
@@ -490,6 +495,7 @@ def run_dispatch(
             options=WorkerOptions(
                 per_job_timeout_s=options.per_job_timeout_s,
                 max_infrastructure_retries=options.max_infrastructure_retries,
+                consecutive_failure_quarantine=options.consecutive_failure_quarantine,
             ),
             ssh=ssh,
             rsync=rsync,

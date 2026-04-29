@@ -92,3 +92,32 @@ def test_parse_args_all_flags():
 def test_parse_args_requires_at_least_one_yaml():
     with pytest.raises(SystemExit):
         parse_args(["--fleet", "fleet.yaml", "--seeds", "42"])
+
+
+def test_parse_args_no_circuit_breaker_default_off():
+    args = parse_args(
+        [
+            "--fleet",
+            "fleet.yaml",
+            "--physx-yaml",
+            "physx.yaml",
+            "--seeds",
+            "42",
+        ]
+    )
+    assert args.no_circuit_breaker is False
+
+
+def test_parse_args_no_circuit_breaker_set():
+    args = parse_args(
+        [
+            "--fleet",
+            "fleet.yaml",
+            "--physx-yaml",
+            "physx.yaml",
+            "--seeds",
+            "42",
+            "--no-circuit-breaker",
+        ]
+    )
+    assert args.no_circuit_breaker is True

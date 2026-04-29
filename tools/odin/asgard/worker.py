@@ -24,9 +24,47 @@ __all__ = ["StateEvent", "ValkyrieWorker", "WorkerOptions"]
 
 
 @dataclass
+class _ConsecutiveFailureTracker:
+    """Per-worker counter for consecutive job failures.
+
+    Tracks how many failures have happened in a row on this worker without
+    an intervening completed job. When the threshold is reached, the
+    worker should quarantine its host (emit ``host_down``) and exit.
+
+    A ``threshold`` of ``0`` disables the circuit-breaker entirely.
+
+    Args:
+        threshold: Number of consecutive failures that triggers quarantine.
+            ``0`` disables the breaker. Default tracked count starts at 0.
+        count: Current consecutive failure count.
+    """
+
+    threshold: int
+    count: int = 0
+
+    def note_failure(self) -> bool:
+        """Record a failure.
+
+        Returns:
+            ``True`` iff the threshold has been reached (caller should
+            quarantine). ``False`` when the breaker is disabled or the
+            count is still below threshold.
+        """
+        if self.threshold <= 0:
+            return False
+        self.count += 1
+        return self.count >= self.threshold
+
+    def note_success(self) -> None:
+        """Reset the counter to zero after a completed job."""
+        self.count = 0
+
+
+@dataclass
 class WorkerOptions:
     per_job_timeout_s: int = 14400
     max_infrastructure_retries: int = 2
+    consecutive_failure_quarantine: int = 3  # 0 = disabled
 
 
 @dataclass
@@ -147,6 +185,7 @@ class ValkyrieWorker(threading.Thread):
         # failed). Causes ``run()`` to stop pulling new jobs.
         self._down_event = threading.Event()
         self._preferred_not_seen: dict[str, int] = {}
+        self._fail_tracker = _ConsecutiveFailureTracker(threshold=options.consecutive_failure_quarantine)
 
     # -- public entry point -------------------------------------------------
 
@@ -261,6 +300,23 @@ class ValkyrieWorker(threading.Thread):
                     ended_at=job.ended_at,
                 )
             )
+            if self._fail_tracker.note_failure():
+                self._state_chan.put(
+                    StateEvent(
+                        run_id=job.run_id,
+                        host=self.host.host,
+                        transition="host_down",
+                        failure=FailureInfo(
+                            kind="circuit_breaker",
+                            message=(
+                                f"{self._fail_tracker.threshold} consecutive failures on "
+                                f"{self.host.host}; quarantining host"
+                            ),
+                        ),
+                    )
+                )
+                self._down_event.set()
+                return  # exit the worker thread
             return
 
         # Success path: rsync pull the bundle back.
@@ -278,6 +334,22 @@ class ValkyrieWorker(threading.Thread):
             self._state_chan.put(
                 StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=job.failure)
             )
+            if self._fail_tracker.note_failure():
+                self._state_chan.put(
+                    StateEvent(
+                        run_id=job.run_id,
+                        host=self.host.host,
+                        transition="host_down",
+                        failure=FailureInfo(
+                            kind="circuit_breaker",
+                            message=(
+                                f"{self._fail_tracker.threshold} consecutive failures on "
+                                f"{self.host.host}; quarantining host"
+                            ),
+                        ),
+                    )
+                )
+                self._down_event.set()
             return
 
         # Validate the bundle: manifest.json present, schema-v1 shape.
@@ -289,6 +361,22 @@ class ValkyrieWorker(threading.Thread):
             self._state_chan.put(
                 StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=bundle_failure)
             )
+            if self._fail_tracker.note_failure():
+                self._state_chan.put(
+                    StateEvent(
+                        run_id=job.run_id,
+                        host=self.host.host,
+                        transition="host_down",
+                        failure=FailureInfo(
+                            kind="circuit_breaker",
+                            message=(
+                                f"{self._fail_tracker.threshold} consecutive failures on "
+                                f"{self.host.host}; quarantining host"
+                            ),
+                        ),
+                    )
+                )
+                self._down_event.set()
             return
 
         job.status = "completed"
@@ -301,6 +389,7 @@ class ValkyrieWorker(threading.Thread):
                 ended_at=job.ended_at,
             )
         )
+        self._fail_tracker.note_success()
 
     # -- timeout cleanup ----------------------------------------------------
 
