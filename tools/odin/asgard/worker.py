@@ -76,13 +76,21 @@ _GPU_LOST_SIGNATURES = (
 def _build_docker_exec_cmd(host: ValkyrieConfig, job: JobEntry) -> str:
     """Return the remote shell command to run Hugin/Munin inside the container.
 
-    Shape: ``cd {isaaclab_path} && docker exec {container_name} bash -lc '...'``.
     Calls ``_isaac_sim/python.sh`` directly (not ``./isaaclab.sh -p``) — the
     outer wrapper's ``set -e`` + ``error_exit`` trap discards child stderr
     on non-zero exit, hiding real tracebacks from the bundle.
 
     Stdout and stderr are redirected into bundle-local log files so they
     survive the rsync-back regardless of exit code.
+
+    Args:
+        host: Valkyrie host configuration.
+        job: Job metadata used to build the runner invocation.
+
+    Returns:
+        Shell command of shape
+        ``cd <isaaclab_path> && docker exec <container_name> bash -lc '...'``
+        ready to pass to :class:`SSHRunner.run`.
     """
     runner_script = "tools/odin/hugin/run.py" if job.framework == "rsl_rl" else "tools/odin/munin/run.py"
     bundle_logs = f"odin_runs/{job.bundle_dir_name}/logs"

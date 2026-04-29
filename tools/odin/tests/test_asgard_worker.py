@@ -816,8 +816,14 @@ def test_build_docker_exec_cmd_uses_python_sh_directly():
 
 def test_build_docker_exec_cmd_redirects_streams_into_bundle():
     """Child stdout / stderr must land in bundle-local log files so they
-    rsync back regardless of exit code."""
-    host = _host()
+    rsync back regardless of exit code. The bundle logs/ directory must
+    be created (mkdir -p) before redirection begins, otherwise the shell
+    would error out on first launch."""
+    from tools.odin.asgard.worker import _build_docker_exec_cmd
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+
+    host = ValkyrieConfig(host="v1", ssh_user="odin", isaaclab_path="/home/odin/IsaacLab")
     job = JobEntry(
         run_id="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
         task_id="Isaac-Ant-Direct-v0",
@@ -829,5 +835,6 @@ def test_build_docker_exec_cmd_redirects_streams_into_bundle():
         bundle_dir_name="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
     )
     cmd = _build_docker_exec_cmd(host, job)
+    assert "mkdir -p odin_runs/rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42/logs" in cmd
     assert "odin_runs/rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42/logs/hugin-stdout.log" in cmd
     assert "odin_runs/rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42/logs/hugin-stderr.log" in cmd
