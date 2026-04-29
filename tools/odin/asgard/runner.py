@@ -325,7 +325,22 @@ def run_dispatch(
     # Load prior state for resume if it exists.
     prior_state = read_dispatch_state(dispatch_dir)
     if prior_state is not None:
-        # Flip in-flight → pending first, then merge.
+        # Reconcile orphans (PR4 / punch-list #7b): for any 'running' job,
+        # check the remote for a completed manifest, alive process, or
+        # neither, and mutate accordingly. Must run BEFORE
+        # reset_in_flight_to_pending — that function would otherwise lose
+        # the assigned_to we need to find the host.
+        from tools.odin.asgard.reconcile import reconcile_orphans
+
+        reconcile_orphans(
+            fleet=fleet,
+            jobs=prior_state.jobs,
+            dispatch_dir=dispatch_dir,
+            ssh=ssh,
+            rsync=rsync,
+        )
+        # Flip remaining in-flight (those still in 'running' after reconcile,
+        # e.g. assigned_to=None edge cases) → pending.
         reset_in_flight_to_pending(prior_state)
         merged_jobs = _merge_jobs(prior_state.jobs, fresh_jobs)
         # Resume preserves the prior skipped[] verbatim; we don't re-evaluate.
