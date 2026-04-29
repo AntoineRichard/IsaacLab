@@ -20,7 +20,7 @@ from dash import Input, Output, dcc, html
 
 from tools.odin.valhalla.dashboard.data import DataLayer
 
-__all__ = ["create_app", "route_pathname"]
+__all__ = ["compute_nav_strip", "create_app", "route_pathname"]
 
 
 _DISPATCH_ID_RE = re.compile(r"^\d{8}-\d{6}$")
@@ -57,6 +57,7 @@ def _build_layout(initial_dispatch: Path | None) -> html.Div:
             dcc.Location(**location_kwargs),
             dcc.Store(id="active-dispatch", storage_type="memory"),
             _build_banner(),
+            html.Div(id="odin-nav-strip"),
             html.Div(id="page-content"),
         ],
     )
@@ -92,10 +93,79 @@ def _build_banner() -> html.Div:
     )
 
 
+_NAV_TABS: list[tuple[str, str]] = [
+    ("dispatches", "Dispatches"),
+    ("dispatch-fleet", "Fleet & Jobs"),
+    ("task-drilldown", "Task Drill-down"),
+]
+
+
+def compute_nav_strip(pathname: str, *, search: str = "") -> html.Div:
+    """Build the persistent top nav strip for the given URL.
+
+    The strip has three pills (Dispatches / Fleet & Jobs / Task Drill-down).
+    Exactly one is marked ``active``; the dispatch-scoped pills are marked
+    ``disabled`` (rendered as ``html.Span``) when no dispatch is in scope.
+    Otherwise dispatch-scoped pills are rendered as ``dcc.Link`` and carry
+    the dispatch_id forward in their ``href``. ``search`` is preserved on
+    the active dispatch-scoped pill so query-string deep-links survive
+    when the user returns to the same tab.
+    """
+    parts = [p for p in pathname.split("/") if p]
+    dispatch_id: str | None = None
+    active_tab: str = "dispatches"
+    if parts and _DISPATCH_ID_RE.match(parts[0]):
+        dispatch_id = parts[0]
+        if len(parts) >= 2 and parts[1] in {"dispatch-fleet", "task-drilldown"}:
+            active_tab = parts[1]
+
+    children = []
+    for slug, label in _NAV_TABS:
+        children.append(_nav_pill(slug, label, dispatch_id, active_tab, search))
+    return html.Div(className="odin-nav-strip", children=children)
+
+
+def _nav_pill(
+    slug: str,
+    label: str,
+    dispatch_id: str | None,
+    active_tab: str,
+    search: str,
+) -> html.Span | dcc.Link:
+    is_active = slug == active_tab
+    classes = ["odin-nav-pill"]
+    if is_active:
+        classes.append("active")
+
+    if slug == "dispatches":
+        return dcc.Link(label, href="/", className=" ".join(classes))
+
+    # Dispatch-scoped pill — disabled when no dispatch is in URL scope.
+    if dispatch_id is None:
+        classes.append("disabled")
+        return html.Span(
+            label,
+            className=" ".join(classes),
+            title="Pick a dispatch first",
+        )
+    href = f"/{dispatch_id}/{slug}"
+    if is_active and search:
+        href = f"{href}{search}"
+    return dcc.Link(label, href=href, className=" ".join(classes))
+
+
 def _register_callbacks(app: dash.Dash, data: DataLayer) -> None:
     @app.callback(Output("page-content", "children"), Input("url", "pathname"))
     def _on_url(pathname: str):
         return route_pathname(pathname or "/", data)
+
+    @app.callback(
+        Output("odin-nav-strip", "children"),
+        Input("url", "pathname"),
+        Input("url", "search"),
+    )
+    def _on_nav_url(pathname: str, search: str):
+        return compute_nav_strip(pathname or "/", search=search or "")
 
     _register_tab_callbacks(app, data)
 
