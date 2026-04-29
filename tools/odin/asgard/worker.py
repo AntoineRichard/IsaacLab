@@ -35,8 +35,7 @@ class _ConsecutiveFailureTracker:
 
     Args:
         threshold: Number of consecutive failures that triggers quarantine.
-            ``0`` disables the breaker. Default tracked count starts at 0.
-        count: Current consecutive failure count.
+            ``0`` disables the breaker.
     """
 
     threshold: int
@@ -300,23 +299,8 @@ class ValkyrieWorker(threading.Thread):
                     ended_at=job.ended_at,
                 )
             )
-            if self._fail_tracker.note_failure():
-                self._state_chan.put(
-                    StateEvent(
-                        run_id=job.run_id,
-                        host=self.host.host,
-                        transition="host_down",
-                        failure=FailureInfo(
-                            kind="circuit_breaker",
-                            message=(
-                                f"{self._fail_tracker.threshold} consecutive failures on "
-                                f"{self.host.host}; quarantining host"
-                            ),
-                        ),
-                    )
-                )
-                self._down_event.set()
-                return  # exit the worker thread
+            if self._maybe_quarantine_after_failure(job.run_id):
+                return
             return
 
         # Success path: rsync pull the bundle back.
@@ -334,22 +318,8 @@ class ValkyrieWorker(threading.Thread):
             self._state_chan.put(
                 StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=job.failure)
             )
-            if self._fail_tracker.note_failure():
-                self._state_chan.put(
-                    StateEvent(
-                        run_id=job.run_id,
-                        host=self.host.host,
-                        transition="host_down",
-                        failure=FailureInfo(
-                            kind="circuit_breaker",
-                            message=(
-                                f"{self._fail_tracker.threshold} consecutive failures on "
-                                f"{self.host.host}; quarantining host"
-                            ),
-                        ),
-                    )
-                )
-                self._down_event.set()
+            if self._maybe_quarantine_after_failure(job.run_id):
+                return
             return
 
         # Validate the bundle: manifest.json present, schema-v1 shape.
@@ -361,22 +331,8 @@ class ValkyrieWorker(threading.Thread):
             self._state_chan.put(
                 StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=bundle_failure)
             )
-            if self._fail_tracker.note_failure():
-                self._state_chan.put(
-                    StateEvent(
-                        run_id=job.run_id,
-                        host=self.host.host,
-                        transition="host_down",
-                        failure=FailureInfo(
-                            kind="circuit_breaker",
-                            message=(
-                                f"{self._fail_tracker.threshold} consecutive failures on "
-                                f"{self.host.host}; quarantining host"
-                            ),
-                        ),
-                    )
-                )
-                self._down_event.set()
+            if self._maybe_quarantine_after_failure(job.run_id):
+                return
             return
 
         job.status = "completed"
@@ -390,6 +346,37 @@ class ValkyrieWorker(threading.Thread):
             )
         )
         self._fail_tracker.note_success()
+
+    # -- circuit-breaker helper ---------------------------------------------
+
+    def _maybe_quarantine_after_failure(self, run_id: str) -> bool:
+        """Note a failure on this worker; if the threshold was reached, emit
+        a host_down ``StateEvent`` and arm ``_down_event``.
+
+        Args:
+            run_id: The run_id of the just-failed job.
+
+        Returns:
+            ``True`` iff the worker should exit (threshold reached).
+            ``False`` if the worker should continue with the next job.
+        """
+        if not self._fail_tracker.note_failure():
+            return False
+        self._state_chan.put(
+            StateEvent(
+                run_id=run_id,
+                host=self.host.host,
+                transition="host_down",
+                failure=FailureInfo(
+                    kind="circuit_breaker",
+                    message=(
+                        f"{self._fail_tracker.threshold} consecutive failures on {self.host.host}; quarantining host"
+                    ),
+                ),
+            )
+        )
+        self._down_event.set()
+        return True
 
     # -- timeout cleanup ----------------------------------------------------
 

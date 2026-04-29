@@ -213,12 +213,13 @@ def _apply_state_event(
                 f.last_error = "gpu_lost: recovered"
         return 0
     if ev.transition == "host_down":
+        kind = ev.failure.kind if ev.failure is not None else "unknown"
         detail = ev.failure.message if ev.failure is not None else "unknown"
         for f in state.fleet:
             if f.host == ev.host:
                 f.status = "down"
-                f.last_error = f"gpu_lost: recovery_failed ({detail})"
-                f.current_run_id = None  # worker re-queued the job
+                f.last_error = f"{kind}: {detail}"
+                f.current_run_id = None  # worker re-queued the job (or quarantined for circuit_breaker)
         return 0
     return 0
 

@@ -478,8 +478,7 @@ def test_runner_handles_host_down_event(tmp_path):
     runner_mod._apply_state_event(state, ev)
     fs = next(f for f in state.fleet if f.host == "v1")
     assert fs.status == "down"
-    assert "gpu_lost: recovery_failed" in fs.last_error
-    assert "docker_restart_failed" in fs.last_error
+    assert fs.last_error == "gpu_lost: docker_restart_failed: daemon down"
 
 
 def test_sweep_pending_terminal_fails_when_all_hosts_down(tmp_path):
