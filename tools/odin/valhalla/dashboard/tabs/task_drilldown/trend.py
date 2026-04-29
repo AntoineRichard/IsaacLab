@@ -12,12 +12,14 @@ import statistics
 import sys
 
 import plotly.graph_objects as go
-from dash import dcc
+from dash import dcc, html
 
 __all__ = [
     "_TREND_METRICS",
     "compute_trend_points",
+    "render_metric_selector",
     "render_trend_chart",
+    "render_trend_section",
 ]
 
 
@@ -189,3 +191,110 @@ def _metric_value(row: dict, metric: str, source: str) -> tuple[float, float]:
     mean = statistics.mean(values)
     std = statistics.pstdev(values) if len(values) > 1 else 0.0
     return mean, std
+
+
+def render_metric_selector(default_metric: str = "reward_final_ema", default_mode: str = "ribbon"):
+    """Build the metric dropdown + view-mode toggle.
+
+    Returns a Div with two child controls:
+    - tab-b-trend-metric-select (dcc.Dropdown)
+    - tab-b-trend-mode-toggle (dcc.RadioItems for Ribbon/Bars)
+    """
+    return html.Div(
+        className="tab-b-trend-controls",
+        children=[
+            html.Span("Metric", className="tab-b-trend-label"),
+            dcc.Dropdown(
+                id="tab-b-trend-metric-select",
+                options=[{"label": m["label"], "value": m["value"]} for m in _TREND_METRICS],
+                value=default_metric,
+                clearable=False,
+                className="tab-b-trend-metric-dropdown",
+            ),
+            html.Span("View", className="tab-b-trend-label"),
+            dcc.RadioItems(
+                id="tab-b-trend-mode-toggle",
+                options=[
+                    {"label": "Ribbon", "value": "ribbon"},
+                    {"label": "Bars", "value": "bars"},
+                ],
+                value=default_mode,
+                inline=True,
+                className="tab-b-trend-mode-toggle",
+            ),
+        ],
+    )
+
+
+def render_trend_section(
+    data,
+    *,
+    current_dispatch_id: str,
+    selection,
+    metric: str,
+    mode: str,
+):
+    """Top-level: selector + chart wrapped in Div(id='tab-b-trend-content').
+
+    Handles three states:
+    - 0 matches → empty-state banner.
+    - 1 match (only current) → single-point chart + note.
+    - N>1 matches → normal chart.
+    """
+    metric_label = next((m["label"] for m in _TREND_METRICS if m["value"] == metric), metric)
+    selector = render_metric_selector(default_metric=metric, default_mode=mode)
+
+    dispatch_ids = data.trend_dispatches_for(
+        current_dispatch_id,
+        selection.task,
+        selection.framework,
+        selection.backend,
+        n=10,
+    )
+    fingerprint = ""
+    with contextlib.suppress(Exception):
+        hw = data.load_hardware(current_dispatch_id) or {}
+        fingerprint = hw.get("fingerprint", "")
+
+    if not dispatch_ids:
+        return html.Div(
+            id="tab-b-trend-content",
+            children=[
+                selector,
+                html.Div(
+                    className="tab-b-empty-state",
+                    children=[
+                        html.P(
+                            f"Trend needs at least 1 prior dispatch matching "
+                            f"{selection.task} · {selection.framework} × {selection.backend}"
+                            + (f" on the same hardware ({fingerprint})." if fingerprint else "."),
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    points = compute_trend_points(
+        data,
+        dispatch_ids,
+        selection.task,
+        selection.framework,
+        selection.backend,
+        metric,
+    )
+    chart = render_trend_chart(points, metric_label, mode=mode)
+
+    if len(dispatch_ids) == 1 and dispatch_ids[0] == current_dispatch_id:
+        return html.Div(
+            id="tab-b-trend-content",
+            children=[
+                selector,
+                chart,
+                html.P(
+                    "First matching dispatch — trend will populate as more land.",
+                    className="tab-b-trend-note",
+                ),
+            ],
+        )
+
+    return html.Div(id="tab-b-trend-content", children=[selector, chart])

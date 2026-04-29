@@ -13,6 +13,21 @@ from tools.odin.valhalla.dashboard.tabs.task_drilldown.trend import (
 )
 
 
+def _walk(component):
+    """Walk a component tree yielding all descendants."""
+    yield component
+    children = getattr(component, "children", None)
+    if children is None:
+        return
+    if isinstance(children, list):
+        for child in children:
+            if child is None or isinstance(child, str):
+                continue
+            yield from _walk(child)
+    elif not isinstance(children, str):
+        yield from _walk(children)
+
+
 def _row(
     *,
     task: str = "X",
@@ -187,3 +202,109 @@ def test_render_trend_chart_x_labels_short_sha():
     # Tick labels should use the short SHA (first 7).
     tick_text = list(fig.layout.xaxis.ticktext or [])
     assert any("abcdef1" in text for text in tick_text)
+
+
+def test_render_trend_chart_current_marker_highlighted():
+    points = [
+        {"dispatch_id": "d1", "commit_sha": "aaa1111", "mean": 7000.0, "std": 300.0, "n_seeds_completed": 3},
+        {"dispatch_id": "d2", "commit_sha": "bbb2222", "mean": 7500.0, "std": 280.0, "n_seeds_completed": 3},
+        {"dispatch_id": "d3", "commit_sha": "ccc3333", "mean": 7991.5, "std": 257.7, "n_seeds_completed": 3},
+    ]
+    graph = render_trend_chart(points, "Reward (final EMA)", mode="ribbon")
+    fig = graph.figure
+    # Locate the line+marker trace (the second one in ribbon mode).
+    line_trace = fig.data[1]
+    marker_colors = list(line_trace.marker.color)
+    # Last marker color is NVIDIA green (#76b900); others are #66b6ff.
+    assert marker_colors[-1] == "#76b900"
+    assert all(c == "#66b6ff" for c in marker_colors[:-1])
+
+
+def test_render_trend_section_empty_state():
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.trend import render_trend_section
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.url_state import TaskSelection
+
+    class _Data:
+        def trend_dispatches_for(self, current, task, fw, be, n=10):
+            return []
+
+        def load_hardware(self, dispatch_id):
+            return {"fingerprint": "gpu:NVIDIA-L40"}
+
+    selection = TaskSelection("Isaac-Ant-Direct-v0", "rsl_rl", "physx")
+    component = render_trend_section(
+        _Data(),
+        current_dispatch_id="d-now",
+        selection=selection,
+        metric="reward_final_ema",
+        mode="ribbon",
+    )
+    text_parts = [getattr(c, "children", "") for c in _walk(component) if isinstance(getattr(c, "children", None), str)]
+    text = " ".join(text_parts)
+    assert "Trend needs at least 1 prior" in text
+
+
+def test_render_trend_section_single_point_state():
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.trend import render_trend_section
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.url_state import TaskSelection
+
+    data = _StubData()
+    data.add_dispatch("d-now", row_kwargs={"agg": _aggregate_block()})
+
+    class _DataWrapper:
+        def trend_dispatches_for(self, current, task, fw, be, n=10):
+            return ["d-now"]
+
+        def load_aggregate(self, dispatch_id):
+            return data.load_aggregate(dispatch_id)
+
+        def load_dispatch(self, dispatch_id):
+            return data.load_dispatch(dispatch_id)
+
+        def load_hardware(self, dispatch_id):
+            return {"fingerprint": "gpu:NVIDIA-L40"}
+
+    selection = TaskSelection("X", "rsl_rl", "physx")
+    component = render_trend_section(
+        _DataWrapper(),
+        current_dispatch_id="d-now",
+        selection=selection,
+        metric="reward_final_ema",
+        mode="ribbon",
+    )
+    text_parts = [getattr(c, "children", "") for c in _walk(component) if isinstance(getattr(c, "children", None), str)]
+    text = " ".join(text_parts)
+    assert "First matching dispatch" in text
+
+
+def test_render_trend_section_normal_render():
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.trend import render_trend_section
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.url_state import TaskSelection
+
+    data = _StubData()
+    for did in ["d1", "d2", "d3"]:
+        data.add_dispatch(did, commit=did, row_kwargs={"agg": _aggregate_block()})
+
+    class _DataWrapper:
+        def trend_dispatches_for(self, current, task, fw, be, n=10):
+            return ["d1", "d2", "d3"]
+
+        def load_aggregate(self, dispatch_id):
+            return data.load_aggregate(dispatch_id)
+
+        def load_dispatch(self, dispatch_id):
+            return data.load_dispatch(dispatch_id)
+
+        def load_hardware(self, dispatch_id):
+            return {"fingerprint": "gpu:NVIDIA-L40"}
+
+    selection = TaskSelection("X", "rsl_rl", "physx")
+    component = render_trend_section(
+        _DataWrapper(),
+        current_dispatch_id="d3",
+        selection=selection,
+        metric="reward_final_ema",
+        mode="ribbon",
+    )
+    graphs = [c for c in _walk(component) if type(c).__name__ == "Graph"]
+    assert len(graphs) == 1
