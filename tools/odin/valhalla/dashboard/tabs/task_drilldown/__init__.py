@@ -16,15 +16,7 @@ def render(dispatch_id: str, tab_id: str):
 
 
 def register(app, data):
-    """Spec 0 registry hook — wire Tab B's callbacks at app startup.
+    """Spec 0 registry hook — wire Tab B's callbacks at app startup."""
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.callbacks import register_callbacks
 
-    Until T9 lands the callbacks module, this is a no-op so the
-    Spec 0 registry's startup walk doesn't crash.
-    """
-    try:
-        from tools.odin.valhalla.dashboard.tabs.task_drilldown.callbacks import (
-            register_callbacks,
-        )
-    except ModuleNotFoundError:
-        return
     register_callbacks(app, data)
