@@ -29,12 +29,10 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["recommend_max_iterations"]
+__all__ = ["recommend_max_iterations", "_parse_calibration_metrics"]
 
 
-def recommend_max_iterations(
-    *, per_iter_s: float, startup_s: float, per_job_timeout_s: int
-) -> int:
+def recommend_max_iterations(*, per_iter_s: float, startup_s: float, per_job_timeout_s: int) -> int:
     """Return the integer max_iterations that fits inside 75% of the timeout.
 
     Args:
@@ -54,10 +52,7 @@ def recommend_max_iterations(
     budget_s = 0.75 * per_job_timeout_s
     headroom = budget_s - startup_s
     if headroom <= 0:
-        raise ValueError(
-            f"startup_s={startup_s:.1f} exceeds budget {budget_s:.1f} "
-            f"(0.75 × {per_job_timeout_s}s)"
-        )
+        raise ValueError(f"startup_s={startup_s:.1f} exceeds budget {budget_s:.1f} (0.75 × {per_job_timeout_s}s)")
     return math.floor(headroom / per_iter_s)
 
 
@@ -81,6 +76,28 @@ def _kept_rows(yaml_data: dict):
                 yield row
 
 
+def _parse_calibration_metrics(bundle: Path) -> tuple[float, float]:
+    """Extract (per_iter_s, startup_s) from a completed bundle.
+
+    Args:
+        bundle: Local path to a completed dispatch bundle.
+
+    Returns:
+        Tuple of ``(per_iter_s, startup_s)``.
+
+    Raises:
+        KeyError: When the bundle's training/startup JSON is missing the
+            expected field paths (e.g., schema drift).
+    """
+    import json
+
+    training = json.loads((bundle / "training.json").read_text())
+    startup = json.loads((bundle / "startup.json").read_text())
+    per_iter_s = float(training["runtime"]["iteration_time_s"]["mean"])
+    startup_s = float(startup["run"]["duration_s"])
+    return per_iter_s, startup_s
+
+
 def _calibrate_one(
     *,
     row: dict,
@@ -91,8 +108,6 @@ def _calibrate_one(
     runs_root: Path,
 ) -> tuple[float, float] | None:
     """Run one calibration dispatch; return (per_iter_s, startup_s) or None."""
-    import json
-
     from tools.odin.asgard.runner import DispatchOptions, resolve_dispatch_dir, run_dispatch
 
     d = resolve_dispatch_dir(runs_root, resume=None)
@@ -114,11 +129,7 @@ def _calibrate_one(
     if not completed:
         return None
     bundle = d / completed[0].bundle_dir_name
-    training = json.loads((bundle / "training.json").read_text())
-    startup = json.loads((bundle / "startup.json").read_text())
-    per_iter_s = float(training["iter_time_s_mean"])
-    startup_s = float(startup["duration_s"])
-    return per_iter_s, startup_s
+    return _parse_calibration_metrics(bundle)
 
 
 def main() -> int:
@@ -177,8 +188,7 @@ def main() -> int:
         row["calibration_per_iter_s"] = round(per_iter_s, 4)
         row["calibration_startup_s"] = round(startup_s, 2)
         print(
-            f"[OK]   {row['task_id']}: {prior} → {recommended} "
-            f"(per_iter={per_iter_s:.3f}s, startup={startup_s:.1f}s)"
+            f"[OK]   {row['task_id']}: {prior} → {recommended} (per_iter={per_iter_s:.3f}s, startup={startup_s:.1f}s)"
         )
 
     if not args.dry_run:
