@@ -14,6 +14,15 @@ from tools.odin.asgard.transport import SSHRunner
 
 __all__ = ["PreflightResult", "preflight_valkyrie"]
 
+_NVML_WEDGE_SIGNATURES = (
+    "Failed to initialize NVML",
+    "CUDA error: no CUDA-capable device is detected",
+)
+
+
+def _looks_wedged(stderr: str) -> bool:
+    return any(s in stderr for s in _NVML_WEDGE_SIGNATURES)
+
 
 @dataclass
 class PreflightResult:
@@ -23,7 +32,7 @@ class PreflightResult:
     message: str = ""
 
 
-def preflight_valkyrie(host: ValkyrieConfig, *, ssh: SSHRunner) -> PreflightResult:
+def preflight_valkyrie(host: ValkyrieConfig, *, ssh: SSHRunner, auto_restart: bool = True) -> PreflightResult:
     """Run SSH + docker + container + IsaacLab-directory + GPU checks on one host.
 
     Returns a :class:`PreflightResult` with ``ok=True`` iff all five checks
@@ -31,10 +40,18 @@ def preflight_valkyrie(host: ValkyrieConfig, *, ssh: SSHRunner) -> PreflightResu
     checks are reported as ``False`` and the first failing check's diagnostic
     lands in ``message``.
 
+    When ``auto_restart`` is ``True`` (the default) and the ``gpu_present``
+    check fails, :func:`~tools.odin.asgard.recovery.recover_valkyrie_gpu` is
+    called to restart the container and re-probe.  If recovery succeeds the
+    host is marked healthy; otherwise it is marked down with a
+    ``recovery_failed`` marker in ``message``.
+
     Args:
         host: Target Valkyrie.
         ssh: :class:`SSHRunner` implementation (``ShellSSHRunner`` in prod,
             fake in tests).
+        auto_restart: When ``True``, attempt one container restart on NVML
+            wedge or empty ``nvidia-smi`` output before failing the host.
 
     Returns:
         Aggregated :class:`PreflightResult`.
@@ -98,13 +115,33 @@ def preflight_valkyrie(host: ValkyrieConfig, *, ssh: SSHRunner) -> PreflightResu
 
     # 5. gpu_present — at least one GPU visible inside the running container.
     r = ssh.run(host, f"docker exec {host.container_name} nvidia-smi -L", timeout_s=15.0)
-    if r.exit_code != 0 or not r.stdout.strip():
+    if r.exit_code == 0 and r.stdout.strip():
+        checks["gpu_present"] = True
+        return PreflightResult(host=host.host, ok=True, checks=checks, message="")
+
+    # GPU absent — try one container-restart recovery if allowed.
+    if auto_restart and (_looks_wedged(r.stderr) or not r.stdout.strip()):
+        from tools.odin.asgard.recovery import recover_valkyrie_gpu
+
+        rec = recover_valkyrie_gpu(host, ssh=ssh)
+        if rec.recovered:
+            checks["gpu_present"] = True
+            return PreflightResult(
+                host=host.host,
+                ok=True,
+                checks=checks,
+                message="recovered: container restarted to clear NVML wedge",
+            )
         return PreflightResult(
             host=host.host,
             ok=False,
             checks=checks,
-            message=f"GPU absent in container: {r.stderr.strip() or 'empty stdout'}",
+            message=f"GPU absent in container, recovery_failed: {rec.message}",
         )
-    checks["gpu_present"] = True
 
-    return PreflightResult(host=host.host, ok=True, checks=checks, message="")
+    return PreflightResult(
+        host=host.host,
+        ok=False,
+        checks=checks,
+        message=f"GPU absent in container: {r.stderr.strip() or 'empty stdout'}",
+    )

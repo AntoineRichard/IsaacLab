@@ -57,6 +57,9 @@ class DispatchOptions:
             failures that trigger host quarantine (``host_down`` +
             worker exit). ``0`` disables the circuit-breaker. Default
             ``3``.
+        preflight_auto_restart: When ``True`` (default), automatically
+            restart the container and re-probe on NVML wedge during
+            preflight. Pass ``False`` to preserve strict-failure semantics.
     """
 
     seeds: list[int]
@@ -69,6 +72,7 @@ class DispatchOptions:
     retry_failed: list[str] | None = None
     skip_aggregate: bool = False
     consecutive_failure_quarantine: int = 3
+    preflight_auto_restart: bool = True
 
 
 def _utc_now_iso() -> str:
@@ -387,7 +391,7 @@ def run_dispatch(
     _snapshot_fleet_yaml(fleet, dispatch_dir)
 
     # Preflight.
-    pre_results = [preflight_valkyrie(h, ssh=ssh) for h in fleet.hosts]
+    pre_results = [preflight_valkyrie(h, ssh=ssh, auto_restart=options.preflight_auto_restart) for h in fleet.hosts]
     _write_preflight(pre_results, dispatch_dir, dispatch_id)
 
     healthy: list[ValkyrieConfig] = []

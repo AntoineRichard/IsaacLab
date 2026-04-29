@@ -190,3 +190,102 @@ def test_gpu_present_short_circuits_on_container_down():
     assert r.ok is False
     assert r.checks["gpu_present"] is False
     assert r.checks["container_up"] is False
+
+
+def test_preflight_recovers_nvml_wedge_via_container_restart():
+    """First nvidia-smi shows NVML init failure → preflight calls
+    recover_valkyrie_gpu → second nvidia-smi succeeds → host marked healthy."""
+    nvml_fail = SSHResult(
+        exit_code=255,
+        stdout="",
+        stderr="Failed to initialize NVML: Unknown Error",
+        duration_s=0.01,
+    )
+    nvml_ok = SSHResult(exit_code=0, stdout="GPU 0: NVIDIA L40\n", stderr="", duration_s=0.01)
+
+    class _SequencedSSH:
+        def __init__(self, scripted, nvidia_seq):
+            self.scripted = scripted
+            self.nvidia_seq = list(nvidia_seq)
+
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            if "nvidia-smi -L" in cmd:
+                return self.nvidia_seq.pop(0)
+            for k, v in self.scripted.items():
+                if k in cmd:
+                    return v
+            return SSHResult(exit_code=1, stdout="", stderr="", duration_s=0.0)
+
+    ssh = _SequencedSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "docker restart": _ok(),
+        },
+        nvidia_seq=[nvml_fail, nvml_ok],
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=True)
+    assert r.ok is True
+    assert r.checks["gpu_present"] is True
+    assert r.message == "recovered: container restarted to clear NVML wedge"
+
+
+def test_preflight_no_auto_restart_marks_host_down():
+    """auto_restart=False preserves the strict-failure semantic."""
+    ssh = _FakeSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "nvidia-smi -L": SSHResult(
+                exit_code=255,
+                stdout="",
+                stderr="Failed to initialize NVML: Unknown Error",
+                duration_s=0.01,
+            ),
+        }
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=False)
+    assert r.ok is False
+    assert r.checks["gpu_present"] is False
+
+
+def test_preflight_recovery_failure_marks_host_down():
+    """auto_restart=True but second nvidia-smi still fails → host down with
+    a recovery_failed marker."""
+    nvml_fail = SSHResult(
+        exit_code=255,
+        stdout="",
+        stderr="Failed to initialize NVML: Unknown Error",
+        duration_s=0.01,
+    )
+
+    class _SequencedSSH:
+        def __init__(self, scripted, nvidia_seq):
+            self.scripted = scripted
+            self.nvidia_seq = list(nvidia_seq)
+
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            if "nvidia-smi -L" in cmd:
+                return self.nvidia_seq.pop(0)
+            for k, v in self.scripted.items():
+                if k in cmd:
+                    return v
+            return SSHResult(exit_code=1, stdout="", stderr="", duration_s=0.0)
+
+    ssh = _SequencedSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "docker restart": _ok(),
+        },
+        nvidia_seq=[nvml_fail, nvml_fail],
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=True)
+    assert r.ok is False
+    assert "recovery_failed" in r.message

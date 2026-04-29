@@ -121,3 +121,32 @@ def test_parse_args_no_circuit_breaker_set():
         ]
     )
     assert args.no_circuit_breaker is True
+
+
+def test_parse_args_no_preflight_recover_default_off():
+    args = parse_args(
+        [
+            "--fleet",
+            "fleet.yaml",
+            "--physx-yaml",
+            "physx.yaml",
+            "--seeds",
+            "42",
+        ]
+    )
+    assert args.no_preflight_recover is False
+
+
+def test_parse_args_no_preflight_recover_set():
+    args = parse_args(
+        [
+            "--fleet",
+            "fleet.yaml",
+            "--physx-yaml",
+            "physx.yaml",
+            "--seeds",
+            "42",
+            "--no-preflight-recover",
+        ]
+    )
+    assert args.no_preflight_recover is True
