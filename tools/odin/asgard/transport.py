@@ -65,6 +65,7 @@ class RsyncRunner(Protocol):
 
 
 _DEFAULT_SSH_OPTS = [
+    "-tt",  # force PTY: ssh client death → SIGHUP to remote process group
     "-o",
     "StrictHostKeyChecking=accept-new",
     "-o",
