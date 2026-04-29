@@ -1,3 +1,6 @@
+# Local worktrees (superpowers workflow)
+.worktrees/
+
 # C++
 **/cmake-build*/
 **/build*/
