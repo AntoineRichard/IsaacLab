@@ -118,7 +118,7 @@ def _compute_picker_children(data: DataLayer, dispatch_id: str, search: str):
             className="tab-b-error-banner",
             children=[
                 html.Strong("Aggregate not yet generated for this dispatch"),
-                " — Tab B is empty until aggregation completes.",
+                " — Task Deep-dive is empty until aggregation completes.",
             ],
         )
     selected = parse_query_string(search)
@@ -150,7 +150,7 @@ def _compute_curves_and_stats(data, dispatch_id: str, selection_value: str | Non
     if aggregate is None:
         return (
             _banner_div(
-                "Aggregate not yet generated for this dispatch — Tab B is empty until aggregation completes.",
+                "Aggregate not yet generated for this dispatch — Task Deep-dive is empty until aggregation completes.",
                 id_="tab-b-curves-content",
             ),
             _banner_div("", id_="tab-b-stats-content"),
