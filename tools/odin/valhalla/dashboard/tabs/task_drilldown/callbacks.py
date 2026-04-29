@@ -199,7 +199,10 @@ def _compute_curves_and_stats(data, dispatch_id: str, selection_value: str | Non
             bundles[seed_key] = training
 
     divergent = row.get("divergent_seeds", []) or []
-    return render_curves(bundles, divergent_seeds=divergent), render_stats_panel(row)
+    return (
+        render_curves(bundles, divergent_seeds=divergent, heading=task),
+        render_stats_panel(row),
+    )
 
 
 def _compute_trend_children(data, dispatch_id: str, selection_value: str | None, metric: str, mode: str):

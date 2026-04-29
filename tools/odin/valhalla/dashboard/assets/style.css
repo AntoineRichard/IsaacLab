@@ -530,6 +530,13 @@ tbody tr:hover td { background: #1f242a; }
   flex-direction: column;
   gap: 12px;
 }
+.tab-b-task-heading {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #e0e0e0;
+  letter-spacing: 0.01em;
+}
 
 /* stats */
 

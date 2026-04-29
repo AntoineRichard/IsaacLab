@@ -21,21 +21,32 @@ def render_curves(
     bundles: dict[str, dict],
     *,
     divergent_seeds: list[str],
+    heading: str | None = None,
 ) -> html.Div:
     """Build two plotly figures (reward + ep_length) overlaying all seeds.
 
     Args:
         bundles: ``{seed_str: training_payload}``. Missing series → seed skipped.
         divergent_seeds: seeds drawn with red dashed stroke instead of palette.
+        heading: optional task name shown in bold above the charts. Omitted
+            when ``None`` (e.g. for unit tests that don't care about it).
 
     Returns:
-        Div(id='tab-b-curves-content') with up to 2 ``dcc.Graph`` components.
+        Div(id='tab-b-curves-content') with an optional ``H3`` heading and
+        up to 2 ``dcc.Graph`` components.
     """
+    heading_node: list = []
+    if heading:
+        heading_node.append(html.H3(heading, className="tab-b-task-heading"))
+
     if not bundles:
         return html.Div(
             id="tab-b-curves-content",
             className="tab-b-empty-state",
-            children=[html.P("No training.json bundles available for this row.")],
+            children=[
+                *heading_node,
+                html.P("No training.json bundles available for this row."),
+            ],
         )
 
     sorted_seeds = sorted(bundles.keys(), key=lambda k: int(k) if str(k).isdigit() else 0)
@@ -46,6 +57,7 @@ def render_curves(
     return html.Div(
         id="tab-b-curves-content",
         children=[
+            *heading_node,
             dcc.Graph(id="tab-b-curve-reward", figure=reward_fig, config={"displayModeBar": False}),
             dcc.Graph(id="tab-b-curve-ep-length", figure=ep_fig, config={"displayModeBar": False}),
         ],

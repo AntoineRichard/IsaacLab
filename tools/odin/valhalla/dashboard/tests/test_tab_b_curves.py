@@ -121,3 +121,26 @@ def test_render_curves_reward_y_axis_label():
     reward_graph = graphs[0]
     fig = reward_graph.figure
     assert "reward" in fig.layout.yaxis.title.text.lower()
+
+
+def test_render_curves_heading_renders_when_provided():
+    bundles = {"42": _bundle(reward=_series(10))}
+    component = render_curves(bundles, divergent_seeds=[], heading="Isaac-Ant-Direct-v0")
+    h3s = [c for c in _walk(component) if type(c).__name__ == "H3"]
+    assert len(h3s) == 1
+    assert h3s[0].children == "Isaac-Ant-Direct-v0"
+    assert "tab-b-task-heading" in (getattr(h3s[0], "className", "") or "").split()
+
+
+def test_render_curves_no_heading_when_omitted():
+    bundles = {"42": _bundle(reward=_series(10))}
+    component = render_curves(bundles, divergent_seeds=[])
+    h3s = [c for c in _walk(component) if type(c).__name__ == "H3"]
+    assert h3s == []
+
+
+def test_render_curves_heading_appears_on_empty_state_too():
+    component = render_curves({}, divergent_seeds=[], heading="Isaac-Ant-Direct-v0")
+    h3s = [c for c in _walk(component) if type(c).__name__ == "H3"]
+    assert len(h3s) == 1
+    assert h3s[0].children == "Isaac-Ant-Direct-v0"
