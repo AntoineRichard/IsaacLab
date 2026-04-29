@@ -38,9 +38,11 @@ def list_row_options(aggregate_payload: dict) -> list[dict]:
 def render_picker(aggregate_payload: dict, selected: TaskSelection | None) -> html.Div:
     """Build the picker Div.
 
-    Returns Div(id='tab-b-picker') containing a searchable dcc.Dropdown
-    'tab-b-row-select'. The dropdown's value is the pipe-separated row key;
-    `selected` is resolved to a value if present, else left as None.
+    Returns Div(id='tab-b-picker-content') containing a searchable dcc.Dropdown
+    'tab-b-row-select'. The wrapper id is distinct from the layout's
+    ``tab-b-picker`` slot so the rendered DOM has no duplicate ids. The
+    dropdown's value is the pipe-separated row key; ``selected`` is resolved to
+    a value if present, else left as None.
     """
     options = list_row_options(aggregate_payload)
     selected_value: str | None = None
@@ -49,7 +51,7 @@ def render_picker(aggregate_payload: dict, selected: TaskSelection | None) -> ht
         if any(o["value"] == candidate for o in options):
             selected_value = candidate
     return html.Div(
-        id="tab-b-picker",
+        id="tab-b-picker-content",
         className="tab-b-picker-row",
         children=[
             html.Span("Row", className="tab-b-picker-label"),

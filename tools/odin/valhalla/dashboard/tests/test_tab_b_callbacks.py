@@ -42,7 +42,7 @@ def _row(task: str, framework: str = "rsl_rl", backend: str = "physx") -> dict:
 def test_init_picker_returns_picker_div():
     data = _StubData(aggregate=_aggregate([_row("X")]))
     out = _compute_picker_children(data, "d-1", search="?task=X&framework=rsl_rl&backend=physx")
-    assert getattr(out, "id", None) == "tab-b-picker"
+    assert getattr(out, "id", None) == "tab-b-picker-content"
 
 
 def test_sync_url_to_selection_parses_full():

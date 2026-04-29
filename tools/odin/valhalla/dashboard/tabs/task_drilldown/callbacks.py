@@ -114,7 +114,7 @@ def _compute_picker_children(data: DataLayer, dispatch_id: str, search: str):
         from dash import html
 
         return html.Div(
-            id="tab-b-picker",
+            id="tab-b-picker-content",
             className="tab-b-error-banner",
             children=[
                 html.Strong("Aggregate not yet generated for this dispatch"),
