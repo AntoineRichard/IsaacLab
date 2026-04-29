@@ -474,7 +474,8 @@ def run_dispatch(
 
     # Filter Newton jobs when no host meets the CUDA floor. Mark them failed
     # with a clear kind so the dispatch report (and operator) sees the gap.
-    newton_capable_hosts = [r.host for r in pre_results if r.ok and r.newton_available]
+    healthy_hosts_set = {h.host for h in healthy}
+    newton_capable_hosts = [r.host for r in pre_results if r.ok and r.newton_available and r.host in healthy_hosts_set]
     if not newton_capable_hosts:
         for j in merged_jobs:
             if j.backend == "newton" and j.status == "pending":

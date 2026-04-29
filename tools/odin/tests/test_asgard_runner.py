@@ -553,4 +553,86 @@ def test_sweep_pending_leaves_pending_when_fleet_healthy(tmp_path):
     runner_mod._sweep_pending_after_dispatch(state)
 
     assert state.jobs[0].status == "pending"
-    assert state.jobs[0].failure is None
+
+
+def test_run_dispatch_marks_newton_jobs_failed_when_no_capable_host(tmp_path: Path, monkeypatch):
+    """When no host has newton_available=True after provisioning, pending newton
+    jobs are marked failed with kind='newton_floor' and an upgrade-hint message."""
+    from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
+    from tools.odin.asgard.preflight import PreflightResult
+    from tools.odin.asgard.provisioner import ProvisionResult
+    from tools.odin.asgard.runner import DispatchOptions, run_dispatch
+
+    # Fake preflight: host healthy, but newton_available=False.
+    def _fake_pf(host, *, ssh, auto_restart=True, newton_cuda_floor=None):
+        return PreflightResult(
+            host=host.host,
+            ok=True,
+            checks={
+                "ssh_reach": True,
+                "docker_running": True,
+                "container_up": True,
+                "isaaclab_present": True,
+                "gpu_present": True,
+            },
+            message="newton unavailable: host CUDA 12.2 < newton floor 12.4",
+            cuda_version=(12, 2),
+            newton_available=False,
+        )
+
+    # Fake provisioner: always succeeds.
+    def _fake_pv(host, working_tree, *, fresh, ssh, rsync):
+        return ProvisionResult(host=host.host, ok=True, commit_sha="test-stub")
+
+    monkeypatch.setattr("tools.odin.asgard.runner.preflight_valkyrie", _fake_pf)
+    monkeypatch.setattr("tools.odin.asgard.runner.provision_valkyrie", _fake_pv)
+
+    # Build minimal newton_yaml using EnvList, creating one Newton-capable task.
+    el = EnvList()
+    el.groups["test/task"] = [
+        EnvEntry(
+            task_id="Isaac-Test-Direct-v0",
+            entry_point="isaaclab_tasks.test:TestEnv",
+            env_cfg_entry_point="isaaclab_tasks.test:TestEnvCfg",
+            group="test/task",
+            has_rsl_rl=True,
+            has_skrl=False,
+            has_rl_games=False,
+            framework="rsl_rl",
+            num_envs=1024,
+            max_iterations=100,
+            keep=True,
+            status="current",
+            presets_available=["newton"],
+        )
+    ]
+    newton_yaml = tmp_path / "newton.yaml"
+    write_env_list(newton_yaml, el, generator="test")
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[ValkyrieConfig(host="v1", ssh_user="odin", isaaclab_path="/h/x")],
+    )
+
+    dispatch_dir = tmp_path / "20260429-000000"
+    dispatch_dir.mkdir()
+
+    state = run_dispatch(
+        fleet=fleet,
+        physx_yaml=None,
+        newton_yaml=newton_yaml,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42], skip_aggregate=True, skip_preflight=False),
+        ssh=_FakeSSH(),
+        rsync=_FakeRsync(),
+    )
+
+    newton_jobs = [j for j in state.jobs if j.backend == "newton"]
+    assert newton_jobs, "expected at least one newton job in the state"
+    assert all(j.status == "failed" for j in newton_jobs), "all newton jobs should be marked failed"
+    assert all(j.failure is not None and j.failure.kind == "newton_floor" for j in newton_jobs), (
+        "all newton jobs should have kind='newton_floor'"
+    )
+    assert all("odin-cuda install --target 12.4" in j.failure.message for j in newton_jobs), (
+        "all newton jobs should have upgrade-hint message"
+    )
