@@ -32,6 +32,9 @@ from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
 
 __all__ = ["DispatchOptions", "resolve_dispatch_dir", "run_dispatch"]
 
+# Minimum CUDA toolkit version required for Newton (warp) workloads.
+_NEWTON_CUDA_FLOOR: tuple[int, int] = (12, 4)
+
 
 @dataclass
 class DispatchOptions:
@@ -391,7 +394,15 @@ def run_dispatch(
     _snapshot_fleet_yaml(fleet, dispatch_dir)
 
     # Preflight.
-    pre_results = [preflight_valkyrie(h, ssh=ssh, auto_restart=options.preflight_auto_restart) for h in fleet.hosts]
+    pre_results = [
+        preflight_valkyrie(
+            h,
+            ssh=ssh,
+            auto_restart=options.preflight_auto_restart,
+            newton_cuda_floor=_NEWTON_CUDA_FLOOR,
+        )
+        for h in fleet.hosts
+    ]
     _write_preflight(pre_results, dispatch_dir, dispatch_id)
 
     healthy: list[ValkyrieConfig] = []
@@ -460,6 +471,25 @@ def run_dispatch(
         else:
             commit_sha = commit_sha or pr.commit_sha
     healthy = [h for h in healthy if h.host not in down_hosts]
+
+    # Filter Newton jobs when no host meets the CUDA floor. Mark them failed
+    # with a clear kind so the dispatch report (and operator) sees the gap.
+    newton_capable_hosts = [r.host for r in pre_results if r.ok and r.newton_available]
+    if not newton_capable_hosts:
+        for j in merged_jobs:
+            if j.backend == "newton" and j.status == "pending":
+                j.status = "failed"
+                j.failure = FailureInfo(
+                    kind="newton_floor",
+                    message=(
+                        f"no host meets Newton CUDA floor "
+                        f"{_NEWTON_CUDA_FLOOR[0]}.{_NEWTON_CUDA_FLOOR[1]}; "
+                        f"run `odin-cuda install --target "
+                        f"{_NEWTON_CUDA_FLOOR[0]}.{_NEWTON_CUDA_FLOOR[1]}`"
+                    ),
+                    details={"newton_cuda_floor": list(_NEWTON_CUDA_FLOOR)},
+                )
+                j.ended_at = _utc_now_iso()
 
     # Seed the state and spawn workers.
     state = DispatchState(

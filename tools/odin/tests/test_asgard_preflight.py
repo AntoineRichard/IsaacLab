@@ -289,3 +289,76 @@ def test_preflight_recovery_failure_marks_host_down():
     r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=True)
     assert r.ok is False
     assert "recovery_failed" in r.message
+
+
+def test_preflight_records_cuda_version():
+    """Healthy host's CUDA version is captured from driver query."""
+    ssh = _FakeSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "nvidia-smi -L": SSHResult(exit_code=0, stdout="GPU 0: L40\n", stderr="", duration_s=0.01),
+            "nvidia-smi --query-gpu=driver_version": SSHResult(
+                exit_code=0,
+                stdout="535.161.07\n",
+                stderr="",
+                duration_s=0.01,
+            ),
+        }
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh)
+    assert r.cuda_version is not None
+    assert r.cuda_version == (12, 2)
+    # No floor passed → newton always available.
+    assert r.newton_available is True
+
+
+def test_preflight_marks_newton_unavailable_below_floor():
+    """Driver 535 → CUDA 12.2; floor 12.4 → newton_available=False, but ok=True (physx still works)."""
+    ssh = _FakeSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "nvidia-smi -L": SSHResult(exit_code=0, stdout="GPU 0: L40\n", stderr="", duration_s=0.01),
+            "nvidia-smi --query-gpu=driver_version": SSHResult(
+                exit_code=0,
+                stdout="535.161.07\n",
+                stderr="",
+                duration_s=0.01,
+            ),
+        }
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh, newton_cuda_floor=(12, 4))
+    assert r.ok is True  # available for physx
+    assert r.cuda_version == (12, 2)
+    assert r.newton_available is False
+    assert "newton floor 12.4" in r.message
+    assert "odin-cuda install --target 12.4" in r.message
+
+
+def test_preflight_above_floor_keeps_newton_available():
+    """Driver 570 → CUDA 12.8 ≥ floor 12.4 → newton_available=True."""
+    ssh = _FakeSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "nvidia-smi -L": SSHResult(exit_code=0, stdout="GPU 0: H100\n", stderr="", duration_s=0.01),
+            "nvidia-smi --query-gpu=driver_version": SSHResult(
+                exit_code=0,
+                stdout="570.0.0\n",
+                stderr="",
+                duration_s=0.01,
+            ),
+        }
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh, newton_cuda_floor=(12, 4))
+    assert r.ok is True
+    assert r.cuda_version == (12, 8)
+    assert r.newton_available is True
+    assert r.message == ""

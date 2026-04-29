@@ -83,7 +83,7 @@ def stub_provisioner(monkeypatch):
     from tools.odin.asgard import preflight as pf
     from tools.odin.asgard import provisioner as pv
 
-    def _fake_pf(host, *, ssh, auto_restart=True):
+    def _fake_pf(host, *, ssh, auto_restart=True, newton_cuda_floor=None):
         return pf.PreflightResult(
             host=host.host,
             ok=True,
