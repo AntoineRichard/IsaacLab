@@ -96,7 +96,7 @@ def _build_banner() -> html.Div:
 _NAV_TABS: list[tuple[str, str]] = [
     ("dispatches", "Dispatches"),
     ("dispatch-fleet", "Fleet & Jobs"),
-    ("task-drilldown", "Task Drill-down"),
+    ("task-drilldown", "Task Deep-dive"),
 ]
 
 

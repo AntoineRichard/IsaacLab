@@ -43,7 +43,7 @@ def test_nav_strip_landing_marks_dispatches_active():
     out = compute_nav_strip("/")
     pills = _pills(out)
     labels = [getattr(p, "children", None) for p in pills]
-    assert labels == ["Dispatches", "Fleet & Jobs", "Task Drill-down"]
+    assert labels == ["Dispatches", "Fleet & Jobs", "Task Deep-dive"]
     assert "active" in (getattr(pills[0], "className", "") or "").split()
     assert "active" not in (getattr(pills[1], "className", "") or "").split()
     assert "active" not in (getattr(pills[2], "className", "") or "").split()
