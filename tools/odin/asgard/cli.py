@@ -71,8 +71,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--per-job-timeout",
         type=int,
-        default=14400,
-        help="Per-job wall-clock timeout in seconds (default: 14400 = 4h).",
+        default=43200,
+        help="Per-job wall-clock timeout in seconds (default: 43200 = 12h).",
     )
     parser.add_argument(
         "--max-infrastructure-retries",
@@ -94,6 +94,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--skip-aggregate",
         action="store_true",
         help="Skip the end-of-dispatch call to valhalla.aggregate_dispatch.",
+    )
+    parser.add_argument(
+        "--no-circuit-breaker",
+        action="store_true",
+        help="Disable per-host consecutive-failure quarantine.",
+    )
+    parser.add_argument(
+        "--no-preflight-recover",
+        action="store_true",
+        help="Skip auto-restart on NVML wedge during preflight.",
     )
     args = parser.parse_args(argv)
 
@@ -121,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
         verbose=args.verbose,
         retry_failed=args.retry_failed,
         skip_aggregate=args.skip_aggregate,
+        consecutive_failure_quarantine=0 if args.no_circuit_breaker else 3,
+        preflight_auto_restart=not args.no_preflight_recover,
     )
 
     print(f"odin-dispatch: dispatch_id={dispatch_dir.name} fleet={fleet.fleet_name} hosts={len(fleet.hosts)}")

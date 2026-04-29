@@ -83,7 +83,7 @@ def stub_provisioner(monkeypatch):
     from tools.odin.asgard import preflight as pf
     from tools.odin.asgard import provisioner as pv
 
-    def _fake_pf(host, *, ssh):
+    def _fake_pf(host, *, ssh, auto_restart=True, newton_cuda_floor=None):
         return pf.PreflightResult(
             host=host.host,
             ok=True,
@@ -312,7 +312,7 @@ def test_native_match_runs_unsupported_pair_routes_to_skipped(tmp_path: Path, st
 
     reloaded = read_dispatch_state(dispatch_dir)
     assert reloaded is not None
-    assert reloaded.schema_version == "1.3"
+    assert reloaded.schema_version == "1.4"
     assert len(reloaded.skipped) == 2
     assert reloaded.skipped[0].native_backend == "physx"
 

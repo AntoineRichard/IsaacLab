@@ -16,6 +16,7 @@ from tools.odin.asgard.state import (
     SCHEMA_VERSION,
     DispatchState,
     FleetSnapshot,
+    QuarantinedHost,
     read_dispatch_state,
     reset_in_flight_to_pending,
     write_dispatch_state,
@@ -241,22 +242,73 @@ def test_read_skipped_without_native_backend_defaults_to_none(tmp_path: Path):
     assert s.skipped[0].native_backend is None
 
 
-def test_schema_version_writes_1_3(tmp_path: Path):
-    """New dispatches write schema_version='1.3'."""
+def test_schema_version_writes_1_4(tmp_path: Path):
+    """New dispatches write schema_version='1.4'."""
     write_dispatch_state(tmp_path, _state_with_skipped([_job("run-a")], []))
     import json
 
     payload = json.loads((tmp_path / "dispatch.json").read_text())
-    assert payload["schema_version"] == "1.3"
+    assert payload["schema_version"] == "1.4"
 
 
-def test_schema_version_is_1_3():
-    """Module-level SCHEMA_VERSION constant is bumped to '1.3'."""
-    assert SCHEMA_VERSION == "1.3"
+def test_schema_version_is_1_4():
+    """Module-level SCHEMA_VERSION constant is bumped to '1.4'."""
+    assert SCHEMA_VERSION == "1.4"
+
+
+def test_roundtrip_quarantined_hosts(tmp_path: Path):
+    """DispatchState with one QuarantinedHost survives write→read."""
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260428-100000",
+        started_at="2026-04-28T10:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="down", current_run_id=None, last_error=None)],
+        jobs=[],
+        quarantined_hosts=[
+            QuarantinedHost(
+                host="v1",
+                reason="circuit_breaker",
+                last_run_id="r-cb",
+                at="2026-04-28T10:05:00Z",
+            )
+        ],
+    )
+    write_dispatch_state(tmp_path, state)
+    reloaded = read_dispatch_state(tmp_path)
+    assert len(reloaded.quarantined_hosts) == 1
+    qh = reloaded.quarantined_hosts[0]
+    assert qh.host == "v1"
+    assert qh.reason == "circuit_breaker"
+    assert qh.last_run_id == "r-cb"
+    assert qh.at == "2026-04-28T10:05:00Z"
+
+
+def test_read_old_state_without_quarantined_hosts_defaults_to_empty(tmp_path: Path):
+    """A 1.3 file without a quarantined_hosts key reads as an empty list."""
+    import json
+
+    payload = {
+        "schema_version": "1.3",
+        "dispatch_id": "20260428-110000",
+        "started_at": "2026-04-28T11:00:00Z",
+        "ended_at": None,
+        "seeds": [42],
+        "commit_sha": "",
+        "fleet": [],
+        "jobs": [],
+        "skipped": [],
+    }
+    (tmp_path / "dispatch.json").write_text(json.dumps(payload, indent=2))
+    state = read_dispatch_state(tmp_path)
+    assert state is not None
+    assert state.quarantined_hosts == []
 
 
 def test_resume_from_1_2_state_works(tmp_path: Path):
-    """A 1.2 dispatch.json on disk is readable by the 1.3 reader (major-match)."""
+    """A 1.2 dispatch.json on disk is readable by the 1.4 reader (major-match)."""
     import json
 
     payload = {

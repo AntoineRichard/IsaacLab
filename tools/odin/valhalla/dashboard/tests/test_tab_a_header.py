@@ -135,8 +135,7 @@ def test_header_failure_pill_ids_use_pattern_matching():
     pill_ids = [
         getattr(c, "id", None)
         for c in _walk(component)
-        if isinstance(getattr(c, "id", None), dict)
-        and getattr(c, "id", {}).get("type") == "tab-a-failure-pill"
+        if isinstance(getattr(c, "id", None), dict) and getattr(c, "id", {}).get("type") == "tab-a-failure-pill"
     ]
     assert len(pill_ids) == 1
     assert pill_ids[0] == {"type": "tab-a-failure-pill", "kind": "hugin_crash"}

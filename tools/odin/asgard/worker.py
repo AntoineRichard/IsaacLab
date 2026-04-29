@@ -24,9 +24,46 @@ __all__ = ["StateEvent", "ValkyrieWorker", "WorkerOptions"]
 
 
 @dataclass
+class _ConsecutiveFailureTracker:
+    """Per-worker counter for consecutive job failures.
+
+    Tracks how many failures have happened in a row on this worker without
+    an intervening completed job. When the threshold is reached, the
+    worker should quarantine its host (emit ``host_down``) and exit.
+
+    A ``threshold`` of ``0`` disables the circuit-breaker entirely.
+
+    Args:
+        threshold: Number of consecutive failures that triggers quarantine.
+            ``0`` disables the breaker.
+    """
+
+    threshold: int
+    count: int = 0
+
+    def note_failure(self) -> bool:
+        """Record a failure.
+
+        Returns:
+            ``True`` iff the threshold has been reached (caller should
+            quarantine). ``False`` when the breaker is disabled or the
+            count is still below threshold.
+        """
+        if self.threshold <= 0:
+            return False
+        self.count += 1
+        return self.count >= self.threshold
+
+    def note_success(self) -> None:
+        """Reset the counter to zero after a completed job."""
+        self.count = 0
+
+
+@dataclass
 class WorkerOptions:
-    per_job_timeout_s: int = 14400
+    per_job_timeout_s: int = 43200
     max_infrastructure_retries: int = 2
+    consecutive_failure_quarantine: int = 3  # 0 = disabled
 
 
 @dataclass
@@ -76,24 +113,38 @@ _GPU_LOST_SIGNATURES = (
 def _build_docker_exec_cmd(host: ValkyrieConfig, job: JobEntry) -> str:
     """Return the remote shell command to run Hugin/Munin inside the container.
 
-    Shape: ``cd {isaaclab_path} && docker exec {container_name} bash -lc '...'``
-    where the inner command is the Hugin (rsl_rl) or Munin (skrl) wrapper
-    invocation with the job's CLI args.
+    Calls ``_isaac_sim/python.sh`` directly (not ``./isaaclab.sh -p``) — the
+    outer wrapper's ``set -e`` + ``error_exit`` trap discards child stderr
+    on non-zero exit, hiding real tracebacks from the bundle.
+
+    Stdout and stderr are redirected into bundle-local log files so they
+    survive the rsync-back regardless of exit code.
+
+    Args:
+        host: Valkyrie host configuration.
+        job: Job metadata used to build the runner invocation.
+
+    Returns:
+        Shell command of shape
+        ``cd <isaaclab_path> && docker exec <container_name> bash -lc '...'``
+        ready to pass to :class:`SSHRunner.run`.
     """
     runner_script = "tools/odin/hugin/run.py" if job.framework == "rsl_rl" else "tools/odin/munin/run.py"
-    inner_parts = [
-        "cd /workspace/isaaclab",
-        "PYTHONPATH=.",
-        f"./isaaclab.sh -p {runner_script}",
-        f"--task {job.task_id}",
-        f"--backend {job.backend}",
-        f"--seed {job.seed}",
-        f"--num_envs {job.num_envs}",
-        f"--max_iterations {job.max_iterations}",
-        "--runs_root odin_runs",
-        f"--run_id {job.run_id}",
-    ]
-    inner = " && ".join(inner_parts[:1]) + " && " + " ".join(inner_parts[1:])
+    bundle_logs = f"odin_runs/{job.bundle_dir_name}/logs"
+    inner = (
+        f"cd /workspace/isaaclab "
+        f"&& mkdir -p {bundle_logs} "
+        f"&& PYTHONPATH=. _isaac_sim/python.sh {runner_script}"
+        f" --task {job.task_id}"
+        f" --backend {job.backend}"
+        f" --seed {job.seed}"
+        f" --num_envs {job.num_envs}"
+        f" --max_iterations {job.max_iterations}"
+        f" --runs_root odin_runs"
+        f" --run_id {job.run_id}"
+        f" > {bundle_logs}/hugin-stdout.log"
+        f" 2> {bundle_logs}/hugin-stderr.log"
+    )
     return f"cd {host.isaaclab_path} && docker exec {host.container_name} bash -lc '{inner}'"
 
 
@@ -133,6 +184,7 @@ class ValkyrieWorker(threading.Thread):
         # failed). Causes ``run()`` to stop pulling new jobs.
         self._down_event = threading.Event()
         self._preferred_not_seen: dict[str, int] = {}
+        self._fail_tracker = _ConsecutiveFailureTracker(threshold=options.consecutive_failure_quarantine)
 
     # -- public entry point -------------------------------------------------
 
@@ -235,6 +287,8 @@ class ValkyrieWorker(threading.Thread):
             break  # non-recoverable result or retries exhausted
 
         if failure is not None:
+            if self._quarantine_check_and_handle(job=job, failure=failure, ssh_tail=ssh_tail):
+                return
             job.status = "failed"
             job.failure = failure
             job.ended_at = _utc_now_iso()
@@ -254,21 +308,26 @@ class ValkyrieWorker(threading.Thread):
         local_bundle = self._dispatch_dir / job.bundle_dir_name
         rsync_result = self._rsync.pull(self.host, remote_bundle, local_bundle)
         if rsync_result.exit_code != 0:
-            job.status = "failed"
-            job.failure = FailureInfo(
+            rsync_failure = FailureInfo(
                 kind="infrastructure",
                 message=f"rsync pull failed: {rsync_result.stderr.strip() or 'non-zero exit'}",
                 details={"attempts": job.attempts},
             )
+            if self._quarantine_check_and_handle(job=job, failure=rsync_failure, ssh_tail=ssh_tail):
+                return
+            job.status = "failed"
+            job.failure = rsync_failure
             job.ended_at = _utc_now_iso()
             self._state_chan.put(
-                StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=job.failure)
+                StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=rsync_failure)
             )
             return
 
         # Validate the bundle: manifest.json present, schema-v1 shape.
         bundle_failure = _validate_bundle(local_bundle)
         if bundle_failure is not None:
+            if self._quarantine_check_and_handle(job=job, failure=bundle_failure, ssh_tail=ssh_tail):
+                return
             job.status = "failed"
             job.failure = bundle_failure
             job.ended_at = _utc_now_iso()
@@ -287,6 +346,48 @@ class ValkyrieWorker(threading.Thread):
                 ended_at=job.ended_at,
             )
         )
+        self._fail_tracker.note_success()
+
+    # -- circuit-breaker helper ---------------------------------------------
+
+    def _quarantine_check_and_handle(self, *, job: JobEntry, failure: FailureInfo, ssh_tail: Path) -> bool:
+        """Increment the failure tracker and, if quarantine triggers, emit
+        host_down + re-queue the job + arm ``_down_event``.
+
+        If the threshold isn't reached, this method does NOT emit any
+        event — caller is expected to post the regular ``failed`` event.
+
+        Args:
+            job: The job that just failed.
+            failure: The :class:`FailureInfo` describing the failure.
+            ssh_tail: Path to the ssh-tail log (passed through for context;
+                not used directly but available for future diagnostics).
+
+        Returns:
+            ``True`` iff the worker should exit (threshold reached).
+            ``False`` if the worker should continue with the next job.
+        """
+        if not self._fail_tracker.note_failure():
+            return False
+        # Threshold reached: re-queue the triggering job so another healthy
+        # host can pick it up, and quarantine this host.
+        job.preferred_not = set(job.preferred_not) | {self.host.host}
+        self._job_queue.put(job)
+        self._state_chan.put(
+            StateEvent(
+                run_id=job.run_id,
+                host=self.host.host,
+                transition="host_down",
+                failure=FailureInfo(
+                    kind="circuit_breaker",
+                    message=(
+                        f"{self._fail_tracker.threshold} consecutive failures on {self.host.host}; quarantining host"
+                    ),
+                ),
+            )
+        )
+        self._down_event.set()
+        return True
 
     # -- timeout cleanup ----------------------------------------------------
 

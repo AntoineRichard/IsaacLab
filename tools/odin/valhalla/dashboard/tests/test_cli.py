@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from tools.odin.valhalla.dashboard import cli as cli_mod
 
 
@@ -44,14 +42,19 @@ def test_parse_args_defaults(tmp_path):
 
 
 def test_parse_args_explicit(tmp_path):
-    ns = cli_mod.parse_args([
-        "20260427-141302",
-        "--runs-root", str(tmp_path),
-        "--port", "9000",
-        "--host", "0.0.0.0",
-        "--no-browser",
-        "--debug",
-    ])
+    ns = cli_mod.parse_args(
+        [
+            "20260427-141302",
+            "--runs-root",
+            str(tmp_path),
+            "--port",
+            "9000",
+            "--host",
+            "0.0.0.0",
+            "--no-browser",
+            "--debug",
+        ]
+    )
     assert ns.dispatch == "20260427-141302"
     assert ns.port == 9000
     assert ns.host == "0.0.0.0"

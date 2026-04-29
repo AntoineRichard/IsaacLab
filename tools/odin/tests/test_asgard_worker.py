@@ -793,3 +793,252 @@ def test_worker_gpu_lost_three_in_a_row_terminal_failure(tmp_path, monkeypatch):
     assert job.failure is not None
     assert job.failure.kind == "gpu_lost"
     assert job.attempts == 3
+
+
+def test_build_docker_exec_cmd_uses_python_sh_directly():
+    """Hugin invocation must bypass ./isaaclab.sh -p whose error_exit trap
+    swallows child stderr; call _isaac_sim/python.sh directly instead."""
+    host = _host()
+    job = JobEntry(
+        run_id="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
+        task_id="Isaac-Ant-Direct-v0",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1024,
+        max_iterations=100,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
+    )
+    cmd = _build_docker_exec_cmd(host, job)
+    assert "_isaac_sim/python.sh" in cmd
+    assert "./isaaclab.sh -p" not in cmd
+
+
+def test_worker_consecutive_failure_counter_resets_on_success():
+    """The counter is per-worker; a single 'completed' resets it to zero."""
+    from tools.odin.asgard.worker import _ConsecutiveFailureTracker
+
+    t = _ConsecutiveFailureTracker(threshold=3)
+    assert not t.note_failure()  # 1
+    assert not t.note_failure()  # 2
+    t.note_success()  # reset
+    assert not t.note_failure()  # 1 again
+    assert not t.note_failure()  # 2
+    assert t.note_failure()  # 3 → True (quarantine)
+
+
+def test_worker_consecutive_failure_threshold_disabled():
+    """threshold=0 means circuit-breaker is off (--no-circuit-breaker)."""
+    from tools.odin.asgard.worker import _ConsecutiveFailureTracker
+
+    t = _ConsecutiveFailureTracker(threshold=0)
+    for _ in range(100):
+        assert not t.note_failure()
+
+
+def test_worker_quarantines_host_after_n_consecutive_failures(tmp_path):
+    """After 3 consecutive failures, the worker emits host_down with
+    FailureInfo(kind='circuit_breaker') and stops pulling jobs.
+
+    With the I2 re-queue fix: the FIRST two failures are emitted as
+    ``failed`` events; the THIRD (triggering) failure is NOT emitted as
+    ``failed`` — instead the job is re-queued with the host in
+    ``preferred_not`` and a ``host_down`` event is emitted.
+
+    Models the existing gpu_lost worker integration tests in this file —
+    use the same _FakeSSH / _FakeRsync style if a fixture is already
+    present, otherwise inline minimal versions like below."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import RsyncResult, SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    host = ValkyrieConfig(host="v1", ssh_user="odin", isaaclab_path="/h/x")
+
+    def _job(seed: int) -> JobEntry:
+        return JobEntry(
+            run_id=f"r-{seed}",
+            task_id="Isaac-Ant-Direct-v0",
+            framework="rsl_rl",
+            backend="physx",
+            num_envs=1024,
+            max_iterations=10,
+            seed=seed,
+            bundle_dir_name=f"r-{seed}",
+        )
+
+    class _AlwaysFailSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            return SSHResult(exit_code=1, stdout="", stderr="boom", duration_s=0.01)
+
+    class _NoopRsync:
+        def pull(self, host, remote_path, local_path):
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+        def push(self, host, local_path, remote_path):
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+    job_q: queue.Queue = queue.Queue()
+    jobs = [_job(seed) for seed in (42, 43, 44, 45, 46)]
+    for j in jobs:
+        job_q.put(j)
+    job_q.put(None)  # sentinel
+
+    state_chan: queue.Queue = queue.Queue()
+    shutdown = threading.Event()
+    worker = ValkyrieWorker(
+        host=host,
+        job_queue=job_q,
+        state_chan=state_chan,
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(
+            per_job_timeout_s=60,
+            consecutive_failure_quarantine=3,
+        ),
+        ssh=_AlwaysFailSSH(),
+        rsync=_NoopRsync(),
+        shutdown_event=shutdown,
+    )
+    worker.start()
+    worker.join(timeout=10.0)
+    assert not worker.is_alive(), "worker should exit after quarantining"
+
+    events: list[StateEvent] = []
+    while not state_chan.empty():
+        events.append(state_chan.get_nowait())
+    failed = [e for e in events if e.transition == "failed"]
+    host_down = [e for e in events if e.transition == "host_down"]
+    # The first two failures are emitted as failed; the third (triggering)
+    # failure is re-queued — NOT emitted as failed.
+    assert len(failed) == 2, f"expected 2 failed before quarantine (3rd re-queued), got {len(failed)}"
+    assert len(host_down) == 1
+    assert host_down[0].failure is not None
+    assert host_down[0].failure.kind == "circuit_breaker"
+    # The triggering job's run_id appears in host_down.
+    triggering_run_id = host_down[0].run_id
+    triggering_job = next((j for j in jobs if j.run_id == triggering_run_id), None)
+    assert triggering_job is not None, f"triggering job {triggering_run_id!r} not found"
+    assert host.host in triggering_job.preferred_not
+
+
+def test_build_docker_exec_cmd_redirects_streams_into_bundle():
+    """Child stdout / stderr must land in bundle-local log files so they
+    rsync back regardless of exit code. The bundle logs/ directory must
+    be created (mkdir -p) before redirection begins, otherwise the shell
+    would error out on first launch."""
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.worker import _build_docker_exec_cmd
+
+    host = ValkyrieConfig(host="v1", ssh_user="odin", isaaclab_path="/home/odin/IsaacLab")
+    job = JobEntry(
+        run_id="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
+        task_id="Isaac-Ant-Direct-v0",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1024,
+        max_iterations=100,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42",
+    )
+    cmd = _build_docker_exec_cmd(host, job)
+    assert "mkdir -p odin_runs/rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42/logs" in cmd
+    assert "odin_runs/rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42/logs/hugin-stdout.log" in cmd
+    assert "odin_runs/rsl-rl_physx_Isaac-Ant-Direct-v0_test_seed42/logs/hugin-stderr.log" in cmd
+
+
+def test_worker_circuit_breaker_requeues_triggering_job(tmp_path):
+    """With threshold=3 and 3 consecutive failures, the third (triggering)
+    job is put back on the queue with ``preferred_not`` containing the host —
+    it is NOT emitted as a ``failed`` state event."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import RsyncResult, SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    host = ValkyrieConfig(host="cb-host", ssh_user="odin", isaaclab_path="/h/cb")
+
+    def _job(seed: int) -> JobEntry:
+        return JobEntry(
+            run_id=f"cb-{seed}",
+            task_id="Isaac-Test-v0",
+            framework="rsl_rl",
+            backend="physx",
+            num_envs=1024,
+            max_iterations=10,
+            seed=seed,
+            bundle_dir_name=f"cb-{seed}",
+        )
+
+    class _AlwaysFailSSH:
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+            return SSHResult(exit_code=1, stdout="", stderr="crash", duration_s=0.01)
+
+    class _NoopRsync:
+        def pull(self, host, remote_path, local_path):
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+        def push(self, host, local_path, remote_path):
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+    job_q: queue.Queue = queue.Queue()
+    jobs = [_job(s) for s in (1, 2, 3)]
+    for j in jobs:
+        job_q.put(j)
+    job_q.put(None)  # sentinel
+
+    state_chan: queue.Queue = queue.Queue()
+    shutdown = threading.Event()
+    worker = ValkyrieWorker(
+        host=host,
+        job_queue=job_q,
+        state_chan=state_chan,
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(
+            per_job_timeout_s=60,
+            consecutive_failure_quarantine=3,
+        ),
+        ssh=_AlwaysFailSSH(),
+        rsync=_NoopRsync(),
+        shutdown_event=shutdown,
+    )
+    worker.start()
+    worker.join(timeout=10.0)
+    assert not worker.is_alive(), "worker should have exited after quarantining"
+
+    events: list = []
+    while not state_chan.empty():
+        events.append(state_chan.get_nowait())
+
+    failed = [e for e in events if e.transition == "failed"]
+    host_down = [e for e in events if e.transition == "host_down"]
+
+    # Only the first two jobs are terminal-failed; the third is re-queued.
+    assert len(failed) == 2, f"expected 2 failed events, got {len(failed)}"
+    assert len(host_down) == 1
+    assert host_down[0].failure.kind == "circuit_breaker"
+
+    # The triggering (third) job must be back on the queue — not failed.
+    triggering_run_id = host_down[0].run_id
+    assert triggering_run_id not in {e.run_id for e in failed}, "triggering job should NOT be in failed events"
+
+    # The requeued job has the host in preferred_not.
+    triggering_job = next(j for j in jobs if j.run_id == triggering_run_id)
+    assert host.host in triggering_job.preferred_not, (
+        "triggering job's preferred_not should contain the quarantined host"
+    )
+
+    # The triggering job is physically back on the queue (not consumed by anyone else).
+    # Drain queue items to find the re-queued job (sentinel None may precede it).
+    queue_items = []
+    while not job_q.empty():
+        queue_items.append(job_q.get_nowait())
+    non_sentinel = [item for item in queue_items if item is not None]
+    assert len(non_sentinel) == 1, f"expected exactly one re-queued job in the queue, got {non_sentinel}"
+    assert non_sentinel[0] is triggering_job, "triggering job should be back on the queue"

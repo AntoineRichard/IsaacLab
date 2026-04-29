@@ -32,6 +32,15 @@ def test_build_ssh_command_minimal():
     assert any("ConnectTimeout=10" in a for a in argv)
 
 
+def test_build_ssh_command_forces_pty():
+    """ssh -tt: force PTY so SSH client death propagates SIGHUP to the
+    remote process group. Without this, killing the dispatcher leaves
+    docker exec'd training processes orphaned on the remotes."""
+    runner = ShellSSHRunner()
+    argv = runner._build_ssh_argv(_host(), "true", timeout_s=None)
+    assert "-tt" in argv
+
+
 def test_build_ssh_command_with_key(tmp_path: Path):
     key = tmp_path / "fake_key"
     key.write_text("nope")

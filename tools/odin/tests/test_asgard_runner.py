@@ -359,7 +359,7 @@ def stub_provisioner(monkeypatch):
     from tools.odin.asgard import preflight as pf
     from tools.odin.asgard import provisioner as pv
 
-    def _fake_pf(host, *, ssh):
+    def _fake_pf(host, *, ssh, auto_restart=True, newton_cuda_floor=None):
         return pf.PreflightResult(
             host=host.host,
             ok=True,
@@ -478,8 +478,7 @@ def test_runner_handles_host_down_event(tmp_path):
     runner_mod._apply_state_event(state, ev)
     fs = next(f for f in state.fleet if f.host == "v1")
     assert fs.status == "down"
-    assert "gpu_lost: recovery_failed" in fs.last_error
-    assert "docker_restart_failed" in fs.last_error
+    assert fs.last_error == "gpu_lost: docker_restart_failed: daemon down"
 
 
 def test_sweep_pending_terminal_fails_when_all_hosts_down(tmp_path):
@@ -554,4 +553,150 @@ def test_sweep_pending_leaves_pending_when_fleet_healthy(tmp_path):
     runner_mod._sweep_pending_after_dispatch(state)
 
     assert state.jobs[0].status == "pending"
-    assert state.jobs[0].failure is None
+
+
+def test_apply_state_event_circuit_breaker_adds_quarantined_host(tmp_path):
+    """host_down(circuit_breaker) appends a QuarantinedHost entry."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+    from tools.odin.asgard.worker import StateEvent
+
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260428-100000",
+        started_at="2026-04-28T10:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="busy", last_error=None)],
+        jobs=[],
+    )
+    ev = StateEvent(
+        run_id="r-cb",
+        host="v1",
+        transition="host_down",
+        failure=FailureInfo(
+            kind="circuit_breaker",
+            message="3 consecutive failures on v1; quarantining host",
+        ),
+    )
+    runner_mod._apply_state_event(state, ev)
+
+    assert len(state.quarantined_hosts) == 1
+    qh = state.quarantined_hosts[0]
+    assert qh.host == "v1"
+    assert qh.reason == "circuit_breaker"
+    assert qh.last_run_id == "r-cb"
+    assert qh.at  # non-empty ISO timestamp
+
+
+def test_apply_state_event_gpu_lost_does_not_add_quarantined_host(tmp_path):
+    """host_down(gpu_lost) does NOT add to quarantined_hosts."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+    from tools.odin.asgard.worker import StateEvent
+
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260428-100000",
+        started_at="2026-04-28T10:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="busy", last_error=None)],
+        jobs=[],
+    )
+    ev = StateEvent(
+        run_id="r-gl",
+        host="v1",
+        transition="host_down",
+        failure=FailureInfo(kind="gpu_lost", message="docker_restart_failed: daemon down"),
+    )
+    runner_mod._apply_state_event(state, ev)
+
+    assert state.quarantined_hosts == []
+
+
+def test_run_dispatch_marks_newton_jobs_failed_when_no_capable_host(tmp_path: Path, monkeypatch):
+    """When no host has newton_available=True after provisioning, pending newton
+    jobs are marked failed with kind='newton_floor' and an upgrade-hint message."""
+    from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
+    from tools.odin.asgard.preflight import PreflightResult
+    from tools.odin.asgard.provisioner import ProvisionResult
+    from tools.odin.asgard.runner import DispatchOptions, run_dispatch
+
+    # Fake preflight: host healthy, but newton_available=False.
+    def _fake_pf(host, *, ssh, auto_restart=True, newton_cuda_floor=None):
+        return PreflightResult(
+            host=host.host,
+            ok=True,
+            checks={
+                "ssh_reach": True,
+                "docker_running": True,
+                "container_up": True,
+                "isaaclab_present": True,
+                "gpu_present": True,
+            },
+            message="newton unavailable: host CUDA 12.2 < newton floor 12.4",
+            cuda_version=(12, 2),
+            newton_available=False,
+        )
+
+    # Fake provisioner: always succeeds.
+    def _fake_pv(host, working_tree, *, fresh, ssh, rsync):
+        return ProvisionResult(host=host.host, ok=True, commit_sha="test-stub")
+
+    monkeypatch.setattr("tools.odin.asgard.runner.preflight_valkyrie", _fake_pf)
+    monkeypatch.setattr("tools.odin.asgard.runner.provision_valkyrie", _fake_pv)
+
+    # Build minimal newton_yaml using EnvList, creating one Newton-capable task.
+    el = EnvList()
+    el.groups["test/task"] = [
+        EnvEntry(
+            task_id="Isaac-Test-Direct-v0",
+            entry_point="isaaclab_tasks.test:TestEnv",
+            env_cfg_entry_point="isaaclab_tasks.test:TestEnvCfg",
+            group="test/task",
+            has_rsl_rl=True,
+            has_skrl=False,
+            has_rl_games=False,
+            framework="rsl_rl",
+            num_envs=1024,
+            max_iterations=100,
+            keep=True,
+            status="current",
+            presets_available=["newton"],
+        )
+    ]
+    newton_yaml = tmp_path / "newton.yaml"
+    write_env_list(newton_yaml, el, generator="test")
+
+    fleet = Fleet(
+        fleet_name="test",
+        hosts=[ValkyrieConfig(host="v1", ssh_user="odin", isaaclab_path="/h/x")],
+    )
+
+    dispatch_dir = tmp_path / "20260429-000000"
+    dispatch_dir.mkdir()
+
+    state = run_dispatch(
+        fleet=fleet,
+        physx_yaml=None,
+        newton_yaml=newton_yaml,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42], skip_aggregate=True, skip_preflight=False),
+        ssh=_FakeSSH(),
+        rsync=_FakeRsync(),
+    )
+
+    newton_jobs = [j for j in state.jobs if j.backend == "newton"]
+    assert newton_jobs, "expected at least one newton job in the state"
+    assert all(j.status == "failed" for j in newton_jobs), "all newton jobs should be marked failed"
+    assert all(j.failure is not None and j.failure.kind == "newton_floor" for j in newton_jobs), (
+        "all newton jobs should have kind='newton_floor'"
+    )
+    assert all("odin-cuda install --target 12.4" in j.failure.message for j in newton_jobs), (
+        "all newton jobs should have upgrade-hint message"
+    )

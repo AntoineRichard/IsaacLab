@@ -32,6 +32,9 @@ from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
 
 __all__ = ["DispatchOptions", "resolve_dispatch_dir", "run_dispatch"]
 
+# Minimum CUDA toolkit version required for Newton (warp) workloads.
+_NEWTON_CUDA_FLOOR: tuple[int, int] = (12, 4)
+
 
 @dataclass
 class DispatchOptions:
@@ -53,17 +56,26 @@ class DispatchOptions:
         skip_aggregate: When ``True``, skip the automatic
             :func:`~tools.odin.valhalla.aggregate_dispatch` + write at the
             end of :func:`run_dispatch`. Default ``False``.
+        consecutive_failure_quarantine: Number of consecutive per-worker
+            failures that trigger host quarantine (``host_down`` +
+            worker exit). ``0`` disables the circuit-breaker. Default
+            ``3``.
+        preflight_auto_restart: When ``True`` (default), automatically
+            restart the container and re-probe on NVML wedge during
+            preflight. Pass ``False`` to preserve strict-failure semantics.
     """
 
     seeds: list[int]
     max_infrastructure_retries: int = 2
-    per_job_timeout_s: int = 14400
+    per_job_timeout_s: int = 43200
     fresh: bool = False
     skip_preflight: bool = False
     include_filter: list[str] | None = None
     verbose: bool = False
     retry_failed: list[str] | None = None
     skip_aggregate: bool = False
+    consecutive_failure_quarantine: int = 3
+    preflight_auto_restart: bool = True
 
 
 def _utc_now_iso() -> str:
@@ -134,7 +146,17 @@ def _write_preflight(results, dispatch_dir: Path, dispatch_id: str) -> None:
         "schema_version": "1.0",
         "dispatch_id": dispatch_id,
         "checked_at": _utc_now_iso(),
-        "hosts": [{"host": r.host, "ok": r.ok, "checks": r.checks, "message": r.message} for r in results],
+        "hosts": [
+            {
+                "host": r.host,
+                "ok": r.ok,
+                "checks": r.checks,
+                "message": r.message,
+                "recovery_attempted": r.recovery_attempted,
+                "recovery_succeeded": r.recovery_succeeded,
+            }
+            for r in results
+        ],
     }
     (dispatch_dir / "preflight.json").write_text(json.dumps(payload, indent=2))
 
@@ -208,12 +230,24 @@ def _apply_state_event(
                 f.last_error = "gpu_lost: recovered"
         return 0
     if ev.transition == "host_down":
+        kind = ev.failure.kind if ev.failure is not None else "unknown"
         detail = ev.failure.message if ev.failure is not None else "unknown"
         for f in state.fleet:
             if f.host == ev.host:
                 f.status = "down"
-                f.last_error = f"gpu_lost: recovery_failed ({detail})"
-                f.current_run_id = None  # worker re-queued the job
+                f.last_error = f"{kind}: {detail}"
+                f.current_run_id = None  # worker re-queued the job (or quarantined for circuit_breaker)
+        if ev.failure is not None and ev.failure.kind == "circuit_breaker":
+            from tools.odin.asgard.state import QuarantinedHost
+
+            state.quarantined_hosts.append(
+                QuarantinedHost(
+                    host=ev.host,
+                    reason=ev.failure.kind,
+                    last_run_id=ev.run_id,
+                    at=_utc_now_iso(),
+                )
+            )
         return 0
     return 0
 
@@ -325,7 +359,22 @@ def run_dispatch(
     # Load prior state for resume if it exists.
     prior_state = read_dispatch_state(dispatch_dir)
     if prior_state is not None:
-        # Flip in-flight → pending first, then merge.
+        # Reconcile orphans (PR4 / punch-list #7b): for any 'running' job,
+        # check the remote for a completed manifest, alive process, or
+        # neither, and mutate accordingly. Must run BEFORE
+        # reset_in_flight_to_pending — that function would otherwise lose
+        # the assigned_to we need to find the host.
+        from tools.odin.asgard.reconcile import reconcile_orphans
+
+        reconcile_orphans(
+            fleet=fleet,
+            jobs=prior_state.jobs,
+            dispatch_dir=dispatch_dir,
+            ssh=ssh,
+            rsync=rsync,
+        )
+        # Flip remaining in-flight (those still in 'running' after reconcile,
+        # e.g. assigned_to=None edge cases) → pending.
         reset_in_flight_to_pending(prior_state)
         merged_jobs = _merge_jobs(prior_state.jobs, fresh_jobs)
         # Resume preserves the prior skipped[] verbatim; we don't re-evaluate.
@@ -366,7 +415,15 @@ def run_dispatch(
     _snapshot_fleet_yaml(fleet, dispatch_dir)
 
     # Preflight.
-    pre_results = [preflight_valkyrie(h, ssh=ssh) for h in fleet.hosts]
+    pre_results = [
+        preflight_valkyrie(
+            h,
+            ssh=ssh,
+            auto_restart=options.preflight_auto_restart,
+            newton_cuda_floor=_NEWTON_CUDA_FLOOR,
+        )
+        for h in fleet.hosts
+    ]
     _write_preflight(pre_results, dispatch_dir, dispatch_id)
 
     healthy: list[ValkyrieConfig] = []
@@ -436,6 +493,26 @@ def run_dispatch(
             commit_sha = commit_sha or pr.commit_sha
     healthy = [h for h in healthy if h.host not in down_hosts]
 
+    # Filter Newton jobs when no host meets the CUDA floor. Mark them failed
+    # with a clear kind so the dispatch report (and operator) sees the gap.
+    healthy_hosts_set = {h.host for h in healthy}
+    newton_capable_hosts = [r.host for r in pre_results if r.ok and r.newton_available and r.host in healthy_hosts_set]
+    if not newton_capable_hosts:
+        for j in merged_jobs:
+            if j.backend == "newton" and j.status == "pending":
+                j.status = "failed"
+                j.failure = FailureInfo(
+                    kind="newton_floor",
+                    message=(
+                        f"no host meets Newton CUDA floor "
+                        f"{_NEWTON_CUDA_FLOOR[0]}.{_NEWTON_CUDA_FLOOR[1]}; "
+                        f"run `odin-cuda install --target "
+                        f"{_NEWTON_CUDA_FLOOR[0]}.{_NEWTON_CUDA_FLOOR[1]}`"
+                    ),
+                    details={"newton_cuda_floor": list(_NEWTON_CUDA_FLOOR)},
+                )
+                j.ended_at = _utc_now_iso()
+
     # Seed the state and spawn workers.
     state = DispatchState(
         schema_version=SCHEMA_VERSION,
@@ -475,6 +552,7 @@ def run_dispatch(
             options=WorkerOptions(
                 per_job_timeout_s=options.per_job_timeout_s,
                 max_infrastructure_retries=options.max_infrastructure_retries,
+                consecutive_failure_quarantine=options.consecutive_failure_quarantine,
             ),
             ssh=ssh,
             rsync=rsync,
