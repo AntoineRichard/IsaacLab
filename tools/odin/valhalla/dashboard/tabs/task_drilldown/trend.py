@@ -274,9 +274,11 @@ def render_trend_section(
             ],
         )
 
+    # data.trend_dispatches_for is newest-first; the chart's x-axis reads
+    # left=oldest → right=newest, with the current dispatch on the right.
     points = compute_trend_points(
         data,
-        dispatch_ids,
+        list(reversed(dispatch_ids)),
         selection.task,
         selection.framework,
         selection.backend,

@@ -308,3 +308,46 @@ def test_render_trend_section_normal_render():
     )
     graphs = [c for c in _walk(component) if type(c).__name__ == "Graph"]
     assert len(graphs) == 1
+
+
+def test_render_trend_section_places_current_on_the_right():
+    """data.trend_dispatches_for returns newest-first; the chart must read
+    left=oldest → right=newest so the current dispatch lands on the rightmost
+    tick (with the ▲ marker and NVIDIA-green color)."""
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.trend import render_trend_section
+    from tools.odin.valhalla.dashboard.tabs.task_drilldown.url_state import TaskSelection
+
+    data = _StubData()
+    for did, sha in [("d-now", "ccc3333"), ("d-mid", "bbb2222"), ("d-old", "aaa1111")]:
+        data.add_dispatch(did, commit=sha, row_kwargs={"agg": _aggregate_block()})
+
+    class _DataWrapper:
+        def trend_dispatches_for(self, current, task, fw, be, n=10):
+            # Production order: newest-first.
+            return ["d-now", "d-mid", "d-old"]
+
+        def load_aggregate(self, dispatch_id):
+            return data.load_aggregate(dispatch_id)
+
+        def load_dispatch(self, dispatch_id):
+            return data.load_dispatch(dispatch_id)
+
+        def load_hardware(self, dispatch_id):
+            return {"fingerprint": "gpu:NVIDIA-L40"}
+
+    selection = TaskSelection("X", "rsl_rl", "physx")
+    component = render_trend_section(
+        _DataWrapper(),
+        current_dispatch_id="d-now",
+        selection=selection,
+        metric="reward_final_ema",
+        mode="ribbon",
+    )
+    graph = next(c for c in _walk(component) if type(c).__name__ == "Graph")
+    fig = graph.figure
+    # Tick labels read left-to-right; the rightmost gets the ' ▲' suffix and
+    # corresponds to the current dispatch (newest, "d-now" → "ccc3333").
+    tick_text = list(fig.layout.xaxis.ticktext or [])
+    assert tick_text[0].startswith("aaa1111")
+    assert tick_text[-1].startswith("ccc3333")
+    assert tick_text[-1].endswith(" ▲")
