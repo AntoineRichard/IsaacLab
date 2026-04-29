@@ -134,7 +134,19 @@ def test_seeds_table_column_set():
     seeds = {"42": _seed()}
     component = render_seeds_table(seeds)
     headers = [c for c in _walk(component) if type(c).__name__ == "Th"]
-    expected = ["Seed", "Status", "Reward", "Ep length", "Iter time", "env_steps/s", "RAM peak", "GPU mem", "Wall time", "Startup", "Host"]
+    expected = [
+        "Seed",
+        "Status",
+        "Reward",
+        "Ep length",
+        "Iter time",
+        "env_steps/s",
+        "RAM peak",
+        "GPU mem",
+        "Wall time",
+        "Startup",
+        "Host",
+    ]
     actual = [getattr(h, "children", "") for h in headers]
     assert actual == expected
 
@@ -161,7 +173,9 @@ def test_seeds_table_dashes_when_metric_missing():
 
 def test_render_stats_panel_contains_both_cards():
     row = {
-        "task": "X", "framework": "rsl_rl", "backend": "physx",
+        "task": "X",
+        "framework": "rsl_rl",
+        "backend": "physx",
         "aggregate": _aggregate_block(),
         "seeds": {"42": _seed()},
         "divergent_seeds": [],

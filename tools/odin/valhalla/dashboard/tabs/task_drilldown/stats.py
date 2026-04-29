@@ -76,7 +76,19 @@ def render_aggregate_card(aggregate_block: dict, divergent_seeds: list[str]) -> 
 
 def render_seeds_table(seeds_block: dict) -> html.Div:
     """Build the right-side per-seed table (11 columns)."""
-    headers = ["Seed", "Status", "Reward", "Ep length", "Iter time", "env_steps/s", "RAM peak", "GPU mem", "Wall time", "Startup", "Host"]
+    headers = [
+        "Seed",
+        "Status",
+        "Reward",
+        "Ep length",
+        "Iter time",
+        "env_steps/s",
+        "RAM peak",
+        "GPU mem",
+        "Wall time",
+        "Startup",
+        "Host",
+    ]
     header_row = html.Tr(children=[html.Th(h) for h in headers])
     body_rows: list = []
     for seed_key in sorted(seeds_block.keys(), key=lambda k: int(k) if str(k).isdigit() else 0):
@@ -145,15 +157,8 @@ def _fmt_num(value) -> str:
     if value is None:
         return "—"
     if abs(value) >= 1000:
-        result = f"{value:.2f}"
-    else:
-        result = f"{value:.3f}"
-    # Strip trailing zeros after decimal point, but keep at least one decimal place
-    if "." in result:
-        result = result.rstrip("0")
-        if result.endswith("."):
-            result += "0"
-    return result
+        return f"{value:.2f}"
+    return f"{value:.3f}"
 
 
 def _fmt_or_dash(value, *, suffix: str = "", int_fmt: bool = False) -> str:
