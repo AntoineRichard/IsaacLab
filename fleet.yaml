@@ -9,9 +9,9 @@ fleet_name: odin-first-fleet-2026-04-23
 default_ssh_user: horde
 default_ssh_key: ~/.ssh/id_ed25519
 hosts:
-  - host: 10.176.221.98
+  - host: 10.176.214.169  # Odin-Runner-5, NVIDIA L40 x1
     isaaclab_path: ~/IsaacLab
     container_name: isaac-lab-base
-  - host: 10.63.172.46
+  - host: 10.176.215.13  # Odin-Runner-3
     isaaclab_path: ~/IsaacLab
     container_name: isaac-lab-base
