@@ -146,6 +146,28 @@ def test_all_checks_pass_with_gpu():
     }
 
 
+def test_healthy_host_has_no_recovery_flags():
+    """A host that passes all checks on first probe has both recovery flags False."""
+    ssh = _FakeSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "nvidia-smi -L": SSHResult(
+                exit_code=0,
+                stdout="GPU 0: NVIDIA A100\n",
+                stderr="",
+                duration_s=0.01,
+            ),
+        }
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh)
+    assert r.ok is True
+    assert r.recovery_attempted is False
+    assert r.recovery_succeeded is False
+
+
 def test_gpu_absent_marks_host_down():
     """nvidia-smi -L returns non-zero → preflight fails with gpu_present=False."""
     ssh = _FakeSSH(
@@ -230,6 +252,8 @@ def test_preflight_recovers_nvml_wedge_via_container_restart():
     assert r.ok is True
     assert r.checks["gpu_present"] is True
     assert r.message == "recovered: container restarted to clear NVML wedge"
+    assert r.recovery_attempted is True
+    assert r.recovery_succeeded is True
 
 
 def test_preflight_no_auto_restart_marks_host_down():
@@ -251,6 +275,7 @@ def test_preflight_no_auto_restart_marks_host_down():
     r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=False)
     assert r.ok is False
     assert r.checks["gpu_present"] is False
+    assert r.recovery_attempted is False
 
 
 def test_preflight_recovery_failure_marks_host_down():
@@ -289,6 +314,8 @@ def test_preflight_recovery_failure_marks_host_down():
     r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=True)
     assert r.ok is False
     assert "recovery_failed" in r.message
+    assert r.recovery_attempted is True
+    assert r.recovery_succeeded is False
 
 
 def test_preflight_records_cuda_version():

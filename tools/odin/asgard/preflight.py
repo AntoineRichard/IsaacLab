@@ -75,6 +75,8 @@ class PreflightResult:
     message: str = ""
     cuda_version: tuple[int, int] | None = None
     newton_available: bool = True
+    recovery_attempted: bool = False
+    recovery_succeeded: bool = False
 
 
 def _resolve_newton_availability(
@@ -247,12 +249,16 @@ def preflight_valkyrie(
                 message=message,
                 cuda_version=cuda_version,
                 newton_available=newton_available,
+                recovery_attempted=True,
+                recovery_succeeded=True,
             )
         return PreflightResult(
             host=host.host,
             ok=False,
             checks=checks,
             message=f"GPU absent in container, recovery_failed: {rec.message}",
+            recovery_attempted=True,
+            recovery_succeeded=False,
         )
 
     return PreflightResult(

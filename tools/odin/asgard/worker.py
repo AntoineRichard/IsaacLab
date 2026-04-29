@@ -61,7 +61,7 @@ class _ConsecutiveFailureTracker:
 
 @dataclass
 class WorkerOptions:
-    per_job_timeout_s: int = 14400
+    per_job_timeout_s: int = 43200
     max_infrastructure_retries: int = 2
     consecutive_failure_quarantine: int = 3  # 0 = disabled
 
@@ -287,6 +287,8 @@ class ValkyrieWorker(threading.Thread):
             break  # non-recoverable result or retries exhausted
 
         if failure is not None:
+            if self._quarantine_check_and_handle(job=job, failure=failure, ssh_tail=ssh_tail):
+                return
             job.status = "failed"
             job.failure = failure
             job.ended_at = _utc_now_iso()
@@ -299,8 +301,6 @@ class ValkyrieWorker(threading.Thread):
                     ended_at=job.ended_at,
                 )
             )
-            if self._maybe_quarantine_after_failure(job.run_id):
-                return
             return
 
         # Success path: rsync pull the bundle back.
@@ -308,31 +308,32 @@ class ValkyrieWorker(threading.Thread):
         local_bundle = self._dispatch_dir / job.bundle_dir_name
         rsync_result = self._rsync.pull(self.host, remote_bundle, local_bundle)
         if rsync_result.exit_code != 0:
-            job.status = "failed"
-            job.failure = FailureInfo(
+            rsync_failure = FailureInfo(
                 kind="infrastructure",
                 message=f"rsync pull failed: {rsync_result.stderr.strip() or 'non-zero exit'}",
                 details={"attempts": job.attempts},
             )
+            if self._quarantine_check_and_handle(job=job, failure=rsync_failure, ssh_tail=ssh_tail):
+                return
+            job.status = "failed"
+            job.failure = rsync_failure
             job.ended_at = _utc_now_iso()
             self._state_chan.put(
-                StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=job.failure)
+                StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=rsync_failure)
             )
-            if self._maybe_quarantine_after_failure(job.run_id):
-                return
             return
 
         # Validate the bundle: manifest.json present, schema-v1 shape.
         bundle_failure = _validate_bundle(local_bundle)
         if bundle_failure is not None:
+            if self._quarantine_check_and_handle(job=job, failure=bundle_failure, ssh_tail=ssh_tail):
+                return
             job.status = "failed"
             job.failure = bundle_failure
             job.ended_at = _utc_now_iso()
             self._state_chan.put(
                 StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=bundle_failure)
             )
-            if self._maybe_quarantine_after_failure(job.run_id):
-                return
             return
 
         job.status = "completed"
@@ -349,12 +350,18 @@ class ValkyrieWorker(threading.Thread):
 
     # -- circuit-breaker helper ---------------------------------------------
 
-    def _maybe_quarantine_after_failure(self, run_id: str) -> bool:
-        """Note a failure on this worker; if the threshold was reached, emit
-        a host_down ``StateEvent`` and arm ``_down_event``.
+    def _quarantine_check_and_handle(self, *, job: JobEntry, failure: FailureInfo, ssh_tail: Path) -> bool:
+        """Increment the failure tracker and, if quarantine triggers, emit
+        host_down + re-queue the job + arm ``_down_event``.
+
+        If the threshold isn't reached, this method does NOT emit any
+        event — caller is expected to post the regular ``failed`` event.
 
         Args:
-            run_id: The run_id of the just-failed job.
+            job: The job that just failed.
+            failure: The :class:`FailureInfo` describing the failure.
+            ssh_tail: Path to the ssh-tail log (passed through for context;
+                not used directly but available for future diagnostics).
 
         Returns:
             ``True`` iff the worker should exit (threshold reached).
@@ -362,9 +369,13 @@ class ValkyrieWorker(threading.Thread):
         """
         if not self._fail_tracker.note_failure():
             return False
+        # Threshold reached: re-queue the triggering job so another healthy
+        # host can pick it up, and quarantine this host.
+        job.preferred_not = set(job.preferred_not) | {self.host.host}
+        self._job_queue.put(job)
         self._state_chan.put(
             StateEvent(
-                run_id=run_id,
+                run_id=job.run_id,
                 host=self.host.host,
                 transition="host_down",
                 failure=FailureInfo(

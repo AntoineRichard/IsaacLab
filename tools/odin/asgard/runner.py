@@ -67,7 +67,7 @@ class DispatchOptions:
 
     seeds: list[int]
     max_infrastructure_retries: int = 2
-    per_job_timeout_s: int = 14400
+    per_job_timeout_s: int = 43200
     fresh: bool = False
     skip_preflight: bool = False
     include_filter: list[str] | None = None
@@ -146,7 +146,17 @@ def _write_preflight(results, dispatch_dir: Path, dispatch_id: str) -> None:
         "schema_version": "1.0",
         "dispatch_id": dispatch_id,
         "checked_at": _utc_now_iso(),
-        "hosts": [{"host": r.host, "ok": r.ok, "checks": r.checks, "message": r.message} for r in results],
+        "hosts": [
+            {
+                "host": r.host,
+                "ok": r.ok,
+                "checks": r.checks,
+                "message": r.message,
+                "recovery_attempted": r.recovery_attempted,
+                "recovery_succeeded": r.recovery_succeeded,
+            }
+            for r in results
+        ],
     }
     (dispatch_dir / "preflight.json").write_text(json.dumps(payload, indent=2))
 
@@ -227,6 +237,17 @@ def _apply_state_event(
                 f.status = "down"
                 f.last_error = f"{kind}: {detail}"
                 f.current_run_id = None  # worker re-queued the job (or quarantined for circuit_breaker)
+        if ev.failure is not None and ev.failure.kind == "circuit_breaker":
+            from tools.odin.asgard.state import QuarantinedHost
+
+            state.quarantined_hosts.append(
+                QuarantinedHost(
+                    host=ev.host,
+                    reason=ev.failure.kind,
+                    last_run_id=ev.run_id,
+                    at=_utc_now_iso(),
+                )
+            )
         return 0
     return 0
 

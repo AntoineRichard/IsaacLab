@@ -71,8 +71,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--per-job-timeout",
         type=int,
-        default=14400,
-        help="Per-job wall-clock timeout in seconds (default: 14400 = 4h).",
+        default=43200,
+        help="Per-job wall-clock timeout in seconds (default: 43200 = 12h).",
     )
     parser.add_argument(
         "--max-infrastructure-retries",

@@ -312,7 +312,7 @@ def test_native_match_runs_unsupported_pair_routes_to_skipped(tmp_path: Path, st
 
     reloaded = read_dispatch_state(dispatch_dir)
     assert reloaded is not None
-    assert reloaded.schema_version == "1.3"
+    assert reloaded.schema_version == "1.4"
     assert len(reloaded.skipped) == 2
     assert reloaded.skipped[0].native_backend == "physx"
 

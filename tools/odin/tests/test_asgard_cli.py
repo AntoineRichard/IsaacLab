@@ -48,7 +48,7 @@ def test_parse_args_minimal():
     assert args.seeds == [42]
     assert args.fresh is False
     assert args.skip_preflight is False
-    assert args.per_job_timeout == 14400
+    assert args.per_job_timeout == 43200
 
 
 def test_parse_args_all_flags():

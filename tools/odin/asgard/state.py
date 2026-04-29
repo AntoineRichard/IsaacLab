@@ -24,6 +24,7 @@ from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry
 __all__ = [
     "DispatchState",
     "FleetSnapshot",
+    "QuarantinedHost",
     "SCHEMA_VERSION",
     "read_dispatch_state",
     "write_dispatch_state",
@@ -31,7 +32,7 @@ __all__ = [
 ]
 
 
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 _DISPATCH_FILENAME = "dispatch.json"
 
 
@@ -43,6 +44,21 @@ class FleetSnapshot:
     status: str  # "idle" | "busy" | "down"
     current_run_id: str | None = None
     last_error: str | None = None
+
+
+@dataclass
+class QuarantinedHost:
+    """Record of a host quarantined by the circuit-breaker.
+
+    Written into the top-level ``quarantined_hosts`` list in
+    ``dispatch.json`` when a worker trips the consecutive-failure
+    threshold (``kind="circuit_breaker"``).
+    """
+
+    host: str
+    reason: str  # the FailureInfo.kind that triggered the quarantine
+    last_run_id: str  # the run_id whose failure tripped the threshold
+    at: str  # UTC ISO-8601 timestamp
 
 
 @dataclass
@@ -58,6 +74,7 @@ class DispatchState:
     fleet: list[FleetSnapshot]
     jobs: list[JobEntry]
     skipped: list[SkippedEntry] = field(default_factory=list)
+    quarantined_hosts: list[QuarantinedHost] = field(default_factory=list)
 
 
 # --- Serialization -----------------------------------------------------------
@@ -161,6 +178,9 @@ def _state_to_dict(s: DispatchState) -> dict[str, Any]:
         ],
         "jobs": [_job_to_dict(j) for j in s.jobs],
         "skipped": [_skipped_to_dict(sk) for sk in s.skipped],
+        "quarantined_hosts": [
+            {"host": q.host, "reason": q.reason, "last_run_id": q.last_run_id, "at": q.at} for q in s.quarantined_hosts
+        ],
     }
 
 
@@ -204,6 +224,15 @@ def _state_from_dict(d: dict[str, Any]) -> DispatchState:
         ],
         jobs=[_job_from_dict(j) for j in (d.get("jobs") or [])],
         skipped=[_skipped_from_dict(s) for s in (d.get("skipped") or [])],
+        quarantined_hosts=[
+            QuarantinedHost(
+                host=str(q["host"]),
+                reason=str(q["reason"]),
+                last_run_id=str(q["last_run_id"]),
+                at=str(q["at"]),
+            )
+            for q in (d.get("quarantined_hosts") or [])
+        ],
     )
 
 

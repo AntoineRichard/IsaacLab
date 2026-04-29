@@ -233,7 +233,7 @@ PYTHONPATH=. ./isaaclab.sh -p tools/odin/asgard/cli.py \
     [--resume LATEST] \
     [--fresh] \
     [--skip-preflight] \
-    [--per-job-timeout 14400] \
+    [--per-job-timeout 43200] \
     [--verbose]
 ```
 

@@ -555,6 +555,70 @@ def test_sweep_pending_leaves_pending_when_fleet_healthy(tmp_path):
     assert state.jobs[0].status == "pending"
 
 
+def test_apply_state_event_circuit_breaker_adds_quarantined_host(tmp_path):
+    """host_down(circuit_breaker) appends a QuarantinedHost entry."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+    from tools.odin.asgard.worker import StateEvent
+
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260428-100000",
+        started_at="2026-04-28T10:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="busy", last_error=None)],
+        jobs=[],
+    )
+    ev = StateEvent(
+        run_id="r-cb",
+        host="v1",
+        transition="host_down",
+        failure=FailureInfo(
+            kind="circuit_breaker",
+            message="3 consecutive failures on v1; quarantining host",
+        ),
+    )
+    runner_mod._apply_state_event(state, ev)
+
+    assert len(state.quarantined_hosts) == 1
+    qh = state.quarantined_hosts[0]
+    assert qh.host == "v1"
+    assert qh.reason == "circuit_breaker"
+    assert qh.last_run_id == "r-cb"
+    assert qh.at  # non-empty ISO timestamp
+
+
+def test_apply_state_event_gpu_lost_does_not_add_quarantined_host(tmp_path):
+    """host_down(gpu_lost) does NOT add to quarantined_hosts."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+    from tools.odin.asgard.worker import StateEvent
+
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260428-100000",
+        started_at="2026-04-28T10:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="busy", last_error=None)],
+        jobs=[],
+    )
+    ev = StateEvent(
+        run_id="r-gl",
+        host="v1",
+        transition="host_down",
+        failure=FailureInfo(kind="gpu_lost", message="docker_restart_failed: daemon down"),
+    )
+    runner_mod._apply_state_event(state, ev)
+
+    assert state.quarantined_hosts == []
+
+
 def test_run_dispatch_marks_newton_jobs_failed_when_no_capable_host(tmp_path: Path, monkeypatch):
     """When no host has newton_available=True after provisioning, pending newton
     jobs are marked failed with kind='newton_floor' and an upgrade-hint message."""

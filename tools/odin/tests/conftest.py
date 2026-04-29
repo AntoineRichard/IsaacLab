@@ -25,6 +25,5 @@ def _no_kit_imported() -> None:
     forbidden_prefixes = ("omni.kit", "isaacsim", "carb")
     leaked = sorted(m for m in sys.modules if m.startswith(forbidden_prefixes))
     assert not leaked, (
-        f"Kit modules imported during Odin tests: {leaked}. "
-        f"Odin tests are pure-Python; do not import Kit / IsaacSim."
+        f"Kit modules imported during Odin tests: {leaked}. Odin tests are pure-Python; do not import Kit / IsaacSim."
     )

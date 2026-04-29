@@ -103,6 +103,7 @@ def _calibrate_one(
     row: dict,
     fleet,
     calibration_iters: int,
+    yaml_path: Path,
     ssh,
     rsync,
     runs_root: Path,
@@ -110,10 +111,12 @@ def _calibrate_one(
     """Run one calibration dispatch; return (per_iter_s, startup_s) or None."""
     from tools.odin.asgard.runner import DispatchOptions, resolve_dispatch_dir, run_dispatch
 
+    # TODO(scope: future PR): calibration_iters is accepted but unused here —
+    # honoring it requires a runner-level max_iterations override.
     d = resolve_dispatch_dir(runs_root, resume=None)
     state = run_dispatch(
         fleet=fleet,
-        physx_yaml=Path("tools/odin/config/physx_envs.yaml"),
+        physx_yaml=yaml_path,
         newton_yaml=None,
         dispatch_dir=d,
         options=DispatchOptions(
@@ -159,6 +162,7 @@ def main() -> int:
                 row=row,
                 fleet=fleet,
                 calibration_iters=args.calibration_iters,
+                yaml_path=args.yaml,
                 ssh=ssh,
                 rsync=rsync,
                 runs_root=args.runs_root,
