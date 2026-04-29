@@ -237,6 +237,16 @@ def _apply_state_event(
                 f.status = "down"
                 f.last_error = f"{kind}: {detail}"
                 f.current_run_id = None  # worker re-queued the job (or quarantined for circuit_breaker)
+        # Worker re-queued the in-flight job; reset its dispatch.json row from
+        # 'running' back to 'pending' so it (a) is eligible to be picked up by
+        # another healthy worker, and (b) is caught by the post-dispatch sweep
+        # if no host remains. Without this reset the job stays as 'running'
+        # forever in the final state.
+        for j in state.jobs:
+            if j.run_id == ev.run_id and j.status == "running":
+                j.status = "pending"
+                j.assigned_to = None
+                j.started_at = None
         if ev.failure is not None and ev.failure.kind == "circuit_breaker":
             from tools.odin.asgard.state import QuarantinedHost
 

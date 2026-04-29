@@ -481,6 +481,67 @@ def test_runner_handles_host_down_event(tmp_path):
     assert fs.last_error == "gpu_lost: docker_restart_failed: daemon down"
 
 
+def test_runner_host_down_resets_in_flight_job_to_pending(tmp_path):
+    """When host_down fires, the in-flight job (matching ev.run_id) was
+    re-queued by the worker; the runner must flip its dispatch.json row from
+    ``running`` back to ``pending`` so it can be picked up again — and so
+    the post-dispatch sweep catches it if no host remains."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo, JobEntry
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState, FleetSnapshot
+    from tools.odin.asgard.worker import StateEvent
+
+    in_flight = JobEntry(
+        run_id="r-flight",
+        task_id="X",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=10,
+        seed=42,
+        bundle_dir_name="r-flight",
+    )
+    in_flight.status = "running"
+    in_flight.assigned_to = "v1"
+    in_flight.started_at = "2026-04-27T20:01:00Z"
+    other_done = JobEntry(
+        run_id="r-other",
+        task_id="X",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=10,
+        seed=43,
+        bundle_dir_name="r-other",
+    )
+    other_done.status = "completed"
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260427-200000",
+        started_at="2026-04-27T20:00:00Z",
+        ended_at=None,
+        seeds=[42, 43],
+        commit_sha="abc",
+        fleet=[FleetSnapshot(host="v1", status="busy", last_error=None)],
+        jobs=[in_flight, other_done],
+    )
+    ev = StateEvent(
+        run_id="r-flight",
+        host="v1",
+        transition="host_down",
+        failure=FailureInfo(kind="circuit_breaker", message="3 consecutive failures on v1; quarantining host"),
+    )
+    runner_mod._apply_state_event(state, ev)
+
+    j = next(j for j in state.jobs if j.run_id == "r-flight")
+    assert j.status == "pending", "in-flight job must be reset to pending so it gets picked up / swept"
+    assert j.assigned_to is None
+    assert j.started_at is None
+    # Other completed job is untouched.
+    other = next(j for j in state.jobs if j.run_id == "r-other")
+    assert other.status == "completed"
+
+
 def test_sweep_pending_terminal_fails_when_all_hosts_down(tmp_path):
     """Post-loop sweep marks pending jobs as gpu_lost when no host is healthy."""
     from tools.odin.asgard import runner as runner_mod
