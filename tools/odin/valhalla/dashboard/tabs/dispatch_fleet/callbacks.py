@@ -311,7 +311,7 @@ def _on_running_tail_fetch_handler(
             return dash.no_update
         if run_id in current_store:
             return dash.no_update
-        if _last_clicked_id(toggle_clicks, toggle_ids) is None:
+        if _clicked_triggered_id(toggle_clicks, toggle_ids, triggered_id) is None:
             return dash.no_update
     elif triggered_type == "tab-a-running-tail-refresh":
         if _last_clicked_id(refresh_clicks, refresh_ids) is None:

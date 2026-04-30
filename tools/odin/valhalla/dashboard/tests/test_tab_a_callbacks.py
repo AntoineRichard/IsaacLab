@@ -388,6 +388,33 @@ def test_running_tail_reopen_uses_cached_store():
     assert data.running_tail_calls == []
 
 
+def test_running_tail_fetch_ignores_triggered_toggle_with_zero_clicks():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-a", status="running"), _job(run_id="run-b", status="running")]))
+    toggle_ids = [
+        {"type": "tab-a-running-tail-toggle", "run_id": "run-a"},
+        {"type": "tab-a-running-tail-toggle", "run_id": "run-b"},
+    ]
+
+    out = cb_mod._on_running_tail_fetch_handler(
+        [0, 1],
+        [],
+        toggle_ids,
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={},
+        data=data,
+        triggered_id=toggle_ids[0],
+    )
+
+    assert out is dash.no_update
+    assert data.running_tail_calls == []
+
+
 def test_running_tail_fetch_ignores_phantom_click():
     import dash
 
