@@ -17,6 +17,9 @@ import contextlib
 import json
 import os
 import re
+import shlex
+import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +29,11 @@ __all__ = ["DataLayer", "DispatchSummary", "HardwareInfo"]
 
 
 _DISPATCH_ID_RE = re.compile(r"^\d{8}-\d{6}$")
+_REMOTE_ODIN_RUNS_ROOT = "/workspace/isaaclab/odin_runs"
+_RUNNING_TAIL_DEFAULT_LINES = 50
+_RUNNING_TAIL_SOURCE_PREFIX = "__odin_tail_source__:"
+_RUNNING_TAIL_TIMEOUT_S = 10
+_subprocess_run = subprocess.run
 
 
 @dataclass(frozen=True)
@@ -221,6 +229,71 @@ class DataLayer:
             return None
         return json.loads(path.read_text())
 
+    # -- running bundle tail -----------------------------------------------
+
+    def read_running_job_tail(
+        self,
+        dispatch_id: str,
+        run_id: str,
+        *,
+        host: str,
+        ssh_user: str = "horde",
+        ssh_key: Path | None = None,
+        container_name: str = "isaac-lab-base",
+        n: int = _RUNNING_TAIL_DEFAULT_LINES,
+    ) -> list[str]:
+        """Read the last ``n`` stdout lines from a running remote Hugin bundle.
+
+        The reader tries ``training.stdout.log`` first, then falls back to
+        ``startup.stdout.log`` when training has not started yet. SSH or log
+        availability failures return an empty list so the dashboard can keep
+        rendering running rows.
+        """
+        return self.read_running_job_tail_payload(
+            dispatch_id,
+            run_id,
+            host=host,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            container_name=container_name,
+            n=n,
+        )["lines"]
+
+    def read_running_job_tail_payload(
+        self,
+        dispatch_id: str,
+        run_id: str,
+        *,
+        host: str,
+        ssh_user: str = "horde",
+        ssh_key: Path | None = None,
+        container_name: str = "isaac-lab-base",
+        n: int = _RUNNING_TAIL_DEFAULT_LINES,
+    ) -> dict[str, Any]:
+        """Read running-job stdout tail lines and source metadata.
+
+        Returns:
+            A payload with ``source`` set to the selected log filename, or
+            ``None`` when no log was available, and ``lines`` containing the
+            decoded tail without trailing newline characters.
+        """
+        n = max(1, int(n))
+        ssh_cmd = _build_running_tail_ssh_cmd(run_id=run_id, container_name=container_name, n=n)
+        argv = _build_running_tail_ssh_argv(host=host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_cmd=ssh_cmd)
+        try:
+            result = _subprocess_run(argv, capture_output=True, timeout=_RUNNING_TAIL_TIMEOUT_S, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _warn_running_tail(dispatch_id, run_id, f"{type(exc).__name__}: {exc}")
+            return {"source": None, "lines": []}
+
+        if result.returncode != 0:
+            message = _decode_running_tail_bytes(result.stderr).strip() or f"ssh exited with {result.returncode}"
+            _warn_running_tail(dispatch_id, run_id, message)
+            return {"source": None, "lines": []}
+
+        source, lines = _parse_running_tail_stdout(result.stdout, n)
+        return {"source": source, "lines": lines}
+
     # -- retry queue (operator's per-dispatch "to retry" list) -------------
 
     def read_retry_queue(self, dispatch_id: str) -> set[str]:
@@ -302,3 +375,52 @@ def _summary_from_dispatch(payload: dict[str, Any]) -> DispatchSummary:
         skipped_total=len(payload.get("skipped", []) or []),
         hostnames=hostnames,
     )
+
+
+def _build_running_tail_ssh_argv(*, host: str, ssh_user: str, ssh_key: Path | None, ssh_cmd: str) -> list[str]:
+    argv = [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "BatchMode=yes",
+    ]
+    if ssh_key is not None:
+        argv += ["-i", str(ssh_key)]
+    argv += [f"{ssh_user}@{host}", ssh_cmd]
+    return argv
+
+
+def _build_running_tail_ssh_cmd(*, run_id: str, container_name: str, n: int) -> str:
+    logs_dir = shlex.quote(f"{_REMOTE_ODIN_RUNS_ROOT}/{run_id}/logs")
+    inner = (
+        f"base={logs_dir}; "
+        "for name in training.stdout.log startup.stdout.log; do "
+        'f="$base/$name"; '
+        'if [ -s "$f" ]; then '
+        f'printf "{_RUNNING_TAIL_SOURCE_PREFIX}%s\\n" "$name"; '
+        f'tail -n {n} "$f"; '
+        "exit 0; "
+        "fi; "
+        "done"
+    )
+    return f"docker exec {shlex.quote(container_name)} bash -c {shlex.quote(inner)}"
+
+
+def _parse_running_tail_stdout(stdout: bytes, n: int) -> tuple[str | None, list[str]]:
+    text = _decode_running_tail_bytes(stdout)
+    lines = text.splitlines()
+    source = None
+    if lines and lines[0].startswith(_RUNNING_TAIL_SOURCE_PREFIX):
+        source = lines.pop(0)[len(_RUNNING_TAIL_SOURCE_PREFIX) :]
+    return source, lines[-n:]
+
+
+def _decode_running_tail_bytes(value: bytes) -> str:
+    return value.decode("utf-8", errors="replace")
+
+
+def _warn_running_tail(dispatch_id: str, run_id: str, message: str) -> None:
+    print(f"[WARNING] read_running_job_tail {dispatch_id}/{run_id}: {message}", file=sys.stderr)
