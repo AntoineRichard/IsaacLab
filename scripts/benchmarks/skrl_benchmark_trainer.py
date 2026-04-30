@@ -23,18 +23,29 @@ directly by ``benchmark_skrl.py``'s v1 bundle builder — no TB round trip.
 
 from __future__ import annotations
 
+import inspect
 import time
 
 import torch
 import tqdm
 from skrl.trainers.torch import SequentialTrainer
 
+# skrl >= ~2.x removed the ``agents_scope`` keyword from
+# ``SequentialTrainer.__init__``. Detect once at import time so the wrapper
+# stays compatible with both old and new versions without try/except per
+# call site.
+_SUPER_INIT_PARAMS = inspect.signature(SequentialTrainer.__init__).parameters
+_SUPPORTS_AGENTS_SCOPE = "agents_scope" in _SUPER_INIT_PARAMS
+
 
 class BenchmarkTrainer(SequentialTrainer):
     """SequentialTrainer that records per-iteration timing + reward + ep length."""
 
     def __init__(self, env, agents, agents_scope=None, cfg=None) -> None:
-        super().__init__(env=env, agents=agents, agents_scope=agents_scope, cfg=cfg)
+        if _SUPPORTS_AGENTS_SCOPE:
+            super().__init__(env=env, agents=agents, agents_scope=agents_scope, cfg=cfg)
+        else:
+            super().__init__(env=env, agents=agents, cfg=cfg)
         self.iter_times_s: list[float] = []
         self.iter_rewards: list[float] = []
         self.iter_ep_lengths: list[float] = []
