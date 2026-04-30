@@ -53,6 +53,9 @@ class DispatchOptions:
         verbose: Print per-job completion lines to stdout.
         retry_failed: Explicit list of ``run_id`` values to re-attempt on a
             resume even though they are ``"failed"`` in the prior state.
+        retry_all_failed: When ``True`` on a resume, flip every prior
+            ``failed`` job back to ``pending`` (regardless of failure kind).
+            Mutually exclusive with ``retry_failed``.
         skip_aggregate: When ``True``, skip the automatic
             :func:`~tools.odin.valhalla.aggregate_dispatch` + write at the
             end of :func:`run_dispatch`. Default ``False``.
@@ -73,6 +76,7 @@ class DispatchOptions:
     include_filter: list[str] | None = None
     verbose: bool = False
     retry_failed: list[str] | None = None
+    retry_all_failed: bool = False
     skip_aggregate: bool = False
     consecutive_failure_quarantine: int = 3
     preflight_auto_restart: bool = True
@@ -289,6 +293,39 @@ def _sweep_pending_after_dispatch(state: DispatchState) -> None:
             j.ended_at = _utc_now_iso()
 
 
+def _apply_retry_options(jobs: list[JobEntry], options: DispatchOptions) -> None:
+    """Resume-time retry logic. Mutates ``jobs`` in place.
+
+    ``options.retry_failed``: explicit run_id list → flip matching failed
+    jobs to pending (preserving attempts / timestamps; this is a targeted
+    poke).
+
+    ``options.retry_all_failed``: sweep every failed job back to pending,
+    clearing attempts/assignment/timestamps so the fresh attempt looks
+    like a first try. Convenient when a host-level wedge produced N>>1
+    spurious failures and enumerating run_ids by hand is impractical.
+
+    The two are mutually exclusive at the CLI surface; this function
+    short-circuits on the targeted form first.
+    """
+    if options.retry_failed:
+        retry_set = set(options.retry_failed)
+        for j in jobs:
+            if j.run_id in retry_set and j.status == "failed":
+                j.status = "pending"
+                j.failure = None
+        return
+    if options.retry_all_failed:
+        for j in jobs:
+            if j.status == "failed":
+                j.status = "pending"
+                j.failure = None
+                j.attempts = 0
+                j.assigned_to = None
+                j.started_at = None
+                j.ended_at = None
+
+
 def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntry]:
     """Preserve completed / failed from existing; take pending / running /
     assigned flipped-to-pending rows from existing too; new rows from fresh.
@@ -390,13 +427,7 @@ def run_dispatch(
         # Resume preserves the prior skipped[] verbatim; we don't re-evaluate.
         merged_skipped = list(prior_state.skipped)
         started_at = prior_state.started_at
-        # Re-attempt specific failed jobs on explicit request.
-        if options.retry_failed:
-            retry_set = set(options.retry_failed)
-            for j in merged_jobs:
-                if j.run_id in retry_set and j.status == "failed":
-                    j.status = "pending"
-                    j.failure = None
+        _apply_retry_options(merged_jobs, options)
     else:
         merged_jobs = fresh_jobs
         merged_skipped = fresh_skipped

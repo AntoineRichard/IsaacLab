@@ -86,6 +86,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Comma-separated list of run_ids (from a prior failed dispatch) to re-attempt on resume.",
     )
     parser.add_argument(
+        "--retry-all-failed",
+        action="store_true",
+        help="On --resume, flip every prior failed job back to pending. Mutually exclusive with --retry-failed.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print per-transition status lines as jobs progress.",
@@ -111,6 +116,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("at least one of --physx-yaml / --newton-yaml is required")
 
     args.seeds = parse_seed_list(args.seeds)
+    if args.retry_failed and args.retry_all_failed:
+        parser.error("--retry-failed and --retry-all-failed are mutually exclusive")
     if args.retry_failed:
         args.retry_failed = [s.strip() for s in args.retry_failed.split(",") if s.strip()]
     return args
@@ -130,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         include_filter=args.include,
         verbose=args.verbose,
         retry_failed=args.retry_failed,
+        retry_all_failed=args.retry_all_failed,
         skip_aggregate=args.skip_aggregate,
         consecutive_failure_quarantine=0 if args.no_circuit_breaker else 3,
         preflight_auto_restart=not args.no_preflight_recover,

@@ -94,6 +94,41 @@ def test_parse_args_requires_at_least_one_yaml():
         parse_args(["--fleet", "fleet.yaml", "--seeds", "42"])
 
 
+def test_parse_args_retry_all_failed_flag():
+    """--retry-all-failed sets the boolean and leaves retry_failed as None."""
+    args = parse_args(
+        [
+            "--fleet",
+            "fleet.yaml",
+            "--physx-yaml",
+            "physx.yaml",
+            "--seeds",
+            "42",
+            "--retry-all-failed",
+        ]
+    )
+    assert args.retry_all_failed is True
+    assert args.retry_failed is None
+
+
+def test_parse_args_retry_all_failed_mutually_exclusive_with_retry_failed():
+    """Passing both --retry-failed and --retry-all-failed errors out."""
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--fleet",
+                "fleet.yaml",
+                "--physx-yaml",
+                "physx.yaml",
+                "--seeds",
+                "42",
+                "--retry-failed",
+                "run1",
+                "--retry-all-failed",
+            ]
+        )
+
+
 def test_parse_args_no_circuit_breaker_default_off():
     args = parse_args(
         [
