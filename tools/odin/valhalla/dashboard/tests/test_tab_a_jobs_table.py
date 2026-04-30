@@ -266,3 +266,78 @@ def test_jobs_task_cell_links_to_tab_b():
     hrefs = [getattr(link, "href", None) for link in links]
     expected = "/20260427-141302/task-drilldown?task=Isaac-Ant-Direct-v0&framework=rsl_rl&backend=physx"
     assert expected in hrefs
+
+
+def _retry_buttons(component):
+    out = []
+    for c in _walk(component):
+        cls = (getattr(c, "className", "") or "").split()
+        if "tab-a-retry-toggle" in cls:
+            out.append(c)
+    return out
+
+
+def test_retry_button_only_on_failed_rows():
+    """Completed / running rows must NOT carry a retry toggle — the only
+    rows that make sense to re-run are failed (kind set) rows."""
+    payload = _payload(
+        [
+            _job(run_id="ok", status="completed"),
+            _job(run_id="fail", status="failed", kind="hugin_crash"),
+            _job(run_id="run", status="running"),
+        ]
+    )
+    component = render_jobs_section(payload)
+    btns = _retry_buttons(component)
+    assert len(btns) == 1
+    btn_id = getattr(btns[0], "id", {})
+    assert isinstance(btn_id, dict)
+    assert btn_id.get("type") == "tab-a-retry-toggle"
+    assert btn_id.get("run_id") == "fail"
+
+
+def test_retry_button_renders_queued_state_when_run_id_in_queue():
+    """When the run_id is already in the retry queue, the button gets the
+    `tab-a-retry-toggle-queued` class and shows ✓ instead of ↻."""
+    payload = _payload([_job(run_id="r1", status="failed", kind="timeout")])
+    component = render_jobs_section(payload, retry_queue={"r1"})
+    btn = _retry_buttons(component)[0]
+    classes = (getattr(btn, "className", "") or "").split()
+    assert "tab-a-retry-toggle-queued" in classes
+    assert btn.children == "✓"
+
+
+def test_retry_button_default_state_when_not_in_queue():
+    payload = _payload([_job(run_id="r1", status="failed", kind="timeout")])
+    component = render_jobs_section(payload, retry_queue=set())
+    btn = _retry_buttons(component)[0]
+    classes = (getattr(btn, "className", "") or "").split()
+    assert "tab-a-retry-toggle-queued" not in classes
+    assert btn.children == "↻"
+
+
+def test_retry_banner_renders_when_queue_nonempty():
+    """Banner appears only when at least one row is queued; carries the
+    operator's --resume command with the run_ids comma-joined."""
+    payload = _payload(
+        [
+            _job(run_id="r1", status="failed", kind="timeout"),
+            _job(run_id="r2", status="failed", kind="timeout"),
+        ]
+    )
+    payload["dispatch_id"] = "20260427-141302"
+    component = render_jobs_section(payload, retry_queue={"r1", "r2"})
+    assert _has_id(component, "tab-a-retry-banner")
+    text = " ".join(
+        str(getattr(c, "children", "")) for c in _walk(component) if isinstance(getattr(c, "children", None), str)
+    )
+    assert "2 job(s) tagged for retry" in text
+    assert "--resume 20260427-141302" in text
+    # Run ids are sorted in the csv to be deterministic.
+    assert "--retry-failed=r1,r2" in text
+
+
+def test_retry_banner_absent_when_queue_empty():
+    payload = _payload([_job(run_id="r1", status="failed", kind="timeout")])
+    component = render_jobs_section(payload, retry_queue=set())
+    assert not _has_id(component, "tab-a-retry-banner")

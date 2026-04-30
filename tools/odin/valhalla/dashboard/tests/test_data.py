@@ -398,3 +398,53 @@ def test_invalidate_is_callable(tmp_path):
     layer = DataLayer(tmp_path)
     layer.invalidate()
     layer.invalidate("20260427-141302")
+
+
+def test_read_retry_queue_empty_when_file_missing(tmp_path):
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    assert layer.read_retry_queue("20260427-141302") == set()
+
+
+def test_toggle_retry_queue_adds_run_id(tmp_path):
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    out = layer.toggle_retry_queue("20260427-141302", "rsl-rl_physx_X_seed42")
+    assert out == {"rsl-rl_physx_X_seed42"}
+    path = tmp_path / "20260427-141302" / "retry_queue.txt"
+    assert path.read_text().strip().splitlines() == ["rsl-rl_physx_X_seed42"]
+
+
+def test_toggle_retry_queue_removes_existing(tmp_path):
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    layer.toggle_retry_queue("20260427-141302", "x")
+    out = layer.toggle_retry_queue("20260427-141302", "x")
+    assert out == set()
+    assert layer.read_retry_queue("20260427-141302") == set()
+
+
+def test_toggle_retry_queue_multiple_round_trip(tmp_path):
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    layer.toggle_retry_queue("20260427-141302", "a")
+    layer.toggle_retry_queue("20260427-141302", "b")
+    assert layer.read_retry_queue("20260427-141302") == {"a", "b"}
+    layer.toggle_retry_queue("20260427-141302", "a")
+    assert layer.read_retry_queue("20260427-141302") == {"b"}
+
+
+def test_toggle_retry_queue_atomic_write(tmp_path):
+    """No partial / half-truncated retry_queue.txt should leak to disk —
+    the write must use tempfile + rename so a crash mid-write leaves
+    either the old contents or the new contents."""
+    _write_dispatch(tmp_path, "20260427-141302")
+    layer = DataLayer(tmp_path)
+    layer.toggle_retry_queue("20260427-141302", "first")
+    siblings = list((tmp_path / "20260427-141302").iterdir())
+    stragglers = [
+        p
+        for p in siblings
+        if p.name.endswith(".tmp") or (p.name.startswith("retry_queue") and p.name != "retry_queue.txt")
+    ]
+    assert stragglers == [], f"temp files leaked: {stragglers}"

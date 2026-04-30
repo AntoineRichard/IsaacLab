@@ -61,6 +61,7 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
         Input("tab-a-failure-filter", "data"),
         Input("tab-a-expanded-run-ids", "data"),
         Input("tab-a-ssh-tail-store", "data"),
+        Input("tab-a-retry-bump", "data"),
     )
     def _update_jobs(
         _n,
@@ -71,6 +72,7 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
         failure_filter,
         expanded_run_ids,
         ssh_tail_store,
+        _retry_bump,
     ):
         if not dispatch_id:
             return dash.no_update
@@ -126,6 +128,16 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
             n_clicks_list, ids_list, data=dispatch_id, current_store=store, runs_root=data._runs_root
         )
 
+    @app.callback(
+        Output("tab-a-retry-bump", "data"),
+        Input({"type": "tab-a-retry-toggle", "run_id": ALL}, "n_clicks"),
+        State({"type": "tab-a-retry-toggle", "run_id": ALL}, "id"),
+        State("tab-a-dispatch-id", "data"),
+        State("tab-a-retry-bump", "data"),
+    )
+    def _on_retry_toggle(n_clicks_list, ids_list, dispatch_id, bump):
+        return _on_retry_toggle_handler(n_clicks_list, ids_list, dispatch_id=dispatch_id, bump=bump, data=data)
+
 
 # -- pure helpers (testable without the Dash callback graph) ----------------------
 
@@ -156,6 +168,7 @@ def _compute_jobs_children(
     effective_kind = list(kind_filter or [])
     if failure_filter and failure_filter not in effective_kind:
         effective_kind.append(failure_filter)
+    retry_queue = data.read_retry_queue(dispatch_id)
     return render_jobs_rows(
         payload,
         status_filter=status_filter or None,
@@ -163,6 +176,7 @@ def _compute_jobs_children(
         task_text=task_text or "",
         expanded_run_ids=set(expanded_run_ids or []),
         ssh_tail_store=ssh_tail_store or {},
+        retry_queue=retry_queue,
     )
 
 
@@ -187,6 +201,24 @@ def _on_expand_toggle_handler(n_clicks_list, ids_list, *, current):
     for n, ident in zip(reversed(n_clicks_list), reversed(ids_list)):
         if n and n > 0:
             return _toggle_run_id(current or [], ident["run_id"])
+    return dash.no_update
+
+
+def _on_retry_toggle_handler(n_clicks_list, ids_list, *, dispatch_id, bump, data):
+    """Mark / un-mark a run_id in the per-dispatch retry queue file.
+
+    Side effect: ``data.toggle_retry_queue(dispatch_id, run_id)`` writes the
+    new state to ``odin_runs/<dispatch_id>/retry_queue.txt`` atomically.
+
+    Returns the next bump value so the jobs-poll callback re-fires; the actual
+    queue contents come from re-reading the file in the poll callback.
+    """
+    if not n_clicks_list or not any(n_clicks_list) or not dispatch_id:
+        return dash.no_update
+    for n, ident in zip(reversed(n_clicks_list), reversed(ids_list)):
+        if n and n > 0:
+            data.toggle_retry_queue(dispatch_id, ident["run_id"])
+            return (bump or 0) + 1
     return dash.no_update
 
 

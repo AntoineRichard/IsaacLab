@@ -40,6 +40,10 @@ def build_layout(dispatch_id: str) -> html.Div:
             dcc.Store(id="tab-a-failure-filter", storage_type="memory", data=None),
             dcc.Store(id="tab-a-expanded-run-ids", storage_type="memory", data=[]),
             dcc.Store(id="tab-a-ssh-tail-store", storage_type="memory", data={}),
+            # Bumped on every retry-toggle click so the jobs-poll callback
+            # re-fires immediately and the row's button + banner refresh
+            # without waiting for the 5 s dcc.Interval.
+            dcc.Store(id="tab-a-retry-bump", storage_type="memory", data=0),
             html.Div(id="tab-a-header"),
             html.Div(id="tab-a-fleet-table"),
             html.Div(

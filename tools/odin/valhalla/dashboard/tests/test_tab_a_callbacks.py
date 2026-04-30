@@ -74,6 +74,9 @@ class _StubData:
         self.lookup_hardware_calls.append(host)
         return self._lookup.get(host)
 
+    def read_retry_queue(self, dispatch_id: str) -> set[str]:
+        return set()
+
 
 def test_update_header_callback_returns_header_div():
     data = _StubData(_payload([_job()]))
@@ -208,4 +211,43 @@ def test_load_ssh_tail_callback_ignores_phantom_click():
     from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
 
     out = cb_mod._on_ssh_tail_handler([], [], data=None, current_store={})
+    assert out is dash.no_update
+
+
+def test_retry_toggle_round_trip(tmp_path):
+    """Click on a retry-toggle button → DataLayer.toggle_retry_queue is
+    invoked with the right run_id; the bump counter increments. Click
+    again → toggles off, file goes empty, bump increments again."""
+    from tools.odin.valhalla.dashboard.data import DataLayer
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    (tmp_path / "20260427-141302").mkdir()
+    (tmp_path / "20260427-141302" / "dispatch.json").write_text("{}")
+    data = DataLayer(tmp_path)
+
+    n_clicks = [1]
+    ids = [{"type": "tab-a-retry-toggle", "run_id": "rsl-rl_physx_X_seed42"}]
+    out = cb_mod._on_retry_toggle_handler(n_clicks, ids, dispatch_id="20260427-141302", bump=0, data=data)
+    assert out == 1
+    assert data.read_retry_queue("20260427-141302") == {"rsl-rl_physx_X_seed42"}
+
+    out = cb_mod._on_retry_toggle_handler(n_clicks, ids, dispatch_id="20260427-141302", bump=1, data=data)
+    assert out == 2
+    assert data.read_retry_queue("20260427-141302") == set()
+
+
+def test_retry_toggle_ignores_phantom_click():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    class _DataNoOp:
+        def toggle_retry_queue(self, *a, **k):
+            raise AssertionError("must not be called on phantom")
+
+    out = cb_mod._on_retry_toggle_handler([], [], dispatch_id="d", bump=0, data=_DataNoOp())
+    assert out is dash.no_update
+    out = cb_mod._on_retry_toggle_handler(
+        [0], [{"type": "x", "run_id": "y"}], dispatch_id="d", bump=0, data=_DataNoOp()
+    )
     assert out is dash.no_update

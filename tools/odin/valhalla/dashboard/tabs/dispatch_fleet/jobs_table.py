@@ -41,16 +41,20 @@ def render_jobs_section(
     task_text: str = "",
     expanded_run_ids: set[str] | None = None,
     ssh_tail_store: dict[str, list[str]] | None = None,
+    retry_queue: set[str] | None = None,
 ) -> html.Div:
     """Build the jobs section: filter row + table + inline expand rows.
 
     expanded_run_ids: which failed-row expansions are currently open.
     ssh_tail_store: keyed by run_id; values are the lines from ssh-tail.log
         (loaded on demand via the tab's load_ssh_tail callback).
+    retry_queue: set of run_ids the operator has tagged for retry. Drives
+        the per-row toggle highlight + the banner above the table.
     """
     jobs = dispatch_payload.get("jobs", []) or []
     expanded_run_ids = expanded_run_ids or set()
     ssh_tail_store = ssh_tail_store or {}
+    retry_queue = retry_queue or set()
 
     if not jobs:
         return html.Div(
@@ -104,7 +108,7 @@ def render_jobs_section(
 
     body_rows: list = []
     for j in visible:
-        body_rows.append(_data_row(j, dispatch_id))
+        body_rows.append(_data_row(j, dispatch_id, retry_queue))
         if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
             body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
 
@@ -116,10 +120,12 @@ def render_jobs_section(
         ],
     )
 
-    return html.Div(
-        id="tab-a-jobs-section-content",
-        children=[_filter_row(status_filter, kind_filter, task_text), table],
-    )
+    section_children = [_filter_row(status_filter, kind_filter, task_text)]
+    banner = _retry_banner(dispatch_id, retry_queue)
+    if banner is not None:
+        section_children.append(banner)
+    section_children.append(table)
+    return html.Div(id="tab-a-jobs-section-content", children=section_children)
 
 
 def render_filter_row(status_filter=None, kind_filter=None, task_text=""):
@@ -137,6 +143,7 @@ def render_jobs_rows(
     task_text: str = "",
     expanded_run_ids: set[str] | None = None,
     ssh_tail_store: dict[str, list[str]] | None = None,
+    retry_queue: set[str] | None = None,
 ):
     """Return just the rows portion (table-or-empty) of the jobs section.
 
@@ -147,6 +154,7 @@ def render_jobs_rows(
     jobs = dispatch_payload.get("jobs", []) or []
     expanded_run_ids = expanded_run_ids or set()
     ssh_tail_store = ssh_tail_store or {}
+    retry_queue = retry_queue or set()
 
     if not jobs:
         return html.Div(
@@ -187,16 +195,20 @@ def render_jobs_rows(
     )
     body_rows: list = []
     for j in visible:
-        body_rows.append(_data_row(j, dispatch_id))
+        body_rows.append(_data_row(j, dispatch_id, retry_queue))
         if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
             body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
-    return html.Table(
+    table = html.Table(
         className="tab-a-jobs-table",
         children=[
             html.Thead(children=[header]),
             html.Tbody(id="tab-a-jobs-rows", children=body_rows),
         ],
     )
+    banner = _retry_banner(dispatch_id, retry_queue)
+    if banner is None:
+        return table
+    return html.Div(children=[banner, table])
 
 
 def _filter_row(status_filter, kind_filter, task_text):
@@ -234,7 +246,38 @@ def _filter_row(status_filter, kind_filter, task_text):
     )
 
 
-def _data_row(job: dict, dispatch_id: str) -> html.Tr:
+def _retry_banner(dispatch_id: str, retry_queue: set[str]) -> html.Div | None:
+    """Top-of-jobs banner shown only when one or more rows are tagged for retry.
+
+    Renders the operator's exact ``odin-dispatch --resume … --retry-failed=<csv>``
+    command in a copy-paste-friendly box.
+    """
+    if not retry_queue:
+        return None
+    csv = ",".join(sorted(retry_queue))
+    cmd = (
+        "PYTHONPATH=. python3 -u -m tools.odin.asgard.cli "
+        "--fleet fleet.yaml --physx-yaml tools/odin/config/physx_envs.yaml "
+        "--seeds 42,43,44 "
+        f"--resume {dispatch_id} --retry-failed={csv} --verbose"
+    )
+    return html.Div(
+        id="tab-a-retry-banner",
+        className="tab-a-retry-banner",
+        children=[
+            html.Div(
+                className="tab-a-retry-banner-header",
+                children=[
+                    html.Strong(f"{len(retry_queue)} job(s) tagged for retry"),
+                    html.Span(" — run the command below to re-dispatch them.", className="tab-a-retry-banner-hint"),
+                ],
+            ),
+            html.Pre(cmd, className="tab-a-retry-banner-cmd"),
+        ],
+    )
+
+
+def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) -> html.Tr:
     status = str(job.get("status", "unknown"))
     failure = job.get("failure") or {}
     kind = failure.get("kind")
@@ -242,6 +285,8 @@ def _data_row(job: dict, dispatch_id: str) -> html.Tr:
     host = job.get("assigned_to") or "—"
     started = _relative_time(job.get("started_at"))
     ended = _relative_time(job.get("ended_at"))
+    retry_queue = retry_queue or set()
+    run_id = job.get("run_id", "")
 
     status_children = [
         html.Span(status.capitalize(), className=f"tab-a-pill tab-a-job-status-{status}"),
@@ -250,15 +295,24 @@ def _data_row(job: dict, dispatch_id: str) -> html.Tr:
         status_children.append(html.Span(f"×{attempts}", className="tab-a-attempts-badge"))
 
     if kind:
+        is_queued = run_id in retry_queue
+        retry_btn = html.Button(
+            "✓" if is_queued else "↻",
+            id={"type": "tab-a-retry-toggle", "run_id": run_id},
+            n_clicks=0,
+            className="tab-a-retry-toggle" + (" tab-a-retry-toggle-queued" if is_queued else ""),
+            title=("Remove from retry queue" if is_queued else "Tag for retry on next --resume --retry-failed"),
+        )
         failure_cell = [
             html.Span(kind, className=f"tab-a-kind-pill tab-a-kind-pill-{kind}"),
             html.Button(
                 "▸",
-                id={"type": "tab-a-expand-toggle", "run_id": job.get("run_id", "")},
+                id={"type": "tab-a-expand-toggle", "run_id": run_id},
                 n_clicks=0,
                 className="tab-a-expand-toggle",
                 title="Show / hide failure details",
             ),
+            retry_btn,
         ]
     else:
         failure_cell = "—"

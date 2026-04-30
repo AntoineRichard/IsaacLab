@@ -13,8 +13,11 @@ trivially testable.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -217,6 +220,52 @@ class DataLayer:
         if not path.exists():
             return None
         return json.loads(path.read_text())
+
+    # -- retry queue (operator's per-dispatch "to retry" list) -------------
+
+    def read_retry_queue(self, dispatch_id: str) -> set[str]:
+        """Return the set of run_ids the operator has tagged for retry.
+
+        Stored at ``<runs_root>/<dispatch_id>/retry_queue.txt`` (one
+        run_id per line). Empty / missing file → empty set.
+
+        dispatch.json is never mutated; this file is the operator's
+        TODO list, consumed by the next ``odin-dispatch --resume <id>
+        --retry-failed=<csv>`` invocation.
+        """
+        path = self._runs_root / dispatch_id / "retry_queue.txt"
+        if not path.exists():
+            return set()
+        return {line.strip() for line in path.read_text().splitlines() if line.strip()}
+
+    def toggle_retry_queue(self, dispatch_id: str, run_id: str) -> set[str]:
+        """Add ``run_id`` to the retry queue if absent, remove if present.
+
+        Atomic on POSIX (tempfile + ``os.replace``) so an interrupted
+        write can't leave a half-truncated file.
+
+        Returns the new contents.
+        """
+        current = self.read_retry_queue(dispatch_id)
+        if run_id in current:
+            current.discard(run_id)
+        else:
+            current.add(run_id)
+        dispatch_dir = self._runs_root / dispatch_id
+        dispatch_dir.mkdir(parents=True, exist_ok=True)
+        target = dispatch_dir / "retry_queue.txt"
+        body = "".join(line + "\n" for line in sorted(current))
+        fd, tmp_path_str = tempfile.mkstemp(prefix=".retry_queue.", suffix=".tmp", dir=str(dispatch_dir))
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(body)
+            os.replace(tmp_path_str, target)
+        except Exception:
+            # Best-effort cleanup of the temp file on failure.
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_path_str)
+            raise
+        return current
 
     # -- cache control ------------------------------------------------------
 
