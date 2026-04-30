@@ -314,7 +314,7 @@ def _on_running_tail_fetch_handler(
         if _clicked_triggered_id(toggle_clicks, toggle_ids, triggered_id) is None:
             return dash.no_update
     elif triggered_type == "tab-a-running-tail-refresh":
-        if _last_clicked_id(refresh_clicks, refresh_ids) is None:
+        if _clicked_triggered_id(refresh_clicks, refresh_ids, triggered_id) is None:
             return dash.no_update
     else:
         return dash.no_update
@@ -344,10 +344,10 @@ def _compute_running_tail_store(data, dispatch_id: str, run_id: str, *, current_
     payload = data.load_dispatch(dispatch_id)
     job = _find_job(payload, run_id)
     host = job.get("assigned_to") if job else None
-    new_store = dict(current_store or {})
+    patch = dash.Patch()
     if not job or not host:
-        new_store[run_id] = {"source": None, "lines": [], "fetched_at": _utc_now_iso()}
-        return new_store
+        patch[run_id] = {"source": None, "lines": [], "fetched_at": _utc_now_iso()}
+        return patch
 
     tail_payload = data.read_running_job_tail_payload(
         dispatch_id,
@@ -357,12 +357,12 @@ def _compute_running_tail_store(data, dispatch_id: str, run_id: str, *, current_
         container_name="isaac-lab-base",
         n=50,
     )
-    new_store[run_id] = {
+    patch[run_id] = {
         "source": tail_payload.get("source"),
         "lines": list(tail_payload.get("lines") or []),
         "fetched_at": _utc_now_iso(),
     }
-    return new_store
+    return patch
 
 
 def _find_job(dispatch_payload: dict, run_id: str) -> dict | None:

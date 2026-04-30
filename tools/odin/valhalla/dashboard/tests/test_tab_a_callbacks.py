@@ -50,6 +50,14 @@ def _payload(jobs):
     }
 
 
+def _patch_assignment(patch, run_id: str) -> dict:
+    patch_json = patch.to_plotly_json()
+    assert patch_json["__dash_patch_update"] == "__dash_patch_update"
+    assert patch_json["operations"][0]["operation"] == "Assign"
+    assert patch_json["operations"][0]["location"] == [run_id]
+    return patch_json["operations"][0]["params"]["value"]
+
+
 class _StubData:
     """Drop-in DataLayer for callback tests."""
 
@@ -315,9 +323,10 @@ def test_running_tail_callback_round_trip():
     )
 
     assert shown == ["run-1"]
-    assert store["run-1"]["source"] == "training.stdout.log"
-    assert store["run-1"]["lines"] == ["iter 1"]
-    assert "fetched_at" in store["run-1"]
+    entry = _patch_assignment(store, "run-1")
+    assert entry["source"] == "training.stdout.log"
+    assert entry["lines"] == ["iter 1"]
+    assert "fetched_at" in entry
     assert data.running_tail_calls == [
         ("d", "run-1", {"host": "v1", "ssh_user": "horde", "container_name": "isaac-lab-base", "n": 50})
     ]
@@ -360,8 +369,9 @@ def test_running_tail_refresh_refetches_existing_store():
         triggered_id=refresh_id,
     )
 
-    assert store["run-2"]["source"] == "startup.stdout.log"
-    assert store["run-2"]["lines"] == ["booting"]
+    entry = _patch_assignment(store, "run-2")
+    assert entry["source"] == "startup.stdout.log"
+    assert entry["lines"] == ["booting"]
 
 
 def test_running_tail_reopen_uses_cached_store():
@@ -413,6 +423,61 @@ def test_running_tail_fetch_ignores_triggered_toggle_with_zero_clicks():
 
     assert out is dash.no_update
     assert data.running_tail_calls == []
+
+
+def test_running_tail_fetch_ignores_triggered_refresh_with_zero_clicks():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-a", status="running"), _job(run_id="run-b", status="running")]))
+    refresh_ids = [
+        {"type": "tab-a-running-tail-refresh", "run_id": "run-a"},
+        {"type": "tab-a-running-tail-refresh", "run_id": "run-b"},
+    ]
+
+    out = cb_mod._on_running_tail_fetch_handler(
+        [],
+        [1, 0],
+        [],
+        refresh_ids,
+        dispatch_id="d",
+        current_shown=["run-a", "run-b"],
+        current_store={},
+        data=data,
+        triggered_id=refresh_ids[1],
+    )
+
+    assert out is dash.no_update
+    assert data.running_tail_calls == []
+
+
+def test_running_tail_fetch_returns_single_key_patch():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-a", status="running"), _job(run_id="run-b", status="running")]))
+    toggle_id = {"type": "tab-a-running-tail-toggle", "run_id": "run-a"}
+
+    out = cb_mod._on_running_tail_fetch_handler(
+        [1],
+        [],
+        [toggle_id],
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={"run-b": {"source": "training.stdout.log", "lines": ["keep"], "fetched_at": "old"}},
+        data=data,
+        triggered_id=toggle_id,
+    )
+
+    patch_json = out.to_plotly_json()
+    assert patch_json["operations"] == [
+        {
+            "operation": "Assign",
+            "location": ["run-a"],
+            "params": {"value": _patch_assignment(out, "run-a")},
+        }
+    ]
 
 
 def test_running_tail_fetch_ignores_phantom_click():
