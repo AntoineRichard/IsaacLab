@@ -277,8 +277,8 @@ def _on_retry_toggle_handler(n_clicks_list, ids_list, *, dispatch_id, bump, data
 
 
 def _on_running_tail_toggle_handler(n_clicks_list, ids_list, *, current, triggered_id=None):
-    ident = triggered_id if isinstance(triggered_id, dict) and triggered_id.get("run_id") else None
-    if ident is None:
+    ident = _clicked_triggered_id(n_clicks_list, ids_list, triggered_id)
+    if ident is None and not (isinstance(triggered_id, dict) and triggered_id.get("run_id")):
         ident = _last_clicked_id(n_clicks_list, ids_list)
     if ident is None:
         return dash.no_update
@@ -328,6 +328,15 @@ def _last_clicked_id(n_clicks_list, ids_list):
     for n, ident in zip(reversed(n_clicks_list), reversed(ids_list)):
         if n and n > 0:
             return ident
+    return None
+
+
+def _clicked_triggered_id(n_clicks_list, ids_list, triggered_id):
+    if not isinstance(triggered_id, dict) or not triggered_id.get("run_id"):
+        return None
+    for n, ident in zip(n_clicks_list or [], ids_list or []):
+        if ident == triggered_id and n and n > 0:
+            return triggered_id
     return None
 
 

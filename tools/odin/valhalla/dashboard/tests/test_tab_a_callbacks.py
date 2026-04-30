@@ -283,6 +283,18 @@ def test_running_tail_toggle_uses_triggered_id_when_counts_are_stale():
     ) == ["run-b"]
 
 
+def test_running_tail_toggle_ignores_triggered_id_with_zero_clicks():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    ids = [{"type": "tab-a-running-tail-toggle", "run_id": "run-a"}]
+
+    out = cb_mod._on_running_tail_toggle_handler([0], ids, current=[], triggered_id=ids[0])
+
+    assert out is dash.no_update
+
+
 def test_running_tail_callback_round_trip():
     from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
 
