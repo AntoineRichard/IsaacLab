@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 from tools.odin.valhalla.dashboard import data as data_mod
@@ -59,7 +60,7 @@ def test_read_running_tail_falls_back_to_startup_when_training_empty(tmp_path, m
 
     entry = DataLayer(tmp_path).read_running_job_tail_payload("20260430-110509", "run-2", host="v1")
 
-    assert entry == {"source": "startup.stdout.log", "lines": ["startup ready"]}
+    assert entry == {"source": "startup.stdout.log", "lines": ["startup ready"], "warning": None}
     remote_cmd = calls[0][-1]
     assert remote_cmd.index("training.stdout.log") < remote_cmd.index("startup.stdout.log")
 
@@ -111,9 +112,12 @@ def test_read_running_tail_ssh_failure_returns_empty_with_warning(tmp_path, monk
     calls: list[list[str]] = []
     _install_fake_run(monkeypatch, _Result(stderr=b"connection timed out", returncode=255), calls)
 
-    lines = DataLayer(tmp_path).read_running_job_tail("20260430-110509", "run-6", host="v1")
+    data = DataLayer(tmp_path)
+    lines = data.read_running_job_tail("20260430-110509", "run-6", host="v1")
+    payload = data.read_running_job_tail_payload("20260430-110509", "run-6", host="v1")
 
     assert lines == []
+    assert payload == {"source": None, "lines": [], "warning": "connection timed out"}
     captured = capsys.readouterr()
     assert "[WARNING] read_running_job_tail 20260430-110509/run-6" in captured.err
     assert "connection timed out" in captured.err
@@ -141,3 +145,32 @@ def test_read_running_tail_handles_binary_garbage_gracefully(tmp_path, monkeypat
 
     assert lines[0] == "ok"
     assert lines[1].startswith("bad:")
+
+
+def test_lookup_fleet_host_config_reads_snapshot(tmp_path):
+    dispatch_dir = tmp_path / "20260430-110509"
+    dispatch_dir.mkdir()
+    (dispatch_dir / "fleet.yaml.snapshot").write_text(
+        json.dumps(
+            {
+                "fleet_name": "test",
+                "hosts": [
+                    {
+                        "host": "v1",
+                        "ssh_user": "odin",
+                        "ssh_key": "/keys/id_ed25519",
+                        "container_name": "custom-container",
+                    }
+                ],
+            }
+        )
+    )
+
+    config = DataLayer(tmp_path).lookup_fleet_host_config("20260430-110509", "v1")
+
+    assert config == {
+        "host": "v1",
+        "ssh_user": "odin",
+        "ssh_key": "/keys/id_ed25519",
+        "container_name": "custom-container",
+    }

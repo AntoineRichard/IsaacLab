@@ -18,6 +18,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -229,7 +230,7 @@ class DataLayer:
             return None
         return json.loads(path.read_text())
 
-    # -- running bundle tail ------------------------------------------------
+    # -- running bundle tail -----------------------------------------------
 
     def read_running_job_tail(
         self,
@@ -242,7 +243,13 @@ class DataLayer:
         container_name: str = "isaac-lab-base",
         n: int = _RUNNING_TAIL_DEFAULT_LINES,
     ) -> list[str]:
-        """Read the last lines from a running remote job log."""
+        """Read the last ``n`` stdout lines from a running remote Hugin bundle.
+
+        The reader tries ``training.stdout.log`` first, then falls back to
+        ``startup.stdout.log`` when training has not started yet. SSH or log
+        availability failures return an empty list so the dashboard can keep
+        rendering running rows.
+        """
         return self.read_running_job_tail_payload(
             dispatch_id,
             run_id,
@@ -252,6 +259,20 @@ class DataLayer:
             container_name=container_name,
             n=n,
         )["lines"]
+
+    def lookup_fleet_host_config(self, dispatch_id: str, host: str) -> dict[str, Any] | None:
+        """Return the snapshotted fleet config for ``host`` when available."""
+        path = self._runs_root / dispatch_id / "fleet.yaml.snapshot"
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        for entry in payload.get("hosts", []) or []:
+            if entry.get("host") == host:
+                return dict(entry)
+        return None
 
     def read_running_job_tail_payload(
         self,
@@ -264,21 +285,32 @@ class DataLayer:
         container_name: str = "isaac-lab-base",
         n: int = _RUNNING_TAIL_DEFAULT_LINES,
     ) -> dict[str, Any]:
-        """Read running remote job log lines with source metadata."""
+        """Read running-job stdout tail lines and source metadata.
+
+        Returns:
+            A payload with ``source`` set to the selected log filename, or
+            ``None`` when no log was available, and ``lines`` containing the
+            decoded tail without trailing newline characters. Transport
+            failures include ``warning`` text for the UI; normal empty logs
+            return ``warning=None``.
+        """
         n = max(1, int(n))
         ssh_cmd = _build_running_tail_ssh_cmd(run_id=run_id, container_name=container_name, n=n)
         argv = _build_running_tail_ssh_argv(host=host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_cmd=ssh_cmd)
         try:
             result = _subprocess_run(argv, capture_output=True, timeout=_RUNNING_TAIL_TIMEOUT_S, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            _warn_running_tail(dispatch_id, run_id, f"{type(exc).__name__}: {exc}")
-            return {"source": None, "lines": []}
+            warning = f"{type(exc).__name__}: {exc}"
+            _warn_running_tail(dispatch_id, run_id, warning)
+            return {"source": None, "lines": [], "warning": warning}
+
         if result.returncode != 0:
-            stderr = _decode_running_tail_bytes(result.stderr).strip()
-            _warn_running_tail(dispatch_id, run_id, stderr)
-            return {"source": None, "lines": []}
+            message = _decode_running_tail_bytes(result.stderr).strip() or f"ssh exited with {result.returncode}"
+            _warn_running_tail(dispatch_id, run_id, message)
+            return {"source": None, "lines": [], "warning": message}
+
         source, lines = _parse_running_tail_stdout(result.stdout, n)
-        return {"source": source, "lines": lines}
+        return {"source": source, "lines": lines, "warning": None}
 
     # -- retry queue (operator's per-dispatch "to retry" list) -------------
 
@@ -379,15 +411,15 @@ def _build_running_tail_ssh_cmd(*, run_id: str, container_name: str, n: int) -> 
 
 
 def _parse_running_tail_stdout(stdout: bytes, n: int) -> tuple[str | None, list[str]]:
-    lines = _decode_running_tail_bytes(stdout).splitlines()
+    text = _decode_running_tail_bytes(stdout)
+    lines = text.splitlines()
     source = None
     if lines and lines[0].startswith(_RUNNING_TAIL_SOURCE_PREFIX):
-        source = lines[0][len(_RUNNING_TAIL_SOURCE_PREFIX) :]
-        lines = lines[1:]
+        source = lines.pop(0)[len(_RUNNING_TAIL_SOURCE_PREFIX) :]
     return source, lines[-n:]
 
 
-def _decode_running_tail_bytes(value) -> str:
+def _decode_running_tail_bytes(value: bytes) -> str:
     return value.decode("utf-8", errors="replace")
 
 

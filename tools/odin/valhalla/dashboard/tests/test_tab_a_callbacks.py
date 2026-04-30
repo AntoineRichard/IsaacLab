@@ -50,17 +50,29 @@ def _payload(jobs):
     }
 
 
+def _patch_assignment(patch, run_id: str) -> dict:
+    patch_json = patch.to_plotly_json()
+    assert patch_json["__dash_patch_update"] == "__dash_patch_update"
+    assert patch_json["operations"][0]["operation"] == "Assign"
+    assert patch_json["operations"][0]["location"] == [run_id]
+    return patch_json["operations"][0]["params"]["value"]
+
+
 class _StubData:
     """Drop-in DataLayer for callback tests."""
 
-    def __init__(self, dispatch_payload, *, hardware=None, lookup_results=None):
+    def __init__(self, dispatch_payload, *, hardware=None, lookup_results=None, fleet_host_configs=None):
         self._dp = dispatch_payload
         self._hw = hardware
         self._lookup = lookup_results or {}
+        self._fleet_host_configs = fleet_host_configs or {}
         self.load_dispatch_calls: list[str] = []
         self.load_hardware_calls: list[str] = []
         self.lookup_hardware_calls: list[str] = []
+        self.lookup_fleet_host_config_calls: list[tuple[str, str]] = []
         self._runs_root = Path("/tmp")
+        self.running_tail_calls: list[tuple] = []
+        self.running_tail_payload = {"source": "training.stdout.log", "lines": ["iter 1"]}
 
     def load_dispatch(self, dispatch_id: str) -> dict:
         self.load_dispatch_calls.append(dispatch_id)
@@ -74,8 +86,16 @@ class _StubData:
         self.lookup_hardware_calls.append(host)
         return self._lookup.get(host)
 
+    def lookup_fleet_host_config(self, dispatch_id: str, host: str):
+        self.lookup_fleet_host_config_calls.append((dispatch_id, host))
+        return self._fleet_host_configs.get(host)
+
     def read_retry_queue(self, dispatch_id: str) -> set[str]:
         return set()
+
+    def read_running_job_tail_payload(self, dispatch_id: str, run_id: str, **kwargs) -> dict:
+        self.running_tail_calls.append((dispatch_id, run_id, kwargs))
+        return dict(self.running_tail_payload)
 
 
 def test_update_header_callback_returns_header_div():
@@ -251,3 +271,285 @@ def test_retry_toggle_ignores_phantom_click():
         [0], [{"type": "x", "run_id": "y"}], dispatch_id="d", bump=0, data=_DataNoOp()
     )
     assert out is dash.no_update
+
+
+def test_running_tail_toggle_adds_then_removes():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    ids = [{"type": "tab-a-running-tail-toggle", "run_id": "run-1"}]
+    assert cb_mod._on_running_tail_toggle_handler([1], ids, current=[]) == ["run-1"]
+    assert cb_mod._on_running_tail_toggle_handler([1], ids, current=["run-1"]) == []
+
+
+def test_running_tail_toggle_uses_triggered_id_when_counts_are_stale():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    ids = [
+        {"type": "tab-a-running-tail-toggle", "run_id": "run-a"},
+        {"type": "tab-a-running-tail-toggle", "run_id": "run-b"},
+    ]
+
+    assert cb_mod._on_running_tail_toggle_handler(
+        [2, 1],
+        ids,
+        current=["run-a", "run-b"],
+        triggered_id=ids[0],
+    ) == ["run-b"]
+
+
+def test_running_tail_toggle_ignores_triggered_id_with_zero_clicks():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    ids = [{"type": "tab-a-running-tail-toggle", "run_id": "run-a"}]
+
+    out = cb_mod._on_running_tail_toggle_handler([0], ids, current=[], triggered_id=ids[0])
+
+    assert out is dash.no_update
+
+
+def test_running_tail_callback_round_trip():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-1", status="running")]))
+    ids = [{"type": "tab-a-running-tail-toggle", "run_id": "run-1"}]
+
+    shown = cb_mod._on_running_tail_toggle_handler([1], ids, current=[])
+    store = cb_mod._on_running_tail_fetch_handler(
+        [1],
+        [],
+        ids,
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={},
+        data=data,
+        triggered_id=ids[0],
+    )
+
+    assert shown == ["run-1"]
+    entry = _patch_assignment(store, "run-1")
+    assert entry["source"] == "training.stdout.log"
+    assert entry["lines"] == ["iter 1"]
+    assert "fetched_at" in entry
+    assert data.running_tail_calls == [
+        (
+            "d",
+            "run-1",
+            {"host": "v1", "ssh_user": "horde", "ssh_key": None, "container_name": "isaac-lab-base", "n": 50},
+        )
+    ]
+
+    hidden = cb_mod._on_running_tail_toggle_handler([1], ids, current=shown)
+    hidden_fetch = cb_mod._on_running_tail_fetch_handler(
+        [1],
+        [],
+        ids,
+        [],
+        dispatch_id="d",
+        current_shown=shown,
+        current_store=store,
+        data=data,
+        triggered_id=ids[0],
+    )
+
+    import dash
+
+    assert hidden == []
+    assert hidden_fetch is dash.no_update
+
+
+def test_running_tail_refresh_refetches_existing_store():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-2", status="running")]))
+    data.running_tail_payload = {"source": "startup.stdout.log", "lines": ["booting"]}
+    refresh_id = {"type": "tab-a-running-tail-refresh", "run_id": "run-2"}
+
+    store = cb_mod._on_running_tail_fetch_handler(
+        [],
+        [1],
+        [],
+        [refresh_id],
+        dispatch_id="d",
+        current_shown=["run-2"],
+        current_store={"run-2": {"source": "training.stdout.log", "lines": ["old"], "fetched_at": "old"}},
+        data=data,
+        triggered_id=refresh_id,
+    )
+
+    entry = _patch_assignment(store, "run-2")
+    assert entry["source"] == "startup.stdout.log"
+    assert entry["lines"] == ["booting"]
+
+
+def test_running_tail_fetch_uses_fleet_snapshot_host_config():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(
+        _payload([_job(run_id="run-2", status="running")]),
+        fleet_host_configs={
+            "v1": {
+                "ssh_user": "odin",
+                "ssh_key": "/keys/id_ed25519",
+                "container_name": "custom-container",
+            }
+        },
+    )
+    toggle_id = {"type": "tab-a-running-tail-toggle", "run_id": "run-2"}
+
+    cb_mod._on_running_tail_fetch_handler(
+        [1],
+        [],
+        [toggle_id],
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={},
+        data=data,
+        triggered_id=toggle_id,
+    )
+
+    assert data.lookup_fleet_host_config_calls == [("d", "v1")]
+    assert data.running_tail_calls == [
+        (
+            "d",
+            "run-2",
+            {
+                "host": "v1",
+                "ssh_user": "odin",
+                "ssh_key": Path("/keys/id_ed25519"),
+                "container_name": "custom-container",
+                "n": 50,
+            },
+        )
+    ]
+
+
+def test_running_tail_reopen_uses_cached_store():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-2", status="running")]))
+    toggle_id = {"type": "tab-a-running-tail-toggle", "run_id": "run-2"}
+
+    store = cb_mod._on_running_tail_fetch_handler(
+        [2],
+        [],
+        [toggle_id],
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={"run-2": {"source": "training.stdout.log", "lines": ["cached"], "fetched_at": "old"}},
+        data=data,
+        triggered_id=toggle_id,
+    )
+
+    assert store is dash.no_update
+    assert data.running_tail_calls == []
+
+
+def test_running_tail_fetch_ignores_triggered_toggle_with_zero_clicks():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-a", status="running"), _job(run_id="run-b", status="running")]))
+    toggle_ids = [
+        {"type": "tab-a-running-tail-toggle", "run_id": "run-a"},
+        {"type": "tab-a-running-tail-toggle", "run_id": "run-b"},
+    ]
+
+    out = cb_mod._on_running_tail_fetch_handler(
+        [0, 1],
+        [],
+        toggle_ids,
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={},
+        data=data,
+        triggered_id=toggle_ids[0],
+    )
+
+    assert out is dash.no_update
+    assert data.running_tail_calls == []
+
+
+def test_running_tail_fetch_ignores_triggered_refresh_with_zero_clicks():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-a", status="running"), _job(run_id="run-b", status="running")]))
+    refresh_ids = [
+        {"type": "tab-a-running-tail-refresh", "run_id": "run-a"},
+        {"type": "tab-a-running-tail-refresh", "run_id": "run-b"},
+    ]
+
+    out = cb_mod._on_running_tail_fetch_handler(
+        [],
+        [1, 0],
+        [],
+        refresh_ids,
+        dispatch_id="d",
+        current_shown=["run-a", "run-b"],
+        current_store={},
+        data=data,
+        triggered_id=refresh_ids[1],
+    )
+
+    assert out is dash.no_update
+    assert data.running_tail_calls == []
+
+
+def test_running_tail_fetch_returns_single_key_patch():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-a", status="running"), _job(run_id="run-b", status="running")]))
+    toggle_id = {"type": "tab-a-running-tail-toggle", "run_id": "run-a"}
+
+    out = cb_mod._on_running_tail_fetch_handler(
+        [1],
+        [],
+        [toggle_id],
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={"run-b": {"source": "training.stdout.log", "lines": ["keep"], "fetched_at": "old"}},
+        data=data,
+        triggered_id=toggle_id,
+    )
+
+    patch_json = out.to_plotly_json()
+    assert patch_json["operations"] == [
+        {
+            "operation": "Assign",
+            "location": ["run-a"],
+            "params": {"value": _patch_assignment(out, "run-a")},
+        }
+    ]
+
+
+def test_running_tail_fetch_ignores_phantom_click():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-3", status="running")]))
+    out = cb_mod._on_running_tail_fetch_handler(
+        [],
+        [],
+        [],
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={},
+        data=data,
+        triggered_id=None,
+    )
+
+    assert out is dash.no_update
+    assert data.running_tail_calls == []
