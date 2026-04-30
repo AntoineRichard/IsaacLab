@@ -456,7 +456,10 @@ def command_install(install_type: str = "all") -> None:
 
     if install_type == "all":
         isaaclab_submodules = None
-        exclude = None
+        # nlopt has no aarch64 wheel for cpython-3.12 and its source build
+        # raises StopIteration in build_extension; teleop (its only consumer
+        # in IsaacLab) is irrelevant for headless training, so skip it on ARM.
+        exclude = {"isaaclab_teleop"} if is_arm() else None
         submodule_extras = {"isaaclab_visualizers": "[all]"}
         framework_type = "all"
     elif install_type == "none":
@@ -466,7 +469,8 @@ def command_install(install_type: str = "all") -> None:
         framework_type = "none"
     elif install_type in VALID_RL_FRAMEWORKS:
         isaaclab_submodules = None
-        exclude = None
+        # See note in the "all" branch above — teleop's nlopt dep can't build on aarch64.
+        exclude = {"isaaclab_teleop"} if is_arm() else None
         submodule_extras = {"isaaclab_visualizers": "[all]"}
         framework_type = install_type
     else:
