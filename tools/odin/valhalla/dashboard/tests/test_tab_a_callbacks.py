@@ -267,6 +267,22 @@ def test_running_tail_toggle_adds_then_removes():
     assert cb_mod._on_running_tail_toggle_handler([1], ids, current=["run-1"]) == []
 
 
+def test_running_tail_toggle_uses_triggered_id_when_counts_are_stale():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    ids = [
+        {"type": "tab-a-running-tail-toggle", "run_id": "run-a"},
+        {"type": "tab-a-running-tail-toggle", "run_id": "run-b"},
+    ]
+
+    assert cb_mod._on_running_tail_toggle_handler(
+        [2, 1],
+        ids,
+        current=["run-a", "run-b"],
+        triggered_id=ids[0],
+    ) == ["run-b"]
+
+
 def test_running_tail_callback_round_trip():
     from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
 

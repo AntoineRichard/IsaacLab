@@ -142,7 +142,9 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
         State("tab-a-running-tail-shown", "data"),
     )
     def _on_running_tail_toggle(n_clicks_list, ids_list, current):
-        return _on_running_tail_toggle_handler(n_clicks_list, ids_list, current=current)
+        return _on_running_tail_toggle_handler(
+            n_clicks_list, ids_list, current=current, triggered_id=dash.ctx.triggered_id
+        )
 
     @app.callback(
         Output("tab-a-running-tail-store", "data"),
@@ -274,8 +276,10 @@ def _on_retry_toggle_handler(n_clicks_list, ids_list, *, dispatch_id, bump, data
     return dash.no_update
 
 
-def _on_running_tail_toggle_handler(n_clicks_list, ids_list, *, current):
-    ident = _last_clicked_id(n_clicks_list, ids_list)
+def _on_running_tail_toggle_handler(n_clicks_list, ids_list, *, current, triggered_id=None):
+    ident = triggered_id if isinstance(triggered_id, dict) and triggered_id.get("run_id") else None
+    if ident is None:
+        ident = _last_clicked_id(n_clicks_list, ids_list)
     if ident is None:
         return dash.no_update
     return _toggle_run_id(current or [], ident["run_id"])
