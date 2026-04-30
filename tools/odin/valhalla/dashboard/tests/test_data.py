@@ -411,8 +411,8 @@ def test_toggle_retry_queue_adds_run_id(tmp_path):
     layer = DataLayer(tmp_path)
     out = layer.toggle_retry_queue("20260427-141302", "rsl-rl_physx_X_seed42")
     assert out == {"rsl-rl_physx_X_seed42"}
-    path = tmp_path / "20260427-141302" / "retry_queue.txt"
-    assert path.read_text().strip().splitlines() == ["rsl-rl_physx_X_seed42"]
+    assert layer.read_retry_queue("20260427-141302") == {"rsl-rl_physx_X_seed42"}
+    assert (tmp_path / ".retry.sqlite").exists()
 
 
 def test_toggle_retry_queue_removes_existing(tmp_path):
@@ -434,17 +434,10 @@ def test_toggle_retry_queue_multiple_round_trip(tmp_path):
     assert layer.read_retry_queue("20260427-141302") == {"b"}
 
 
-def test_toggle_retry_queue_atomic_write(tmp_path):
-    """No partial / half-truncated retry_queue.txt should leak to disk —
-    the write must use tempfile + rename so a crash mid-write leaves
-    either the old contents or the new contents."""
+def test_toggle_retry_queue_does_not_write_legacy_txt(tmp_path):
+    """New toggles persist in SQLite and do not rewrite legacy txt files."""
     _write_dispatch(tmp_path, "20260427-141302")
     layer = DataLayer(tmp_path)
     layer.toggle_retry_queue("20260427-141302", "first")
-    siblings = list((tmp_path / "20260427-141302").iterdir())
-    stragglers = [
-        p
-        for p in siblings
-        if p.name.endswith(".tmp") or (p.name.startswith("retry_queue") and p.name != "retry_queue.txt")
-    ]
-    assert stragglers == [], f"temp files leaked: {stragglers}"
+    assert not (tmp_path / "20260427-141302" / "retry_queue.txt").exists()
+    assert layer.read_retry_queue("20260427-141302") == {"first"}

@@ -13,14 +13,13 @@ trivially testable.
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 __all__ = ["DataLayer", "DispatchSummary", "HardwareInfo"]
 
@@ -60,6 +59,7 @@ class DataLayer:
 
     def __init__(self, runs_root: Path):
         self._runs_root = Path(runs_root).resolve() if runs_root else Path(runs_root)
+        self._retry_db: RetryDB | None = None
 
     # -- list_dispatches ----------------------------------------------------
 
@@ -226,46 +226,29 @@ class DataLayer:
     def read_retry_queue(self, dispatch_id: str) -> set[str]:
         """Return the set of run_ids the operator has tagged for retry.
 
-        Stored at ``<runs_root>/<dispatch_id>/retry_queue.txt`` (one
-        run_id per line). Empty / missing file → empty set.
+        Stored in ``<runs_root>/.retry.sqlite``. Empty / missing rows return
+        an empty set.
 
-        dispatch.json is never mutated; this file is the operator's
-        TODO list, consumed by the next ``odin-dispatch --resume <id>
+        ``dispatch.json`` is never mutated; this queue is the operator's TODO
+        list, consumed by the next ``odin-dispatch --resume <id>
         --retry-failed=<csv>`` invocation.
         """
-        path = self._runs_root / dispatch_id / "retry_queue.txt"
-        if not path.exists():
-            return set()
-        return {line.strip() for line in path.read_text().splitlines() if line.strip()}
+        return self._get_retry_db().read_pending(dispatch_id)
 
     def toggle_retry_queue(self, dispatch_id: str, run_id: str) -> set[str]:
         """Add ``run_id`` to the retry queue if absent, remove if present.
 
-        Atomic on POSIX (tempfile + ``os.replace``) so an interrupted
-        write can't leave a half-truncated file.
+        Backed by a SQLite transaction, so multiple dashboard tabs and CLI
+        processes serialize cleanly.
 
         Returns the new contents.
         """
-        current = self.read_retry_queue(dispatch_id)
-        if run_id in current:
-            current.discard(run_id)
-        else:
-            current.add(run_id)
-        dispatch_dir = self._runs_root / dispatch_id
-        dispatch_dir.mkdir(parents=True, exist_ok=True)
-        target = dispatch_dir / "retry_queue.txt"
-        body = "".join(line + "\n" for line in sorted(current))
-        fd, tmp_path_str = tempfile.mkstemp(prefix=".retry_queue.", suffix=".tmp", dir=str(dispatch_dir))
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(body)
-            os.replace(tmp_path_str, target)
-        except Exception:
-            # Best-effort cleanup of the temp file on failure.
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(tmp_path_str)
-            raise
-        return current
+        return self._get_retry_db().toggle(dispatch_id, run_id)
+
+    def _get_retry_db(self) -> RetryDB:
+        if self._retry_db is None:
+            self._retry_db = RetryDB(self._runs_root)
+        return self._retry_db
 
     # -- cache control ------------------------------------------------------
 

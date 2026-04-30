@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +28,7 @@ from tools.odin.asgard.runner import DispatchOptions, resolve_dispatch_dir, run_
 from tools.odin.asgard.state import read_dispatch_state
 from tools.odin.asgard.transport import RsyncResult, ShellRsyncRunner, ShellSSHRunner, SSHResult
 from tools.odin.common.env_list import EnvEntry, EnvList, write_env_list
+from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 
 @dataclass
@@ -761,3 +765,240 @@ def test_run_dispatch_marks_newton_jobs_failed_when_no_capable_host(tmp_path: Pa
     assert all("odin-cuda install --target 12.4" in j.failure.message for j in newton_jobs), (
         "all newton jobs should have upgrade-hint message"
     )
+
+
+def test_consume_live_retries_requeues_failed_job(tmp_path: Path):
+    """A pending DB retry for a failed job resets and requeues that job exactly once."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo, JobEntry
+
+    dispatch_id = "20260430-110509"
+    job = JobEntry(
+        run_id="run-a",
+        task_id="Isaac-Ant-Direct-v0",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=10,
+        seed=42,
+        bundle_dir_name="run-a",
+    )
+    job.status = "failed"
+    job.failure = FailureInfo(kind="hugin_crash", message="boom")
+    job.assigned_to = "v1"
+    job.started_at = "2026-04-30T11:00:00Z"
+    job.ended_at = "2026-04-30T11:01:00Z"
+    job.attempts = 1
+    retry_db = RetryDB(tmp_path)
+    retry_db.toggle(dispatch_id, job.run_id)
+    job_q: queue.Queue = queue.Queue()
+    live_retry_run_ids: set[str] = set()
+
+    added = runner_mod._consume_live_retries(
+        retry_db=retry_db,
+        dispatch_id=dispatch_id,
+        jobs_by_id={job.run_id: job},
+        job_q=job_q,
+        live_retry_run_ids=live_retry_run_ids,
+    )
+
+    assert added == 1
+    assert job_q.get_nowait() is job
+    assert live_retry_run_ids == {job.run_id}
+    assert job.status == "pending"
+    assert job.failure is None
+    assert job.assigned_to is None
+    assert job.started_at is None
+    assert job.ended_at is None
+    assert job.attempts == 1
+
+
+def test_consume_live_retries_ignores_non_failed_and_unknown_rows(tmp_path: Path):
+    """Only failed jobs in the active dispatch are eligible for live ingestion."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo, JobEntry
+
+    dispatch_id = "20260430-110509"
+    jobs_by_id: dict[str, JobEntry] = {}
+    for status in ["pending", "running", "completed"]:
+        job = JobEntry(
+            run_id=f"run-{status}",
+            task_id="Isaac-Ant-Direct-v0",
+            framework="rsl_rl",
+            backend="physx",
+            num_envs=4096,
+            max_iterations=10,
+            seed=42,
+            bundle_dir_name=f"run-{status}",
+        )
+        job.status = status
+        if status == "completed":
+            job.failure = None
+        elif status == "running":
+            job.assigned_to = "v1"
+        jobs_by_id[job.run_id] = job
+
+    failed_from_other_dispatch = JobEntry(
+        run_id="run-other",
+        task_id="Isaac-Ant-Direct-v0",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=10,
+        seed=43,
+        bundle_dir_name="run-other",
+    )
+    failed_from_other_dispatch.status = "failed"
+    failed_from_other_dispatch.failure = FailureInfo(kind="hugin_crash", message="boom")
+    jobs_by_id[failed_from_other_dispatch.run_id] = failed_from_other_dispatch
+
+    retry_db = RetryDB(tmp_path)
+    for run_id in ["run-pending", "run-running", "run-completed", "run-unknown"]:
+        retry_db.toggle(dispatch_id, run_id)
+    retry_db.toggle("20260430-120000", failed_from_other_dispatch.run_id)
+    job_q: queue.Queue = queue.Queue()
+
+    added = runner_mod._consume_live_retries(
+        retry_db=retry_db,
+        dispatch_id=dispatch_id,
+        jobs_by_id=jobs_by_id,
+        job_q=job_q,
+        live_retry_run_ids=set(),
+    )
+
+    assert added == 0
+    assert job_q.empty()
+    assert retry_db.read_pending(dispatch_id) == {"run-pending", "run-running", "run-completed", "run-unknown"}
+
+
+def test_mark_live_retry_consumed_records_completed_outcome(tmp_path: Path):
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.worker import StateEvent
+
+    retry_db = RetryDB(tmp_path)
+    dispatch_id = "20260430-110509"
+    retry_db.toggle(dispatch_id, "run-a")
+
+    runner_mod._mark_live_retry_consumed(
+        retry_db=retry_db,
+        dispatch_id=dispatch_id,
+        ev=StateEvent(run_id="run-a", host="v1", transition="completed"),
+        live_retry_run_ids={"run-a"},
+    )
+
+    rows = retry_db.list_for_dispatch(dispatch_id)
+    assert rows[0].retried_at is not None
+    assert rows[0].retry_dispatch_id == dispatch_id
+    assert rows[0].retry_outcome == "completed"
+    assert rows[0].retry_failure_kind is None
+
+
+def test_mark_live_retry_consumed_records_failed_outcome(tmp_path: Path):
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import FailureInfo
+    from tools.odin.asgard.worker import StateEvent
+
+    retry_db = RetryDB(tmp_path)
+    dispatch_id = "20260430-110509"
+    retry_db.toggle(dispatch_id, "run-a")
+
+    runner_mod._mark_live_retry_consumed(
+        retry_db=retry_db,
+        dispatch_id=dispatch_id,
+        ev=StateEvent(
+            run_id="run-a",
+            host="v1",
+            transition="failed",
+            failure=FailureInfo(kind="gpu_lost", message="lost gpu"),
+        ),
+        live_retry_run_ids={"run-a"},
+    )
+
+    rows = retry_db.list_for_dispatch(dispatch_id)
+    assert rows[0].retry_outcome == "failed"
+    assert rows[0].retry_failure_kind == "gpu_lost"
+
+
+def test_run_dispatch_consumes_live_retry_for_current_dispatch(tmp_path: Path):
+    """A live runner requeues a failed job after the dashboard/CLI adds it to the retry DB."""
+
+    class _LiveRetrySSH(_FakeSSH):
+        def __init__(self):
+            super().__init__()
+            self.seed42_calls = 0
+            self.seed43_started = threading.Event()
+            self.release_seed43 = threading.Event()
+
+        def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None) -> SSHResult:
+            if "hugin/run.py" not in cmd and "munin/run.py" not in cmd:
+                return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+            if "seed42" in cmd:
+                self.seed42_calls += 1
+                if self.seed42_calls == 1:
+                    return SSHResult(exit_code=1, stdout="", stderr="training failed", duration_s=0.01)
+                return SSHResult(exit_code=0, stdout="ok", stderr="", duration_s=0.01)
+            if "seed43" in cmd:
+                self.seed43_started.set()
+                if self.release_seed43.wait(timeout=30):
+                    return SSHResult(exit_code=0, stdout="ok", stderr="", duration_s=0.01)
+                return SSHResult(exit_code=1, stdout="", stderr="seed43 release timeout", duration_s=30.0)
+            return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
+
+    fleet = _write_fleet(tmp_path)
+    physx = _write_env_list(tmp_path)
+    dispatch_id = "20260430-110509"
+    dispatch_dir = tmp_path / "odin_runs" / dispatch_id
+    dispatch_dir.mkdir(parents=True)
+    ssh = _LiveRetrySSH()
+    result_holder: dict[str, object] = {}
+
+    def _run_dispatch() -> None:
+        try:
+            result_holder["state"] = run_dispatch(
+                fleet=fleet,
+                physx_yaml=physx,
+                newton_yaml=None,
+                dispatch_dir=dispatch_dir,
+                options=DispatchOptions(seeds=[42, 43], skip_aggregate=True, live_retry_poll_s=0.05),
+                ssh=ssh,
+                rsync=_FakeRsync(),
+            )
+        except BaseException as exc:
+            result_holder["exc"] = exc
+
+    thread = threading.Thread(target=_run_dispatch)
+    thread.start()
+    assert ssh.seed43_started.wait(timeout=10), "seed43 did not start"
+    run_id_42 = f"rsl-rl_physx_Isaac-Ant-Direct-v0_{dispatch_id}_seed42"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        state = read_dispatch_state(dispatch_dir)
+        if state is not None:
+            job = next(j for j in state.jobs if j.run_id == run_id_42)
+            if job.status == "failed":
+                break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("seed42 did not reach failed state before live retry")
+
+    RetryDB(dispatch_dir.parent).toggle(dispatch_id, run_id_42)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if ssh.seed42_calls >= 2:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("seed42 was not retried while dispatch was live")
+
+    ssh.release_seed43.set()
+    thread.join(timeout=10)
+
+    assert "exc" not in result_holder
+    final_state = result_holder["state"]
+    final_job = next(j for j in final_state.jobs if j.run_id == run_id_42)
+    assert final_job.status == "completed"
+    assert final_job.attempts == 2
+    rows = RetryDB(dispatch_dir.parent).list_for_dispatch(dispatch_id)
+    assert rows[0].retry_dispatch_id == dispatch_id
+    assert rows[0].retry_outcome == "completed"
+    assert RetryDB(dispatch_dir.parent).read_pending(dispatch_id) == set()

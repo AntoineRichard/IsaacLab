@@ -205,13 +205,13 @@ def _on_expand_toggle_handler(n_clicks_list, ids_list, *, current):
 
 
 def _on_retry_toggle_handler(n_clicks_list, ids_list, *, dispatch_id, bump, data):
-    """Mark / un-mark a run_id in the per-dispatch retry queue file.
+    """Mark / un-mark a run_id in the retry DB.
 
     Side effect: ``data.toggle_retry_queue(dispatch_id, run_id)`` writes the
-    new state to ``odin_runs/<dispatch_id>/retry_queue.txt`` atomically.
+    new state to ``odin_runs/.retry.sqlite`` atomically.
 
     Returns the next bump value so the jobs-poll callback re-fires; the actual
-    queue contents come from re-reading the file in the poll callback.
+    queue contents come from re-reading SQLite in the poll callback.
     """
     if not n_clicks_list or not any(n_clicks_list) or not dispatch_id:
         return dash.no_update

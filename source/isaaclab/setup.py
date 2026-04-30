@@ -142,5 +142,10 @@ setup(
         "Programming Language :: Python :: 3.12",
         "Isaac Sim :: 6.0.0",
     ],
+    entry_points={
+        "console_scripts": [
+            "odin-retry=tools.odin.valhalla.dashboard.retry_cli:main",
+        ],
+    },
     zip_safe=False,
 )

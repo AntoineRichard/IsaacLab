@@ -29,6 +29,7 @@ from tools.odin.asgard.state import (
 )
 from tools.odin.asgard.transport import RsyncRunner, ShellRsyncRunner, ShellSSHRunner, SSHRunner
 from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
+from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 __all__ = ["DispatchOptions", "resolve_dispatch_dir", "run_dispatch"]
 
@@ -66,6 +67,8 @@ class DispatchOptions:
         preflight_auto_restart: When ``True`` (default), automatically
             restart the container and re-probe on NVML wedge during
             preflight. Pass ``False`` to preserve strict-failure semantics.
+        live_retry_poll_s: Poll period [s] for live retry rows in the
+            retry DB while this dispatch still has active work.
     """
 
     seeds: list[int]
@@ -80,6 +83,7 @@ class DispatchOptions:
     skip_aggregate: bool = False
     consecutive_failure_quarantine: int = 3
     preflight_auto_restart: bool = True
+    live_retry_poll_s: float = 5.0
 
 
 def _utc_now_iso() -> str:
@@ -324,6 +328,59 @@ def _apply_retry_options(jobs: list[JobEntry], options: DispatchOptions) -> None
                 j.assigned_to = None
                 j.started_at = None
                 j.ended_at = None
+
+
+def _consume_live_retries(
+    *,
+    retry_db: RetryDB,
+    dispatch_id: str,
+    jobs_by_id: dict[str, JobEntry],
+    job_q: queue.Queue,
+    live_retry_run_ids: set[str],
+) -> int:
+    """Requeue failed jobs that were tagged for retry while this dispatch is live."""
+    added = 0
+    for run_id in sorted(retry_db.read_pending(dispatch_id)):
+        if run_id in live_retry_run_ids:
+            continue
+        job = jobs_by_id.get(run_id)
+        if job is None or job.status != "failed":
+            continue
+        job.status = "pending"
+        job.failure = None
+        job.assigned_to = None
+        job.started_at = None
+        job.ended_at = None
+        job_q.put(job)
+        live_retry_run_ids.add(run_id)
+        added += 1
+    return added
+
+
+def _mark_live_retry_consumed(
+    *,
+    retry_db: RetryDB,
+    dispatch_id: str,
+    ev: StateEvent,
+    live_retry_run_ids: set[str],
+) -> None:
+    """Mark a terminal live retry event consumed in the retry DB."""
+    if ev.run_id not in live_retry_run_ids or ev.transition not in {"completed", "failed"}:
+        return
+    outcome = "completed" if ev.transition == "completed" else "failed"
+    failure_kind = ev.failure.kind if ev.failure is not None else None
+    try:
+        retry_db.mark_consumed(
+            dispatch_id,
+            ev.run_id,
+            retry_dispatch_id=dispatch_id,
+            outcome=outcome,
+            failure_kind=failure_kind,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARNING] failed to mark retry consumed for {ev.run_id}: {exc}")
+    finally:
+        live_retry_run_ids.discard(ev.run_id)
 
 
 def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntry]:
@@ -581,6 +638,8 @@ def run_dispatch(
     for j in state.jobs:
         if j.status == "pending":
             job_q.put(j)
+    jobs_by_id: dict[str, JobEntry] = {j.run_id: j for j in state.jobs}
+    remaining = sum(1 for j in state.jobs if j.status == "pending")
 
     shutdown_event = threading.Event()
     workers: list[ValkyrieWorker] = []
@@ -602,26 +661,60 @@ def run_dispatch(
         w.start()
         workers.append(w)
 
-    # Sentinels so workers exit once the queue is drained.
-    for _ in workers:
-        job_q.put(None)
-
     # Drain state events into state.jobs; rewrite dispatch.json after each.
-    jobs_by_id: dict[str, JobEntry] = {j.run_id: j for j in state.jobs}
-    remaining = sum(1 for j in state.jobs if j.status == "pending")
+    retry_db = RetryDB(dispatch_dir.parent)
+    live_retry_run_ids: set[str] = set()
+    live_retry_poll_s = max(0.05, options.live_retry_poll_s)
+    last_retry_poll = time.monotonic()
     last_write = time.monotonic()
     while remaining > 0 and any(w.is_alive() for w in workers):
         try:
-            ev: StateEvent = state_chan.get(timeout=1.0)
+            ev: StateEvent = state_chan.get(timeout=min(1.0, live_retry_poll_s))
         except queue.Empty:
+            now = time.monotonic()
+            if now - last_retry_poll >= live_retry_poll_s:
+                added = _consume_live_retries(
+                    retry_db=retry_db,
+                    dispatch_id=dispatch_id,
+                    jobs_by_id=jobs_by_id,
+                    job_q=job_q,
+                    live_retry_run_ids=live_retry_run_ids,
+                )
+                if added:
+                    remaining += added
+                    write_dispatch_state(dispatch_dir, state)
+                    last_write = now
+                last_retry_poll = now
             if time.monotonic() - last_write >= 5.0:
                 write_dispatch_state(dispatch_dir, state)
                 last_write = time.monotonic()
             continue
         remaining -= _apply_state_event(state, ev, jobs_by_id, options.verbose)
+        _mark_live_retry_consumed(
+            retry_db=retry_db,
+            dispatch_id=dispatch_id,
+            ev=ev,
+            live_retry_run_ids=live_retry_run_ids,
+        )
         write_dispatch_state(dispatch_dir, state)
         last_write = time.monotonic()
+        if ev.transition in {"completed", "failed"}:
+            added = _consume_live_retries(
+                retry_db=retry_db,
+                dispatch_id=dispatch_id,
+                jobs_by_id=jobs_by_id,
+                job_q=job_q,
+                live_retry_run_ids=live_retry_run_ids,
+            )
+            if added:
+                remaining += added
+                write_dispatch_state(dispatch_dir, state)
+                last_write = time.monotonic()
+            last_retry_poll = time.monotonic()
 
+    shutdown_event.set()
+    for _ in workers:
+        job_q.put(None)
     for w in workers:
         w.join(timeout=30.0)
 

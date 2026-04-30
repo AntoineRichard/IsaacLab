@@ -1,6 +1,15 @@
 Changelog
 ---------
 
+4.6.11 (2026-04-30)
+~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added the ``odin-retry`` console script for managing Odin retry queues from
+  the shell.
+
 4.6.10 (2026-04-22)
 ~~~~~~~~~~~~~~~~~~~~
 
