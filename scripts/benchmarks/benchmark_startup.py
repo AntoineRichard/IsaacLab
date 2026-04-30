@@ -105,12 +105,13 @@ imports_time_begin = time.perf_counter_ns()
 imports_profile.enable()
 
 import gymnasium as gym  # noqa: E402
-import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from isaaclab.envs import DirectMARLEnvCfg, DirectRLEnvCfg, ManagerBasedRLEnvCfg  # noqa: E402
 
 from isaaclab_tasks.utils import launch_simulation, resolve_task_config  # noqa: E402
+
+from scripts.benchmarks._action_sampling import sample_random_actions  # noqa: E402
 
 imports_profile.disable()
 
@@ -328,10 +329,10 @@ def main(
         env_creation_time_end = time.perf_counter_ns()
         # -- First step profiled ------------------------------------------------
 
-        # Sample random actions from the action space directly to support
-        # Box, Discrete, MultiDiscrete, and Dict spaces.
-        np_actions = np.stack([env.unwrapped.single_action_space.sample() for _ in range(env.unwrapped.num_envs)])
-        actions = torch.as_tensor(np_actions, dtype=torch.float32, device=env.unwrapped.device)
+        # Sample random actions from the action space(s). Returns a tensor for
+        # single-agent envs and a per-agent dict for multi-agent (DirectMARLEnv)
+        # envs — env.step accepts the matching shape.
+        actions = sample_random_actions(env)
 
         first_step_profile = cProfile.Profile()
         first_step_time_begin = time.perf_counter_ns()

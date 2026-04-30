@@ -233,7 +233,27 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
 # Resolve SKRL agent entry point (matches scripts/reinforcement_learning/skrl/train.py).
+# For multi-agent (DirectMARLEnv) tasks, plain PPO can't be used — its observation
+# preprocessor and policy assume a single Tensor obs, but DirectMARLEnv emits a
+# per-agent dict. Auto-promote the default ``ppo`` algorithm to ``ippo`` so the
+# task gets the right multi-agent variant; explicit ``--algorithm`` overrides
+# (e.g. user passes ``mappo``) are honoured as-is.
 _algorithm = args_cli.algorithm.lower()
+if _algorithm == "ppo":
+    try:
+        from isaaclab.envs import DirectMARLEnvCfg as _DirectMARLEnvCfg
+        from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry as _peek_cfg
+
+        _peek = _peek_cfg(args_cli.task, "env_cfg_entry_point")
+        if isinstance(_peek, type) and issubclass(_peek, _DirectMARLEnvCfg):
+            _is_marl = True
+        else:
+            _is_marl = isinstance(_peek, _DirectMARLEnvCfg)
+    except Exception:  # noqa: BLE001 — best-effort detection; fall through to PPO if peek fails
+        _is_marl = False
+    if _is_marl:
+        print(f"[INFO] {args_cli.task!r} is a multi-agent task; promoting --algorithm ppo -> ippo.", file=sys.stderr)
+        _algorithm = "ippo"
 _agent_cfg_entry_point = "skrl_cfg_entry_point" if _algorithm == "ppo" else f"skrl_{_algorithm}_cfg_entry_point"
 
 backend_type = get_backend_type(args_cli.benchmark_backend)
