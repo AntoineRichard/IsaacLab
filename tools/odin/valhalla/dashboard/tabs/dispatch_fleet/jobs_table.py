@@ -41,6 +41,8 @@ def render_jobs_section(
     task_text: str = "",
     expanded_run_ids: set[str] | None = None,
     ssh_tail_store: dict[str, list[str]] | None = None,
+    running_tail_shown: set[str] | None = None,
+    running_tail_store: dict[str, dict] | None = None,
     retry_queue: set[str] | None = None,
 ) -> html.Div:
     """Build the jobs section: filter row + table + inline expand rows.
@@ -54,6 +56,8 @@ def render_jobs_section(
     jobs = dispatch_payload.get("jobs", []) or []
     expanded_run_ids = expanded_run_ids or set()
     ssh_tail_store = ssh_tail_store or {}
+    running_tail_shown = running_tail_shown or set()
+    running_tail_store = running_tail_store or {}
     retry_queue = retry_queue or set()
 
     if not jobs:
@@ -111,6 +115,8 @@ def render_jobs_section(
         body_rows.append(_data_row(j, dispatch_id, retry_queue))
         if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
             body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
+        if j.get("status") == "running" and j.get("run_id") in running_tail_shown:
+            body_rows.append(_expand_running_row(j, running_tail_store.get(j.get("run_id"))))
 
     table = html.Table(
         className="tab-a-jobs-table",
@@ -143,6 +149,8 @@ def render_jobs_rows(
     task_text: str = "",
     expanded_run_ids: set[str] | None = None,
     ssh_tail_store: dict[str, list[str]] | None = None,
+    running_tail_shown: set[str] | None = None,
+    running_tail_store: dict[str, dict] | None = None,
     retry_queue: set[str] | None = None,
 ):
     """Return just the rows portion (table-or-empty) of the jobs section.
@@ -154,6 +162,8 @@ def render_jobs_rows(
     jobs = dispatch_payload.get("jobs", []) or []
     expanded_run_ids = expanded_run_ids or set()
     ssh_tail_store = ssh_tail_store or {}
+    running_tail_shown = running_tail_shown or set()
+    running_tail_store = running_tail_store or {}
     retry_queue = retry_queue or set()
 
     if not jobs:
@@ -198,6 +208,8 @@ def render_jobs_rows(
         body_rows.append(_data_row(j, dispatch_id, retry_queue))
         if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
             body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
+        if j.get("status") == "running" and j.get("run_id") in running_tail_shown:
+            body_rows.append(_expand_running_row(j, running_tail_store.get(j.get("run_id"))))
     table = html.Table(
         className="tab-a-jobs-table",
         children=[
@@ -314,6 +326,16 @@ def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) 
             ),
             retry_btn,
         ]
+    elif status == "running":
+        failure_cell = [
+            html.Button(
+                "👁",
+                id={"type": "tab-a-running-tail-toggle", "run_id": run_id},
+                n_clicks=0,
+                className="tab-a-expand-toggle tab-a-running-tail-toggle",
+                title="Show / hide running stdout tail",
+            )
+        ]
     else:
         failure_cell = "—"
 
@@ -382,6 +404,39 @@ def _expand_row(job: dict, ssh_tail_lines: list[str] | None) -> html.Tr:
 
     return html.Tr(
         className="tab-a-expand-row",
+        children=[html.Td(colSpan=7, children=body)],
+    )
+
+
+def _expand_running_row(job: dict, tail_entry: dict | None) -> html.Tr:
+    """Inline expansion row for a running job's stdout tail."""
+    run_id = job.get("run_id", "")
+    tail_entry = tail_entry or {}
+    source = tail_entry.get("source") or "stdout tail"
+    fetched_at = tail_entry.get("fetched_at")
+    lines = tail_entry.get("lines")
+
+    body: list = [
+        html.Button(
+            "Refresh",
+            id={"type": "tab-a-running-tail-refresh", "run_id": run_id},
+            n_clicks=0,
+            className="tab-a-ssh-tail-button tab-a-running-tail-refresh",
+        ),
+        html.Span(source, className="tab-a-running-tail-source"),
+    ]
+    if fetched_at:
+        body.extend([html.Span("  Fetched ", className="tab-a-expand-label"), html.Span(fetched_at)])
+
+    if lines is None:
+        body.append(html.P("Running stdout tail not loaded yet.", className="tab-a-ssh-tail-empty"))
+    elif lines:
+        body.append(html.Pre("\n".join(lines), className="tab-a-ssh-tail-pre"))
+    else:
+        body.append(html.P("Running stdout tail is empty or unavailable.", className="tab-a-ssh-tail-empty"))
+
+    return html.Tr(
+        className="tab-a-expand-row tab-a-running-tail-row",
         children=[html.Td(colSpan=7, children=body)],
     )
 

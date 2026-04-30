@@ -199,6 +199,8 @@ def test_tab_a_render_returns_layout_with_expected_slots(tmp_path):
     assert _has_id(component, "tab-a-failure-filter")
     assert _has_id(component, "tab-a-expanded-run-ids")
     assert _has_id(component, "tab-a-ssh-tail-store")
+    assert _has_id(component, "tab-a-running-tail-shown")
+    assert _has_id(component, "tab-a-running-tail-store")
 
     # Tick interval.
     assert _has_id(component, "tab-a-tick")
