@@ -336,6 +336,30 @@ def test_running_tail_refresh_refetches_existing_store():
     assert store["run-2"]["lines"] == ["booting"]
 
 
+def test_running_tail_reopen_uses_cached_store():
+    import dash
+
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(_payload([_job(run_id="run-2", status="running")]))
+    toggle_id = {"type": "tab-a-running-tail-toggle", "run_id": "run-2"}
+
+    store = cb_mod._on_running_tail_fetch_handler(
+        [2],
+        [],
+        [toggle_id],
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={"run-2": {"source": "training.stdout.log", "lines": ["cached"], "fetched_at": "old"}},
+        data=data,
+        triggered_id=toggle_id,
+    )
+
+    assert store is dash.no_update
+    assert data.running_tail_calls == []
+
+
 def test_running_tail_fetch_ignores_phantom_click():
     import dash
 

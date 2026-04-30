@@ -300,9 +300,12 @@ def _on_running_tail_fetch_handler(
         return dash.no_update
 
     current_shown = current_shown or []
+    current_store = current_store or {}
     triggered_type = triggered_id.get("type")
     if triggered_type == "tab-a-running-tail-toggle":
         if run_id in set(current_shown):
+            return dash.no_update
+        if run_id in current_store:
             return dash.no_update
         if _last_clicked_id(toggle_clicks, toggle_ids) is None:
             return dash.no_update
@@ -312,7 +315,7 @@ def _on_running_tail_fetch_handler(
     else:
         return dash.no_update
 
-    return _compute_running_tail_store(data, dispatch_id, run_id, current_store=current_store or {})
+    return _compute_running_tail_store(data, dispatch_id, run_id, current_store=current_store)
 
 
 def _last_clicked_id(n_clicks_list, ids_list):
