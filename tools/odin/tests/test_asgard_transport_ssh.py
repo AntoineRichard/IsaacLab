@@ -186,3 +186,28 @@ def test_run_timeout_terminates(monkeypatch):
     result = runner.run(_host(), "cmd", timeout_s=0.1)
     assert result.timed_out is True
     assert result.exit_code != 0
+
+
+def test_push_excludes_skip_dev_machine_scratch():
+    """Rsync must skip the dev tree's heavyweight scratch dirs (worktrees,
+    install-CI venvs, tool caches, editor metadata). Each one of these has
+    bitten us in the past — a single forgotten exclude can ship 10+ GB to
+    every Valkyrie."""
+    from tools.odin.asgard.transport import _PUSH_EXCLUDES
+
+    must_exclude = [
+        ".worktrees/",  # nested git worktrees, each a full IsaacLab checkout
+        "outputs/",  # local script outputs (rendered USDs, debug dumps)
+        "_isaaclab_install_ci_*/",  # leftover uv venvs from install_ci tests
+        ".ruff_cache/",
+        ".pytest_cache/",
+        ".mypy_cache/",
+        ".vscode/",
+        ".cursor/",
+        ".superpowers/",
+        ".github/",
+    ]
+    for pattern in must_exclude:
+        assert f"--exclude={pattern}" in _PUSH_EXCLUDES, (
+            f"Missing rsync exclude for {pattern!r} — without it, every bootstrap rsyncs this dir."
+        )

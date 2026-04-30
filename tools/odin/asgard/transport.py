@@ -234,6 +234,30 @@ _PUSH_EXCLUDES = [
     # Excluding here lets the Dockerfile's symlink win, and bootstrap's
     # post-start fix inside the container also retargets it explicitly.
     "--exclude=_isaac_sim",
+    # Each git worktree under .worktrees/ is a full second IsaacLab checkout
+    # (often with its own venv and partial cache). Single-digit GB → 10+ GB
+    # of dead weight on every push.
+    "--exclude=.worktrees/",
+    # outputs/ is the dev-machine's scratch dir for local script outputs
+    # (rendered frames, generated USDs, debug dumps) — never needed on a
+    # Valkyrie.
+    "--exclude=outputs/",
+    # `_isaaclab_install_ci_*/` are uv venvs created by IsaacLab's
+    # install_ci test suite (source/isaaclab/test/install_ci/). When the
+    # test crashes mid-install (e.g. flaky pypi.nvidia.com timeout) the
+    # cleanup hook misses and the partial venv stays — multi-GB of stale
+    # CUDA wheels per leftover.
+    "--exclude=_isaaclab_install_ci_*/",
+    # Tool / editor caches — local-only, regenerated on demand.
+    "--exclude=.ruff_cache/",
+    "--exclude=.pytest_cache/",
+    "--exclude=.mypy_cache/",
+    "--exclude=.vscode/",
+    "--exclude=.cursor/",
+    # Workflow/skill metadata that lives in the dev tree but is irrelevant
+    # to a remote training job.
+    "--exclude=.superpowers/",
+    "--exclude=.github/",
 ]
 
 
