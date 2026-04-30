@@ -272,6 +272,67 @@ def test_build_docker_exec_cmd_includes_run_id():
     assert "--runs_root odin_runs" in cmd
 
 
+def test_build_docker_exec_cmd_runs_nvidia_smi_probe_before_training():
+    """A wedged GPU on a previous job leaves NVML un-initialisable; pre-flight
+    nvidia-smi probe surfaces the failure with a recognizable marker on
+    SSH-side stderr BEFORE the heavyweight training script tries to start."""
+    host = _host()
+    job = _job()
+    cmd = _build_docker_exec_cmd(host, job)
+    assert "nvidia-smi -L" in cmd, "pre-job nvidia-smi probe missing"
+    # Marker must match what _GPU_LOST_SIGNATURES catches.
+    assert "odin: gpu_unavailable" in cmd
+    # The probe must fire BEFORE the runner_script invocation.
+    probe_idx = cmd.index("nvidia-smi -L")
+    runner_idx = cmd.index("hugin/run.py")
+    assert probe_idx < runner_idx, "probe must run before training"
+
+
+def test_classify_gpu_lost_signature_probe_marker(tmp_path):
+    """Stderr containing the pre-job probe's 'odin: gpu_unavailable' marker
+    → kind='gpu_lost' (so the container-restart recovery path fires)."""
+    import queue
+    import threading
+
+    from tools.odin.asgard.fleet import ValkyrieConfig
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.transport import SSHResult
+    from tools.odin.asgard.worker import ValkyrieWorker, WorkerOptions
+
+    worker = ValkyrieWorker(
+        host=ValkyrieConfig(host="v1", ssh_user="horde"),
+        job_queue=queue.Queue(),
+        state_chan=queue.Queue(),
+        dispatch_dir=tmp_path,
+        options=WorkerOptions(),
+        ssh=None,
+        rsync=None,
+        shutdown_event=threading.Event(),
+    )
+    job = JobEntry(
+        run_id="rsl-rl_physx_Z_seed42",
+        task_id="Z",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=300,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_Z_seed42",
+    )
+    ssh_tail = tmp_path / "rsl-rl_physx_Z_seed42" / "logs" / "ssh-tail.log"
+    ssh_tail.parent.mkdir(parents=True, exist_ok=True)
+    ssh_tail.write_text("")
+    r = SSHResult(
+        exit_code=1,
+        stdout="",
+        stderr="odin: gpu_unavailable: Failed to initialize NVML: Unknown Error\n",
+        duration_s=0.5,
+    )
+    failure = worker._classify(r, job, ssh_tail)
+    assert failure is not None
+    assert failure.kind == "gpu_lost"
+
+
 def test_worker_classifies_preset_unsupported(tmp_path: Path):
     """Stderr containing 'preset_unsupported:' maps to its own kind, not hugin_crash."""
     ssh = _FakeSSH(

@@ -111,10 +111,18 @@ _HOST_HEALTH_FAILURE_KINDS = frozenset({"infrastructure", "hugin_malformed_bundl
 # FailureInfo(kind="gpu_lost") when the training process exited non-zero
 # AND its stderr contains any of these strings.  Recovery (T8) is then
 # attempted via container restart before retrying on the same host.
+#
+# ``odin: gpu_unavailable`` is the marker emitted by the pre-job
+# ``nvidia-smi -L`` probe in :func:`_build_docker_exec_cmd` — when the
+# probe fails, the rest of the SSH/docker pipeline is skipped and we get
+# this marker on SSH-side stderr without having to read remote bundle
+# logs. Catches the case where a previous job's training left the GPU /
+# NVML state wedged.
 _GPU_LOST_SIGNATURES = (
     "Failed to initialize NVML",
     "CUDA error: no CUDA-capable device is detected",
     "Vulkan ERROR_INCOMPATIBLE_DRIVER",
+    "odin: gpu_unavailable",
 )
 
 
@@ -139,9 +147,23 @@ def _build_docker_exec_cmd(host: ValkyrieConfig, job: JobEntry) -> str:
     """
     runner_script = "tools/odin/hugin/run.py" if job.framework == "rsl_rl" else "tools/odin/munin/run.py"
     bundle_logs = f"odin_runs/{job.bundle_dir_name}/logs"
+    # Pre-job nvidia-smi probe. If a prior job left the GPU / NVML state
+    # wedged, ``nvidia-smi -L`` fails fast and we surface a recognizable
+    # marker on SSH-side stderr so :data:`_GPU_LOST_SIGNATURES` matches in
+    # :meth:`ValkyrieWorker._classify`. The probe's own stderr (e.g.
+    # ``Failed to initialize NVML: Unknown Error``) is appended after the
+    # marker for diagnostic context. Without this probe, training scripts
+    # crash deep in PyTorch's CUDA init with "No CUDA GPUs are available",
+    # which only lands in the bundle's training.stderr.log on the remote
+    # — invisible to the worker's classifier.
+    gpu_probe = (
+        f"(nvidia-smi -L >/dev/null 2>{bundle_logs}/nvidia-probe.log || "
+        f"{{ echo \"odin: gpu_unavailable: $(tr -d '\\n' < {bundle_logs}/nvidia-probe.log)\" >&2; exit 1; }})"
+    )
     inner = (
         f"cd /workspace/isaaclab "
         f"&& mkdir -p {bundle_logs} "
+        f"&& {gpu_probe} "
         f"&& PYTHONPATH=. _isaac_sim/python.sh {runner_script}"
         f" --task {job.task_id}"
         f" --backend {job.backend}"
