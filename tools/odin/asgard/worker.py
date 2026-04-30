@@ -321,6 +321,12 @@ def _build_submit_script(
         f"""\
         set -u
         cd /workspace/isaaclab
+        # Wipe any prior attempt's bundle so a stale manifest / pidfile /
+        # tracker doesn't trip up the new run's first poll. A SIGKILL'd or
+        # crashed predecessor can leave a manifest.json with status=failed,
+        # which the worker would otherwise pull and adopt before the new
+        # trainer has a chance to write its own outcome.
+        rm -rf {bundle}
         mkdir -p {bundle_logs}
         if ! nvidia-smi -L >/dev/null 2>{bundle_logs}/nvidia-probe.log; then
           PROBE_TAIL=$(tr -d '\\n' < {bundle_logs}/nvidia-probe.log)

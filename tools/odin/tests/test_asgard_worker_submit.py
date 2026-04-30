@@ -102,6 +102,34 @@ def test_build_submit_script_includes_setsid_and_pidfile_write():
     assert "&" in script
 
 
+def test_build_submit_script_wipes_bundle_before_launching_trainer():
+    """A previous attempt's manifest.json (or any other terminal artifact) must
+    not survive into a fresh submit. Without a wipe, the new worker's first
+    poll picks up the old manifest, _validate_bundle accepts it as terminal
+    (or, post-fix, rejects it as hugin_crash even though the new trainer is
+    still alive), and the freshly-submitted run is reported as failed before
+    it gets a chance to write its own outcome.
+
+    The wipe must run BEFORE the trainer is backgrounded — otherwise we race
+    with the new trainer starting to write its logs."""
+    script = _build_submit_script(
+        _host(),
+        _job("r1"),
+        submitted_at="2026-04-30T11:05:34Z",
+        per_job_timeout_s=43200,
+    )
+    # rm -rf the bundle (or at minimum manifest.json + tracker + pidfile).
+    assert "rm -rf" in script
+    assert "odin_runs/r1" in script
+    rm_idx = script.index("rm -rf")
+    train_idx = script.index("hugin/run.py")
+    assert rm_idx < train_idx, "wipe must precede trainer launch"
+    # mkdir -p of the logs dir must come AFTER the wipe — otherwise rm -rf
+    # nukes the directory we just created.
+    mkdir_idx = script.index("mkdir -p")
+    assert rm_idx < mkdir_idx, "mkdir must come after rm so the dir exists"
+
+
 def test_build_submit_script_runs_nvidia_probe_before_train():
     script = _build_submit_script(
         _host(),
