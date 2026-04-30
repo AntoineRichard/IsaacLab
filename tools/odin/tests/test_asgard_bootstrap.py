@@ -45,7 +45,7 @@ class _FakeSSH:
     reply_stderr: dict[str, str] = field(default_factory=dict)
     reply_timed_out: dict[str, bool] = field(default_factory=dict)
 
-    def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+    def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
         self.calls.append(_SSHCall(cmd=cmd, timeout_s=timeout_s))
         exit_code = 0
         stdout = ""
@@ -325,7 +325,7 @@ def test_bootstrap_fleet_mixed_outcome(tmp_path: Path):
     # Wrap both with a routing SSH that dispatches on host.host.
     @dataclass
     class _RoutingSSH:
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             inner = good_ssh if host.host == "v-good" else bad_ssh
             return inner.run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
 
@@ -352,7 +352,7 @@ def test_bootstrap_fleet_parallel_runs_concurrently(tmp_path: Path):
 
     # SSH fake that sleeps 100 ms on container.py start to simulate slow hosts.
     class _SlowSSH(_FakeSSH):
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             if "container.py start" in cmd:
                 _time_mod.sleep(0.1)
             return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
@@ -382,7 +382,7 @@ def test_bootstrap_fleet_sequential_adds_up(tmp_path: Path):
     )
 
     class _SlowSSH(_FakeSSH):
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             if "container.py start" in cmd:
                 _time_mod.sleep(0.1)
             return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)

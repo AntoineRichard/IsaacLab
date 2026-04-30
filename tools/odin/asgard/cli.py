@@ -110,6 +110,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Skip auto-restart on NVML wedge during preflight.",
     )
+    parser.add_argument(
+        "--legacy-pty-mode",
+        action="store_true",
+        help=(
+            "Use the legacy per-job PTY SSH worker instead of the detached "
+            "submit-and-poll model. Network blips during a long training run "
+            "will kill the job. Will be removed after detached mode is validated."
+        ),
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=30.0,
+        help="Detached-mode poll interval in seconds (default: 30).",
+    )
     args = parser.parse_args(argv)
 
     if args.physx_yaml is None and args.newton_yaml is None:
@@ -141,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         skip_aggregate=args.skip_aggregate,
         consecutive_failure_quarantine=0 if args.no_circuit_breaker else 3,
         preflight_auto_restart=not args.no_preflight_recover,
+        detached_mode=not args.legacy_pty_mode,
+        poll_interval_s=args.poll_interval,
     )
 
     print(f"odin-dispatch: dispatch_id={dispatch_dir.name} fleet={fleet.fleet_name} hosts={len(fleet.hosts)}")

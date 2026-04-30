@@ -28,7 +28,7 @@ class _ScriptedSSH:
         if self.calls is None:
             self.calls = []
 
-    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None) -> SSHResult:
+    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None, pty=True) -> SSHResult:
         self.calls.append((host.host, cmd))
         if not self.responses:
             return SSHResult(exit_code=255, stdout="", stderr="ssh script exhausted", duration_s=0.0)

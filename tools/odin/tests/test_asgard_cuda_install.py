@@ -135,7 +135,7 @@ class _FakeSSH:
     reply_stderr: dict[str, str] = field(default_factory=dict)
     reply_timed_out: dict[str, bool] = field(default_factory=dict)
 
-    def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+    def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
         self.calls.append(_SSHCall(cmd=cmd, timeout_s=timeout_s))
         exit_code = 0
         stdout = ""
@@ -277,7 +277,7 @@ def test_check_fleet_parallel_runs_concurrently():
     )
 
     class _SlowSSH(_FakeSSH):
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             if "nvidia-smi" in cmd:
                 _t.sleep(0.1)
             return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
@@ -370,7 +370,7 @@ def _install_happy_path_ssh() -> _FakeSSH:
     class _PrePostSSH(_FakeSSH):
         post_phase: bool = False
 
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             r = super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
             # Flip to "post" the moment the install asks for the reboot.
             if "systemctl reboot" in cmd:
@@ -563,7 +563,7 @@ def test_install_os_slug_refetch_failure_returns_clean_error():
     class _OSRefetchFailSSH(_FakeSSH):
         os_release_call_count: int = 0
 
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             if "/etc/os-release" in cmd:
                 self.os_release_call_count += 1
                 if self.os_release_call_count == 1:
@@ -617,7 +617,7 @@ def test_install_fleet_parallel_runs_concurrently():
     )
 
     class _SlowSSH(_FakeSSH):
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             if "nvidia-smi" in cmd:
                 _t.sleep(0.1)
             return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)

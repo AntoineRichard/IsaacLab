@@ -20,7 +20,7 @@ class _FakeSSH:
     log: list[str] = field(default_factory=list)
     scripted: dict = field(default_factory=dict)
 
-    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None) -> SSHResult:
+    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None, pty=True) -> SSHResult:
         self.log.append(cmd)
         for key, result in self.scripted.items():
             if key in cmd:
@@ -143,7 +143,7 @@ def testcontainer_start_respects_custom_timeout():
     recorded: list[dict] = []
 
     class _RecordingSSH:
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             recorded.append({"cmd": cmd, "timeout_s": timeout_s})
 
             class R:
@@ -175,7 +175,7 @@ def testcontainer_start_default_timeout_is_300():
     recorded: list[dict] = []
 
     class _RecordingSSH:
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             recorded.append({"timeout_s": timeout_s})
 
             class R:

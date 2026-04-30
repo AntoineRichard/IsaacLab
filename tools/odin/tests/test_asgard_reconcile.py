@@ -22,7 +22,7 @@ class _FakeSSH:
     scripted: dict
     calls: list = field(default_factory=list)
 
-    def run(self, host, cmd, *, timeout_s=None, stdout_tee=None) -> SSHResult:
+    def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True) -> SSHResult:
         self.calls.append((host.host, cmd))
         for key, result in self.scripted.items():
             if key in cmd:
@@ -175,3 +175,100 @@ def test_reconcile_skips_jobs_without_assigned_host(tmp_path: Path):
 
     assert outcomes == []
     assert job.status == "running"  # untouched
+
+
+# --- Detached-mode reattach via tracker.json --------------------------------
+
+
+def _write_tracker(local_bundle: Path, run_id: str, host: str, container: str = "isaac-lab-base") -> None:
+    """Helper: write a local-side ``.tracker.json`` so reconcile can find it.
+
+    The dispatcher actually reads the tracker over SSH from the remote
+    bundle, but for unit-testing reconcile we just stage a pre-pulled
+    bundle dir locally and stub the SSH calls separately.
+    """
+    from tools.odin.asgard.tracker import Tracker, write_tracker
+
+    local_bundle.mkdir(parents=True, exist_ok=True)
+    write_tracker(
+        local_bundle,
+        Tracker(
+            run_id=run_id,
+            container_name=container,
+            host=host,
+            submitted_at="2026-04-30T11:05:34Z",
+            pid=12345,
+            per_job_timeout_s=43200,
+        ),
+    )
+
+
+def test_reconcile_reattaches_inflight_with_tracker_alive(tmp_path: Path):
+    """Tracker found + remote process still alive → action=reattached_inflight.
+
+    Reconcile leaves the job in ``running`` for the worker to keep polling;
+    the caller seeds the worker's ``_inflight`` map from the outcome list.
+    """
+    fleet = Fleet(fleet_name="t", hosts=[_host()])
+    job = _job()
+    _write_tracker(tmp_path / job.bundle_dir_name, job.run_id, host="v1")
+    ssh = _FakeSSH(
+        scripted={
+            # Detached-mode poll script — recognise via 'kill -0' (the manifest
+            # cat would also contain ' cat ' so we order this key first).
+            "kill -0": SSHResult(exit_code=0, stdout=f"{job.bundle_dir_name} alive\n", stderr="", duration_s=0.0),
+            "manifest.json": SSHResult(exit_code=1, stdout="", stderr="No such file", duration_s=0.0),
+        }
+    )
+    rsync = _FakeRsync()
+
+    outcomes = reconcile_orphans(
+        fleet=fleet, jobs=[job], dispatch_dir=tmp_path, ssh=ssh, rsync=rsync, detached_mode=True
+    )
+
+    assert any(o.action == "reattached_inflight" for o in outcomes)
+    assert job.status == "running"
+
+
+def test_reconcile_finalizes_inflight_with_tracker_done(tmp_path: Path):
+    """Tracker found + manifest.json present on remote → adopted_completed."""
+    fleet = Fleet(fleet_name="t", hosts=[_host()])
+    job = _job()
+    _write_tracker(tmp_path / job.bundle_dir_name, job.run_id, host="v1")
+    ssh = _FakeSSH(
+        scripted={
+            "cat ": SSHResult(exit_code=0, stdout=_manifest_completed(), stderr="", duration_s=0.0),
+        }
+    )
+    rsync = _FakeRsync()
+
+    outcomes = reconcile_orphans(
+        fleet=fleet, jobs=[job], dispatch_dir=tmp_path, ssh=ssh, rsync=rsync, detached_mode=True
+    )
+
+    assert outcomes == [ReconcileOutcome(run_id="r1", action="adopted_completed")]
+    assert job.status == "completed"
+
+
+def test_reconcile_finalizes_inflight_with_tracker_exited_no_manifest(tmp_path: Path):
+    """Tracker present, no manifest, process gone → mark failed via remote stderr."""
+    fleet = Fleet(fleet_name="t", hosts=[_host()])
+    job = _job()
+    _write_tracker(tmp_path / job.bundle_dir_name, job.run_id, host="v1")
+    ssh = _FakeSSH(
+        scripted={
+            "kill -0": SSHResult(
+                exit_code=0, stdout=f"{job.bundle_dir_name} exited-no-manifest\n", stderr="", duration_s=0.0
+            ),
+            "manifest.json": SSHResult(exit_code=1, stdout="", stderr="No such file", duration_s=0.0),
+        }
+    )
+    rsync = _FakeRsync()
+
+    outcomes = reconcile_orphans(
+        fleet=fleet, jobs=[job], dispatch_dir=tmp_path, ssh=ssh, rsync=rsync, detached_mode=True
+    )
+
+    assert any(o.action == "adopted_failed" for o in outcomes)
+    assert job.status == "failed"
+    assert job.failure is not None

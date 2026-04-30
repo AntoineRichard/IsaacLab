@@ -41,7 +41,7 @@ class _FakeSSH:
     scripted: dict = field(default_factory=dict)
     log: list[tuple[str, str]] = field(default_factory=list)
 
-    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None) -> SSHResult:
+    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None, pty=True) -> SSHResult:
         self.log.append((host.host, cmd))
         for key, result in self.scripted.items():
             if key in cmd:
@@ -215,7 +215,7 @@ def test_worker_classifies_infrastructure_before_hugin(tmp_path: Path):
 
 def test_worker_writes_ssh_tail_log(tmp_path: Path):
     class _SSHThatTees(_FakeSSH):
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             # Emulate the real runner's tee behaviour.
             if stdout_tee is not None:
                 stdout_tee.parent.mkdir(parents=True, exist_ok=True)
@@ -640,7 +640,7 @@ def test_worker_gpu_lost_recovery_succeeds_retries_same_host(tmp_path, monkeypat
     ]
 
     class _SeqSSH:
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             return ssh_responses.pop(0)
 
     # Build a minimal valid bundle so _validate_bundle passes after retry.
@@ -718,7 +718,7 @@ def test_worker_gpu_lost_recovery_fails_marks_host_down(tmp_path, monkeypatch):
     from tools.odin.asgard.transport import SSHResult
 
     class _SingleSSH:
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             return SSHResult(
                 exit_code=1,
                 stdout="",
@@ -807,7 +807,7 @@ def test_worker_gpu_lost_three_in_a_row_terminal_failure(tmp_path, monkeypatch):
     ssh_responses = [nvml_fail, nvml_fail, nvml_fail]
 
     class _SeqSSH:
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             return ssh_responses.pop(0)
 
     def _fake_recover(host, *, ssh):
@@ -935,7 +935,7 @@ def test_worker_quarantines_host_after_n_consecutive_failures(tmp_path):
         # exit code 125 = docker exec: "container not found / daemon
         # unreachable" — classified as 'infrastructure', a host-health
         # failure that DOES count toward the consecutive-failure breaker.
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             return SSHResult(exit_code=125, stdout="", stderr="docker: cannot connect", duration_s=0.01)
 
     class _NoopRsync:
@@ -1043,7 +1043,7 @@ def test_worker_circuit_breaker_requeues_triggering_job(tmp_path):
 
     class _AlwaysInfraFailSSH:
         # exit 125 → 'infrastructure' kind, which counts toward the breaker.
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             return SSHResult(exit_code=125, stdout="", stderr="docker daemon down", duration_s=0.01)
 
     class _NoopRsync:
@@ -1139,7 +1139,7 @@ def test_worker_circuit_breaker_does_not_count_timeouts(tmp_path):
 
     class _AlwaysTimeoutSSH:
         # timed_out=True → kind="timeout" → MUST NOT count toward breaker.
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             return SSHResult(exit_code=124, stdout="", stderr="", duration_s=0.01, timed_out=True)
 
     class _NoopRsync:

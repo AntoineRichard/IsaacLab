@@ -8,23 +8,29 @@
 Called once on ``--resume`` before workers spin up. For each job that the
 prior dispatch state had in ``running`` status (and thus has an
 ``assigned_to`` host), check the remote bundle directory and process
-state, and pick one of five outcomes:
+state, and pick one of six outcomes:
 
 1. ``adopted_completed`` — remote ``manifest.json`` shows both phases
    ``completed`` / ``exit_code: 0``. Rsync the bundle back; mark
    ``completed``.
 2. ``adopted_failed`` — remote ``manifest.json`` exists but a phase
    failed. Rsync the bundle back; mark ``failed`` with a Hugin-crash
-   classification.
-3. ``killed_alive_orphan`` — no manifest yet but a process matching
-   ``--run_id <run_id>`` is alive. Kill it (``pkill -9``); mark
+   classification. (Detached mode also lands here when the trainer
+   exited without writing a manifest — see ``classify_remote_stderr``.)
+3. ``reattached_inflight`` — detached mode only: no manifest yet but the
+   poll script reports the trainer is still alive. Leave the job in
+   ``running`` so the worker can keep polling it after resume.
+4. ``killed_alive_orphan`` — legacy mode: no manifest, but ``pgrep``
+   finds a process matching ``--run_id <run_id>``. Kill it (``pkill
+   -9``); mark ``pending`` for re-dispatch. (Not used in detached mode
+   — the trainer is intentionally outliving the dispatcher there, and
+   we re-attach instead of killing.)
+5. ``dead_re_pending`` — no manifest, no live process. Mark
    ``pending`` for re-dispatch.
-4. ``dead_re_pending`` — no manifest, no live process. Mark
-   ``pending`` for re-dispatch.
-5. (skipped) — ``assigned_to`` is None, nothing to reconcile.
+6. (skipped) — ``assigned_to`` is None, nothing to reconcile.
 
 The caller's existing ``reset_in_flight_to_pending`` then handles any
-remaining ``running`` rows (which would only be cases 3 / 4 / 5 above
+remaining ``running`` rows (which would only be cases 4 / 5 / 6 above
 that we've already mutated to ``pending``, or unrelated edge cases).
 """
 
@@ -96,6 +102,43 @@ def _pull_bundle(host: ValkyrieConfig, run_id: str, dispatch_dir: Path, rsync: R
     return rr.exit_code == 0
 
 
+def _detached_poll_one(host: ValkyrieConfig, bundle_id: str, ssh: SSHRunner) -> str | None:
+    """Run the detached-mode poll script for a single bundle, return its state.
+
+    Returns ``None`` when the SSH call itself failed — the caller should
+    treat that as "no information; fall through to legacy handling".
+    """
+    from tools.odin.asgard.worker import _build_poll_script, _parse_poll_output
+
+    cmd = _build_poll_script(host, [bundle_id])
+    r = ssh.run(host, cmd, timeout_s=30.0, pty=False)
+    if r.exit_code != 0:
+        return None
+    return _parse_poll_output(r.stdout).get(bundle_id)
+
+
+def _classify_pulled_bundle(local_bundle: Path) -> FailureInfo:
+    """Classify a failed run from the locally-pulled bundle's stderr files.
+
+    Reads ``logs/odin-submit-error.log`` and ``logs/hugin-stderr.log``
+    and runs the combined text through
+    :func:`~tools.odin.asgard.worker.classify_remote_stderr` so reconcile
+    and worker reach the same kind for the same input.
+    """
+    from tools.odin.asgard.worker import classify_remote_stderr
+
+    submit_err = local_bundle / "logs" / "odin-submit-error.log"
+    train_err = local_bundle / "logs" / "hugin-stderr.log"
+    parts: list[str] = []
+    if submit_err.exists():
+        parts.append(submit_err.read_text())
+    if train_err.exists():
+        parts.append(train_err.read_text())
+    failure = classify_remote_stderr("\n".join(parts))
+    failure.details = {**failure.details, "reconciled": True}
+    return failure
+
+
 def reconcile_orphans(
     *,
     fleet: Fleet,
@@ -103,11 +146,26 @@ def reconcile_orphans(
     dispatch_dir: Path,
     ssh: SSHRunner,
     rsync: RsyncRunner,
+    detached_mode: bool = False,
 ) -> list[ReconcileOutcome]:
     """Reconcile every ``running`` job against its prior remote host.
 
     Mutates ``jobs`` in place (status, failure, assigned_to). The caller
     must persist the mutated state via :func:`write_dispatch_state`.
+
+    Detached-mode behaviour adds two new outcomes:
+
+      - ``reattached_inflight``: the poll script reports the trainer is
+        still alive on the remote. Leave the job in ``running`` so the
+        worker can pick the polling back up; do NOT pull the bundle yet
+        (training is mid-write).
+      - ``adopted_failed`` (extended): the poll reports
+        ``exited-no-manifest``. Pull the bundle (best effort) and
+        classify via remote stderr, mirroring the worker's terminal-fail
+        path in :meth:`ValkyrieWorker._finalize_terminal`.
+
+    The legacy-mode behaviour is unchanged: ``pgrep`` + ``pkill`` on no
+    manifest, mark ``pending``.
 
     Args:
         fleet: Fleet config used to resolve ``assigned_to`` → host.
@@ -117,6 +175,10 @@ def reconcile_orphans(
         dispatch_dir: Local dispatch directory; bundles are rsynced here.
         ssh: SSH runner.
         rsync: Rsync runner.
+        detached_mode: When ``True``, use the detached-mode poll script
+            instead of ``pgrep`` for the no-manifest fall-through, and
+            re-attach in-flight jobs. Default ``False`` preserves the
+            legacy behaviour (and matches existing call sites).
 
     Returns:
         List of :class:`ReconcileOutcome` — one per reconciled job.
@@ -146,6 +208,38 @@ def reconcile_orphans(
                 )
                 outcomes.append(ReconcileOutcome(run_id=j.run_id, action="adopted_failed"))
             continue
+
+        if detached_mode:
+            poll_state = _detached_poll_one(host, j.bundle_dir_name, ssh)
+            if poll_state == "done":
+                # Manifest landed between the first check and the poll
+                # (or the upstream manifest read returned None spuriously).
+                # Pull and adopt as completed.
+                _pull_bundle(host, j.run_id, dispatch_dir, rsync)
+                j.status = "completed"
+                outcomes.append(ReconcileOutcome(run_id=j.run_id, action="adopted_completed"))
+                continue
+            if poll_state == "alive":
+                # Trainer is still running — leave 'running', let the
+                # worker re-attach and keep polling.
+                outcomes.append(ReconcileOutcome(run_id=j.run_id, action="reattached_inflight"))
+                continue
+            if poll_state == "exited-no-manifest":
+                _pull_bundle(host, j.run_id, dispatch_dir, rsync)
+                j.status = "failed"
+                j.failure = _classify_pulled_bundle(dispatch_dir / j.bundle_dir_name)
+                outcomes.append(ReconcileOutcome(run_id=j.run_id, action="adopted_failed"))
+                continue
+            if poll_state == "no-pidfile":
+                # Submit was interrupted before the pidfile write — no
+                # trainer ever ran. Re-pending.
+                j.status = "pending"
+                j.assigned_to = None
+                j.started_at = None
+                outcomes.append(ReconcileOutcome(run_id=j.run_id, action="dead_re_pending"))
+                continue
+            # poll_state is None (SSH failed) → fall through to legacy path
+            # so we still get a sane outcome for the operator.
 
         if _process_alive(host, j.run_id, ssh):
             _kill_remote(host, j.run_id, ssh)

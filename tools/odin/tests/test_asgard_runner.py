@@ -31,7 +31,7 @@ from tools.odin.common.env_list import EnvEntry, EnvList, write_env_list
 class _FakeSSH:
     scripted: dict = field(default_factory=dict)
 
-    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None) -> SSHResult:
+    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None, pty=True) -> SSHResult:
         for key, result in self.scripted.items():
             if key in cmd:
                 return result
@@ -127,7 +127,7 @@ def test_run_dispatch_happy_path(tmp_path: Path):
         physx_yaml=physx,
         newton_yaml=None,
         dispatch_dir=dispatch_dir,
-        options=DispatchOptions(seeds=[42]),
+        options=DispatchOptions(seeds=[42], detached_mode=False),
         ssh=_FakeSSH(),
         rsync=_FakeRsync(),
     )
@@ -151,7 +151,7 @@ def test_run_dispatch_preflight_fail_fast(tmp_path: Path):
             physx_yaml=physx,
             newton_yaml=None,
             dispatch_dir=dispatch_dir,
-            options=DispatchOptions(seeds=[42]),
+            options=DispatchOptions(seeds=[42], detached_mode=False),
             ssh=_FakeSSH(
                 scripted={
                     "docker ps": SSHResult(exit_code=1, stdout="", stderr="daemon unreachable", duration_s=0.01),
@@ -175,7 +175,7 @@ def test_run_dispatch_resume_preserves_completed(tmp_path: Path):
         physx_yaml=physx,
         newton_yaml=None,
         dispatch_dir=dispatch_dir,
-        options=DispatchOptions(seeds=[42]),
+        options=DispatchOptions(seeds=[42], detached_mode=False),
         ssh=_FakeSSH(),
         rsync=_FakeRsync(),
     )
@@ -187,7 +187,7 @@ def test_run_dispatch_resume_preserves_completed(tmp_path: Path):
     # 'docker exec' — preflight's gpu_present probe legitimately uses
     # docker exec nvidia-smi -L without dispatching a job.
     class _AssertNoDispatch(_FakeSSH):
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             if "hugin/run.py" in cmd or "munin/run.py" in cmd:
                 raise AssertionError(f"resume should not re-dispatch completed jobs; cmd={cmd!r}")
             return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee)
@@ -197,7 +197,7 @@ def test_run_dispatch_resume_preserves_completed(tmp_path: Path):
         physx_yaml=physx,
         newton_yaml=None,
         dispatch_dir=dispatch_dir,
-        options=DispatchOptions(seeds=[42]),
+        options=DispatchOptions(seeds=[42], detached_mode=False),
         ssh=_AssertNoDispatch(),
         rsync=_FakeRsync(),
     )
@@ -217,7 +217,7 @@ def test_run_dispatch_writes_aggregate_json(tmp_path: Path):
         physx_yaml=env_yaml,
         newton_yaml=None,
         dispatch_dir=dispatch_dir,
-        options=DispatchOptions(seeds=[42]),
+        options=DispatchOptions(seeds=[42], detached_mode=False),
         ssh=_FakeSSH(),
         rsync=_FakeRsync(),
     )
@@ -243,7 +243,7 @@ def test_run_dispatch_skip_aggregate_leaves_no_file(tmp_path: Path):
         physx_yaml=env_yaml,
         newton_yaml=None,
         dispatch_dir=dispatch_dir,
-        options=DispatchOptions(seeds=[42], skip_aggregate=True),
+        options=DispatchOptions(seeds=[42], skip_aggregate=True, detached_mode=False),
         ssh=_FakeSSH(),
         rsync=_FakeRsync(),
     )
@@ -298,7 +298,7 @@ def test_resume_preserves_skipped_array(tmp_path: Path):
         physx_yaml=physx,
         newton_yaml=None,
         dispatch_dir=dispatch_dir,
-        options=DispatchOptions(seeds=[42], skip_aggregate=True),
+        options=DispatchOptions(seeds=[42], skip_aggregate=True, detached_mode=False),
         ssh=_FakeSSH(),
         rsync=_FakeRsync(),
     )
@@ -419,7 +419,7 @@ def test_pre_dispatch_summary_renders_native_mismatch_line(tmp_path: Path, stub_
         physx_yaml=None,
         newton_yaml=physx_yaml,  # request newton on a physx-native task
         dispatch_dir=dispatch_dir,
-        options=DispatchOptions(seeds=[42], skip_aggregate=True, per_job_timeout_s=60),
+        options=DispatchOptions(seeds=[42], skip_aggregate=True, per_job_timeout_s=60, detached_mode=False),
         ssh=ShellSSHRunner(),
         rsync=ShellRsyncRunner(),
     )
@@ -747,7 +747,7 @@ def test_run_dispatch_marks_newton_jobs_failed_when_no_capable_host(tmp_path: Pa
         physx_yaml=None,
         newton_yaml=newton_yaml,
         dispatch_dir=dispatch_dir,
-        options=DispatchOptions(seeds=[42], skip_aggregate=True, skip_preflight=False),
+        options=DispatchOptions(seeds=[42], skip_aggregate=True, skip_preflight=False, detached_mode=False),
         ssh=_FakeSSH(),
         rsync=_FakeRsync(),
     )
