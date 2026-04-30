@@ -269,7 +269,10 @@ def _retry_banner(dispatch_id: str, retry_queue: set[str]) -> html.Div | None:
                 className="tab-a-retry-banner-header",
                 children=[
                     html.Strong(f"{len(retry_queue)} job(s) tagged for retry"),
-                    html.Span(" — run the command below to re-dispatch them.", className="tab-a-retry-banner-hint"),
+                    html.Span(
+                        " — live runners consume these automatically; use the command below after dispatch end.",
+                        className="tab-a-retry-banner-hint",
+                    ),
                 ],
             ),
             html.Pre(cmd, className="tab-a-retry-banner-cmd"),
@@ -301,7 +304,7 @@ def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) 
             id={"type": "tab-a-retry-toggle", "run_id": run_id},
             n_clicks=0,
             className="tab-a-retry-toggle" + (" tab-a-retry-toggle-queued" if is_queued else ""),
-            title=("Remove from retry queue" if is_queued else "Tag for retry on next --resume --retry-failed"),
+            title=("Remove from retry queue" if is_queued else "Tag for live retry if the runner is active"),
         )
         failure_cell = [
             html.Span(kind, className=f"tab-a-kind-pill tab-a-kind-pill-{kind}"),

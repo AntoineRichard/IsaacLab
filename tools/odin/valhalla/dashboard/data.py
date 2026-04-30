@@ -13,19 +13,26 @@ trivially testable.
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 import re
-import tempfile
+import shlex
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 __all__ = ["DataLayer", "DispatchSummary", "HardwareInfo"]
 
 
 _DISPATCH_ID_RE = re.compile(r"^\d{8}-\d{6}$")
+_REMOTE_ODIN_RUNS_ROOT = "/workspace/isaaclab/odin_runs"
+_RUNNING_TAIL_DEFAULT_LINES = 50
+_RUNNING_TAIL_SOURCE_PREFIX = "__odin_tail_source__:"
+_RUNNING_TAIL_TIMEOUT_S = 10
+_subprocess_run = subprocess.run
 
 
 @dataclass(frozen=True)
@@ -60,6 +67,7 @@ class DataLayer:
 
     def __init__(self, runs_root: Path):
         self._runs_root = Path(runs_root).resolve() if runs_root else Path(runs_root)
+        self._retry_db: RetryDB | None = None
 
     # -- list_dispatches ----------------------------------------------------
 
@@ -221,51 +229,85 @@ class DataLayer:
             return None
         return json.loads(path.read_text())
 
+    # -- running bundle tail ------------------------------------------------
+
+    def read_running_job_tail(
+        self,
+        dispatch_id: str,
+        run_id: str,
+        *,
+        host: str,
+        ssh_user: str = "horde",
+        ssh_key: Path | None = None,
+        container_name: str = "isaac-lab-base",
+        n: int = _RUNNING_TAIL_DEFAULT_LINES,
+    ) -> list[str]:
+        """Read the last lines from a running remote job log."""
+        return self.read_running_job_tail_payload(
+            dispatch_id,
+            run_id,
+            host=host,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            container_name=container_name,
+            n=n,
+        )["lines"]
+
+    def read_running_job_tail_payload(
+        self,
+        dispatch_id: str,
+        run_id: str,
+        *,
+        host: str,
+        ssh_user: str = "horde",
+        ssh_key: Path | None = None,
+        container_name: str = "isaac-lab-base",
+        n: int = _RUNNING_TAIL_DEFAULT_LINES,
+    ) -> dict[str, Any]:
+        """Read running remote job log lines with source metadata."""
+        n = max(1, int(n))
+        ssh_cmd = _build_running_tail_ssh_cmd(run_id=run_id, container_name=container_name, n=n)
+        argv = _build_running_tail_ssh_argv(host=host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_cmd=ssh_cmd)
+        try:
+            result = _subprocess_run(argv, capture_output=True, timeout=_RUNNING_TAIL_TIMEOUT_S, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _warn_running_tail(dispatch_id, run_id, f"{type(exc).__name__}: {exc}")
+            return {"source": None, "lines": []}
+        if result.returncode != 0:
+            stderr = _decode_running_tail_bytes(result.stderr).strip()
+            _warn_running_tail(dispatch_id, run_id, stderr)
+            return {"source": None, "lines": []}
+        source, lines = _parse_running_tail_stdout(result.stdout, n)
+        return {"source": source, "lines": lines}
+
     # -- retry queue (operator's per-dispatch "to retry" list) -------------
 
     def read_retry_queue(self, dispatch_id: str) -> set[str]:
         """Return the set of run_ids the operator has tagged for retry.
 
-        Stored at ``<runs_root>/<dispatch_id>/retry_queue.txt`` (one
-        run_id per line). Empty / missing file → empty set.
+        Stored in ``<runs_root>/.retry.sqlite``. Empty / missing rows return
+        an empty set.
 
-        dispatch.json is never mutated; this file is the operator's
-        TODO list, consumed by the next ``odin-dispatch --resume <id>
+        ``dispatch.json`` is never mutated; this queue is the operator's TODO
+        list, consumed by the next ``odin-dispatch --resume <id>
         --retry-failed=<csv>`` invocation.
         """
-        path = self._runs_root / dispatch_id / "retry_queue.txt"
-        if not path.exists():
-            return set()
-        return {line.strip() for line in path.read_text().splitlines() if line.strip()}
+        return self._get_retry_db().read_pending(dispatch_id)
 
     def toggle_retry_queue(self, dispatch_id: str, run_id: str) -> set[str]:
         """Add ``run_id`` to the retry queue if absent, remove if present.
 
-        Atomic on POSIX (tempfile + ``os.replace``) so an interrupted
-        write can't leave a half-truncated file.
+        Backed by a SQLite transaction, so multiple dashboard tabs and CLI
+        processes serialize cleanly.
 
         Returns the new contents.
         """
-        current = self.read_retry_queue(dispatch_id)
-        if run_id in current:
-            current.discard(run_id)
-        else:
-            current.add(run_id)
-        dispatch_dir = self._runs_root / dispatch_id
-        dispatch_dir.mkdir(parents=True, exist_ok=True)
-        target = dispatch_dir / "retry_queue.txt"
-        body = "".join(line + "\n" for line in sorted(current))
-        fd, tmp_path_str = tempfile.mkstemp(prefix=".retry_queue.", suffix=".tmp", dir=str(dispatch_dir))
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(body)
-            os.replace(tmp_path_str, target)
-        except Exception:
-            # Best-effort cleanup of the temp file on failure.
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(tmp_path_str)
-            raise
-        return current
+        return self._get_retry_db().toggle(dispatch_id, run_id)
+
+    def _get_retry_db(self) -> RetryDB:
+        if self._retry_db is None:
+            self._retry_db = RetryDB(self._runs_root)
+        return self._retry_db
 
     # -- cache control ------------------------------------------------------
 
@@ -302,3 +344,52 @@ def _summary_from_dispatch(payload: dict[str, Any]) -> DispatchSummary:
         skipped_total=len(payload.get("skipped", []) or []),
         hostnames=hostnames,
     )
+
+
+def _build_running_tail_ssh_argv(*, host: str, ssh_user: str, ssh_key: Path | None, ssh_cmd: str) -> list[str]:
+    argv = [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "BatchMode=yes",
+    ]
+    if ssh_key is not None:
+        argv += ["-i", str(ssh_key)]
+    argv += [f"{ssh_user}@{host}", ssh_cmd]
+    return argv
+
+
+def _build_running_tail_ssh_cmd(*, run_id: str, container_name: str, n: int) -> str:
+    logs_dir = shlex.quote(f"{_REMOTE_ODIN_RUNS_ROOT}/{run_id}/logs")
+    inner = (
+        f"base={logs_dir}; "
+        "for name in training.stdout.log startup.stdout.log; do "
+        'f="$base/$name"; '
+        'if [ -s "$f" ]; then '
+        f'printf "{_RUNNING_TAIL_SOURCE_PREFIX}%s\\n" "$name"; '
+        f'tail -n {n} "$f"; '
+        "exit 0; "
+        "fi; "
+        "done"
+    )
+    return f"docker exec {shlex.quote(container_name)} bash -c {shlex.quote(inner)}"
+
+
+def _parse_running_tail_stdout(stdout: bytes, n: int) -> tuple[str | None, list[str]]:
+    lines = _decode_running_tail_bytes(stdout).splitlines()
+    source = None
+    if lines and lines[0].startswith(_RUNNING_TAIL_SOURCE_PREFIX):
+        source = lines[0][len(_RUNNING_TAIL_SOURCE_PREFIX) :]
+        lines = lines[1:]
+    return source, lines[-n:]
+
+
+def _decode_running_tail_bytes(value) -> str:
+    return value.decode("utf-8", errors="replace")
+
+
+def _warn_running_tail(dispatch_id: str, run_id: str, message: str) -> None:
+    print(f"[WARNING] read_running_job_tail {dispatch_id}/{run_id}: {message}", file=sys.stderr)

@@ -49,6 +49,7 @@ def test_parse_args_minimal():
     assert args.fresh is False
     assert args.skip_preflight is False
     assert args.per_job_timeout == 43200
+    assert args.live_retry_poll_s == 5.0
 
 
 def test_parse_args_all_flags():
@@ -75,6 +76,8 @@ def test_parse_args_all_flags():
             "5",
             "--retry-failed",
             "run1,run2",
+            "--live_retry_poll_s",
+            "0.25",
             "--verbose",
         ]
     )
@@ -86,6 +89,7 @@ def test_parse_args_all_flags():
     assert args.per_job_timeout == 7200
     assert args.max_infrastructure_retries == 5
     assert args.retry_failed == ["run1", "run2"]
+    assert args.live_retry_poll_s == 0.25
     assert args.verbose is True
 
 
@@ -125,6 +129,38 @@ def test_parse_args_retry_all_failed_mutually_exclusive_with_retry_failed():
                 "--retry-failed",
                 "run1",
                 "--retry-all-failed",
+            ]
+        )
+
+
+def test_parse_args_live_retry_poll_alias():
+    args = parse_args(
+        [
+            "--fleet",
+            "fleet.yaml",
+            "--physx-yaml",
+            "physx.yaml",
+            "--seeds",
+            "42",
+            "--live-retry-poll-s",
+            "0.5",
+        ]
+    )
+    assert args.live_retry_poll_s == 0.5
+
+
+def test_parse_args_live_retry_poll_rejects_non_positive():
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--fleet",
+                "fleet.yaml",
+                "--physx-yaml",
+                "physx.yaml",
+                "--seeds",
+                "42",
+                "--live_retry_poll_s",
+                "0",
             ]
         )
 

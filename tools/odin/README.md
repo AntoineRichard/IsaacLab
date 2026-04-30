@@ -234,6 +234,7 @@ PYTHONPATH=. ./isaaclab.sh -p tools/odin/asgard/cli.py \
     [--fresh] \
     [--skip-preflight] \
     [--per-job-timeout 43200] \
+    [--live_retry_poll_s 5.0] \
     [--verbose]
 ```
 
@@ -288,6 +289,7 @@ Starting a fresh dispatch means **not** passing `--resume` — a new
 
 ```
 odin_runs/
+├── .retry.sqlite                              # cross-dispatch retry queue
 └── 20260422-220000/                         # dispatch_id
     ├── dispatch.json                         # full state, atomically rewritten
     ├── fleet.yaml.snapshot                   # fleet.yaml at dispatch start
@@ -308,6 +310,34 @@ odin_runs/
 `tools/odin/asgard/state.py`. See
 `docs/superpowers/specs/2026-04-22-odin-t3-1-dispatch-design.md` for
 field-by-field details.
+
+### Retry queue
+
+The dashboard retry toggle and the `odin-retry` CLI share
+`odin_runs/.retry.sqlite`. Legacy per-dispatch `retry_queue.txt` files are
+imported on first connect and left in place as audit artifacts; new queue
+edits only touch SQLite.
+
+While an `odin-dispatch` runner is still active for the same dispatch, it
+polls this DB every `--live_retry_poll_s` seconds (default `5.0`). Pending
+retry rows for failed jobs in that dispatch are reset to `pending`,
+re-enqueued, and marked consumed with the retry outcome when the retry
+attempt reaches `completed` or `failed`.
+
+Live ingestion is intentionally current-dispatch only. A runner never
+consumes retry rows for another dispatch, and rows for jobs that are still
+`running`, already `completed`, or unknown stay pending for operator
+cleanup. After the dispatch has ended, use `export-resume-cmd` for the
+manual resume flow; manual resume outcome marking is still deferred.
+
+```bash
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/valhalla/dashboard/retry_cli.py \
+    --runs_root odin_runs list
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/valhalla/dashboard/retry_cli.py \
+    --runs_root odin_runs queue 20260430-110509 rsl-rl_physx_X_seed42
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/valhalla/dashboard/retry_cli.py \
+    --runs_root odin_runs export-resume-cmd 20260430-110509
+```
 
 ## Aggregating a dispatch (T4.1 — Valhalla)
 

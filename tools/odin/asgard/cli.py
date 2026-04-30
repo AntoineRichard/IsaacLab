@@ -91,6 +91,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="On --resume, flip every prior failed job back to pending. Mutually exclusive with --retry-failed.",
     )
     parser.add_argument(
+        "--live_retry_poll_s",
+        "--live-retry-poll-s",
+        dest="live_retry_poll_s",
+        type=float,
+        default=5.0,
+        help="Poll period [s] for live retry queue ingestion (default: 5.0).",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print per-transition status lines as jobs progress.",
@@ -135,6 +143,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--retry-failed and --retry-all-failed are mutually exclusive")
     if args.retry_failed:
         args.retry_failed = [s.strip() for s in args.retry_failed.split(",") if s.strip()]
+    if args.live_retry_poll_s <= 0:
+        parser.error("--live_retry_poll_s must be positive")
     return args
 
 
@@ -158,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         preflight_auto_restart=not args.no_preflight_recover,
         detached_mode=not args.legacy_pty_mode,
         poll_interval_s=args.poll_interval,
+        live_retry_poll_s=args.live_retry_poll_s,
     )
 
     print(f"odin-dispatch: dispatch_id={dispatch_dir.name} fleet={fleet.fleet_name} hosts={len(fleet.hosts)}")
