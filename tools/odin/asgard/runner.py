@@ -66,6 +66,12 @@ class DispatchOptions:
         preflight_auto_restart: When ``True`` (default), automatically
             restart the container and re-probe on NVML wedge during
             preflight. Pass ``False`` to preserve strict-failure semantics.
+        detached_mode: When ``True`` (default), workers use the
+            submit-and-poll model so a transient network blip between
+            dispatcher and Valkyrie no longer kills in-flight training.
+            Set to ``False`` (via ``--legacy-pty-mode``) to fall back to
+            the per-job PTY-tied SSH path during initial rollout.
+        poll_interval_s: Seconds between poll ticks in detached mode.
     """
 
     seeds: list[int]
@@ -80,6 +86,8 @@ class DispatchOptions:
     skip_aggregate: bool = False
     consecutive_failure_quarantine: int = 3
     preflight_auto_restart: bool = True
+    detached_mode: bool = True
+    poll_interval_s: float = 30.0
 
 
 def _utc_now_iso() -> str:
@@ -419,6 +427,7 @@ def run_dispatch(
             dispatch_dir=dispatch_dir,
             ssh=ssh,
             rsync=rsync,
+            detached_mode=options.detached_mode,
         )
         # Flip remaining in-flight (those still in 'running' after reconcile,
         # e.g. assigned_to=None edge cases) → pending.
@@ -582,6 +591,16 @@ def run_dispatch(
         if j.status == "pending":
             job_q.put(j)
 
+    # In detached mode, reconcile may have left some jobs in 'running' to
+    # signal "trainer is still alive on the remote — keep polling on
+    # resume". Seed per-host worker inflight maps before the workers
+    # start so they pick up the polling loop without re-submitting.
+    reattached_by_host: dict[str, list[JobEntry]] = {}
+    if options.detached_mode:
+        for j in state.jobs:
+            if j.status == "running" and j.assigned_to is not None:
+                reattached_by_host.setdefault(j.assigned_to, []).append(j)
+
     shutdown_event = threading.Event()
     workers: list[ValkyrieWorker] = []
     for host in healthy:
@@ -594,11 +613,21 @@ def run_dispatch(
                 per_job_timeout_s=options.per_job_timeout_s,
                 max_infrastructure_retries=options.max_infrastructure_retries,
                 consecutive_failure_quarantine=options.consecutive_failure_quarantine,
+                detached_mode=options.detached_mode,
+                poll_interval_s=options.poll_interval_s,
             ),
             ssh=ssh,
             rsync=rsync,
             shutdown_event=shutdown_event,
         )
+        for reattach_job in reattached_by_host.get(host.host, []):
+            from tools.odin.asgard.worker import JobInflight
+
+            w._inflight[reattach_job.run_id] = JobInflight(
+                job=reattach_job,
+                tracker=None,
+                submitted_at_monotonic=time.monotonic(),
+            )
         w.start()
         workers.append(w)
 
@@ -608,7 +637,9 @@ def run_dispatch(
 
     # Drain state events into state.jobs; rewrite dispatch.json after each.
     jobs_by_id: dict[str, JobEntry] = {j.run_id: j for j in state.jobs}
-    remaining = sum(1 for j in state.jobs if j.status == "pending")
+    # Both 'pending' jobs (queued for submit) and 'running' jobs (reattached
+    # via reconcile in detached mode) count toward "work outstanding".
+    remaining = sum(1 for j in state.jobs if j.status in ("pending", "running"))
     last_write = time.monotonic()
     while remaining > 0 and any(w.is_alive() for w in workers):
         try:

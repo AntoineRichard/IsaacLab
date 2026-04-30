@@ -41,6 +41,19 @@ def test_build_ssh_command_forces_pty():
     assert "-tt" in argv
 
 
+def test_build_ssh_command_drops_pty_when_pty_false():
+    """Detached submit/poll calls must skip ``-tt`` — keeping it would force
+    a TTY allocation on the short-lived call and (more importantly) leave
+    SSH client death wired up to propagate SIGHUP, which is exactly what
+    detached mode is designed to avoid."""
+    runner = ShellSSHRunner()
+    argv = runner._build_ssh_argv(_host(), "true", timeout_s=None, pty=False)
+    assert "-tt" not in argv
+    # Other base options must still be present.
+    assert any("StrictHostKeyChecking=accept-new" in a for a in argv)
+    assert any("BatchMode=yes" in a for a in argv)
+
+
 def test_build_ssh_command_with_key(tmp_path: Path):
     key = tmp_path / "fake_key"
     key.write_text("nope")

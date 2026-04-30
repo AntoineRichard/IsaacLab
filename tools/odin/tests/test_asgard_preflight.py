@@ -20,7 +20,7 @@ class _FakeSSH:
 
     scripted: dict  # {cmd_substring: SSHResult}
 
-    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None) -> SSHResult:
+    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None, pty=True) -> SSHResult:
         for key, result in self.scripted.items():
             if key in cmd:
                 return result
@@ -195,7 +195,7 @@ def test_gpu_present_short_circuits_on_container_down():
     call_count = {"n": 0}
 
     class _CountingSSH:
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             call_count["n"] += 1
             if "echo preflight-ok" in cmd:
                 return _ok()
@@ -230,7 +230,7 @@ def test_preflight_recovers_nvml_wedge_via_container_restart():
             self.scripted = scripted
             self.nvidia_seq = list(nvidia_seq)
 
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             if "nvidia-smi -L" in cmd:
                 return self.nvidia_seq.pop(0)
             for k, v in self.scripted.items():
@@ -293,7 +293,7 @@ def test_preflight_recovery_failure_marks_host_down():
             self.scripted = scripted
             self.nvidia_seq = list(nvidia_seq)
 
-        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None):
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
             if "nvidia-smi -L" in cmd:
                 return self.nvidia_seq.pop(0)
             for k, v in self.scripted.items():

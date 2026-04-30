@@ -52,6 +52,7 @@ class SSHRunner(Protocol):
         *,
         timeout_s: float | None = None,
         stdout_tee: Path | None = None,
+        pty: bool = True,
     ) -> SSHResult: ...
 
 
@@ -64,8 +65,8 @@ class RsyncRunner(Protocol):
 # --- Default ssh implementation ---------------------------------------------
 
 
-_DEFAULT_SSH_OPTS = [
-    "-tt",  # force PTY: ssh client death → SIGHUP to remote process group
+# Common SSH options used in both PTY and no-PTY modes.
+_BASE_SSH_OPTS = [
     "-o",
     "StrictHostKeyChecking=accept-new",
     "-o",
@@ -76,12 +77,27 @@ _DEFAULT_SSH_OPTS = [
     "BatchMode=yes",  # no interactive password prompts in a dispatch
 ]
 
+# Legacy PTY-mode options. The ``-tt`` flag forces a TTY so SSH-client
+# death propagates SIGHUP to the remote process group — required for the
+# legacy single-SSH-per-job model where killing the dispatcher must kill
+# the remote training. Detached submit-and-poll flips this off so
+# transient SSH disconnects no longer SIGHUP the trainer.
+_DEFAULT_SSH_OPTS = ["-tt", *_BASE_SSH_OPTS]
+
 
 class ShellSSHRunner:
     """SSH runner that shells out to the ``ssh`` command."""
 
-    def _build_ssh_argv(self, host: ValkyrieConfig, cmd: str, timeout_s: float | None) -> list[str]:
-        argv: list[str] = ["ssh", *_DEFAULT_SSH_OPTS]
+    def _build_ssh_argv(
+        self,
+        host: ValkyrieConfig,
+        cmd: str,
+        timeout_s: float | None,
+        *,
+        pty: bool = True,
+    ) -> list[str]:
+        opts = _DEFAULT_SSH_OPTS if pty else _BASE_SSH_OPTS
+        argv: list[str] = ["ssh", *opts]
         if host.ssh_key is not None:
             argv += ["-i", str(host.ssh_key)]
         argv += [f"{host.ssh_user}@{host.host}", cmd]
@@ -94,6 +110,7 @@ class ShellSSHRunner:
         *,
         timeout_s: float | None = None,
         stdout_tee: Path | None = None,
+        pty: bool = True,
     ) -> SSHResult:
         """Run ``cmd`` on ``host`` and return an :class:`SSHResult`.
 
@@ -111,12 +128,16 @@ class ShellSSHRunner:
             timeout_s: Optional wall-clock timeout in seconds. ``None`` means no
                 timeout.
             stdout_tee: Optional path to append stdout lines as they arrive.
+            pty: When ``True`` (default), force a TTY via ``-tt`` so SSH
+                client death SIGHUPs the remote process group. Detached
+                submit-and-poll calls pass ``False`` so a network blip
+                cannot kill an in-flight training job.
 
         Returns:
             :class:`SSHResult` capturing exit code, captured output, duration,
             and timeout flag.
         """
-        argv = self._build_ssh_argv(host, cmd, timeout_s)
+        argv = self._build_ssh_argv(host, cmd, timeout_s, pty=pty)
         t0 = time.monotonic()
         tee_fh = None
         stdout_buf: list[str] = []

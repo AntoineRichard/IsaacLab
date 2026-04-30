@@ -9,18 +9,30 @@ from __future__ import annotations
 
 import json
 import queue
+import textwrap
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.odin.asgard.fleet import ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry
 from tools.odin.asgard.recovery import recover_valkyrie_gpu
+from tools.odin.asgard.tracker import TRACKER_SCHEMA_VERSION
 from tools.odin.asgard.transport import RsyncRunner, SSHResult, SSHRunner
 
-__all__ = ["StateEvent", "ValkyrieWorker", "WorkerOptions"]
+__all__ = [
+    "JobInflight",
+    "POLL_ALIVE",
+    "POLL_DONE",
+    "POLL_EXITED_NO_MANIFEST",
+    "POLL_NO_PIDFILE",
+    "StateEvent",
+    "SubmitResult",
+    "ValkyrieWorker",
+    "WorkerOptions",
+]
 
 
 @dataclass
@@ -61,9 +73,35 @@ class _ConsecutiveFailureTracker:
 
 @dataclass
 class WorkerOptions:
+    """Per-worker tunables.
+
+    Args:
+        per_job_timeout_s: Wall-clock timeout per training run [s].
+        max_infrastructure_retries: Cap on per-job infrastructure retries.
+        consecutive_failure_quarantine: Per-host consecutive-failure threshold;
+            ``0`` disables the circuit breaker.
+        detached_mode: When ``True`` the worker uses the submit-and-poll model
+            so SSH disconnects no longer kill in-flight training. ``False``
+            preserves the legacy single-PTY-per-job behaviour for rollback.
+        poll_interval_s: Sleep [s] between poll ticks in detached mode.
+        submit_max_retries: Cap on transient-SSH retries during submit. Set
+            small (default 3) so that a 1-second glitch at submit doesn't
+            kill a job before it starts, but a genuinely-down host fails
+            fast enough to free the worker for the next job.
+        submit_retry_backoff_s: Sleep [s] between submit retries.
+    """
+
     per_job_timeout_s: int = 43200
     max_infrastructure_retries: int = 2
     consecutive_failure_quarantine: int = 3  # 0 = disabled
+    # Default ``False`` for backward compatibility with the existing legacy
+    # PTY tests. The dispatcher's :class:`DispatchOptions.detached_mode`
+    # default is ``True`` and overrides this when the worker is built via
+    # :func:`run_dispatch`.
+    detached_mode: bool = False
+    poll_interval_s: float = 30.0
+    submit_max_retries: int = 3
+    submit_retry_backoff_s: float = 2.0
 
 
 @dataclass
@@ -124,6 +162,268 @@ _GPU_LOST_SIGNATURES = (
     "Vulkan ERROR_INCOMPATIBLE_DRIVER",
     "odin: gpu_unavailable",
 )
+
+
+def classify_remote_stderr(text: str) -> FailureInfo:
+    """Map a remote-stderr blob → :class:`FailureInfo`.
+
+    Pure function (no I/O). Used by both the worker's detached-mode
+    finalize path and the reconcile path so the same signature set
+    classifies failures regardless of how the bytes reached the
+    dispatcher.
+
+    Args:
+        text: Concatenated ``odin-submit-error.log`` plus
+            ``hugin-stderr.log`` content from the bundle.
+
+    Returns:
+        ``FailureInfo`` with kind ``gpu_lost`` / ``preset_unsupported``
+        / ``hugin_crash``.
+    """
+    if any(sig in text for sig in _GPU_LOST_SIGNATURES):
+        return FailureInfo(
+            kind="gpu_lost",
+            message="GPU-loss signature in remote stderr",
+            details={"stderr_tail": text.strip()[-400:]},
+        )
+    if "preset_unsupported:" in text:
+        return FailureInfo(
+            kind="preset_unsupported",
+            message="benchmark script reported missing preset",
+            details={"stderr_tail": text.strip()[-400:]},
+        )
+    last_line = text.strip().splitlines()[-1] if text.strip() else None
+    return FailureInfo(
+        kind="hugin_crash",
+        message=f"trainer exited without manifest; stderr tail: {repr(last_line) if last_line else '(empty)'}",
+        details={"stderr_tail": text.strip()[-400:]},
+    )
+
+
+# --- Detached submit / poll -------------------------------------------------
+
+# Poll-output state strings, in sync with the bash :func:`_build_poll_script`.
+POLL_DONE = "done"
+POLL_ALIVE = "alive"
+POLL_EXITED_NO_MANIFEST = "exited-no-manifest"
+POLL_NO_PIDFILE = "no-pidfile"
+
+_POLL_STATES = frozenset({POLL_DONE, POLL_ALIVE, POLL_EXITED_NO_MANIFEST, POLL_NO_PIDFILE})
+
+_SUBMIT_OK_PREFIX = "odin-submit: ok"
+
+
+@dataclass
+class SubmitResult:
+    """Outcome of a single ``_submit_job`` call.
+
+    Attributes:
+        ok: ``True`` when the submit landed and the trainer is now detached
+            on the remote. ``False`` for any synchronous-failure path.
+        failure: When ``ok`` is ``False``, the classified
+            :class:`~tools.odin.asgard.jobs.FailureInfo` to terminal-fail
+            the job with.
+    """
+
+    ok: bool
+    failure: FailureInfo | None = None
+
+
+@dataclass
+class JobInflight:
+    """In-memory record of a detached job between submit and finalize.
+
+    Attributes:
+        job: The :class:`JobEntry` we submitted.
+        tracker: The :class:`~tools.odin.asgard.tracker.Tracker` object
+            describing the remote run. ``None`` when the runtime
+            constructed the inflight before reading the remote tracker
+            (resume re-attach path).
+        submitted_at_monotonic: ``time.monotonic()`` snapshot at submit;
+            used by ``_sweep_timeouts`` for budget enforcement. Not the
+            tracker's ``submitted_at`` (host clocks may drift).
+        timeout_kill_dispatched: ``True`` once ``_sweep_timeouts`` has
+            issued a best-effort pkill for this run; the next
+            ``exited-no-manifest`` poll classifies as ``timeout`` rather
+            than re-running ``_classify_remote``.
+    """
+
+    job: JobEntry
+    tracker: object | None = None
+    submitted_at_monotonic: float = field(default_factory=time.monotonic)
+    timeout_kill_dispatched: bool = False
+
+
+def _build_submit_script(
+    host: ValkyrieConfig,
+    job: JobEntry,
+    *,
+    submitted_at: str,
+    per_job_timeout_s: int,
+) -> str:
+    """Return the SSH command that detaches the trainer on the remote.
+
+    The command is one outer SSH that pipes a quoted heredoc into
+    ``docker exec -i ... bash -l``. The inner script:
+
+      1. ``cd`` into ``/workspace/isaaclab``.
+      2. Runs ``nvidia-smi -L``; on failure, writes the
+         ``odin: gpu_unavailable`` marker to
+         ``<bundle>/logs/odin-submit-error.log`` and exits non-zero so the
+         dispatcher's submit phase short-circuits to a ``gpu_lost``
+         failure (no need to rsync — the marker is already on remote).
+      3. Backgrounds the trainer with ``nohup setsid bash -c '...' &``.
+         The inner-inner shell writes its own PID into ``.run.pid``
+         (``$$``) and ``exec``s the trainer with stdio redirected to
+         bundle-local log files.
+      4. Captures ``$!`` (the setsid bash's host-side PID) and writes
+         ``.tracker.json`` with all dispatcher-known fields plus the
+         captured PID.
+      5. Echoes the ``odin-submit: ok`` sentinel and exits 0.
+
+    The outer heredoc is ``<<'ASGARD_SUBMIT_EOF'`` (quoted), so the
+    remote login shell does NOT pre-expand ``$$`` / ``$!`` /
+    ``$TRAINING_PID`` before sending the body to ``bash -l``. Inside the
+    container, all expansion happens in the inner bash, which is the
+    only context where those variables have the right values.
+
+    Args:
+        host: Target Valkyrie host.
+        job: Job to submit. ``job.framework`` selects ``hugin/run.py`` vs
+            ``munin/run.py``.
+        submitted_at: UTC ISO-8601 timestamp stamped into the tracker for
+            audit (not used for timeout enforcement — that uses
+            ``time.monotonic()`` on the dispatcher).
+        per_job_timeout_s: Tracker-stamped budget for orphan recovery to
+            see at resume time.
+
+    Returns:
+        Single-string SSH command suitable for
+        :meth:`SSHRunner.run` with ``pty=False``.
+    """
+    runner_script = "tools/odin/hugin/run.py" if job.framework == "rsl_rl" else "tools/odin/munin/run.py"
+    bundle = f"odin_runs/{job.bundle_dir_name}"
+    bundle_logs = f"{bundle}/logs"
+    inner_inner = (
+        f"echo $$ > {bundle}/.run.pid; "
+        f"exec env PYTHONPATH=. _isaac_sim/python.sh {runner_script}"
+        f" --task {job.task_id}"
+        f" --backend {job.backend}"
+        f" --seed {job.seed}"
+        f" --num_envs {job.num_envs}"
+        f" --max_iterations {job.max_iterations}"
+        f" --runs_root odin_runs"
+        f" --run_id {job.run_id}"
+        f" > {bundle_logs}/hugin-stdout.log"
+        f" 2> {bundle_logs}/hugin-stderr.log"
+    )
+    body = textwrap.dedent(
+        f"""\
+        set -u
+        cd /workspace/isaaclab
+        mkdir -p {bundle_logs}
+        if ! nvidia-smi -L >/dev/null 2>{bundle_logs}/nvidia-probe.log; then
+          PROBE_TAIL=$(tr -d '\\n' < {bundle_logs}/nvidia-probe.log)
+          echo "odin: gpu_unavailable: $PROBE_TAIL" > {bundle_logs}/odin-submit-error.log
+          echo "odin: gpu_unavailable: $PROBE_TAIL" >&2
+          exit 1
+        fi
+        nohup setsid bash -c '{inner_inner}' > /dev/null 2>&1 < /dev/null &
+        TRAINING_PID=$!
+        cat > {bundle}/.tracker.json <<TRACKER_EOF
+        {{
+          "schema_version": "{TRACKER_SCHEMA_VERSION}",
+          "run_id": "{job.run_id}",
+          "container_name": "{host.container_name}",
+          "host": "{host.host}",
+          "submitted_at": "{submitted_at}",
+          "pid": $TRAINING_PID,
+          "container_pid": null,
+          "per_job_timeout_s": {per_job_timeout_s}
+        }}
+        TRACKER_EOF
+        echo "odin-submit: ok run_id={job.run_id} bundle={job.bundle_dir_name}"
+        """
+    )
+    return (
+        f"cd {host.isaaclab_path} && "
+        f"docker exec -i {host.container_name} bash -l <<'ASGARD_SUBMIT_EOF'\n"
+        f"{body}"
+        f"ASGARD_SUBMIT_EOF"
+    )
+
+
+def _build_poll_script(host: ValkyrieConfig, bundle_ids: list[str]) -> str:
+    """Return one batched poll command for all in-flight bundles on ``host``.
+
+    The command iterates each bundle and emits one of four states:
+
+      - ``done``: ``manifest.json`` exists (training wrote its bundle).
+      - ``alive``: no manifest, ``.run.pid`` exists, and ``kill -0`` finds
+        the PID — training still running.
+      - ``exited-no-manifest``: no manifest, ``.run.pid`` exists, but the
+        PID is gone — training crashed (or was killed by sweep_timeouts).
+      - ``no-pidfile``: neither manifest nor pidfile — sub-second window
+        between submit and the inner-inner shell writing ``.run.pid``;
+        keep polling.
+
+    A note on safety: the body uses no single quotes (so the outer
+    ``bash -lc '...'`` works) and only standard POSIX file tests +
+    ``kill -0``. No PTY required.
+
+    Args:
+        host: Valkyrie whose bundles we're polling.
+        bundle_ids: ``bundle_dir_name`` of every in-flight job on this host.
+
+    Returns:
+        SSH command to pass to :meth:`SSHRunner.run` with ``pty=False``.
+    """
+    if not bundle_ids:
+        raise ValueError("_build_poll_script requires at least one bundle_id")
+    bundles = " ".join(bundle_ids)
+    inner = (
+        f"for bundle in {bundles}; do "
+        f"if [ -f /workspace/isaaclab/odin_runs/$bundle/manifest.json ]; then "
+        f'echo "$bundle {POLL_DONE}"; '
+        f"elif [ -f /workspace/isaaclab/odin_runs/$bundle/.run.pid ]; then "
+        f"pid=$(cat /workspace/isaaclab/odin_runs/$bundle/.run.pid); "
+        f'if kill -0 "$pid" 2>/dev/null; then '
+        f'echo "$bundle {POLL_ALIVE}"; '
+        f"else "
+        f'echo "$bundle {POLL_EXITED_NO_MANIFEST}"; '
+        f"fi; "
+        f"else "
+        f'echo "$bundle {POLL_NO_PIDFILE}"; '
+        f"fi; "
+        f"done"
+    )
+    return f"cd {host.isaaclab_path} && docker exec {host.container_name} bash -lc '{inner}'"
+
+
+def _parse_poll_output(stdout: str) -> dict[str, str]:
+    """Decode the per-line ``<bundle> <state>`` poll stdout into a dict.
+
+    Garbage lines (SSH banner, empty lines, unknown states) are dropped.
+
+    Args:
+        stdout: Raw stdout from the poll SSH call.
+
+    Returns:
+        Mapping ``bundle_id → state`` containing only recognised
+        :data:`POLL_*` strings.
+    """
+    states: dict[str, str] = {}
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        bundle, state = parts
+        if state in _POLL_STATES:
+            states[bundle] = state
+    return states
 
 
 def _build_docker_exec_cmd(host: ValkyrieConfig, job: JobEntry) -> str:
@@ -215,10 +515,25 @@ class ValkyrieWorker(threading.Thread):
         self._down_event = threading.Event()
         self._preferred_not_seen: dict[str, int] = {}
         self._fail_tracker = _ConsecutiveFailureTracker(threshold=options.consecutive_failure_quarantine)
+        # Detached-mode in-memory record of submitted jobs awaiting terminal
+        # poll outcome. Single-job-per-host policy keeps this dict at ≤1
+        # entry today, but the structure supports >1 in case the policy
+        # changes. Keyed by ``run_id``.
+        self._inflight: dict[str, JobInflight] = {}
+        # Set transiently by ``_try_take_job`` when the sentinel is consumed
+        # so the run loop can flip its own sentinel-seen flag without
+        # juggling tuple returns.
+        self._sentinel_just_seen: bool = False
 
     # -- public entry point -------------------------------------------------
 
     def run(self) -> None:
+        if self._options.detached_mode:
+            self._run_detached()
+        else:
+            self._run_legacy_pty()
+
+    def _run_legacy_pty(self) -> None:
         while not self._shutdown.is_set() and not self._down_event.is_set():
             try:
                 job = self._job_queue.get(timeout=0.5)
@@ -238,6 +553,156 @@ class ValkyrieWorker(threading.Thread):
                     continue
                 # Fall through: take the job anyway.
             self._execute(job)
+
+    def _run_detached(self) -> None:
+        """Detached-mode run loop: submit-and-poll.
+
+        Single-job-per-host policy keeps :attr:`_inflight` at ≤1 entry.
+        The loop alternates: pull a job from the queue if we have
+        capacity → submit → poll → finalize. Sentinel handling is
+        slightly trickier than the legacy path: receiving ``None`` does
+        NOT exit immediately because we may still have an in-flight job
+        whose terminal poll is pending. Exit only when both the sentinel
+        is in hand AND :attr:`_inflight` is empty.
+        """
+        sentinel_seen = False
+        while not self._shutdown.is_set() and not self._down_event.is_set():
+            if not sentinel_seen and not self._inflight:
+                job = self._try_take_job()
+                if job is None and self._sentinel_just_seen:
+                    sentinel_seen = True
+                elif job is not None:
+                    self._submit_or_handle(job)
+            elif self._inflight:
+                self._poll_inflight_once()
+                self._sweep_timeouts()
+            if sentinel_seen and not self._inflight:
+                return
+            if self._inflight:
+                # Wait one poll-interval between ticks; short-sleep
+                # tightens the loop in tests (poll_interval_s=0).
+                time.sleep(self._options.poll_interval_s)
+            else:
+                # No work in flight, queue empty: short sleep so we
+                # don't busy-spin while waiting for the sentinel.
+                time.sleep(0.1 if self._options.poll_interval_s else 0)
+
+    def _try_take_job(self) -> JobEntry | None:
+        """Pop one job from the queue (non-blocking).
+
+        Sets :attr:`_sentinel_just_seen` when the sentinel arrives so the
+        caller can flip its sentinel-seen flag. Handles the
+        ``preferred_not`` re-queue case in-line.
+
+        Returns:
+            The popped job, or ``None`` when the queue is empty / a
+            sentinel was just consumed / the job was put back.
+        """
+        self._sentinel_just_seen = False
+        try:
+            job = self._job_queue.get_nowait()
+        except queue.Empty:
+            return None
+        if job is None:
+            self._sentinel_just_seen = True
+            return None
+        if job.preferred_not and self.host.host in job.preferred_not:
+            seen_count = self._preferred_not_seen.get(job.run_id, 0) + 1
+            self._preferred_not_seen[job.run_id] = seen_count
+            if seen_count < 3:
+                self._job_queue.put(job)
+                return None
+            # Fall through: bounded fallback exhausted, take it.
+        return job
+
+    def _submit_or_handle(self, job: JobEntry) -> None:
+        """Submit one job. On success, register inflight; on terminal failure,
+        emit the matching :class:`StateEvent` (with the existing
+        recovery / retry / quarantine policy applied)."""
+        started_at = _utc_now_iso()
+        self._state_chan.put(
+            StateEvent(
+                run_id=job.run_id,
+                host=self.host.host,
+                transition="running",
+                started_at=started_at,
+            )
+        )
+        job.started_at = started_at
+        job.assigned_to = self.host.host
+        job.attempts += 1
+        result = self._submit_job(job)
+        if result.ok:
+            self._inflight[job.run_id] = JobInflight(
+                job=job,
+                tracker=None,  # populated lazily on first successful poll if needed
+                submitted_at_monotonic=time.monotonic(),
+            )
+            return
+        # Submit failed synchronously. Apply the same kind-driven policy
+        # as the legacy path so retries / recovery / quarantine behave
+        # identically.
+        failure = result.failure
+        if failure is None:
+            return
+        self._handle_synchronous_failure(job, failure)
+
+    def _handle_synchronous_failure(self, job: JobEntry, failure: FailureInfo) -> None:
+        """Apply retry / recovery / quarantine to a synchronous submit failure.
+
+        Mirrors the kind-driven branches in :meth:`_execute` so the
+        operator-visible behaviour is the same on both paths.
+        """
+        if failure.kind == "infrastructure":
+            if job.attempts <= self._options.max_infrastructure_retries:
+                # Re-queue the job for another attempt on this same host.
+                # (Mirrors the legacy retry loop.)
+                self._job_queue.put(job)
+                return
+        elif failure.kind == "gpu_lost":
+            rec = recover_valkyrie_gpu(self.host, ssh=self._ssh)
+            if rec.recovered:
+                self._state_chan.put(StateEvent(run_id=job.run_id, host=self.host.host, transition="recovered"))
+                if job.attempts <= self._options.max_infrastructure_retries:
+                    self._job_queue.put(job)
+                    return
+            else:
+                self._state_chan.put(
+                    StateEvent(
+                        run_id=job.run_id,
+                        host=self.host.host,
+                        transition="host_down",
+                        failure=failure,
+                    )
+                )
+                job.preferred_not = set(job.preferred_not) | {self.host.host}
+                self._job_queue.put(job)
+                self._down_event.set()
+                return
+        # Quarantine bookkeeping (host-health failures) before terminal-fail.
+        ssh_tail = self._dispatch_dir / job.bundle_dir_name / "logs" / "ssh-tail.log"
+        if self._quarantine_check_and_handle(job=job, failure=failure, ssh_tail=ssh_tail):
+            return
+        self._emit_failed(job, failure)
+
+    def _poll_inflight_once(self) -> None:
+        """One poll tick: query the host once for all inflight bundles, then
+        finalize any that landed on a terminal state."""
+        bundle_to_run: dict[str, str] = {
+            inflight.job.bundle_dir_name: run_id for run_id, inflight in self._inflight.items()
+        }
+        if not bundle_to_run:
+            return
+        states = self._poll_host(list(bundle_to_run.keys()))
+        for bundle_id, state in states.items():
+            run_id = bundle_to_run.get(bundle_id)
+            if run_id is None:
+                continue
+            inflight = self._inflight.get(run_id)
+            if inflight is None:
+                continue
+            if state in (POLL_DONE, POLL_EXITED_NO_MANIFEST):
+                self._finalize_terminal(inflight, state)
 
     # -- execute one job ----------------------------------------------------
 
@@ -441,6 +906,254 @@ class ValkyrieWorker(threading.Thread):
         """
         cleanup_cmd = f"docker exec {self.host.container_name} pkill -9 -f '{job.run_id}' 2>/dev/null; true"
         self._ssh.run(self.host, cleanup_cmd, timeout_s=30.0)
+
+    # -- detached: submit ---------------------------------------------------
+
+    def _submit_job(self, job: JobEntry) -> SubmitResult:
+        """Run the detached-submit phase for one job.
+
+        Sends the script from :func:`_build_submit_script` over SSH with
+        ``pty=False`` and short retries on transient SSH-connect failures.
+        Recognised return modes:
+
+          - SSH exit 0 + stdout contains the ``odin-submit: ok`` sentinel
+            → trainer is detached on the remote; tracker is in place.
+          - SSH exit 1 + stderr contains ``odin: gpu_unavailable`` → GPU
+            probe failed pre-flight; classify ``gpu_lost`` for the
+            recovery path to fire.
+          - SSH exit 125/126/127 → docker daemon couldn't dispatch;
+            classify ``infrastructure``.
+          - Transient SSH failure (exit 255 = ``ssh: connect``) → retry up
+            to ``submit_max_retries`` with a short sleep between attempts.
+          - All other non-zero exits → classify ``hugin_crash`` (the
+            script body itself failed before backgrounding).
+
+        Args:
+            job: Job to submit.
+
+        Returns:
+            :class:`SubmitResult`; on success the worker should record an
+            inflight entry and start polling; on failure the worker should
+            terminal-fail the job (or trip its retry/quarantine logic).
+        """
+        script = _build_submit_script(
+            self.host,
+            job,
+            submitted_at=_utc_now_iso(),
+            per_job_timeout_s=self._options.per_job_timeout_s,
+        )
+        last_failure: FailureInfo | None = None
+        for attempt in range(1, self._options.submit_max_retries + 1):
+            r = self._ssh.run(self.host, script, timeout_s=120.0, pty=False)
+            if r.exit_code == 0 and _SUBMIT_OK_PREFIX in r.stdout:
+                return SubmitResult(ok=True)
+            if r.exit_code == 1 and any(sig in r.stderr for sig in _GPU_LOST_SIGNATURES):
+                return SubmitResult(
+                    ok=False,
+                    failure=FailureInfo(
+                        kind="gpu_lost",
+                        message="GPU probe failed at submit",
+                        details={"attempts": attempt, "stderr_tail": r.stderr.strip()[-200:]},
+                    ),
+                )
+            if r.exit_code in _INFRASTRUCTURE_DOCKER_EXIT_CODES:
+                return SubmitResult(
+                    ok=False,
+                    failure=FailureInfo(
+                        kind="infrastructure",
+                        message=f"docker exec failed with exit {r.exit_code}: {r.stderr.strip() or 'unknown'}",
+                        details={"exit_code": r.exit_code, "attempts": attempt},
+                    ),
+                )
+            if r.exit_code == 255:
+                # Transient ssh-side glitch (connection refused / timed
+                # out). Retry up to the cap before giving up.
+                last_failure = FailureInfo(
+                    kind="infrastructure",
+                    message=f"ssh transient error: {r.stderr.strip() or 'exit 255'}",
+                    details={"exit_code": r.exit_code, "attempts": attempt},
+                )
+                if attempt < self._options.submit_max_retries:
+                    time.sleep(self._options.submit_retry_backoff_s)
+                continue
+            return SubmitResult(
+                ok=False,
+                failure=FailureInfo(
+                    kind="hugin_crash",
+                    message=(
+                        f"submit script exited {r.exit_code}; stderr tail:"
+                        f" {repr(r.stderr.strip().splitlines()[-1]) if r.stderr.strip() else '(empty)'}"
+                    ),
+                    details={"exit_code": r.exit_code, "attempts": attempt},
+                ),
+            )
+        return SubmitResult(ok=False, failure=last_failure)
+
+    # -- detached: poll -----------------------------------------------------
+
+    def _poll_host(self, bundle_ids: list[str]) -> dict[str, str]:
+        """One short SSH per host per tick. Returns ``bundle → poll-state``.
+
+        Failures (network blips) return an empty dict so the run loop
+        treats it as "no terminal news this tick" and the next tick will
+        catch up.
+
+        Args:
+            bundle_ids: ``bundle_dir_name``s to query.
+
+        Returns:
+            Mapping limited to the four recognised :data:`POLL_*` states.
+        """
+        if not bundle_ids:
+            return {}
+        cmd = _build_poll_script(self.host, bundle_ids)
+        r = self._ssh.run(self.host, cmd, timeout_s=30.0, pty=False)
+        if r.exit_code != 0:
+            return {}
+        return _parse_poll_output(r.stdout)
+
+    def _read_local_log(self, job: JobEntry, filename: str) -> str:
+        """Read a log file from the locally-pulled bundle, returning ``""`` on miss.
+
+        Used by :meth:`_classify_remote` after the bundle was rsynced
+        back. Reading locally avoids a second SSH round trip on the
+        terminal-failure path; the rsync pull is already on the critical
+        path, so the file is already present (or genuinely absent because
+        the trainer never wrote it).
+        """
+        path = self._dispatch_dir / job.bundle_dir_name / "logs" / filename
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text()
+        except OSError:
+            return ""
+
+    def _classify_remote_text(self, text: str) -> FailureInfo:
+        """Instance-method shim around :func:`classify_remote_stderr`.
+
+        Kept on the worker so tests can call it directly without resolving
+        the bundle dir. Implementation is delegated to the free function
+        so reconcile (which has no worker instance) can apply the same
+        rules.
+        """
+        return classify_remote_stderr(text)
+
+    def _classify_remote(self, job: JobEntry) -> FailureInfo:
+        """Read the just-pulled bundle's stderr files and classify the failure.
+
+        Concatenates ``<bundle>/logs/odin-submit-error.log`` and
+        ``<bundle>/logs/hugin-stderr.log`` (whichever the trainer
+        produced), then runs the combined text through
+        :meth:`_classify_remote_text`.
+
+        Reads from the local rsync target rather than ``docker exec cat``
+        — the bundle was already pulled on the terminal-failure path, so
+        the files are already on disk.
+
+        Args:
+            job: The failing job (used to locate the bundle dir).
+
+        Returns:
+            ``FailureInfo`` describing the failure.
+        """
+        submit_err = self._read_local_log(job, "odin-submit-error.log")
+        train_err = self._read_local_log(job, "hugin-stderr.log")
+        return self._classify_remote_text(f"{submit_err}\n{train_err}")
+
+    # -- detached: finalize / sweep -----------------------------------------
+
+    def _finalize_terminal(self, inflight: JobInflight, poll_state: str) -> None:
+        """Drive a job through to a terminal :class:`StateEvent`.
+
+        Two terminal poll states feed into this method:
+
+          - :data:`POLL_DONE`: rsync-pull the bundle, validate the
+            manifest, emit ``completed`` (or a malformed-bundle failure).
+          - :data:`POLL_EXITED_NO_MANIFEST`: rsync-pull the bundle (best
+            effort), classify via :meth:`_classify_remote`, emit
+            ``failed``. If ``inflight.timeout_kill_dispatched`` is set,
+            override the classification to ``kind="timeout"``.
+
+        Removes the entry from :attr:`_inflight` on the way out.
+        """
+        job = inflight.job
+        remote_bundle = f"{self.host.isaaclab_path}/odin_runs/{job.bundle_dir_name}"
+        local_bundle = self._dispatch_dir / job.bundle_dir_name
+        rsync_result = self._rsync.pull(self.host, remote_bundle, local_bundle)
+
+        if poll_state == POLL_DONE:
+            if rsync_result.exit_code != 0:
+                failure = FailureInfo(
+                    kind="infrastructure",
+                    message=f"rsync pull failed: {rsync_result.stderr.strip() or 'non-zero exit'}",
+                    details={"attempts": job.attempts},
+                )
+                self._emit_failed(job, failure)
+                self._inflight.pop(job.run_id, None)
+                return
+            bundle_failure = _validate_bundle(local_bundle)
+            if bundle_failure is not None:
+                self._emit_failed(job, bundle_failure)
+                self._inflight.pop(job.run_id, None)
+                return
+            job.status = "completed"
+            job.ended_at = _utc_now_iso()
+            self._state_chan.put(
+                StateEvent(
+                    run_id=job.run_id,
+                    host=self.host.host,
+                    transition="completed",
+                    ended_at=job.ended_at,
+                )
+            )
+            self._fail_tracker.note_success()
+            self._inflight.pop(job.run_id, None)
+            return
+
+        # POLL_EXITED_NO_MANIFEST
+        if inflight.timeout_kill_dispatched:
+            failure = FailureInfo(
+                kind="timeout",
+                message=f"remote process exceeded {self._options.per_job_timeout_s}s",
+                details={"per_job_timeout_s": self._options.per_job_timeout_s},
+            )
+        else:
+            failure = self._classify_remote(job)
+        self._emit_failed(job, failure)
+        self._inflight.pop(job.run_id, None)
+
+    def _emit_failed(self, job: JobEntry, failure: FailureInfo) -> None:
+        """Stamp the job as ``failed`` and post the matching :class:`StateEvent`."""
+        job.status = "failed"
+        job.failure = failure
+        job.ended_at = _utc_now_iso()
+        self._state_chan.put(
+            StateEvent(
+                run_id=job.run_id,
+                host=self.host.host,
+                transition="failed",
+                failure=failure,
+                ended_at=job.ended_at,
+            )
+        )
+
+    def _sweep_timeouts(self) -> None:
+        """For each in-flight job past its budget, dispatch a best-effort kill.
+
+        We don't terminal-fail here — the next poll tick will see
+        ``exited-no-manifest`` and :meth:`_finalize_terminal` will use the
+        ``timeout_kill_dispatched`` flag to classify as ``timeout``.
+        """
+        now = time.monotonic()
+        for inflight in list(self._inflight.values()):
+            if inflight.timeout_kill_dispatched:
+                continue
+            elapsed = now - inflight.submitted_at_monotonic
+            if elapsed < self._options.per_job_timeout_s:
+                continue
+            self._cleanup_remote_process(inflight.job)
+            inflight.timeout_kill_dispatched = True
 
     # -- classification -----------------------------------------------------
 
