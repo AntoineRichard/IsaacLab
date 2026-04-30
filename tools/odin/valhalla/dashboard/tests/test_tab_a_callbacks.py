@@ -61,13 +61,15 @@ def _patch_assignment(patch, run_id: str) -> dict:
 class _StubData:
     """Drop-in DataLayer for callback tests."""
 
-    def __init__(self, dispatch_payload, *, hardware=None, lookup_results=None):
+    def __init__(self, dispatch_payload, *, hardware=None, lookup_results=None, fleet_host_configs=None):
         self._dp = dispatch_payload
         self._hw = hardware
         self._lookup = lookup_results or {}
+        self._fleet_host_configs = fleet_host_configs or {}
         self.load_dispatch_calls: list[str] = []
         self.load_hardware_calls: list[str] = []
         self.lookup_hardware_calls: list[str] = []
+        self.lookup_fleet_host_config_calls: list[tuple[str, str]] = []
         self._runs_root = Path("/tmp")
         self.running_tail_calls: list[tuple] = []
         self.running_tail_payload = {"source": "training.stdout.log", "lines": ["iter 1"]}
@@ -83,6 +85,10 @@ class _StubData:
     def lookup_hardware(self, host: str):
         self.lookup_hardware_calls.append(host)
         return self._lookup.get(host)
+
+    def lookup_fleet_host_config(self, dispatch_id: str, host: str):
+        self.lookup_fleet_host_config_calls.append((dispatch_id, host))
+        return self._fleet_host_configs.get(host)
 
     def read_retry_queue(self, dispatch_id: str) -> set[str]:
         return set()
@@ -328,7 +334,11 @@ def test_running_tail_callback_round_trip():
     assert entry["lines"] == ["iter 1"]
     assert "fetched_at" in entry
     assert data.running_tail_calls == [
-        ("d", "run-1", {"host": "v1", "ssh_user": "horde", "container_name": "isaac-lab-base", "n": 50})
+        (
+            "d",
+            "run-1",
+            {"host": "v1", "ssh_user": "horde", "ssh_key": None, "container_name": "isaac-lab-base", "n": 50},
+        )
     ]
 
     hidden = cb_mod._on_running_tail_toggle_handler([1], ids, current=shown)
@@ -372,6 +382,49 @@ def test_running_tail_refresh_refetches_existing_store():
     entry = _patch_assignment(store, "run-2")
     assert entry["source"] == "startup.stdout.log"
     assert entry["lines"] == ["booting"]
+
+
+def test_running_tail_fetch_uses_fleet_snapshot_host_config():
+    from tools.odin.valhalla.dashboard.tabs.dispatch_fleet import callbacks as cb_mod
+
+    data = _StubData(
+        _payload([_job(run_id="run-2", status="running")]),
+        fleet_host_configs={
+            "v1": {
+                "ssh_user": "odin",
+                "ssh_key": "/keys/id_ed25519",
+                "container_name": "custom-container",
+            }
+        },
+    )
+    toggle_id = {"type": "tab-a-running-tail-toggle", "run_id": "run-2"}
+
+    cb_mod._on_running_tail_fetch_handler(
+        [1],
+        [],
+        [toggle_id],
+        [],
+        dispatch_id="d",
+        current_shown=[],
+        current_store={},
+        data=data,
+        triggered_id=toggle_id,
+    )
+
+    assert data.lookup_fleet_host_config_calls == [("d", "v1")]
+    assert data.running_tail_calls == [
+        (
+            "d",
+            "run-2",
+            {
+                "host": "v1",
+                "ssh_user": "odin",
+                "ssh_key": Path("/keys/id_ed25519"),
+                "container_name": "custom-container",
+                "n": 50,
+            },
+        )
+    ]
 
 
 def test_running_tail_reopen_uses_cached_store():

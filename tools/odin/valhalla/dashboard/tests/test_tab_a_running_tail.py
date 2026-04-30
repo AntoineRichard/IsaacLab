@@ -110,6 +110,17 @@ def test_expand_running_row_shows_filename_marker():
         assert source in _text_blob(component)
 
 
+def test_expand_running_row_shows_transport_warning():
+    component = _expand_running_row(
+        _job(run_id="rid-running"),
+        {"source": None, "lines": [], "warning": "connection timed out", "fetched_at": "2026-04-30T12:01:00Z"},
+    )
+
+    text = _text_blob(component)
+    assert "Running stdout tail unavailable" in text
+    assert "connection timed out" in text
+
+
 def test_render_jobs_section_inserts_running_expand_row_when_shown():
     component = render_jobs_section(
         _payload([_job(run_id="rid-open", status="running")]),

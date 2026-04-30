@@ -414,6 +414,7 @@ def _expand_running_row(job: dict, tail_entry: dict | None) -> html.Tr:
     tail_entry = tail_entry or {}
     source = tail_entry.get("source") or "stdout tail"
     fetched_at = tail_entry.get("fetched_at")
+    warning = tail_entry.get("warning")
     lines = tail_entry.get("lines")
 
     body: list = [
@@ -428,7 +429,14 @@ def _expand_running_row(job: dict, tail_entry: dict | None) -> html.Tr:
     if fetched_at:
         body.extend([html.Span("  Fetched ", className="tab-a-expand-label"), html.Span(fetched_at)])
 
-    if lines is None:
+    if warning:
+        body.append(
+            html.P(
+                f"Running stdout tail unavailable: {warning}",
+                className="tab-a-ssh-tail-empty tab-a-running-tail-warning",
+            )
+        )
+    elif lines is None:
         body.append(html.P("Running stdout tail not loaded yet.", className="tab-a-ssh-tail-empty"))
     elif lines:
         body.append(html.Pre("\n".join(lines), className="tab-a-ssh-tail-pre"))

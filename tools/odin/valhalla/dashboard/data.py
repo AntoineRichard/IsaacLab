@@ -259,6 +259,20 @@ class DataLayer:
             n=n,
         )["lines"]
 
+    def lookup_fleet_host_config(self, dispatch_id: str, host: str) -> dict[str, Any] | None:
+        """Return the snapshotted fleet config for ``host`` when available."""
+        path = self._runs_root / dispatch_id / "fleet.yaml.snapshot"
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        for entry in payload.get("hosts", []) or []:
+            if entry.get("host") == host:
+                return dict(entry)
+        return None
+
     def read_running_job_tail_payload(
         self,
         dispatch_id: str,
@@ -275,7 +289,9 @@ class DataLayer:
         Returns:
             A payload with ``source`` set to the selected log filename, or
             ``None`` when no log was available, and ``lines`` containing the
-            decoded tail without trailing newline characters.
+            decoded tail without trailing newline characters. Transport
+            failures include ``warning`` text for the UI; normal empty logs
+            return ``warning=None``.
         """
         n = max(1, int(n))
         ssh_cmd = _build_running_tail_ssh_cmd(run_id=run_id, container_name=container_name, n=n)
@@ -283,16 +299,17 @@ class DataLayer:
         try:
             result = _subprocess_run(argv, capture_output=True, timeout=_RUNNING_TAIL_TIMEOUT_S, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            _warn_running_tail(dispatch_id, run_id, f"{type(exc).__name__}: {exc}")
-            return {"source": None, "lines": []}
+            warning = f"{type(exc).__name__}: {exc}"
+            _warn_running_tail(dispatch_id, run_id, warning)
+            return {"source": None, "lines": [], "warning": warning}
 
         if result.returncode != 0:
             message = _decode_running_tail_bytes(result.stderr).strip() or f"ssh exited with {result.returncode}"
             _warn_running_tail(dispatch_id, run_id, message)
-            return {"source": None, "lines": []}
+            return {"source": None, "lines": [], "warning": message}
 
         source, lines = _parse_running_tail_stdout(result.stdout, n)
-        return {"source": source, "lines": lines}
+        return {"source": source, "lines": lines, "warning": None}
 
     # -- retry queue (operator's per-dispatch "to retry" list) -------------
 

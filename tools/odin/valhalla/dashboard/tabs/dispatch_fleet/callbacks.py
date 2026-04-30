@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import dash
 from dash import ALL, Input, Output, State
@@ -349,17 +350,21 @@ def _compute_running_tail_store(data, dispatch_id: str, run_id: str, *, current_
         patch[run_id] = {"source": None, "lines": [], "fetched_at": _utc_now_iso()}
         return patch
 
+    host_config = data.lookup_fleet_host_config(dispatch_id, host)
+    ssh_key = host_config.get("ssh_key") if host_config else None
     tail_payload = data.read_running_job_tail_payload(
         dispatch_id,
         run_id,
         host=host,
-        ssh_user="horde",
-        container_name="isaac-lab-base",
+        ssh_user=(host_config or {}).get("ssh_user") or "horde",
+        ssh_key=Path(ssh_key) if ssh_key else None,
+        container_name=(host_config or {}).get("container_name") or "isaac-lab-base",
         n=50,
     )
     patch[run_id] = {
         "source": tail_payload.get("source"),
         "lines": list(tail_payload.get("lines") or []),
+        "warning": tail_payload.get("warning"),
         "fetched_at": _utc_now_iso(),
     }
     return patch
