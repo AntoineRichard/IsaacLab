@@ -1211,7 +1211,17 @@ class ValkyrieWorker(threading.Thread):
 
 
 def _validate_bundle(local_bundle: Path) -> FailureInfo | None:
-    """Check that manifest.json exists and declares schema_version==1.0."""
+    """Validate bundle structure AND training-phase outcome.
+
+    Schema-level checks (``hugin_malformed_bundle``) catch transport /
+    framework breakage. The training-phase content check
+    (``hugin_crash``) catches a subtler failure mode observed in
+    production: a SIGKILL'd orphan trainer can leave behind a
+    schema-valid manifest whose ``phases.training.status=failed,
+    exit_code=-9``. Without inspecting those two fields the worker
+    would adopt the failed run as completed on the next dispatch's
+    first poll.
+    """
     manifest_path = local_bundle / "manifest.json"
     if not manifest_path.exists():
         return FailureInfo(
@@ -1232,5 +1242,21 @@ def _validate_bundle(local_bundle: Path) -> FailureInfo | None:
             kind="hugin_malformed_bundle",
             message=f"manifest.json schema_version != 1.0 (got {m.get('schema_version')!r})",
             details={"bundle_dir": str(local_bundle.name)},
+        )
+    training = m.get("phases", {}).get("training", {})
+    train_status = training.get("status")
+    train_exit = training.get("exit_code")
+    if train_status != "completed" or (train_exit is not None and train_exit != 0):
+        return FailureInfo(
+            kind="hugin_crash",
+            message=(
+                f"manifest reports training phase did not complete cleanly: "
+                f"status={train_status!r} exit_code={train_exit!r}"
+            ),
+            details={
+                "bundle_dir": str(local_bundle.name),
+                "exit_code": train_exit,
+                "training_status": train_status,
+            },
         )
     return None

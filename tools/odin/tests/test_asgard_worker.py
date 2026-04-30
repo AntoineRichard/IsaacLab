@@ -191,6 +191,99 @@ def test_worker_classifies_malformed_bundle(tmp_path: Path):
     assert failed.failure.kind == "hugin_malformed_bundle"
 
 
+def test_worker_rejects_manifest_with_failed_training_phase(tmp_path: Path):
+    """A manifest whose ``phases.training.status`` is not ``completed`` (or whose
+    ``exit_code`` is non-zero) must NOT be adopted as a successful run.
+
+    Caught in production on 2026-04-30: a SIGKILL'd orphan trainer left a
+    valid-schema manifest with ``training.status=failed, exit_code=-9``
+    on the host. The next dispatch's first poll saw POLL_DONE, the
+    worker called ``_validate_bundle`` which only checked the schema,
+    and the failed run was reported as completed."""
+
+    class _RsyncFailedTraining(_FakeRsync):
+        def pull(self, host, remote_path: str, local_path: Path) -> RsyncResult:
+            local_path.mkdir(parents=True, exist_ok=True)
+            (local_path / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": "1.0",
+                    "phases": {
+                        "startup": {"status": "completed", "exit_code": 0},
+                        "training": {"status": "failed", "exit_code": -9},
+                    },
+                })
+            )
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+    ssh = _FakeSSH()
+    rsync = _RsyncFailedTraining()
+    w = _make_worker(tmp_path, ssh, rsync)
+    events = _spin_worker(w, [_job()])
+    failed = next(e for e in events if e.transition == "failed")
+    assert failed.failure.kind == "hugin_crash"
+    # The trainer's actual exit code propagates so the operator can tell
+    # SIGKILL'd-orphan (-9) from a real crash (1) at a glance.
+    assert failed.failure.details.get("exit_code") == -9
+
+
+def test_worker_rejects_manifest_with_nonzero_training_exit(tmp_path: Path):
+    """Even when ``status`` says completed, a non-zero exit code is a
+    contradiction — surface it as ``hugin_crash`` rather than silently
+    accepting the bundle. Defensive: the dispatcher trusts ``exit_code``
+    over ``status`` when the two disagree."""
+
+    class _RsyncStatusOkExitNonZero(_FakeRsync):
+        def pull(self, host, remote_path: str, local_path: Path) -> RsyncResult:
+            local_path.mkdir(parents=True, exist_ok=True)
+            (local_path / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": "1.0",
+                    "phases": {
+                        "startup": {"status": "completed", "exit_code": 0},
+                        "training": {"status": "completed", "exit_code": 1},
+                    },
+                })
+            )
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+    ssh = _FakeSSH()
+    rsync = _RsyncStatusOkExitNonZero()
+    w = _make_worker(tmp_path, ssh, rsync)
+    events = _spin_worker(w, [_job()])
+    failed = next(e for e in events if e.transition == "failed")
+    assert failed.failure.kind == "hugin_crash"
+    assert failed.failure.details.get("exit_code") == 1
+
+
+def test_worker_accepts_clean_completed_manifest(tmp_path: Path):
+    """The happy-path classifier must still adopt a manifest where the
+    training phase truly completed (exit 0). This guards against a
+    regression where the new content check is too strict."""
+
+    class _RsyncCleanCompleted(_FakeRsync):
+        def pull(self, host, remote_path: str, local_path: Path) -> RsyncResult:
+            local_path.mkdir(parents=True, exist_ok=True)
+            (local_path / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": "1.0",
+                    "phases": {
+                        "startup": {"status": "completed", "exit_code": 0},
+                        "training": {"status": "completed", "exit_code": 0},
+                    },
+                })
+            )
+            (local_path / "training.json").write_text(json.dumps({"schema_version": "1.0"}))
+            (local_path / "startup.json").write_text(json.dumps({"schema_version": "1.0"}))
+            return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
+
+    ssh = _FakeSSH()
+    rsync = _RsyncCleanCompleted()
+    w = _make_worker(tmp_path, ssh, rsync)
+    events = _spin_worker(w, [_job()])
+    completed = [e for e in events if e.transition == "completed"]
+    assert len(completed) == 1
+
+
 def test_worker_classifies_infrastructure_before_hugin(tmp_path: Path):
     """ssh error on docker exec itself (exit -1 / no such container) is infrastructure, not hugin_crash."""
     ssh = _FakeSSH(
@@ -656,7 +749,13 @@ def test_worker_gpu_lost_recovery_succeeds_retries_same_host(tmp_path, monkeypat
     )
     bundle = tmp_path / job.bundle_dir_name
     bundle.mkdir(parents=True)
-    (bundle / "manifest.json").write_text('{"schema_version": "1.0"}')
+    (bundle / "manifest.json").write_text(json.dumps({
+        "schema_version": "1.0",
+        "phases": {
+            "startup": {"status": "completed", "exit_code": 0},
+            "training": {"status": "completed", "exit_code": 0},
+        },
+    }))
 
     class _FakeRsync:
         def pull(self, host, remote, local):
