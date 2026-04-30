@@ -13,6 +13,19 @@ import pytest
 from tools.odin.hugin import run as hugin_run
 
 
+class _Completed:
+    def __init__(self, returncode: int):
+        self.returncode = returncode
+
+
+def _write_output_json_from_cmd(cmd):
+    out_idx = cmd.index("--schema_v1_output") + 1
+    out_path = cmd[out_idx]
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        f.write('{"schema_version": "1.0", "fake": true}\n')
+
+
 def _fake_run_factory():
     """Return a stub that pretends to write startup.json/training.json and
     records every command it was called with for later assertions."""
@@ -21,21 +34,160 @@ def _fake_run_factory():
 
     def _fake_run(cmd, *args, **kwargs):
         captured_cmds.append(list(cmd))
-        out_idx = cmd.index("--schema_v1_output") + 1
-        out_path = cmd[out_idx]
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        with open(out_path, "w") as f:
-            f.write('{"schema_version": "1.0", "fake": true}\n')
+        _write_output_json_from_cmd(cmd)
+        if "stdout" in kwargs:
+            kwargs["stdout"].write(b"fake stdout")
+        if "stderr" in kwargs:
+            kwargs["stderr"].write(b"fake stderr")
 
-        class R:
-            returncode = 0
-            stdout = b"fake stdout"
-            stderr = b"fake stderr"
-
-        return R()
+        return _Completed(0)
 
     _fake_run.captured_cmds = captured_cmds
     return _fake_run
+
+
+def test_run_phase_streams_stdout_to_log_during_run(tmp_path, monkeypatch):
+    output_json = os.path.join(tmp_path, "training.json")
+
+    def _streaming_run(cmd, *args, **kwargs):
+        stdout_fh = kwargs["stdout"]
+        stdout_fh.write(b"first line\n")
+        stdout_fh.flush()
+        with open(stdout_fh.name, "rb") as f:
+            assert f.read() == b"first line\n"
+        _write_output_json_from_cmd(cmd)
+        return _Completed(0)
+
+    monkeypatch.setattr(hugin_run, "_subprocess_run", _streaming_run)
+
+    phase = hugin_run._run_phase(
+        cmd=["python.sh", "train.py", "--schema_v1_output", output_json],
+        bundle_dir=str(tmp_path),
+        phase_name="training",
+        output_json=output_json,
+    )
+
+    assert phase.status == "completed"
+
+
+def test_run_phase_writes_full_stdout_on_completed(tmp_path, monkeypatch):
+    output_json = os.path.join(tmp_path, "training.json")
+
+    def _run(cmd, *args, **kwargs):
+        kwargs["stdout"].write(b"line 1\nline 2\n")
+        kwargs["stderr"].write(b"warning\n")
+        _write_output_json_from_cmd(cmd)
+        return _Completed(0)
+
+    monkeypatch.setattr(hugin_run, "_subprocess_run", _run)
+
+    hugin_run._run_phase(
+        cmd=["python.sh", "train.py", "--schema_v1_output", output_json],
+        bundle_dir=str(tmp_path),
+        phase_name="training",
+        output_json=output_json,
+    )
+
+    with open(os.path.join(tmp_path, "logs", "training.stdout.log"), "rb") as f:
+        assert f.read() == b"line 1\nline 2\n"
+    with open(os.path.join(tmp_path, "logs", "training.stderr.log"), "rb") as f:
+        assert f.read() == b"warning\n"
+
+
+def test_run_phase_no_tail_truncation_on_failure(tmp_path, monkeypatch):
+    output_json = os.path.join(tmp_path, "training.json")
+    stdout = b"".join(f"stdout {i}\n".encode() for i in range(2000))
+    stderr = b"".join(f"stderr {i}\n".encode() for i in range(2000))
+
+    def _run(cmd, *args, **kwargs):
+        kwargs["stdout"].write(stdout)
+        kwargs["stderr"].write(stderr)
+        return _Completed(7)
+
+    monkeypatch.setattr(hugin_run, "_subprocess_run", _run)
+
+    phase = hugin_run._run_phase(
+        cmd=["python.sh", "train.py", "--schema_v1_output", output_json],
+        bundle_dir=str(tmp_path),
+        phase_name="training",
+        output_json=output_json,
+    )
+
+    assert phase.status == "failed"
+    assert phase.exit_code == 7
+    with open(os.path.join(tmp_path, "logs", "training.stdout.log"), "rb") as f:
+        assert f.read() == stdout
+    with open(os.path.join(tmp_path, "logs", "training.stderr.log"), "rb") as f:
+        assert f.read() == stderr
+
+
+def test_run_phase_injects_dash_u_for_python_child(tmp_path, monkeypatch):
+    output_json = os.path.join(tmp_path, "training.json")
+    captured_cmds: list[list[str]] = []
+
+    def _run(cmd, *args, **kwargs):
+        captured_cmds.append(list(cmd))
+        kwargs["stdout"].write(b"stdout\n")
+        kwargs["stderr"].write(b"stderr\n")
+        _write_output_json_from_cmd(cmd)
+        return _Completed(0)
+
+    monkeypatch.setattr(hugin_run, "_subprocess_run", _run)
+
+    hugin_run._run_phase(
+        cmd=["python.sh", "train.py", "--schema_v1_output", output_json],
+        bundle_dir=str(tmp_path),
+        phase_name="training",
+        output_json=output_json,
+    )
+
+    assert captured_cmds == [["python.sh", "-u", "train.py", "--schema_v1_output", output_json]]
+
+
+def test_run_phase_injects_dash_u_for_isaaclab_sh_python_mode(tmp_path, monkeypatch):
+    output_json = os.path.join(tmp_path, "training.json")
+    captured_cmds: list[list[str]] = []
+
+    def _run(cmd, *args, **kwargs):
+        captured_cmds.append(list(cmd))
+        kwargs["stdout"].write(b"stdout\n")
+        kwargs["stderr"].write(b"stderr\n")
+        _write_output_json_from_cmd(cmd)
+        return _Completed(0)
+
+    monkeypatch.setattr(hugin_run, "_subprocess_run", _run)
+
+    hugin_run._run_phase(
+        cmd=["isaaclab.sh", "-p", "train.py", "--schema_v1_output", output_json],
+        bundle_dir=str(tmp_path),
+        phase_name="training",
+        output_json=output_json,
+    )
+
+    assert captured_cmds == [["isaaclab.sh", "-p", "-u", "train.py", "--schema_v1_output", output_json]]
+
+
+def test_run_phase_does_not_inject_dash_u_for_non_python(tmp_path, monkeypatch):
+    output_json = os.path.join(tmp_path, "training.json")
+    captured_cmds: list[list[str]] = []
+
+    def _run(cmd, *args, **kwargs):
+        captured_cmds.append(list(cmd))
+        kwargs["stdout"].write(b"stdout\n")
+        kwargs["stderr"].write(b"stderr\n")
+        _write_output_json_from_cmd(cmd)
+        return _Completed(0)
+
+    monkeypatch.setattr(hugin_run, "_subprocess_run", _run)
+
+    hugin_run._run_phase(
+        cmd=["nvidia-smi", "--schema_v1_output", output_json],
+        bundle_dir=str(tmp_path),
+        phase_name="training",
+        output_json=output_json,
+    )
+
+    assert captured_cmds == [["nvidia-smi", "--schema_v1_output", output_json]]
 
 
 def test_hugin_happy_path(tmp_path, monkeypatch):
@@ -89,12 +241,10 @@ def test_hugin_happy_path(tmp_path, monkeypatch):
 
 def test_hugin_failure_path_writes_logs(tmp_path, monkeypatch):
     def _failing_run(cmd, *args, **kwargs):
-        class R:
-            returncode = 7
-            stdout = b"partial stdout"
-            stderr = b"traceback..."
+        kwargs["stdout"].write(b"partial stdout")
+        kwargs["stderr"].write(b"traceback...")
 
-        return R()
+        return _Completed(7)
 
     bundle_root = str(tmp_path)
     monkeypatch.setattr(hugin_run, "_subprocess_run", _failing_run)
@@ -164,12 +314,7 @@ def test_hugin_silent_exit_zero_no_output_marks_failed(tmp_path, monkeypatch):
 
     def _silent_exit_zero(cmd, *args, **kwargs):
         # Do NOT create the --schema_v1_output file.
-        class R:
-            returncode = 0
-            stdout = b""
-            stderr = b""
-
-        return R()
+        return _Completed(0)
 
     bundle_root = str(tmp_path)
     monkeypatch.setattr(hugin_run, "_subprocess_run", _silent_exit_zero)

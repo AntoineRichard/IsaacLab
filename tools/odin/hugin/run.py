@@ -7,8 +7,7 @@
 
 One invocation = one Odin run. Subprocess-launches the IsaacLab startup
 profiler and the IsaacLab RSL-RL benchmark script, collects their outputs
-into a bundle directory, writes ``manifest.json``, and captures log tails
-on failure.
+into a bundle directory, streams phase logs, and writes ``manifest.json``.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from datetime import datetime, timezone
 
 from isaaclab.test.benchmark.standard_schema import ManifestPhase
 
-from tools.odin.common.log_tail import tail_bytes
 from tools.odin.common.manifest import write_manifest
 from tools.odin.common.run_id import compute_run_id
 
@@ -37,19 +35,45 @@ _TRAINING_SCRIPT = os.path.join(_REPO_ROOT, "scripts/benchmarks/benchmark_rsl_rl
 _ISAACLAB_SH = os.path.join(_REPO_ROOT, "isaaclab.sh")
 
 
+def _with_unbuffered_python(cmd: list[str]) -> list[str]:
+    """Return ``cmd`` with ``-u`` inserted for Python child processes.
+
+    Hugin redirects child stdout/stderr to files so CPython would otherwise
+    block-buffer stdout. For Python launchers, ``-u`` keeps per-iteration log
+    lines visible in the bundle within the child's own flush behavior.
+    """
+    if not cmd:
+        return []
+    out = list(cmd)
+    exe = os.path.basename(out[0])
+    is_python = exe in {"python", "python3", "python.sh"} or exe.endswith(("python", "python3", "python.sh"))
+    if is_python:
+        if len(out) == 1 or out[1] != "-u":
+            out.insert(1, "-u")
+        return out
+    if exe == "isaaclab.sh" and len(out) >= 2 and out[1] == "-p":
+        if len(out) == 2 or out[2] != "-u":
+            out.insert(2, "-u")
+        return out
+    return out
+
+
 def _run_phase(cmd: list[str], bundle_dir: str, phase_name: str, output_json: str) -> ManifestPhase:
-    """Run one subprocess phase; capture exit code, duration, and log tails on failure.
+    """Run one subprocess phase; stream stdout/stderr to bundle log files.
 
     Defines "completed" as: returncode == 0 AND ``output_json`` exists. A
     silent-exit-0 (subprocess exits 0 but writes no output) is a known
-    failure mode for Isaac Sim crashes — promote it to ``status="failed"``
+    failure mode for Isaac Sim crashes -- promote it to ``status="failed"``
     with a derived non-zero exit code so the worker's classifier and the
     aggregator both pick it up.
     """
     logs_dir = os.path.join(bundle_dir, "logs")
     os.makedirs(logs_dir, exist_ok=True)
+    stdout_path = os.path.join(logs_dir, f"{phase_name}.stdout.log")
+    stderr_path = os.path.join(logs_dir, f"{phase_name}.stderr.log")
     start = datetime.now(timezone.utc)
-    completed = _subprocess_run(cmd, capture_output=True)
+    with open(stdout_path, "wb") as stdout_fh, open(stderr_path, "wb") as stderr_fh:
+        completed = _subprocess_run(_with_unbuffered_python(cmd), stdout=stdout_fh, stderr=stderr_fh)
     end = datetime.now(timezone.utc)
     duration_s = (end - start).total_seconds()
     output_exists = os.path.exists(output_json)
@@ -57,10 +81,6 @@ def _run_phase(cmd: list[str], bundle_dir: str, phase_name: str, output_json: st
         status = "failed"
         # Promote silent-exit-0 to a non-zero exit code so main() exits non-zero.
         exit_code = completed.returncode or 1
-        with open(os.path.join(logs_dir, f"{phase_name}.stderr.log"), "wb") as f:
-            f.write(tail_bytes(completed.stderr))
-        with open(os.path.join(logs_dir, f"{phase_name}.stdout.log"), "wb") as f:
-            f.write(tail_bytes(completed.stdout))
     else:
         status = "completed"
         exit_code = completed.returncode
