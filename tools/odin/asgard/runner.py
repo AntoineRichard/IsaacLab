@@ -17,6 +17,7 @@ from pathlib import Path
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry, build_queue_from_env_lists
+from tools.odin.asgard.cleanup import sweep_orphan_trainers
 from tools.odin.asgard.preflight import preflight_valkyrie
 from tools.odin.asgard.provisioner import provision_valkyrie
 from tools.odin.asgard.state import (
@@ -599,6 +600,17 @@ def run_dispatch(
         else:
             commit_sha = commit_sha or pr.commit_sha
     healthy = [h for h in healthy if h.host not in down_hosts]
+
+    # Sweep orphan trainers left behind by a prior dispatch (legacy-PTY mode
+    # could leak ``docker exec``-launched trainers when the dispatcher's SSH
+    # was killed mid-run). Detached mode does not create orphans, but a fleet
+    # may have run a legacy dispatch yesterday — sweep regardless.
+    for host in healthy:
+        sweep = sweep_orphan_trainers(host, ssh=ssh)
+        if sweep.killed_count > 0:
+            print(f"[INFO] {host.host}: killed {sweep.killed_count} orphan trainer(s)")
+        elif not sweep.ok:
+            print(f"[WARN] {host.host}: zombie sweep failed: {sweep.message}")
 
     # Filter Newton jobs when no host meets the CUDA floor. Mark them failed
     # with a clear kind so the dispatch report (and operator) sees the gap.

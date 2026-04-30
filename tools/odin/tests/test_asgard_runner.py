@@ -143,6 +143,39 @@ def test_run_dispatch_happy_path(tmp_path: Path):
     assert (dispatch_dir / state.jobs[0].bundle_dir_name / "manifest.json").exists()
 
 
+def test_run_dispatch_sweeps_orphan_trainers_per_host(tmp_path: Path):
+    """Pre-dispatch sweep must run on every healthy host before workers
+    start — otherwise a wedged GPU from yesterday's legacy-PTY orphan
+    will spawn the same cascade we already debugged."""
+
+    @dataclass
+    class _SweepRecordingSSH(_FakeSSH):
+        sweep_calls: list = field(default_factory=list)
+
+        def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None, pty=True):
+            if "pkill" in cmd and "benchmark_rsl_rl" in cmd:
+                self.sweep_calls.append(host.host)
+                return SSHResult(exit_code=0, stdout="2\n", stderr="", duration_s=0.01)
+            return super().run(host, cmd, timeout_s=timeout_s, stdout_tee=stdout_tee, pty=pty)
+
+    fleet = _write_fleet(tmp_path)
+    physx = _write_env_list(tmp_path)
+    dispatch_dir = tmp_path / "odin_runs" / "20260430-sweep"
+    dispatch_dir.mkdir(parents=True)
+    ssh = _SweepRecordingSSH()
+    run_dispatch(
+        fleet=fleet,
+        physx_yaml=physx,
+        newton_yaml=None,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(seeds=[42], detached_mode=False),
+        ssh=ssh,
+        rsync=_FakeRsync(),
+    )
+    # Both healthy hosts swept exactly once before workers start.
+    assert sorted(ssh.sweep_calls) == ["v1", "v2"]
+
+
 def test_run_dispatch_preflight_fail_fast(tmp_path: Path):
     fleet = _write_fleet(tmp_path)
     physx = _write_env_list(tmp_path)
