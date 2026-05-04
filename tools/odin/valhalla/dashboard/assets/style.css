@@ -385,6 +385,54 @@ tbody tr:hover td { background: #1f242a; }
   color: #76b900;
 }
 
+/* Cancel toggle (Kill on running rows, Skip on pending rows). Same
+   base shape as retry-toggle. The red Kill variant uses the same
+   palette as the failure-pill family so destructive actions read
+   "danger" at a glance. */
+.tab-a-cancel-toggle {
+  background: transparent;
+  border: 1px solid #2a2e35;
+  color: #c8c8c8;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tab-a-cancel-toggle:hover { background: #1f242a; }
+.tab-a-cancel-toggle-kill {
+  color: #e16868;
+  border-color: rgba(220, 80, 80, 0.4);
+  font-weight: 600;
+}
+.tab-a-cancel-toggle-kill:hover {
+  background: rgba(220, 80, 80, 0.16);
+  border-color: rgba(220, 80, 80, 0.65);
+  color: #ff7f7f;
+}
+.tab-a-cancel-toggle-confirm {
+  background: rgba(220, 80, 80, 0.22);
+  border-color: rgba(220, 80, 80, 0.65);
+  color: #ff7f7f;
+}
+.tab-a-cancel-toggle-pending {
+  background: rgba(160, 160, 160, 0.18);
+  color: #aaa;
+  border-color: rgba(160, 160, 160, 0.4);
+  cursor: not-allowed;
+}
+.tab-a-cancel-pending-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+  font-size: 11px;
+  font-style: italic;
+  background: rgba(160, 160, 160, 0.18);
+  color: #aaa;
+  border: 1px solid rgba(160, 160, 160, 0.3);
+}
+
 .tab-a-retry-banner {
   background: rgba(118, 185, 0, 0.10);
   border: 1px solid rgba(118, 185, 0, 0.45);

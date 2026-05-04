@@ -348,10 +348,23 @@ def _data_row(
                     className="tab-a-cancel-pending-badge",
                 )
             )
-        base_label = "Kill" if status == "running" else "Skip"
+        # Kill (running) is a red ✕ glyph — high-contrast, immediate
+        # signal that the action is destructive. Skip (pending) keeps
+        # the text label since the action is non-destructive (no live
+        # trainer to interrupt). Confirm step uses the explicit word
+        # so the destructive action is unambiguous at the moment of
+        # commitment.
+        if status == "running":
+            base_label = "✕"
+            base_action_word = "kill"
+        else:
+            base_label = "Skip"
+            base_action_word = "skip"
         in_confirm = run_id in cancel_confirm
-        cancel_label = f"Confirm {base_label}" if in_confirm else base_label
+        cancel_label = f"Confirm {base_action_word.capitalize()}" if in_confirm else base_label
         css = ["tab-a-cancel-toggle"]
+        if status == "running":
+            css.append("tab-a-cancel-toggle-kill")
         if in_confirm:
             css.append("tab-a-cancel-toggle-confirm")
         if pending_kind:
@@ -366,9 +379,9 @@ def _data_row(
                     f"{pending_kind} pending — runner will act on next tick"
                     if pending_kind
                     else (
-                        f"Click again within 5 s to {base_label.lower()} this job"
+                        f"Click again within 5 s to {base_action_word} this job"
                         if in_confirm
-                        else f"{base_label} this job"
+                        else f"{base_action_word.capitalize()} this job"
                     )
                 ),
             )

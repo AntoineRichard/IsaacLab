@@ -67,11 +67,18 @@ def test_pending_row_renders_skip_button():
 
 
 def test_running_row_renders_kill_button():
+    """Running rows get the destructive-action ✕ glyph (with the
+    ``tab-a-cancel-toggle-kill`` red modifier class) — high-contrast
+    cue that the action stops a live trainer. The class is the
+    contract; the glyph is rendered text."""
     section = render_jobs_section(_payload_with_jobs([_job("running", "r1")]))
 
     buttons = _find_buttons(section, "r1")
     assert len(buttons) == 1
-    assert "Kill" in (buttons[0].children or "")
+    btn = buttons[0]
+    assert btn.children == "✕"
+    classes = (btn.className or "").split()
+    assert "tab-a-cancel-toggle-kill" in classes
 
 
 def test_completed_row_does_not_render_cancel_button():
