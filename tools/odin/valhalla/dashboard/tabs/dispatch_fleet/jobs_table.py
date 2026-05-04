@@ -356,6 +356,23 @@ def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) 
         className="tab-a-task-link",
     )
 
+    if host == "—":
+        host_cell = html.Td("—", className="tab-a-mono")
+    else:
+        host_cell = html.Td(
+            [
+                html.Span(host, className="tab-a-host-text"),
+                html.Button(
+                    "📋",
+                    className="tab-a-host-copy",
+                    title="Copy IP to clipboard",
+                    # Plain HTML button — no Dash callback. Click handling
+                    # lives in assets/init.js (clipboard API).
+                ),
+            ],
+            className="tab-a-mono tab-a-host-cell",
+        )
+
     return html.Tr(
         children=[
             html.Td(task_link),
@@ -363,7 +380,7 @@ def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) 
             html.Td(str(job.get("seed", ""))),
             html.Td(status_children),
             html.Td(failure_cell),
-            html.Td(host, className="tab-a-mono"),
+            host_cell,
             html.Td(started_ended_text, className="tab-a-muted"),
         ]
     )
