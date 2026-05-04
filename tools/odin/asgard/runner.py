@@ -499,7 +499,7 @@ def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntr
     return merged
 
 
-def run_dispatch(
+def run_dispatch(  # noqa: C901
     fleet: Fleet,
     physx_yaml: Path | None,
     newton_yaml: Path | None,
@@ -762,7 +762,7 @@ def run_dispatch(
                 reattached_by_host.setdefault(j.assigned_to, []).append(j)
 
     shutdown_event = threading.Event()
-    workers: list[ValkyrieWorker] = []
+    workers_by_host: dict[str, ValkyrieWorker] = {}
     for host in healthy:
         w = ValkyrieWorker(
             host=host,
@@ -789,10 +789,12 @@ def run_dispatch(
                 submitted_at_monotonic=time.monotonic(),
             )
         w.start()
-        workers.append(w)
+        workers_by_host[host.host] = w
+    workers = list(workers_by_host.values())
 
     # Drain state events into state.jobs; rewrite dispatch.json after each.
     retry_db = RetryDB(dispatch_dir.parent)
+    cancel_db = CancelDB(dispatch_dir.parent)
     live_retry_run_ids: set[str] = set()
     live_retry_poll_s = max(0.05, options.live_retry_poll_s)
     last_retry_poll = time.monotonic()
@@ -814,6 +816,16 @@ def run_dispatch(
                     remaining += added
                     write_dispatch_state(dispatch_dir, state)
                     last_write = now
+                cancel_added = _consume_cancellations(
+                    cancel_db=cancel_db,
+                    dispatch_id=dispatch_id,
+                    jobs_by_id=jobs_by_id,
+                    workers_by_host=workers_by_host,
+                )
+                if cancel_added:
+                    remaining -= cancel_added  # skipped jobs flipped pending→failed
+                    write_dispatch_state(dispatch_dir, state)
+                    last_write = now
                 last_retry_poll = now
             if time.monotonic() - last_write >= 5.0:
                 write_dispatch_state(dispatch_dir, state)
@@ -825,6 +837,11 @@ def run_dispatch(
             dispatch_id=dispatch_id,
             ev=ev,
             live_retry_run_ids=live_retry_run_ids,
+        )
+        _mark_cancellation_consumed(
+            cancel_db=cancel_db,
+            dispatch_id=dispatch_id,
+            ev=ev,
         )
         write_dispatch_state(dispatch_dir, state)
         last_write = time.monotonic()
@@ -838,6 +855,16 @@ def run_dispatch(
             )
             if added:
                 remaining += added
+                write_dispatch_state(dispatch_dir, state)
+                last_write = time.monotonic()
+            cancel_added = _consume_cancellations(
+                cancel_db=cancel_db,
+                dispatch_id=dispatch_id,
+                jobs_by_id=jobs_by_id,
+                workers_by_host=workers_by_host,
+            )
+            if cancel_added:
+                remaining -= cancel_added
                 write_dispatch_state(dispatch_dir, state)
                 last_write = time.monotonic()
             last_retry_poll = time.monotonic()
