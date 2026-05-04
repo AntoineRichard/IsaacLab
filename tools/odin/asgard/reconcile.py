@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry
@@ -50,10 +51,25 @@ __all__ = ["ReconcileOutcome", "reconcile_orphans"]
 _REMOTE_RUNS_ROOT = "/workspace/isaaclab/odin_runs"
 
 
+class _CancelDBLike(Protocol):
+    """Structural type for the bits of CancelDB this module uses.
+
+    Avoids the dashboard → asgard import cycle that a direct
+    :class:`~tools.odin.valhalla.dashboard.cancel_db.CancelDB` import
+    would create, while still giving callers static-analysis coverage.
+    """
+
+    def read_pending(self, dispatch_id: str) -> dict[str, str]: ...
+
+    def mark_consumed(self, dispatch_id: str, run_id: str, *, outcome: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class ReconcileOutcome:
     run_id: str
-    action: str  # one of: adopted_completed, adopted_failed, killed_alive_orphan, dead_re_pending
+    # One of: adopted_completed, adopted_failed, reattached_inflight,
+    # killed_alive_orphan, dead_re_pending.
+    action: str
 
 
 def _host_by_name(fleet: Fleet, name: str | None) -> ValkyrieConfig | None:
@@ -147,7 +163,7 @@ def reconcile_orphans(
     ssh: SSHRunner,
     rsync: RsyncRunner,
     detached_mode: bool = False,
-    cancel_db: object | None = None,
+    cancel_db: _CancelDBLike | None = None,
 ) -> list[ReconcileOutcome]:
     """Reconcile every ``running`` job against its prior remote host.
 
@@ -276,9 +292,10 @@ def reconcile_orphans(
                 )
                 cancel_db.mark_consumed(dispatch_id, run_id, outcome="skipped")
                 outcomes.append(ReconcileOutcome(run_id=run_id, action="adopted_failed"))
-            # Pending kill rows for in-flight jobs are seeded into the worker's
-            # _cancel_request map by the runner after worker construction; we
-            # leave those rows untouched here so the runner's main loop sees
-            # them on the first tick.
+            # Skip-on-running and pending kill rows are intentionally left
+            # untouched here. The runner's _consume_cancellations sees them
+            # on its first tick: skip-on-running gets upgraded to kill via
+            # CancelDB.upgrade_to_kill, and kill rows fire request_cancel on
+            # the assigned worker.
 
     return outcomes

@@ -289,7 +289,7 @@ def test_reconcile_applies_pending_skip_for_pending_job(tmp_path: Path):
     ssh = _FakeSSH(scripted={})
     rsync = _FakeRsync()
 
-    reconcile_orphans(
+    outcomes = reconcile_orphans(
         fleet=fleet,
         jobs=[job],
         dispatch_dir=tmp_path,
@@ -302,4 +302,50 @@ def test_reconcile_applies_pending_skip_for_pending_job(tmp_path: Path):
     assert job.status == "failed"
     assert job.failure is not None
     assert job.failure.kind == "skipped"
+    assert any(
+        o.run_id == "r-skip-on-resume" and o.action == "adopted_failed" for o in outcomes
+    )
     assert cancel_db.read_pending(tmp_path.name) == {}
+
+
+def test_reconcile_leaves_skip_for_running_job_unconsumed(tmp_path: Path):
+    """Skip on a job still 'running' at resume time → reconcile leaves the
+    cancellation row pending. The runner's _consume_cancellations will
+    upgrade it to kill on the first main-loop tick.
+    """
+    from tools.odin.valhalla.dashboard.cancel_db import CancelDB
+
+    fleet = Fleet(fleet_name="t", hosts=[_host()])
+    job = _job("r-running-skip")
+    job.status = "running"
+    job.assigned_to = "v1"
+    cancel_db = CancelDB(tmp_path)
+    cancel_db.request(tmp_path.name, "r-running-skip", kind="skip")
+    # SSH responses for the detached running-job reconcile path: no manifest,
+    # alive.
+    ssh = _FakeSSH(
+        scripted={
+            "kill -0": SSHResult(
+                exit_code=0, stdout="r-running-skip alive\n", stderr="", duration_s=0.0
+            ),
+            "manifest.json": SSHResult(
+                exit_code=1, stdout="", stderr="No such file", duration_s=0.0
+            ),
+        }
+    )
+    rsync = _FakeRsync()
+
+    reconcile_orphans(
+        fleet=fleet,
+        jobs=[job],
+        dispatch_dir=tmp_path,
+        ssh=ssh,
+        rsync=rsync,
+        detached_mode=True,
+        cancel_db=cancel_db,
+    )
+
+    # Job state untouched — re-attached as running.
+    assert job.status == "running"
+    # Skip row still pending — the runner will pick it up on the first tick.
+    assert cancel_db.read_pending(tmp_path.name) == {"r-running-skip": "skip"}
