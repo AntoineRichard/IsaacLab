@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry
@@ -50,10 +51,25 @@ __all__ = ["ReconcileOutcome", "reconcile_orphans"]
 _REMOTE_RUNS_ROOT = "/workspace/isaaclab/odin_runs"
 
 
+class _CancelDBLike(Protocol):
+    """Structural type for the bits of CancelDB this module uses.
+
+    Avoids the dashboard → asgard import cycle that a direct
+    :class:`~tools.odin.valhalla.dashboard.cancel_db.CancelDB` import
+    would create, while still giving callers static-analysis coverage.
+    """
+
+    def read_pending(self, dispatch_id: str) -> dict[str, str]: ...
+
+    def mark_consumed(self, dispatch_id: str, run_id: str, *, outcome: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class ReconcileOutcome:
     run_id: str
-    action: str  # one of: adopted_completed, adopted_failed, killed_alive_orphan, dead_re_pending
+    # One of: adopted_completed, adopted_failed, reattached_inflight,
+    # killed_alive_orphan, dead_re_pending.
+    action: str
 
 
 def _host_by_name(fleet: Fleet, name: str | None) -> ValkyrieConfig | None:
@@ -147,6 +163,7 @@ def reconcile_orphans(
     ssh: SSHRunner,
     rsync: RsyncRunner,
     detached_mode: bool = False,
+    cancel_db: _CancelDBLike | None = None,
 ) -> list[ReconcileOutcome]:
     """Reconcile every ``running`` job against its prior remote host.
 
@@ -179,6 +196,12 @@ def reconcile_orphans(
             instead of ``pgrep`` for the no-manifest fall-through, and
             re-attach in-flight jobs. Default ``False`` preserves the
             legacy behaviour (and matches existing call sites).
+        cancel_db: Optional :class:`CancelDB` (passed by the runner on
+            ``--resume``). When non-None, pending skip/kill rows are
+            re-applied before workers spin up — skips flip pending jobs
+            to failed; kills are applied to in-flight jobs after the
+            re-attach by seeding ``worker._cancel_request`` (handled in
+            the runner, not here).
 
     Returns:
         List of :class:`ReconcileOutcome` — one per reconciled job.
@@ -252,5 +275,27 @@ def reconcile_orphans(
             j.assigned_to = None
             j.started_at = None
             outcomes.append(ReconcileOutcome(run_id=j.run_id, action="dead_re_pending"))
+
+    if cancel_db is not None:
+        dispatch_id = dispatch_dir.name
+        for run_id, kind in list(cancel_db.read_pending(dispatch_id).items()):
+            job = next((j for j in jobs if j.run_id == run_id), None)
+            if job is None or job.status in {"completed", "failed"}:
+                cancel_db.mark_consumed(dispatch_id, run_id, outcome="noop")
+                continue
+            if kind == "skip" and job.status == "pending":
+                job.status = "failed"
+                job.failure = FailureInfo(
+                    kind="skipped",
+                    message="operator skipped before dispatch (applied at resume)",
+                    details={"reconciled": True},
+                )
+                cancel_db.mark_consumed(dispatch_id, run_id, outcome="skipped")
+                outcomes.append(ReconcileOutcome(run_id=run_id, action="adopted_failed"))
+            # Skip-on-running and pending kill rows are intentionally left
+            # untouched here. The runner's _consume_cancellations sees them
+            # on its first tick: skip-on-running gets upgraded to kill via
+            # CancelDB.upgrade_to_kill, and kill rows fire request_cancel on
+            # the assigned worker.
 
     return outcomes

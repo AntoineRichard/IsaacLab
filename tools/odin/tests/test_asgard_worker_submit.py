@@ -152,9 +152,7 @@ def test_build_submit_script_writes_tracker_json():
     """Tracker carries everything reconcile.py needs to re-attach an orphan."""
     host = _host()
     job = _job()
-    script = _build_submit_script(
-        host, job, submitted_at="2026-04-30T11:05:34Z", per_job_timeout_s=43200
-    )
+    script = _build_submit_script(host, job, submitted_at="2026-04-30T11:05:34Z", per_job_timeout_s=43200)
     assert ".tracker.json" in script
     # Dispatcher-known fields are stamped in the heredoc body.
     assert f'"run_id": "{job.run_id}"' in script

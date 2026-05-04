@@ -93,6 +93,9 @@ class _StubData:
     def read_retry_queue(self, dispatch_id: str) -> set[str]:
         return set()
 
+    def read_cancel_queue(self, dispatch_id: str) -> dict[str, str]:
+        return {}
+
     def read_running_job_tail_payload(self, dispatch_id: str, run_id: str, **kwargs) -> dict:
         self.running_tail_calls.append((dispatch_id, run_id, kwargs))
         return dict(self.running_tail_payload)

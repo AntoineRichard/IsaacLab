@@ -18,11 +18,11 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tools.odin.valhalla.dashboard.cancel_db import CancelDB
 from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 __all__ = ["DataLayer", "DispatchSummary", "HardwareInfo"]
@@ -69,6 +69,7 @@ class DataLayer:
     def __init__(self, runs_root: Path):
         self._runs_root = Path(runs_root).resolve() if runs_root else Path(runs_root)
         self._retry_db: RetryDB | None = None
+        self._cancel_db: CancelDB | None = None
 
     # -- list_dispatches ----------------------------------------------------
 
@@ -340,6 +341,33 @@ class DataLayer:
         if self._retry_db is None:
             self._retry_db = RetryDB(self._runs_root)
         return self._retry_db
+
+    # -- cancel queue (operator's per-row kill / skip requests) --------------
+
+    def read_cancel_queue(self, dispatch_id: str) -> dict[str, str]:
+        """Return ``{run_id: kind}`` for the dispatch's pending cancellations.
+
+        Stored in ``<runs_root>/.retry.sqlite`` (same SQLite file as the
+        retry queue, different table). Empty / missing rows return an
+        empty dict.
+        """
+        return self._get_cancel_db().read_pending(dispatch_id)
+
+    def request_cancel(self, dispatch_id: str, run_id: str, *, kind: str) -> None:
+        """Request a kill (running) or skip (pending) cancellation for ``run_id``.
+
+        Args:
+            dispatch_id: Dispatch the row belongs to.
+            run_id: Job to cancel.
+            kind: ``"kill"`` (signal worker to abort) or ``"skip"`` (mark
+                pending job as failed before submit).
+        """
+        self._get_cancel_db().request(dispatch_id, run_id, kind=kind)
+
+    def _get_cancel_db(self) -> CancelDB:
+        if self._cancel_db is None:
+            self._cancel_db = CancelDB(self._runs_root)
+        return self._cancel_db
 
     # -- cache control ------------------------------------------------------
 

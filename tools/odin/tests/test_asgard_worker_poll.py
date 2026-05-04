@@ -144,12 +144,7 @@ def test_build_poll_script_no_pty_required():
 
 
 def test_parse_poll_output_recognises_done_alive_exited_no_manifest():
-    raw = (
-        "b-completed done\n"
-        "b-running alive\n"
-        "b-crashed exited-no-manifest\n"
-        "b-just-submitted no-pidfile\n"
-    )
+    raw = "b-completed done\nb-running alive\nb-crashed exited-no-manifest\nb-just-submitted no-pidfile\n"
     states = _parse_poll_output(raw)
     assert states == {
         "b-completed": POLL_DONE,
@@ -161,13 +156,7 @@ def test_parse_poll_output_recognises_done_alive_exited_no_manifest():
 
 def test_parse_poll_output_ignores_garbage_lines():
     """SSH banner / login motd / blank lines must not produce phantom states."""
-    raw = (
-        "Welcome to Ubuntu 22.04\n"
-        "\n"
-        "b1 done\n"
-        "some extra text\n"
-        "b2 unexpected-state\n"
-    )
+    raw = "Welcome to Ubuntu 22.04\n\nb1 done\nsome extra text\nb2 unexpected-state\n"
     states = _parse_poll_output(raw)
     assert states == {"b1": POLL_DONE}
 
@@ -200,7 +189,6 @@ def test_finalize_done_emits_completed_after_pull_and_validate(tmp_path: Path):
 
 def test_finalize_exited_no_manifest_classifies_via_remote_stderr(tmp_path: Path):
     """Crashed mid-run: pull bundle (best effort), classify via remote stderr."""
-    bundle = tmp_path / "r-crash"
 
     class _RsyncBest:
         def pull(self, host, remote_path, local_path):
@@ -226,10 +214,7 @@ def test_finalize_exited_no_manifest_classifies_via_remote_stderr(tmp_path: Path
     )
     worker._inflight[job.run_id] = inflight
     worker._finalize_terminal(inflight, POLL_EXITED_NO_MANIFEST)
-    failed = [
-        worker._state_chan.get_nowait()
-        for _ in range(worker._state_chan.qsize())
-    ]
+    failed = [worker._state_chan.get_nowait() for _ in range(worker._state_chan.qsize())]
     fail_evt = next(e for e in failed if e.transition == "failed")
     assert fail_evt.failure is not None
     assert fail_evt.failure.kind == "gpu_lost"
@@ -263,9 +248,7 @@ def test_classify_remote_recognises_preset_unsupported(tmp_path: Path):
     ssh = _ScriptedSSH()
     rsync = _RsyncMaterialize()
     worker = _make_worker(tmp_path, ssh, rsync)
-    result = worker._classify_remote_text(
-        "[ERROR] preset_unsupported: task 'Isaac-Foo-v0' has no 'physx' preset.\n"
-    )
+    result = worker._classify_remote_text("[ERROR] preset_unsupported: task 'Isaac-Foo-v0' has no 'physx' preset.\n")
     assert result.kind == "preset_unsupported"
 
 

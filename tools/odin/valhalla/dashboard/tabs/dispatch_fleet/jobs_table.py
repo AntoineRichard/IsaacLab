@@ -44,6 +44,8 @@ def render_jobs_section(
     running_tail_shown: set[str] | None = None,
     running_tail_store: dict[str, dict] | None = None,
     retry_queue: set[str] | None = None,
+    cancel_queue: dict[str, str] | None = None,
+    cancel_confirm: dict[str, int] | None = None,
 ) -> html.Div:
     """Build the jobs section: filter row + table + inline expand rows.
 
@@ -52,6 +54,10 @@ def render_jobs_section(
         (loaded on demand via the tab's load_ssh_tail callback).
     retry_queue: set of run_ids the operator has tagged for retry. Drives
         the per-row toggle highlight + the banner above the table.
+    cancel_queue: mapping of run_id to pending cancel kind (``"kill"`` or
+        ``"skip"``). Drives the per-row pending badge.
+    cancel_confirm: mapping of run_id to confirm-expiry timestamp (ms).
+        Drives the two-step confirm label on the cancel button.
     """
     jobs = dispatch_payload.get("jobs", []) or []
     expanded_run_ids = expanded_run_ids or set()
@@ -59,6 +65,9 @@ def render_jobs_section(
     running_tail_shown = running_tail_shown or set()
     running_tail_store = running_tail_store or {}
     retry_queue = retry_queue or set()
+    cancel_queue = cancel_queue or {}
+    cancel_confirm = cancel_confirm or {}
+    dispatch_ended = bool(dispatch_payload.get("ended_at"))
 
     if not jobs:
         return html.Div(
@@ -112,7 +121,7 @@ def render_jobs_section(
 
     body_rows: list = []
     for j in visible:
-        body_rows.append(_data_row(j, dispatch_id, retry_queue))
+        body_rows.append(_data_row(j, dispatch_id, retry_queue, cancel_queue, cancel_confirm, dispatch_ended))
         if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
             body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
         if j.get("status") == "running" and j.get("run_id") in running_tail_shown:
@@ -152,12 +161,23 @@ def render_jobs_rows(
     running_tail_shown: set[str] | None = None,
     running_tail_store: dict[str, dict] | None = None,
     retry_queue: set[str] | None = None,
+    cancel_queue: dict[str, str] | None = None,
+    cancel_confirm: dict[str, int] | None = None,
 ):
     """Return just the rows portion (table-or-empty) of the jobs section.
 
     Callable used by the live ``update_jobs`` callback — the filter row is
     static (rendered once in the layout) so it doesn't get re-rendered each
     tick (which would wipe filter state).
+
+    Args:
+        cancel_queue: ``{run_id: kind}`` of pending cancellations from
+            :class:`~tools.odin.valhalla.dashboard.cancel_db.CancelDB`.
+            Drives the "kill pending" / "skip pending" status-cell badge
+            and disables the cancel button for those rows.
+        cancel_confirm: ``{run_id: expires_at_ms}`` of rows currently in
+            the 5-second confirm window after a first click. Drives the
+            "Confirm Kill" / "Confirm Skip" red label and CSS class.
     """
     jobs = dispatch_payload.get("jobs", []) or []
     expanded_run_ids = expanded_run_ids or set()
@@ -165,6 +185,9 @@ def render_jobs_rows(
     running_tail_shown = running_tail_shown or set()
     running_tail_store = running_tail_store or {}
     retry_queue = retry_queue or set()
+    cancel_queue = cancel_queue or {}
+    cancel_confirm = cancel_confirm or {}
+    dispatch_ended = bool(dispatch_payload.get("ended_at"))
 
     if not jobs:
         return html.Div(
@@ -205,7 +228,7 @@ def render_jobs_rows(
     )
     body_rows: list = []
     for j in visible:
-        body_rows.append(_data_row(j, dispatch_id, retry_queue))
+        body_rows.append(_data_row(j, dispatch_id, retry_queue, cancel_queue, cancel_confirm, dispatch_ended))
         if j.get("status") == "failed" and j.get("run_id") in expanded_run_ids:
             body_rows.append(_expand_row(j, ssh_tail_store.get(j.get("run_id"))))
         if j.get("status") == "running" and j.get("run_id") in running_tail_shown:
@@ -292,7 +315,14 @@ def _retry_banner(dispatch_id: str, retry_queue: set[str]) -> html.Div | None:
     )
 
 
-def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) -> html.Tr:
+def _data_row(
+    job: dict,
+    dispatch_id: str,
+    retry_queue: set[str] | None = None,
+    cancel_queue: dict[str, str] | None = None,
+    cancel_confirm: dict[str, int] | None = None,
+    dispatch_ended: bool = False,
+) -> html.Tr:
     status = str(job.get("status", "unknown"))
     failure = job.get("failure") or {}
     kind = failure.get("kind")
@@ -301,11 +331,49 @@ def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) 
     started = _relative_time(job.get("started_at"))
     ended = _relative_time(job.get("ended_at"))
     retry_queue = retry_queue or set()
+    cancel_queue = cancel_queue or {}
+    cancel_confirm = cancel_confirm or {}
     run_id = job.get("run_id", "")
 
     status_children = [
         html.Span(status.capitalize(), className=f"tab-a-pill tab-a-job-status-{status}"),
     ]
+
+    if not dispatch_ended and status in {"pending", "running"}:
+        pending_kind = cancel_queue.get(run_id)
+        if pending_kind is not None:
+            status_children.append(
+                html.Span(
+                    f"{pending_kind} pending",
+                    className="tab-a-cancel-pending-badge",
+                )
+            )
+        base_label = "Kill" if status == "running" else "Skip"
+        in_confirm = run_id in cancel_confirm
+        cancel_label = f"Confirm {base_label}" if in_confirm else base_label
+        css = ["tab-a-cancel-toggle"]
+        if in_confirm:
+            css.append("tab-a-cancel-toggle-confirm")
+        if pending_kind:
+            css.append("tab-a-cancel-toggle-pending")
+        status_children.append(
+            html.Button(
+                cancel_label,
+                id={"type": "tab-a-cancel-toggle", "run_id": run_id},
+                n_clicks=0,
+                className=" ".join(css),
+                title=(
+                    f"{pending_kind} pending — runner will act on next tick"
+                    if pending_kind
+                    else (
+                        f"Click again within 5 s to {base_label.lower()} this job"
+                        if in_confirm
+                        else f"{base_label} this job"
+                    )
+                ),
+            )
+        )
+
     if attempts > 1:
         status_children.append(html.Span(f"×{attempts}", className="tab-a-attempts-badge"))
 

@@ -246,12 +246,17 @@ class JobInflight:
             issued a best-effort pkill for this run; the next
             ``exited-no-manifest`` poll classifies as ``timeout`` rather
             than re-running ``_classify_remote``.
+        kill_dispatched: ``True`` once :meth:`_sweep_cancellations` has
+            issued a best-effort pkill in response to an operator kill;
+            the next ``exited-no-manifest`` poll classifies as
+            ``killed`` rather than running ``_classify_remote``.
     """
 
     job: JobEntry
     tracker: object | None = None
     submitted_at_monotonic: float = field(default_factory=time.monotonic)
     timeout_kill_dispatched: bool = False
+    kill_dispatched: bool = False
 
 
 def _build_submit_script(
@@ -526,6 +531,10 @@ class ValkyrieWorker(threading.Thread):
         # entry today, but the structure supports >1 in case the policy
         # changes. Keyed by ``run_id``.
         self._inflight: dict[str, JobInflight] = {}
+        # Kill requests pushed by the runner via ``request_cancel(run_id)``.
+        # Drained on each ``_sweep_cancellations`` tick.
+        self._cancel_request: dict[str, bool] = {}
+        self._cancel_request_lock = threading.Lock()
         # Set transiently by ``_try_take_job`` when the sentinel is consumed
         # so the run loop can flip its own sentinel-seen flag without
         # juggling tuple returns.
@@ -580,6 +589,7 @@ class ValkyrieWorker(threading.Thread):
                 elif job is not None:
                     self._submit_or_handle(job)
             elif self._inflight:
+                self._sweep_cancellations()
                 self._poll_inflight_once()
                 self._sweep_timeouts()
             if sentinel_seen and not self._inflight:
@@ -625,6 +635,12 @@ class ValkyrieWorker(threading.Thread):
         """Submit one job. On success, register inflight; on terminal failure,
         emit the matching :class:`StateEvent` (with the existing
         recovery / retry / quarantine policy applied)."""
+        # Skip race: between when this job was put on the queue and when we
+        # popped it off, the runner may have flipped its status to 'failed'
+        # in response to an operator skip. Re-check before paying for an
+        # SSH submit.
+        if job.status != "pending":
+            return
         started_at = _utc_now_iso()
         self._state_chan.put(
             StateEvent(
@@ -1092,8 +1108,11 @@ class ValkyrieWorker(threading.Thread):
             manifest, emit ``completed`` (or a malformed-bundle failure).
           - :data:`POLL_EXITED_NO_MANIFEST`: rsync-pull the bundle (best
             effort), classify via :meth:`_classify_remote`, emit
-            ``failed``. If ``inflight.timeout_kill_dispatched`` is set,
-            override the classification to ``kind="timeout"``.
+            ``failed``. Classification precedence (highest first):
+            ``inflight.timeout_kill_dispatched`` → ``kind="timeout"``;
+            ``inflight.kill_dispatched`` (operator kill via
+            :meth:`request_cancel`) → ``kind="killed"``; otherwise →
+            :meth:`_classify_remote`.
 
         Removes the entry from :attr:`_inflight` on the way out.
         """
@@ -1133,11 +1152,19 @@ class ValkyrieWorker(threading.Thread):
 
         # POLL_EXITED_NO_MANIFEST
         if inflight.timeout_kill_dispatched:
+            # Timeout precedence stays — operator-clicked Kill on a job that
+            # tripped its budget gets the more accurate kind="timeout".
             timeout_s = self._timeout_for(job)
             failure = FailureInfo(
                 kind="timeout",
                 message=f"remote process exceeded {timeout_s}s",
                 details={"per_job_timeout_s": timeout_s},
+            )
+        elif inflight.kill_dispatched:
+            failure = FailureInfo(
+                kind="killed",
+                message="operator kill",
+                details={"per_job_timeout_s": self._options.per_job_timeout_s},
             )
         else:
             failure = self._classify_remote(job)
@@ -1158,6 +1185,36 @@ class ValkyrieWorker(threading.Thread):
                 ended_at=job.ended_at,
             )
         )
+
+    def request_cancel(self, run_id: str) -> None:
+        """Mark ``run_id`` for kill. Called by the runner from its main thread.
+
+        Thread-safe: a single dict assignment is atomic in CPython, but the
+        explicit lock keeps the contract obvious and protects against
+        concurrent ``_sweep_cancellations`` reads during list-rebuild.
+        """
+        with self._cancel_request_lock:
+            self._cancel_request[run_id] = True
+
+    def _sweep_cancellations(self) -> None:
+        """For each pending kill request, dispatch a best-effort pkill once.
+
+        The next poll tick will see ``exited-no-manifest`` and
+        :meth:`_finalize_terminal` will classify as ``killed`` (because
+        ``inflight.kill_dispatched`` is set here).
+        """
+        with self._cancel_request_lock:
+            requested = list(self._cancel_request.keys())
+            self._cancel_request.clear()
+        for run_id in requested:
+            inflight = self._inflight.get(run_id)
+            if inflight is None:
+                # Job already finished (or was never on this worker). Drop.
+                continue
+            if inflight.kill_dispatched:
+                continue
+            self._cleanup_remote_process(inflight.job)
+            inflight.kill_dispatched = True
 
     def _sweep_timeouts(self) -> None:
         """For each in-flight job past its budget, dispatch a best-effort kill.

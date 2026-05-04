@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.odin.asgard.budgets import Budgets, load_budgets
+from tools.odin.asgard.cleanup import sweep_orphan_trainers
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry, build_queue_from_env_lists
-from tools.odin.asgard.cleanup import sweep_orphan_trainers
 from tools.odin.asgard.preflight import preflight_valkyrie
 from tools.odin.asgard.provisioner import provision_valkyrie
 from tools.odin.asgard.state import (
@@ -31,6 +31,7 @@ from tools.odin.asgard.state import (
 )
 from tools.odin.asgard.transport import RsyncRunner, ShellRsyncRunner, ShellSSHRunner, SSHRunner
 from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
+from tools.odin.valhalla.dashboard.cancel_db import CancelDB
 from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 __all__ = ["DispatchOptions", "resolve_dispatch_dir", "run_dispatch"]
@@ -397,6 +398,87 @@ def _mark_live_retry_consumed(
         live_retry_run_ids.discard(ev.run_id)
 
 
+def _consume_cancellations(
+    *,
+    cancel_db: CancelDB,
+    dispatch_id: str,
+    jobs_by_id: dict[str, JobEntry],
+    workers_by_host: dict,
+) -> int:
+    """Drain pending kill / skip rows from ``cancel_db`` and act on them.
+
+    For each pending row:
+
+    - Job already in a terminal state → mark ``outcome="noop"`` (cleanup).
+    - Skip on a pending job → flip ``status="failed"`` (kind=skipped),
+      mark ``outcome="skipped"``. Returns 1 (caller's ``remaining`` -= 1).
+    - Skip on a running job → upgrade row to kill, fall through.
+    - Kill on a running job → call ``worker.request_cancel(run_id)``;
+      leave the row pending (worker emits ``failed/killed`` later;
+      :func:`_mark_cancellation_consumed` then marks ``outcome="killed"``).
+
+    Args:
+        cancel_db: Open :class:`CancelDB` for this dispatch's runs_root.
+        dispatch_id: Current dispatch id.
+        jobs_by_id: ``run_id → JobEntry`` map (shared with the main loop).
+        workers_by_host: ``hostname → worker`` lookup. Workers must expose
+            ``request_cancel(run_id)`` (the real
+            :class:`~tools.odin.asgard.worker.ValkyrieWorker` does).
+
+    Returns:
+        Count of jobs that landed terminal in this call (skips only).
+    """
+    landed = 0
+    for run_id, kind in cancel_db.read_pending(dispatch_id).items():
+        job = jobs_by_id.get(run_id)
+        if job is None or job.status in {"completed", "failed"}:
+            cancel_db.mark_consumed(dispatch_id, run_id, outcome="noop")
+            continue
+        if kind == "skip" and job.status == "pending":
+            job.status = "failed"
+            job.failure = FailureInfo(
+                kind="skipped",
+                message="operator skipped before dispatch",
+                details={"requested_at": _utc_now_iso()},
+            )
+            job.ended_at = _utc_now_iso()
+            cancel_db.mark_consumed(dispatch_id, run_id, outcome="skipped")
+            landed += 1
+            continue
+        if kind == "skip" and job.status == "running":
+            cancel_db.upgrade_to_kill(dispatch_id, run_id)
+            kind = "kill"
+        if kind == "kill" and job.status == "running":
+            worker = workers_by_host.get(job.assigned_to)
+            if worker is None:
+                # Worker for the assigned host isn't around any more
+                # (host_down quarantine). Mark noop; the worker is gone
+                # so the job won't terminate via kill anyway.
+                cancel_db.mark_consumed(dispatch_id, run_id, outcome="noop")
+                continue
+            worker.request_cancel(run_id)
+            # Row stays pending; consumed when the worker emits failed/killed.
+    return landed
+
+
+def _mark_cancellation_consumed(
+    *,
+    cancel_db: CancelDB,
+    dispatch_id: str,
+    ev: StateEvent,
+) -> None:
+    """Mark a cancellation row consumed when the matching worker event arrives.
+
+    Only fires for ``failed`` events whose ``failure.kind == "killed"``
+    (skips are marked synchronously inside :func:`_consume_cancellations`).
+    """
+    if ev.transition != "failed" or ev.failure is None:
+        return
+    if ev.failure.kind != "killed":
+        return
+    cancel_db.mark_consumed(dispatch_id, ev.run_id, outcome="killed")
+
+
 def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntry]:
     """Preserve completed / failed from existing; take pending / running /
     assigned flipped-to-pending rows from existing too; new rows from fresh.
@@ -422,7 +504,7 @@ def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntr
     return merged
 
 
-def run_dispatch(
+def run_dispatch(  # noqa: C901
     fleet: Fleet,
     physx_yaml: Path | None,
     newton_yaml: Path | None,
@@ -491,6 +573,7 @@ def run_dispatch(
             ssh=ssh,
             rsync=rsync,
             detached_mode=options.detached_mode,
+            cancel_db=CancelDB(dispatch_dir.parent),
         )
         # Flip remaining in-flight (those still in 'running' after reconcile,
         # e.g. assigned_to=None edge cases) → pending.
@@ -705,7 +788,7 @@ def run_dispatch(
                 reattached_by_host.setdefault(j.assigned_to, []).append(j)
 
     shutdown_event = threading.Event()
-    workers: list[ValkyrieWorker] = []
+    workers_by_host: dict[str, ValkyrieWorker] = {}
     for host in healthy:
         w = ValkyrieWorker(
             host=host,
@@ -732,10 +815,12 @@ def run_dispatch(
                 submitted_at_monotonic=time.monotonic(),
             )
         w.start()
-        workers.append(w)
+        workers_by_host[host.host] = w
+    workers = list(workers_by_host.values())
 
     # Drain state events into state.jobs; rewrite dispatch.json after each.
     retry_db = RetryDB(dispatch_dir.parent)
+    cancel_db = CancelDB(dispatch_dir.parent)
     live_retry_run_ids: set[str] = set()
     live_retry_poll_s = max(0.05, options.live_retry_poll_s)
     last_retry_poll = time.monotonic()
@@ -757,6 +842,16 @@ def run_dispatch(
                     remaining += added
                     write_dispatch_state(dispatch_dir, state)
                     last_write = now
+                cancel_added = _consume_cancellations(
+                    cancel_db=cancel_db,
+                    dispatch_id=dispatch_id,
+                    jobs_by_id=jobs_by_id,
+                    workers_by_host=workers_by_host,
+                )
+                if cancel_added:
+                    remaining -= cancel_added  # skipped jobs flipped pending→failed
+                    write_dispatch_state(dispatch_dir, state)
+                    last_write = now
                 last_retry_poll = now
             if time.monotonic() - last_write >= 5.0:
                 write_dispatch_state(dispatch_dir, state)
@@ -768,6 +863,11 @@ def run_dispatch(
             dispatch_id=dispatch_id,
             ev=ev,
             live_retry_run_ids=live_retry_run_ids,
+        )
+        _mark_cancellation_consumed(
+            cancel_db=cancel_db,
+            dispatch_id=dispatch_id,
+            ev=ev,
         )
         write_dispatch_state(dispatch_dir, state)
         last_write = time.monotonic()
@@ -781,6 +881,16 @@ def run_dispatch(
             )
             if added:
                 remaining += added
+                write_dispatch_state(dispatch_dir, state)
+                last_write = time.monotonic()
+            cancel_added = _consume_cancellations(
+                cancel_db=cancel_db,
+                dispatch_id=dispatch_id,
+                jobs_by_id=jobs_by_id,
+                workers_by_host=workers_by_host,
+            )
+            if cancel_added:
+                remaining -= cancel_added
                 write_dispatch_state(dispatch_dir, state)
                 last_write = time.monotonic()
             last_retry_poll = time.monotonic()
