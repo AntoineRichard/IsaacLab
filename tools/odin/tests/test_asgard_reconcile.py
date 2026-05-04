@@ -272,3 +272,34 @@ def test_reconcile_finalizes_inflight_with_tracker_exited_no_manifest(tmp_path: 
     assert any(o.action == "adopted_failed" for o in outcomes)
     assert job.status == "failed"
     assert job.failure is not None
+
+
+def test_reconcile_applies_pending_skip_for_pending_job(tmp_path: Path):
+    """Resume: a 'skip' cancellation arrived while the dispatcher was down.
+    The pending job is flipped to failed/skipped and the row marked consumed."""
+    from tools.odin.asgard.reconcile import reconcile_orphans
+    from tools.odin.valhalla.dashboard.cancel_db import CancelDB
+
+    fleet = Fleet(fleet_name="t", hosts=[_host()])
+    job = _job("r-skip-on-resume")
+    job.status = "pending"
+    job.assigned_to = None
+    cancel_db = CancelDB(tmp_path)
+    cancel_db.request(tmp_path.name, "r-skip-on-resume", kind="skip")
+    ssh = _FakeSSH(scripted={})
+    rsync = _FakeRsync()
+
+    reconcile_orphans(
+        fleet=fleet,
+        jobs=[job],
+        dispatch_dir=tmp_path,
+        ssh=ssh,
+        rsync=rsync,
+        detached_mode=True,
+        cancel_db=cancel_db,
+    )
+
+    assert job.status == "failed"
+    assert job.failure is not None
+    assert job.failure.kind == "skipped"
+    assert cancel_db.read_pending(tmp_path.name) == {}

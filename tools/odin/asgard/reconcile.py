@@ -147,6 +147,7 @@ def reconcile_orphans(
     ssh: SSHRunner,
     rsync: RsyncRunner,
     detached_mode: bool = False,
+    cancel_db: object | None = None,
 ) -> list[ReconcileOutcome]:
     """Reconcile every ``running`` job against its prior remote host.
 
@@ -179,6 +180,12 @@ def reconcile_orphans(
             instead of ``pgrep`` for the no-manifest fall-through, and
             re-attach in-flight jobs. Default ``False`` preserves the
             legacy behaviour (and matches existing call sites).
+        cancel_db: Optional :class:`CancelDB` (passed by the runner on
+            ``--resume``). When non-None, pending skip/kill rows are
+            re-applied before workers spin up — skips flip pending jobs
+            to failed; kills are applied to in-flight jobs after the
+            re-attach by seeding ``worker._cancel_request`` (handled in
+            the runner, not here).
 
     Returns:
         List of :class:`ReconcileOutcome` — one per reconciled job.
@@ -252,5 +259,26 @@ def reconcile_orphans(
             j.assigned_to = None
             j.started_at = None
             outcomes.append(ReconcileOutcome(run_id=j.run_id, action="dead_re_pending"))
+
+    if cancel_db is not None:
+        dispatch_id = dispatch_dir.name
+        for run_id, kind in list(cancel_db.read_pending(dispatch_id).items()):
+            job = next((j for j in jobs if j.run_id == run_id), None)
+            if job is None or job.status in {"completed", "failed"}:
+                cancel_db.mark_consumed(dispatch_id, run_id, outcome="noop")
+                continue
+            if kind == "skip" and job.status == "pending":
+                job.status = "failed"
+                job.failure = FailureInfo(
+                    kind="skipped",
+                    message="operator skipped before dispatch (applied at resume)",
+                    details={"reconciled": True},
+                )
+                cancel_db.mark_consumed(dispatch_id, run_id, outcome="skipped")
+                outcomes.append(ReconcileOutcome(run_id=run_id, action="adopted_failed"))
+            # Pending kill rows for in-flight jobs are seeded into the worker's
+            # _cancel_request map by the runner after worker construction; we
+            # leave those rows untouched here so the runner's main loop sees
+            # them on the first tick.
 
     return outcomes

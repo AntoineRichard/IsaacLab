@@ -568,6 +568,7 @@ def run_dispatch(  # noqa: C901
             ssh=ssh,
             rsync=rsync,
             detached_mode=options.detached_mode,
+            cancel_db=CancelDB(dispatch_dir.parent),
         )
         # Flip remaining in-flight (those still in 'running' after reconcile,
         # e.g. assigned_to=None edge cases) → pending.
