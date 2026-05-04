@@ -112,7 +112,9 @@ budgets:
     rsl_rl: 10200   # n=3, max=112.7m
 
 gpu_multipliers:
-  default: 1.5  # generous — applied to unknown GPU classes
+  default: 3.0  # very generous — better to over-budget an unknown GPU
+                # than to silently kill a job that needed a couple more
+                # hours. Tighten once a calibration run lands.
   blackwell-pro-5000: 1.0  # baseline (this run)
   # add more once we have calibration data on other GPUs:
   # l40: 1.4
