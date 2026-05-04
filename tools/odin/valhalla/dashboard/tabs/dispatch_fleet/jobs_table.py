@@ -391,13 +391,35 @@ def _data_row(
         )
 
     if kind:
+        # Live-retry toggle lives next to the status pill (symmetric with
+        # the Kill/Skip cancel button on pending/running rows). Tagging
+        # writes to RetryDB; the runner's _consume_live_retries picks it
+        # up on the next 5s tick if the dispatcher is alive, otherwise
+        # the next --resume re-queues it. The icon is a toggle (↻ → ✓)
+        # because the operation is reversible — no confirm flow needed.
         is_queued = run_id in retry_queue
-        retry_btn = html.Button(
-            "✓" if is_queued else "↻",
-            id={"type": "tab-a-retry-toggle", "run_id": run_id},
-            n_clicks=0,
-            className="tab-a-retry-toggle" + (" tab-a-retry-toggle-queued" if is_queued else ""),
-            title=("Remove from retry queue" if is_queued else "Tag for live retry if the runner is active"),
+        retry_btn_label = "Queued ✓" if is_queued else "Retry"
+        retry_css = ["tab-a-retry-toggle"]
+        if is_queued:
+            retry_css.append("tab-a-retry-toggle-queued")
+        if not dispatch_ended:
+            retry_css.append("tab-a-retry-toggle-live")
+        status_children.append(
+            html.Button(
+                retry_btn_label,
+                id={"type": "tab-a-retry-toggle", "run_id": run_id},
+                n_clicks=0,
+                className=" ".join(retry_css),
+                title=(
+                    "Remove from retry queue"
+                    if is_queued
+                    else (
+                        "Tag for live retry — runner will re-queue on next tick"
+                        if not dispatch_ended
+                        else "Tag for retry on next --resume"
+                    )
+                ),
+            )
         )
         failure_cell = [
             html.Span(kind, className=f"tab-a-kind-pill tab-a-kind-pill-{kind}"),
@@ -408,7 +430,6 @@ def _data_row(
                 className="tab-a-expand-toggle",
                 title="Show / hide failure details",
             ),
-            retry_btn,
         ]
     else:
         failure_cell = "—"
