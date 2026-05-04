@@ -46,6 +46,8 @@ def build_layout(dispatch_id: str) -> html.Div:
             # re-fires immediately and the row's button + banner refresh
             # without waiting for the 5 s dcc.Interval.
             dcc.Store(id="tab-a-retry-bump", storage_type="memory", data=0),
+            dcc.Store(id="tab-a-cancel-pending", data={}),
+            dcc.Interval(id="tab-a-cancel-revert", interval=500, disabled=False),
             html.Div(id="tab-a-header"),
             html.Div(id="tab-a-fleet-table"),
             html.Div(

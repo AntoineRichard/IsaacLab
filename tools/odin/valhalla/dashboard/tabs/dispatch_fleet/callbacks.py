@@ -189,6 +189,44 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
     def _on_retry_toggle(n_clicks_list, ids_list, dispatch_id, bump):
         return _on_retry_toggle_handler(n_clicks_list, ids_list, dispatch_id=dispatch_id, bump=bump, data=data)
 
+    @app.callback(
+        Output("tab-a-cancel-pending", "data"),
+        Input({"type": "tab-a-cancel-toggle", "run_id": ALL}, "n_clicks"),
+        Input("tab-a-cancel-revert", "n_intervals"),
+        State({"type": "tab-a-cancel-toggle", "run_id": ALL}, "id"),
+        State("tab-a-dispatch-id", "data"),
+        State("tab-a-cancel-pending", "data"),
+    )
+    def _on_cancel_toggle(
+        n_clicks_list,
+        _n_intervals,
+        ids_list,
+        dispatch_id,
+        pending_store,
+    ):
+        from time import monotonic
+
+        now_ms = int(monotonic() * 1000)
+        triggered = dash.ctx.triggered_id
+        if triggered == "tab-a-cancel-revert":
+            return _on_cancel_revert_handler(pending_store=pending_store, now_ms=now_ms)
+        # Resolve per-row statuses + dispatch.ended_at from the dispatch payload
+        # so we don't need a parallel dcc.Store. data.load_dispatch is cached.
+        payload = data.load_dispatch(dispatch_id) if dispatch_id else {}
+        status_by_run = {j.get("run_id"): j.get("status", "") for j in payload.get("jobs", []) or []}
+        statuses = [status_by_run.get(ident["run_id"], "") for ident in (ids_list or [])]
+        dispatch_ended = bool(payload.get("ended_at"))
+        return _on_cancel_toggle_handler(
+            n_clicks_list,
+            ids_list,
+            statuses=statuses,
+            dispatch_id=dispatch_id,
+            dispatch_ended=dispatch_ended,
+            pending_store=pending_store,
+            data=data,
+            now_ms=now_ms,
+        )
+
 
 # -- pure helpers (testable without the Dash callback graph) ----------------------
 
@@ -275,6 +313,53 @@ def _on_retry_toggle_handler(n_clicks_list, ids_list, *, dispatch_id, bump, data
             data.toggle_retry_queue(dispatch_id, ident["run_id"])
             return (bump or 0) + 1
     return dash.no_update
+
+
+_CANCEL_CONFIRM_WINDOW_MS = 5000
+
+
+def _on_cancel_toggle_handler(
+    n_clicks_list,
+    ids_list,
+    *,
+    statuses: list[str],
+    dispatch_id: str,
+    dispatch_ended: bool,
+    pending_store: dict | None,
+    data,
+    now_ms: int,
+) -> dict:
+    """Two-click confirm flow for the per-row cancel button.
+
+    First click on a row flips the store entry to ``{run_id: expires_at_ms}``
+    (5 s out). Second click within the window writes the DB row via
+    ``data.request_cancel`` and clears the entry. Clicks for finished
+    dispatches are dropped.
+    """
+    if dispatch_ended:
+        return {}
+    pending_store = dict(pending_store or {})
+    if not n_clicks_list or not any(n_clicks_list):
+        return pending_store
+    for n, ident, status in zip(n_clicks_list, ids_list, statuses):
+        if not n or n <= 0:
+            continue
+        run_id = ident["run_id"]
+        existing = pending_store.get(run_id)
+        if existing is not None and existing > now_ms:
+            # Second click inside the confirm window → write the DB row.
+            kind = "kill" if status == "running" else "skip"
+            data.request_cancel(dispatch_id, run_id, kind=kind)
+            pending_store.pop(run_id, None)
+        elif status in {"pending", "running"}:
+            pending_store[run_id] = now_ms + _CANCEL_CONFIRM_WINDOW_MS
+    return pending_store
+
+
+def _on_cancel_revert_handler(*, pending_store: dict | None, now_ms: int) -> dict:
+    """Drain expired entries from the pending-confirm store. Run by a 500 ms interval."""
+    pending_store = dict(pending_store or {})
+    return {run_id: ts for run_id, ts in pending_store.items() if ts > now_ms}
 
 
 def _on_running_tail_toggle_handler(n_clicks_list, ids_list, *, current, triggered_id=None):
