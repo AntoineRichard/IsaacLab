@@ -298,26 +298,27 @@ def test_retry_button_only_on_failed_rows():
 
 def test_retry_button_renders_queued_state_when_run_id_in_queue():
     """When the run_id is already in the retry queue, the button gets the
-    ``tab-a-retry-toggle-queued`` class and shows ``Queued ✓`` so the
-    operator can see at a glance which rows are tagged."""
+    ``tab-a-retry-toggle-queued`` class and shows the ``✓`` glyph so the
+    operator can see at a glance which rows are tagged. Tooltip is the
+    self-describing wording (kept in ``title=``)."""
     payload = _payload([_job(run_id="r1", status="failed", kind="timeout")])
     component = render_jobs_section(payload, retry_queue={"r1"})
     btn = _retry_buttons(component)[0]
     classes = (getattr(btn, "className", "") or "").split()
     assert "tab-a-retry-toggle-queued" in classes
-    assert btn.children == "Queued ✓"
+    assert btn.children == "✓"
 
 
 def test_retry_button_default_state_when_not_in_queue():
-    """Untagged failed rows show ``Retry`` next to the status pill,
-    visually parallel to the Kill/Skip cancel buttons on running and
-    pending rows."""
+    """Untagged failed rows show the ``↻`` retry glyph next to the status
+    pill, visually parallel to the ``✕`` Kill / ``Skip`` cancel buttons
+    on running and pending rows."""
     payload = _payload([_job(run_id="r1", status="failed", kind="timeout")])
     component = render_jobs_section(payload, retry_queue=set())
     btn = _retry_buttons(component)[0]
     classes = (getattr(btn, "className", "") or "").split()
     assert "tab-a-retry-toggle-queued" not in classes
-    assert btn.children == "Retry"
+    assert btn.children == "↻"
 
 
 def test_retry_banner_renders_when_queue_nonempty():

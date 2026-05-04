@@ -411,7 +411,7 @@ def _data_row(
         # the next --resume re-queues it. The icon is a toggle (↻ → ✓)
         # because the operation is reversible — no confirm flow needed.
         is_queued = run_id in retry_queue
-        retry_btn_label = "Queued ✓" if is_queued else "Retry"
+        retry_btn_label = "✓" if is_queued else "↻"
         retry_css = ["tab-a-retry-toggle"]
         if is_queued:
             retry_css.append("tab-a-retry-toggle-queued")
