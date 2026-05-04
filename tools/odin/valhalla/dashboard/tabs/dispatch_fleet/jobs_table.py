@@ -169,6 +169,15 @@ def render_jobs_rows(
     Callable used by the live ``update_jobs`` callback — the filter row is
     static (rendered once in the layout) so it doesn't get re-rendered each
     tick (which would wipe filter state).
+
+    Args:
+        cancel_queue: ``{run_id: kind}`` of pending cancellations from
+            :class:`~tools.odin.valhalla.dashboard.cancel_db.CancelDB`.
+            Drives the "kill pending" / "skip pending" status-cell badge
+            and disables the cancel button for those rows.
+        cancel_confirm: ``{run_id: expires_at_ms}`` of rows currently in
+            the 5-second confirm window after a first click. Drives the
+            "Confirm Kill" / "Confirm Skip" red label and CSS class.
     """
     jobs = dispatch_payload.get("jobs", []) or []
     expanded_run_ids = expanded_run_ids or set()

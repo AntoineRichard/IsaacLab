@@ -99,9 +99,7 @@ def test_pending_cancellation_renders_pending_badge():
     assert len(buttons) == 1
     assert "kill pending" in (buttons[0].title or "").lower()
     # Badge text appears in the Status cell.
-    found_badge = any(
-        getattr(node, "className", "") == "tab-a-cancel-pending-badge" for node in _walk(section)
-    )
+    found_badge = any(getattr(node, "className", "") == "tab-a-cancel-pending-badge" for node in _walk(section))
     assert found_badge
 
 
@@ -128,3 +126,12 @@ def test_confirm_state_for_pending_status_says_confirm_skip():
 
     buttons = _find_buttons(section, "r1")
     assert "Confirm Skip" in (buttons[0].children or "")
+
+
+def test_failed_row_does_not_render_cancel_button():
+    """Failed terminal status (most common terminal kind in practice) → no
+    cancel button. Companion to test_completed_row_does_not_render_cancel_button.
+    """
+    section = render_jobs_section(_payload_with_jobs([_job("failed", "r1")]))
+
+    assert _find_buttons(section, "r1") == []

@@ -302,9 +302,7 @@ def test_reconcile_applies_pending_skip_for_pending_job(tmp_path: Path):
     assert job.status == "failed"
     assert job.failure is not None
     assert job.failure.kind == "skipped"
-    assert any(
-        o.run_id == "r-skip-on-resume" and o.action == "adopted_failed" for o in outcomes
-    )
+    assert any(o.run_id == "r-skip-on-resume" and o.action == "adopted_failed" for o in outcomes)
     assert cancel_db.read_pending(tmp_path.name) == {}
 
 
@@ -325,12 +323,8 @@ def test_reconcile_leaves_skip_for_running_job_unconsumed(tmp_path: Path):
     # alive.
     ssh = _FakeSSH(
         scripted={
-            "kill -0": SSHResult(
-                exit_code=0, stdout="r-running-skip alive\n", stderr="", duration_s=0.0
-            ),
-            "manifest.json": SSHResult(
-                exit_code=1, stdout="", stderr="No such file", duration_s=0.0
-            ),
+            "kill -0": SSHResult(exit_code=0, stdout="r-running-skip alive\n", stderr="", duration_s=0.0),
+            "manifest.json": SSHResult(exit_code=1, stdout="", stderr="No such file", duration_s=0.0),
         }
     )
     rsync = _FakeRsync()
