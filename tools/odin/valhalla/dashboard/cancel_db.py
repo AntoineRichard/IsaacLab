@@ -129,7 +129,13 @@ class CancelDB:
         return {str(row["run_id"]): str(row["kind"]) for row in rows}
 
     def mark_consumed(self, dispatch_id: str, run_id: str, *, outcome: str) -> None:
-        """Mark a cancellation row as consumed by the runner."""
+        """Mark a cancellation row as consumed by the runner.
+
+        Silent no-op when the ``(dispatch_id, run_id)`` row is missing or
+        has already been consumed. Call discipline (avoiding double-
+        consumption) is the runner's responsibility — see
+        :func:`tools.odin.asgard.runner._consume_cancellations`.
+        """
         if outcome not in _VALID_OUTCOMES:
             raise ValueError(f"outcome must be one of {sorted(_VALID_OUTCOMES)}, got {outcome!r}")
         with closing(self._connect()) as con:
