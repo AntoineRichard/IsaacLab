@@ -87,6 +87,13 @@ class JobEntry:
     preferred_not: set[str] = field(default_factory=set)
     started_at: str | None = None
     ended_at: str | None = None
+    # Per-job wall-clock timeout in seconds. ``None`` means "use the
+    # dispatcher-wide :attr:`DispatchOptions.per_job_timeout_s`". Populated by
+    # :func:`tools.odin.asgard.runner.run_dispatch` from
+    # :func:`tools.odin.asgard.budgets.Budgets.lookup` so heavy tasks (Allegro,
+    # Camera) get hours instead of the global 1h default while Cartpole stays
+    # at 10 minutes.
+    per_job_timeout_s: int | None = None
 
 
 def _framework_slug(framework: str) -> str:

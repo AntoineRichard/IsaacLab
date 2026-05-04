@@ -133,6 +133,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=30.0,
         help="Detached-mode poll interval in seconds (default: 30).",
     )
+    parser.add_argument(
+        "--budgets-yaml",
+        type=Path,
+        default=None,
+        help=(
+            "Path to per-task budget yaml (see tools/odin/config/job_budgets.yaml). "
+            "When set, --per-job-timeout becomes a fallback used only for tasks "
+            "missing from the table."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.physx_yaml is None and args.newton_yaml is None:
@@ -169,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         detached_mode=not args.legacy_pty_mode,
         poll_interval_s=args.poll_interval,
         live_retry_poll_s=args.live_retry_poll_s,
+        budgets_yaml=args.budgets_yaml,
     )
 
     print(f"odin-dispatch: dispatch_id={dispatch_dir.name} fleet={fleet.fleet_name} hosts={len(fleet.hosts)}")

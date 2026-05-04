@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tools.odin.asgard.budgets import Budgets, load_budgets
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry, build_queue_from_env_lists
 from tools.odin.asgard.cleanup import sweep_orphan_trainers
@@ -93,6 +94,10 @@ class DispatchOptions:
     detached_mode: bool = True
     poll_interval_s: float = 30.0
     live_retry_poll_s: float = 5.0
+    # Path to the per-task budget yaml; ``None`` keeps the legacy
+    # single-global-timeout behaviour. See
+    # :func:`tools.odin.asgard.budgets.load_budgets`.
+    budgets_yaml: Path | None = None
 
 
 def _utc_now_iso() -> str:
@@ -612,9 +617,29 @@ def run_dispatch(
         elif not sweep.ok:
             print(f"[WARN] {host.host}: zombie sweep failed: {sweep.message}")
 
+    healthy_hosts_set = {h.host for h in healthy}
+
+    # Stamp per-job timeouts from the budget table. Use the first healthy
+    # host's gpu_class as the reference — adequate for a homogeneous fleet
+    # (today's case). Mixed-GPU fleets will need per-host stamping at
+    # worker submit time; not yet implemented.
+    if options.budgets_yaml is not None:
+        budgets = load_budgets(options.budgets_yaml)
+        ref_gpu_class: str | None = None
+        for r in pre_results:
+            if r.ok and r.host in healthy_hosts_set:
+                ref_gpu_class = r.gpu_class
+                break
+        for j in merged_jobs:
+            if j.per_job_timeout_s is None:
+                j.per_job_timeout_s = budgets.lookup(j.task_id, j.framework, ref_gpu_class)
+        print(
+            f"[INFO] applied per-task budgets from {options.budgets_yaml}"
+            f" (reference gpu_class={ref_gpu_class!r})"
+        )
+
     # Filter Newton jobs when no host meets the CUDA floor. Mark them failed
     # with a clear kind so the dispatch report (and operator) sees the gap.
-    healthy_hosts_set = {h.host for h in healthy}
     newton_capable_hosts = [r.host for r in pre_results if r.ok and r.newton_available and r.host in healthy_hosts_set]
     if not newton_capable_hosts:
         for j in merged_jobs:

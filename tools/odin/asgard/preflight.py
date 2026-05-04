@@ -77,6 +77,11 @@ class PreflightResult:
     newton_available: bool = True
     recovery_attempted: bool = False
     recovery_succeeded: bool = False
+    # Normalised GPU class string (e.g. ``"blackwell-pro-5000"``, ``"l40"``)
+    # parsed from the host's ``nvidia-smi -L`` output. Used by the budget
+    # lookup to scale per-job timeouts. ``None`` when GPU detection fails
+    # — the budget table treats that as "use default multiplier".
+    gpu_class: str | None = None
 
 
 def _resolve_newton_availability(
@@ -219,6 +224,8 @@ def preflight_valkyrie(
     # 5. gpu_present — at least one GPU visible inside the running container.
     r = ssh.run(host, f"docker exec {host.container_name} nvidia-smi -L", timeout_s=15.0)
     if r.exit_code == 0 and r.stdout.strip():
+        from tools.odin.asgard.budgets import parse_gpu_class
+
         checks["gpu_present"] = True
         cuda_version, newton_available, msg = _resolve_newton_availability(
             host=host, ssh=ssh, newton_cuda_floor=newton_cuda_floor
@@ -230,18 +237,24 @@ def preflight_valkyrie(
             message=msg,
             cuda_version=cuda_version,
             newton_available=newton_available,
+            gpu_class=parse_gpu_class(r.stdout),
         )
 
     # GPU absent — try one container-restart recovery if allowed.
     if auto_restart and (_looks_wedged(r.stderr) or not r.stdout.strip()):
         rec = recover_valkyrie_gpu(host, ssh=ssh)
         if rec.recovered:
+            from tools.odin.asgard.budgets import parse_gpu_class
+
             checks["gpu_present"] = True
             cuda_version, newton_available, post_recover_msg = _resolve_newton_availability(
                 host=host, ssh=ssh, newton_cuda_floor=newton_cuda_floor
             )
             recover_msg = "recovered: container restarted to clear NVML wedge"
             message = f"{recover_msg}; {post_recover_msg}" if post_recover_msg else recover_msg
+            # Re-probe nvidia-smi -L after the container restart so we can
+            # populate gpu_class for the budget lookup.
+            post_r = ssh.run(host, f"docker exec {host.container_name} nvidia-smi -L", timeout_s=15.0)
             return PreflightResult(
                 host=host.host,
                 ok=True,
@@ -251,6 +264,7 @@ def preflight_valkyrie(
                 newton_available=newton_available,
                 recovery_attempted=True,
                 recovery_succeeded=True,
+                gpu_class=parse_gpu_class(post_r.stdout) if post_r.exit_code == 0 else None,
             )
         return PreflightResult(
             host=host.host,

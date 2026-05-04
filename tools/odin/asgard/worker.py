@@ -732,7 +732,7 @@ class ValkyrieWorker(threading.Thread):
             ssh_tail = self._dispatch_dir / job.bundle_dir_name / "logs" / "ssh-tail.log"
             cmd = _build_docker_exec_cmd(self.host, job)
             ssh_result = self._ssh.run(
-                self.host, cmd, timeout_s=float(self._options.per_job_timeout_s), stdout_tee=ssh_tail
+                self.host, cmd, timeout_s=float(self._timeout_for(job)), stdout_tee=ssh_tail
             )
 
             # After an SSH timeout, the local ssh process is terminated, but
@@ -897,6 +897,20 @@ class ValkyrieWorker(threading.Thread):
         self._down_event.set()
         return True
 
+    # -- per-job budget -----------------------------------------------------
+
+    def _timeout_for(self, job: JobEntry) -> int:
+        """Resolve the wall-clock timeout for ``job``.
+
+        Per-job override (populated by the runner from
+        :func:`tools.odin.asgard.budgets.Budgets.lookup`) wins. Falls back
+        to the dispatcher-wide default in :attr:`WorkerOptions.per_job_timeout_s`
+        so existing single-timeout dispatches keep working unchanged.
+        """
+        if job.per_job_timeout_s is not None:
+            return job.per_job_timeout_s
+        return self._options.per_job_timeout_s
+
     # -- timeout cleanup ----------------------------------------------------
 
     def _cleanup_remote_process(self, job: JobEntry) -> None:
@@ -946,7 +960,7 @@ class ValkyrieWorker(threading.Thread):
             self.host,
             job,
             submitted_at=_utc_now_iso(),
-            per_job_timeout_s=self._options.per_job_timeout_s,
+            per_job_timeout_s=self._timeout_for(job),
         )
         last_failure: FailureInfo | None = None
         for attempt in range(1, self._options.submit_max_retries + 1):
@@ -1119,10 +1133,11 @@ class ValkyrieWorker(threading.Thread):
 
         # POLL_EXITED_NO_MANIFEST
         if inflight.timeout_kill_dispatched:
+            timeout_s = self._timeout_for(job)
             failure = FailureInfo(
                 kind="timeout",
-                message=f"remote process exceeded {self._options.per_job_timeout_s}s",
-                details={"per_job_timeout_s": self._options.per_job_timeout_s},
+                message=f"remote process exceeded {timeout_s}s",
+                details={"per_job_timeout_s": timeout_s},
             )
         else:
             failure = self._classify_remote(job)
@@ -1156,7 +1171,7 @@ class ValkyrieWorker(threading.Thread):
             if inflight.timeout_kill_dispatched:
                 continue
             elapsed = now - inflight.submitted_at_monotonic
-            if elapsed < self._options.per_job_timeout_s:
+            if elapsed < self._timeout_for(inflight.job):
                 continue
             self._cleanup_remote_process(inflight.job)
             inflight.timeout_kill_dispatched = True
@@ -1165,9 +1180,10 @@ class ValkyrieWorker(threading.Thread):
 
     def _classify(self, r: SSHResult, job: JobEntry, ssh_tail: Path) -> FailureInfo | None:
         if r.timed_out:
+            timeout_s = self._timeout_for(job)
             return FailureInfo(
                 kind="timeout",
-                message=f"remote process exceeded {self._options.per_job_timeout_s}s",
+                message=f"remote process exceeded {timeout_s}s",
                 details={
                     "duration_s": r.duration_s,
                     "log_tail_path": str(ssh_tail.relative_to(self._dispatch_dir)),

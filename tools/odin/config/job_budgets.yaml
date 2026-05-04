@@ -1,0 +1,114 @@
+# Auto-generated from dispatch 20260430-110509 by ad-hoc analysis.
+# Per-task budgets = max-observed-duration × 1.5, rounded up to nearest 5 min.
+# Hand-set values for tasks that timed out without completing.
+
+defaults:
+  rsl_rl: 3600   # 1h fallback
+  skrl: 7200     # 2h fallback (skrl tends heavier)
+
+budgets:
+  Isaac-Ant-Direct-v0:
+    rsl_rl: 2100   # n=3, max=20.7m
+  Isaac-Ant-v0:
+    rsl_rl: 1500   # n=3, max=15.7m
+  Isaac-Cart-Double-Pendulum-Direct-v0:
+    skrl: 3000   # n=3, max=31.0m
+  Isaac-Cartpole-Depth-Camera-Direct-v0:
+    skrl: 129600   # manual: real workload exceeds 12h baseline
+  Isaac-Cartpole-Direct-v0:
+    rsl_rl: 300   # n=3, max=1.9m
+  Isaac-Cartpole-RGB-Camera-Direct-v0:
+    skrl: 28800   # manual: real workload exceeds 12h baseline
+  Isaac-Cartpole-Showcase-Box-MultiDiscrete-Direct-v0:
+    skrl: 6300   # n=3, max=69.0m
+  Isaac-Cartpole-v0:
+    rsl_rl: 300   # n=3, max=1.7m
+  Isaac-Deploy-Reach-Rizon4s-v0:
+    rsl_rl: 34500   # n=3, max=381.1m
+  Isaac-Deploy-Reach-UR10e-v0:
+    rsl_rl: 33600   # n=3, max=372.6m
+  Isaac-Dexsuite-Kuka-Allegro-Lift-v0:
+    rsl_rl: 86400   # manual: real workload exceeds 12h baseline
+  Isaac-Franka-Cabinet-Direct-v0:
+    rsl_rl: 3900   # n=3, max=40.9m
+  Isaac-Humanoid-Direct-v0:
+    rsl_rl: 3000   # n=3, max=30.4m
+  Isaac-Humanoid-v0:
+    rsl_rl: 2400   # n=3, max=23.7m
+  Isaac-Lift-Cube-Franka-v0:
+    rsl_rl: 3000   # n=3, max=30.4m
+  Isaac-Lift-Cube-OpenArm-v0:
+    rsl_rl: 3600   # n=3, max=38.6m
+  Isaac-Open-Drawer-OpenArm-v0:
+    rsl_rl: 3300   # n=3, max=34.0m
+  Isaac-Quadcopter-Direct-v0:
+    rsl_rl: 300   # n=3, max=2.8m
+  Isaac-Reach-Franka-OSC-v0:
+    rsl_rl: 1800   # n=3, max=19.2m
+  Isaac-Reach-Franka-v0:
+    rsl_rl: 1500   # n=3, max=14.4m
+  Isaac-Reach-OpenArm-Bi-v0:
+    rsl_rl: 900   # n=3, max=10.0m
+  Isaac-Reach-OpenArm-v0:
+    rsl_rl: 1200   # n=3, max=12.4m
+  Isaac-Reach-UR10-v0:
+    rsl_rl: 1500   # n=3, max=13.5m
+  Isaac-Repose-Cube-Allegro-Direct-v0:
+    rsl_rl: 33600   # n=3, max=372.0m
+  Isaac-Repose-Cube-Allegro-v0:
+    rsl_rl: 28200   # n=3, max=312.0m
+  Isaac-Repose-Cube-Shadow-Direct-v0:
+    rsl_rl: 25200   # n=3, max=279.5m
+  Isaac-Repose-Cube-Shadow-Vision-Direct-v0:
+    rsl_rl: 86400   # manual: real workload exceeds 12h baseline
+  Isaac-TrackPositionNoObstacles-ARL-Robot-1-v0:
+    rsl_rl: 3300   # n=3, max=33.8m
+  Isaac-Tracking-LocoManip-Digit-v0:
+    rsl_rl: 10800   # n=3, max=118.2m
+  Isaac-Velocity-Flat-Anymal-B-v0:
+    rsl_rl: 900   # n=3, max=7.1m
+  Isaac-Velocity-Flat-Anymal-C-Direct-v0:
+    rsl_rl: 1500   # n=3, max=14.3m
+  Isaac-Velocity-Flat-Anymal-C-v0:
+    rsl_rl: 900   # n=3, max=7.6m
+  Isaac-Velocity-Flat-Anymal-D-v0:
+    rsl_rl: 900   # n=3, max=8.7m
+  Isaac-Velocity-Flat-Cassie-v0:
+    rsl_rl: 1800   # n=3, max=18.9m
+  Isaac-Velocity-Flat-Digit-v0:
+    rsl_rl: 10200   # n=2, max=112.5m
+  Isaac-Velocity-Flat-H1-v0:
+    rsl_rl: 2100   # n=3, max=20.9m
+  Isaac-Velocity-Flat-Unitree-A1-v0:
+    rsl_rl: 900   # n=3, max=7.1m
+  Isaac-Velocity-Flat-Unitree-Go2-v0:
+    rsl_rl: 900   # n=3, max=8.1m
+  Isaac-Velocity-Rough-Anymal-B-v0:
+    rsl_rl: 6300   # n=3, max=67.6m
+  Isaac-Velocity-Rough-Anymal-C-Direct-v0:
+    rsl_rl: 17100   # n=3, max=188.5m
+  Isaac-Velocity-Rough-Anymal-C-v0:
+    rsl_rl: 6000   # n=3, max=66.5m
+  Isaac-Velocity-Rough-Anymal-D-v0:
+    rsl_rl: 6600   # n=3, max=71.9m
+  Isaac-Velocity-Rough-Cassie-v0:
+    rsl_rl: 4500   # n=3, max=49.5m
+  Isaac-Velocity-Rough-Digit-v0:
+    rsl_rl: 24900   # n=3, max=276.1m
+  Isaac-Velocity-Rough-G1-v0:
+    rsl_rl: 16200   # n=3, max=179.7m
+  Isaac-Velocity-Rough-H1-v0:
+    rsl_rl: 13800   # n=3, max=152.1m
+  Isaac-Velocity-Rough-Unitree-A1-v0:
+    rsl_rl: 7500   # n=3, max=81.3m
+  Isaac-Velocity-Rough-Unitree-Go1-v0:
+    rsl_rl: 7500   # n=3, max=82.8m
+  Isaac-Velocity-Rough-Unitree-Go2-v0:
+    rsl_rl: 10200   # n=3, max=112.7m
+
+gpu_multipliers:
+  default: 1.5  # generous — applied to unknown GPU classes
+  blackwell-pro-5000: 1.0  # baseline (this run)
+  # add more once we have calibration data on other GPUs:
+  # l40: 1.4
+  # a100: 0.9
