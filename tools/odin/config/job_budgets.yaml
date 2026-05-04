@@ -19,16 +19,18 @@ budgets:
   Isaac-Cart-Double-Pendulum-Direct-v0:
     skrl: 3000   # n=3, max=31.0m
   Isaac-Cartpole-Depth-Camera-Direct-v0:
-    skrl: 5400   # 1h30. TB shows policy converges at ~100K steps
-                 # (~285 reward plateau). max_iterations halved to 16000
-                 # (~1M steps); 1h30 gives ~120K steps wall-clock at the
-                 # observed Blackwell rate — lands just past convergence.
+    skrl: 5400   # 1h30 safety budget. max_iterations sized to match
+                 # (1600 × 64 rollouts = ~102k trainer ticks ≈ 1h30 on
+                 # Blackwell at 19 ticks/s). Trainer normally exits
+                 # clean before this fires; the budget catches a stall.
+                 # TB on prior runs showed convergence at ~100k ticks
+                 # (~285 reward plateau).
   Isaac-Cartpole-Direct-v0:
     rsl_rl: 300   # n=3, max=1.9m
   Isaac-Cartpole-RGB-Camera-Direct-v0:
-    skrl: 5400   # 1h30. Same as Depth-Camera variant. RGB-Camera also
-                 # hangs in 2-5h on the synthetic-data render bug, so
-                 # 1h30 fail-fast is well below the hang threshold.
+    skrl: 5400   # Same as Depth-Camera (max_iterations=1600 → ~1h30
+                 # natural exit). RGB also hits the upstream synthetic-
+                 # data hang in 2-5h, so 1h30 catches that case too.
   Isaac-Cartpole-Showcase-Box-MultiDiscrete-Direct-v0:
     skrl: 6300   # n=3, max=69.0m
   Isaac-Cartpole-v0:
