@@ -34,13 +34,24 @@ def has_physics_preset(raw_cfg, preset_name: str) -> bool:
     :func:`~isaaclab_tasks.utils.parse_cfg.parse_env_cfg`, because the latter
     resolves all ``PresetCfg`` wrappers to their default before returning.
 
+    Two valid wrapper shapes are recognised:
+
+    1. ``physics``-level preset: ``env_cfg.sim.physics`` is a
+       :class:`~isaaclab_tasks.utils.hydra.PresetCfg` whose fields are
+       physics-solver options (``PhysxCfg``, ``NewtonCfg``, ...). Used by
+       most direct envs.
+    2. ``sim``-level preset: ``env_cfg.sim`` is itself a
+       :class:`~isaaclab_tasks.utils.hydra.PresetCfg` whose fields are
+       full :class:`~isaaclab.sim.SimulationCfg` instances per backend.
+       Used by manager-based cabinet envs (``CabinetSimCfg``).
+
     Args:
         raw_cfg: Raw env config from :func:`load_cfg_from_registry`.
         preset_name: Name of the preset to check for (e.g. ``"newton"``).
 
     Returns:
-        ``True`` if ``raw_cfg.sim.physics`` is a ``PresetCfg`` wrapper that
-        defines a field named ``preset_name``, ``False`` otherwise.
+        ``True`` when either wrapper shape declares a field named
+        ``preset_name``, ``False`` otherwise.
     """
     if isinstance(raw_cfg, dict):
         return False
@@ -55,5 +66,21 @@ def has_physics_preset(raw_cfg, preset_name: str) -> bool:
         and not hasattr(type(env_cfg), "class_type")
     ):
         env_cfg = env_cfg.default
-    physics = getattr(getattr(env_cfg, "sim", None), "physics", None)
+    sim = getattr(env_cfg, "sim", None)
+    if sim is None:
+        return False
+    # Sim-level preset: ``sim`` itself wraps full SimulationCfg per backend.
+    # Detected by the same dataclass + ``default`` + no-class_type signature
+    # used for top-level wrappers above. Caught Cabinet-Franka in production
+    # — its CabinetSimCfg(PresetCfg) declares ``physx``/``newton`` directly
+    # on ``sim`` with no nested ``physics`` field, and the old check missed it.
+    if (
+        hasattr(sim, "__dataclass_fields__")
+        and hasattr(sim, "default")
+        and not hasattr(type(sim), "class_type")
+        and hasattr(sim, preset_name)
+    ):
+        return True
+    # Physics-level preset: ``sim.physics`` is the preset wrapper.
+    physics = getattr(sim, "physics", None)
     return physics is not None and hasattr(physics, preset_name)

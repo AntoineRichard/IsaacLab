@@ -76,3 +76,53 @@ def test_has_physics_preset_other_preset_name():
     cfg = _EnvCfg(sim=_Sim(physics=_PhysicsWithOther()))
     assert has_physics_preset(cfg, "mjwarp") is True
     assert has_physics_preset(cfg, "newton") is False
+
+
+# --- sim-level PresetCfg fixtures (e.g. cabinet_env_cfg.CabinetSimCfg) -------
+# A second valid pattern: ``sim`` itself is a PresetCfg with full
+# SimulationCfg instances per backend, no nested ``physics`` field. The
+# Cabinet-Franka task hits this — its ``CabinetSimCfg(PresetCfg)`` declares
+# ``default``, ``physx``, ``newton`` directly. Pre-fix, the validator
+# missed this shape and the benchmark script killed the run with
+# ``preset_unsupported`` even though the preset existed.
+
+
+@dataclass
+class _SimAsPreset:
+    """Imitates a sim-level PresetCfg subclass with named backend fields.
+
+    Has ``__dataclass_fields__`` and a ``default`` attribute, AND is the
+    ``sim`` slot of an env-config dataclass (which has ``class_type``).
+    The crucial bit: it has no ``physics`` attribute — the preset names
+    live directly on this object.
+    """
+
+    default: object = None
+    physx: object = None
+    newton: object = None
+
+
+@dataclass
+class _EnvCfgWithSimPreset:
+    sim: object = field(default_factory=_SimAsPreset)
+
+
+def test_has_physics_preset_sim_level_preset_with_physx():
+    """Cabinet-Franka shape: ``env_cfg.sim`` is itself a PresetCfg whose
+    fields are the named backends. Must be detected as supporting the
+    advertised preset."""
+    cfg = _EnvCfgWithSimPreset(sim=_SimAsPreset(default=object(), physx=object()))
+    assert has_physics_preset(cfg, "physx") is True
+
+
+def test_has_physics_preset_sim_level_preset_with_newton():
+    cfg = _EnvCfgWithSimPreset(sim=_SimAsPreset(default=object(), newton=object()))
+    assert has_physics_preset(cfg, "newton") is True
+
+
+def test_has_physics_preset_sim_level_preset_unsupported_backend():
+    """If the sim-level preset doesn't declare the requested backend, return
+    False — even though the wrapper itself is detected. Prevents a false
+    positive when an env supports physx but is asked about ovphysx."""
+    cfg = _EnvCfgWithSimPreset(sim=_SimAsPreset(default=object(), physx=object()))
+    assert has_physics_preset(cfg, "ovphysx") is False
