@@ -242,6 +242,7 @@ _algorithm = args_cli.algorithm.lower()
 if _algorithm == "ppo":
     try:
         from isaaclab.envs import DirectMARLEnvCfg as _DirectMARLEnvCfg
+
         from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry as _peek_cfg
 
         _peek = _peek_cfg(args_cli.task, "env_cfg_entry_point")

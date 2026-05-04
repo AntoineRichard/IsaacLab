@@ -716,10 +716,7 @@ def run_dispatch(  # noqa: C901
         for j in merged_jobs:
             if j.per_job_timeout_s is None:
                 j.per_job_timeout_s = budgets.lookup(j.task_id, j.framework, ref_gpu_class)
-        print(
-            f"[INFO] applied per-task budgets from {options.budgets_yaml}"
-            f" (reference gpu_class={ref_gpu_class!r})"
-        )
+        print(f"[INFO] applied per-task budgets from {options.budgets_yaml} (reference gpu_class={ref_gpu_class!r})")
 
     # Filter Newton jobs when no host meets the CUDA floor. Mark them failed
     # with a clear kind so the dispatch report (and operator) sees the gap.

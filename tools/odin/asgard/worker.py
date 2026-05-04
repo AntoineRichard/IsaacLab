@@ -747,9 +747,7 @@ class ValkyrieWorker(threading.Thread):
 
             ssh_tail = self._dispatch_dir / job.bundle_dir_name / "logs" / "ssh-tail.log"
             cmd = _build_docker_exec_cmd(self.host, job)
-            ssh_result = self._ssh.run(
-                self.host, cmd, timeout_s=float(self._timeout_for(job)), stdout_tee=ssh_tail
-            )
+            ssh_result = self._ssh.run(self.host, cmd, timeout_s=float(self._timeout_for(job)), stdout_tee=ssh_tail)
 
             # After an SSH timeout, the local ssh process is terminated, but
             # the ``docker exec``'d training process inside the container

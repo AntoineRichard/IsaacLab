@@ -59,10 +59,7 @@ def test_parse_gpu_class_no_gpu_returns_none():
 def test_parse_gpu_class_takes_first_when_multi_gpu():
     """Multi-GPU hosts get budget-classed by the first device. We don't run
     multi-GPU per worker today, but parse defensively."""
-    out = (
-        "GPU 0: NVIDIA L40 (UUID: GPU-aaa)\n"
-        "GPU 1: NVIDIA L40 (UUID: GPU-bbb)\n"
-    )
+    out = "GPU 0: NVIDIA L40 (UUID: GPU-aaa)\nGPU 1: NVIDIA L40 (UUID: GPU-bbb)\n"
     assert parse_gpu_class(out) == "l40"
 
 
