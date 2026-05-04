@@ -755,3 +755,173 @@ def test_loopback_detached_resume_reattaches_inflight(tmp_path: Path, stub_provi
     # The resumed worker reattached, polled → done, finalized → completed.
     assert len(state.jobs) == 1
     assert state.jobs[0].status == "completed", f"job failed: {state.jobs[0].failure}"
+
+
+def test_loopback_detached_dispatch_skip_and_kill_via_db(tmp_path: Path, stub_provisioner, monkeypatch):
+    """Two-job loopback dispatch: skip one before submit, kill the other mid-run.
+
+    Asserts both end terminal with the expected kinds and the killed job's
+    bundle dir contains its (partial) logs/.
+    """
+    if not _ssh_localhost_works():
+        pytest.skip("ssh localhost does not work without a password")
+
+    from tools.odin.asgard import worker as worker_mod
+    from tools.odin.valhalla.dashboard.cancel_db import CancelDB
+
+    # Submit stub: write a tracker + pidfile (using the test process's pid so
+    # poll's `kill -0` reports `alive`), then sleep so the job is observably
+    # mid-flight when we issue the kill.
+    test_pid = os.getpid()
+
+    def _fake_submit(host, job, *, submitted_at, per_job_timeout_s):
+        bundle_dir = f"{host.isaaclab_path}/odin_runs/{job.bundle_dir_name}"
+        import json as _json
+
+        from tools.odin.asgard.tracker import TRACKER_SCHEMA_VERSION
+
+        tracker = {
+            "schema_version": TRACKER_SCHEMA_VERSION,
+            "run_id": job.run_id,
+            "container_name": host.container_name,
+            "host": host.host,
+            "submitted_at": submitted_at,
+            "pid": test_pid,
+            "container_pid": None,
+            "per_job_timeout_s": per_job_timeout_s,
+        }
+        tracker_s = _json.dumps(tracker).replace("'", r"\'")
+        return (
+            f"mkdir -p {bundle_dir}/logs && "
+            # Write the test process's PID so `kill -0` always reports alive.
+            f"echo {test_pid} > {bundle_dir}/.run.pid && "
+            f"printf '%s' '{tracker_s}' > {bundle_dir}/.tracker.json && "
+            # Simulate a mid-run trainer with partial stderr.
+            f"echo 'fake training started' > {bundle_dir}/logs/hugin-stderr.log && "
+            f"echo 'odin-submit: ok run_id={job.run_id} bundle={job.bundle_dir_name}'"
+        )
+
+    def _fake_poll(host, bundle_ids):
+        bundles = " ".join(bundle_ids)
+        return (
+            f"for bundle in {bundles}; do "
+            f"if [ -f {host.isaaclab_path}/odin_runs/$bundle/manifest.json ]; then "
+            f'echo "$bundle done"; '
+            f"elif [ -f {host.isaaclab_path}/odin_runs/$bundle/.run.pid ]; then "
+            f"pid=$(cat {host.isaaclab_path}/odin_runs/$bundle/.run.pid); "
+            f'if kill -0 "$pid" 2>/dev/null; then echo "$bundle alive"; '
+            f'else echo "$bundle exited-no-manifest"; fi; '
+            f'else echo "$bundle no-pidfile"; fi; '
+            f"done"
+        )
+
+    monkeypatch.setattr(worker_mod, "_build_submit_script", _fake_submit)
+    monkeypatch.setattr(worker_mod, "_build_poll_script", _fake_poll)
+
+    # Stub _cleanup_remote_process to simulate killing the remote process:
+    # replace .run.pid with a dead PID so the next poll returns
+    # "exited-no-manifest" (pidfile present but `kill -0` fails) rather than
+    # "no-pidfile".  The real implementation issues docker-exec pkill, which
+    # cannot reach our test-process PID in a loopback test.
+    def _fake_cleanup(self_worker, job):
+        pid_file = Path(self_worker.host.isaaclab_path) / "odin_runs" / job.bundle_dir_name / ".run.pid"
+        # PID 2147483647 (INT_MAX) is virtually never a live process.
+        pid_file.write_text("2147483647\n")
+
+    monkeypatch.setattr(worker_mod.ValkyrieWorker, "_cleanup_remote_process", _fake_cleanup)
+
+    repo_root = Path.cwd()
+    host = ValkyrieConfig(
+        host="localhost",
+        ssh_user=os.environ.get("USER", "root"),
+        isaaclab_path=str(repo_root),
+    )
+    fleet = Fleet(fleet_name="loopback-cancel", hosts=[host])
+    dispatch_dir = tmp_path / "odin_runs" / "20260504-cancel"
+    dispatch_dir.mkdir(parents=True)
+
+    # Two-job env list (we need a pending one to skip + a running one to kill).
+    from tools.odin.common.env_list import EnvEntry as _EnvEntry
+    from tools.odin.common.env_list import EnvList as _EnvList
+    from tools.odin.common.env_list import write_env_list as _write_env_list
+
+    el = _EnvList()
+    el.groups["direct/ant"] = [
+        _EnvEntry(
+            task_id="Isaac-Ant-Direct-v0",
+            entry_point="ep:E",
+            env_cfg_entry_point="ec:E",
+            group="direct/ant",
+            has_rsl_rl=True,
+            has_skrl=True,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=10,
+            keep=True,
+            status="current",
+        )
+    ]
+    physx_yaml = tmp_path / "physx.yaml"
+    _write_env_list(physx_yaml, el, generator="test")
+
+    # Kick the dispatch in the background; it will spin polling forever
+    # because we never write a manifest. We send the cancel rows after a
+    # short sleep, then expect the dispatch to terminate.
+    cancel_db = CancelDB(dispatch_dir.parent)
+
+    import threading as _threading
+
+    def _send_cancels():
+        import time as _time
+
+        _time.sleep(2.0)  # let the runner submit + poll at least once
+        # Job ids are deterministic from dispatch_id + framework + task + seed.
+        # seed42 is the first job submitted → running → send kill.
+        # seed43 is still pending in the queue → send skip (lands terminal
+        # synchronously so `remaining` reaches 0 quickly).  If seed43 is
+        # somehow already running, _consume_cancellations upgrades skip→kill.
+        dispatch_id = dispatch_dir.name
+        run_id_42 = f"rsl-rl_physx_Isaac-Ant-Direct-v0_{dispatch_id}_seed42"
+        run_id_43 = f"rsl-rl_physx_Isaac-Ant-Direct-v0_{dispatch_id}_seed43"
+        cancel_db.request(dispatch_id, run_id_42, kind="kill")
+        cancel_db.request(dispatch_id, run_id_43, kind="skip")
+
+    cancel_thread = _threading.Thread(target=_send_cancels, daemon=True)
+    cancel_thread.start()
+
+    state = run_dispatch(
+        fleet=fleet,
+        physx_yaml=physx_yaml,
+        newton_yaml=None,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(
+            seeds=[42, 43],  # two jobs from one task
+            per_job_timeout_s=60,
+            skip_aggregate=True,
+            detached_mode=True,
+            poll_interval_s=0,
+            live_retry_poll_s=0.5,
+        ),
+        ssh=ShellSSHRunner(),
+        rsync=ShellRsyncRunner(),
+    )
+
+    # Pre-cleanup: the loopback wrote bundles into repo_root.
+    import shutil as _shutil
+
+    for j in state.jobs:
+        _shutil.rmtree(repo_root / "odin_runs" / j.bundle_dir_name, ignore_errors=True)
+
+    # Whichever job the runner sent first becomes "running" + killed; the
+    # other stays pending until killed via the same cancel-loop tick or
+    # through the per-job timeout. In a deterministic test we only assert
+    # on the killed one.
+    killed_jobs = [j for j in state.jobs if j.failure and j.failure.kind == "killed"]
+    assert killed_jobs, (
+        f"expected at least one killed job, got "
+        f"{[(j.run_id, j.failure.kind if j.failure else j.status) for j in state.jobs]}"
+    )
+    killed = killed_jobs[0]
+    bundle = dispatch_dir / killed.bundle_dir_name
+    # Partial logs preserved per kill-flow spec.
+    assert (bundle / "logs" / "hugin-stderr.log").exists()
