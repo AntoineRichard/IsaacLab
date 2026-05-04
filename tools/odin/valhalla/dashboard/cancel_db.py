@@ -128,6 +128,52 @@ class CancelDB:
             ).fetchall()
         return {str(row["run_id"]): str(row["kind"]) for row in rows}
 
+    def mark_consumed(self, dispatch_id: str, run_id: str, *, outcome: str) -> None:
+        """Mark a cancellation row as consumed by the runner."""
+        if outcome not in _VALID_OUTCOMES:
+            raise ValueError(f"outcome must be one of {sorted(_VALID_OUTCOMES)}, got {outcome!r}")
+        with closing(self._connect()) as con:
+            con.execute(
+                """
+                UPDATE cancellations
+                SET consumed_at = ?, outcome = ?
+                WHERE dispatch_id = ? AND run_id = ?
+                """,
+                (_now_iso(), outcome, dispatch_id, run_id),
+            )
+
+    def upgrade_to_kill(self, dispatch_id: str, run_id: str) -> None:
+        """Flip a pending row's kind to ``kill`` (no-op if already killed/consumed)."""
+        with closing(self._connect()) as con:
+            con.execute(
+                """
+                UPDATE cancellations
+                SET kind = 'kill'
+                WHERE dispatch_id = ? AND run_id = ? AND consumed_at IS NULL
+                """,
+                (dispatch_id, run_id),
+            )
+
+    def list_for_dispatch(
+        self,
+        dispatch_id: str,
+        *,
+        pending_only: bool = False,
+    ) -> list[CancelRow]:
+        """Return cancellation rows for one dispatch."""
+        where = "AND consumed_at IS NULL" if pending_only else ""
+        with closing(self._connect()) as con:
+            rows = con.execute(
+                f"""
+                SELECT * FROM cancellations
+                WHERE dispatch_id = ?
+                {where}
+                ORDER BY run_id
+                """,
+                (dispatch_id,),
+            ).fetchall()
+        return [_row_from_sqlite(row) for row in rows]
+
 
 def _migrate(con: sqlite3.Connection) -> None:
     current = int(con.execute("PRAGMA user_version").fetchone()[0])
@@ -136,6 +182,18 @@ def _migrate(con: sqlite3.Connection) -> None:
             con.executescript(sql)
             con.execute(f"PRAGMA user_version = {version}")
     con.commit()
+
+
+def _row_from_sqlite(row: sqlite3.Row) -> CancelRow:
+    values: dict[str, Any] = dict(row)
+    return CancelRow(
+        dispatch_id=str(values["dispatch_id"]),
+        run_id=str(values["run_id"]),
+        requested_at=str(values["requested_at"]),
+        kind=str(values["kind"]),
+        consumed_at=values["consumed_at"],
+        outcome=values["outcome"],
+    )
 
 
 def _now_iso() -> str:
