@@ -30,6 +30,7 @@ from tools.odin.asgard.state import (
 )
 from tools.odin.asgard.transport import RsyncRunner, ShellRsyncRunner, ShellSSHRunner, SSHRunner
 from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
+from tools.odin.valhalla.dashboard.cancel_db import CancelDB
 from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 __all__ = ["DispatchOptions", "resolve_dispatch_dir", "run_dispatch"]
@@ -390,6 +391,87 @@ def _mark_live_retry_consumed(
         print(f"[WARNING] failed to mark retry consumed for {ev.run_id}: {exc}")
     finally:
         live_retry_run_ids.discard(ev.run_id)
+
+
+def _consume_cancellations(
+    *,
+    cancel_db: CancelDB,
+    dispatch_id: str,
+    jobs_by_id: dict[str, JobEntry],
+    workers_by_host: dict,
+) -> int:
+    """Drain pending kill / skip rows from ``cancel_db`` and act on them.
+
+    For each pending row:
+
+    - Job already in a terminal state → mark ``outcome="noop"`` (cleanup).
+    - Skip on a pending job → flip ``status="failed"`` (kind=skipped),
+      mark ``outcome="skipped"``. Returns 1 (caller's ``remaining`` -= 1).
+    - Skip on a running job → upgrade row to kill, fall through.
+    - Kill on a running job → call ``worker.request_cancel(run_id)``;
+      leave the row pending (worker emits ``failed/killed`` later;
+      :func:`_mark_cancellation_consumed` then marks ``outcome="killed"``).
+
+    Args:
+        cancel_db: Open :class:`CancelDB` for this dispatch's runs_root.
+        dispatch_id: Current dispatch id.
+        jobs_by_id: ``run_id → JobEntry`` map (shared with the main loop).
+        workers_by_host: ``hostname → worker`` lookup. Workers must expose
+            ``request_cancel(run_id)`` (the real
+            :class:`~tools.odin.asgard.worker.ValkyrieWorker` does).
+
+    Returns:
+        Count of jobs that landed terminal in this call (skips only).
+    """
+    landed = 0
+    for run_id, kind in cancel_db.read_pending(dispatch_id).items():
+        job = jobs_by_id.get(run_id)
+        if job is None or job.status in {"completed", "failed"}:
+            cancel_db.mark_consumed(dispatch_id, run_id, outcome="noop")
+            continue
+        if kind == "skip" and job.status == "pending":
+            job.status = "failed"
+            job.failure = FailureInfo(
+                kind="skipped",
+                message="operator skipped before dispatch",
+                details={"requested_at": _utc_now_iso()},
+            )
+            job.ended_at = _utc_now_iso()
+            cancel_db.mark_consumed(dispatch_id, run_id, outcome="skipped")
+            landed += 1
+            continue
+        if kind == "skip" and job.status == "running":
+            cancel_db.upgrade_to_kill(dispatch_id, run_id)
+            kind = "kill"
+        if kind == "kill" and job.status == "running":
+            worker = workers_by_host.get(job.assigned_to)
+            if worker is None:
+                # Worker for the assigned host isn't around any more
+                # (host_down quarantine). Mark noop; the worker is gone
+                # so the job won't terminate via kill anyway.
+                cancel_db.mark_consumed(dispatch_id, run_id, outcome="noop")
+                continue
+            worker.request_cancel(run_id)
+            # Row stays pending; consumed when the worker emits failed/killed.
+    return landed
+
+
+def _mark_cancellation_consumed(
+    *,
+    cancel_db: CancelDB,
+    dispatch_id: str,
+    ev: StateEvent,
+) -> None:
+    """Mark a cancellation row consumed when the matching worker event arrives.
+
+    Only fires for ``failed`` events whose ``failure.kind == "killed"``
+    (skips are marked synchronously inside :func:`_consume_cancellations`).
+    """
+    if ev.transition != "failed" or ev.failure is None:
+        return
+    if ev.failure.kind != "killed":
+        return
+    cancel_db.mark_consumed(dispatch_id, ev.run_id, outcome="killed")
 
 
 def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntry]:
