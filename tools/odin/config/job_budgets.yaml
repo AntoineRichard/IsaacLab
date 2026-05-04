@@ -1,10 +1,15 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 # Auto-generated from dispatch 20260430-110509 by ad-hoc analysis.
 # Per-task budgets = max-observed-duration × 1.5, rounded up to nearest 5 min.
 # Hand-set values for tasks that timed out without completing.
 
 defaults:
-  rsl_rl: 3600   # 1h fallback
-  skrl: 7200     # 2h fallback (skrl tends heavier)
+  rsl_rl: 43200  # 12h fallback — generous for unlisted tasks; bump if you
+  skrl: 43200    # know a task is going to need more, otherwise tight enough.
 
 budgets:
   Isaac-Ant-Direct-v0:
