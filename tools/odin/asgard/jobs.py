@@ -39,6 +39,13 @@ class FailureInfo:
       driver mismatch). Worker attempts container-restart-based
       recovery before retrying on the same host. Counts against
       ``max_infrastructure_retries``.
+    - ``killed``: operator-initiated kill via the Tab A cancel button.
+      The worker pkilled the trainer mid-run and pulled whatever
+      partial bundle was on disk. Does NOT count as a host-health
+      failure for the circuit-breaker.
+    - ``skipped``: operator-initiated skip via the Tab A cancel button.
+      The runner flipped a pending job to failed before any worker
+      submitted. No bundle exists.
     """
 
     kind: str
