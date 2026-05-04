@@ -96,6 +96,7 @@ def _job_to_dict(j: JobEntry) -> dict[str, Any]:
         "started_at": j.started_at,
         "ended_at": j.ended_at,
         "preferred_not": sorted(j.preferred_not),
+        "per_job_timeout_s": j.per_job_timeout_s,
     }
     if j.failure is None:
         d["failure"] = None
@@ -132,6 +133,7 @@ def _job_from_dict(d: dict[str, Any]) -> JobEntry:
         preferred_not=set(d.get("preferred_not") or []),
         started_at=d.get("started_at"),
         ended_at=d.get("ended_at"),
+        per_job_timeout_s=d.get("per_job_timeout_s"),
     )
 
 
