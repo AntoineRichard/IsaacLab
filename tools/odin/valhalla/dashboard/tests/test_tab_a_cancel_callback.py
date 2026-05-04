@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pytest
-
 from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.callbacks import (
     _on_cancel_revert_handler,
     _on_cancel_toggle_handler,

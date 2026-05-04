@@ -66,6 +66,7 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
         Input("tab-a-running-tail-shown", "data"),
         Input("tab-a-running-tail-store", "data"),
         Input("tab-a-retry-bump", "data"),
+        State("tab-a-cancel-pending", "data"),
     )
     def _update_jobs(
         _n,
@@ -79,6 +80,7 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
         running_tail_shown,
         running_tail_store,
         _retry_bump,
+        cancel_pending,
     ):
         if not dispatch_id:
             return dash.no_update
@@ -94,6 +96,7 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
                 ssh_tail_store=ssh_tail_store or {},
                 running_tail_shown=running_tail_shown or [],
                 running_tail_store=running_tail_store or {},
+                cancel_pending=cancel_pending,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[WARNING] tab-a jobs callback: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -254,6 +257,7 @@ def _compute_jobs_children(
     ssh_tail_store: dict[str, list[str]],
     running_tail_shown: list[str] | None = None,
     running_tail_store: dict[str, dict] | None = None,
+    cancel_pending: dict | None = None,
 ):
     payload = data.load_dispatch(dispatch_id)
     effective_kind = list(kind_filter or [])
@@ -270,6 +274,8 @@ def _compute_jobs_children(
         running_tail_shown=set(running_tail_shown or []),
         running_tail_store=running_tail_store or {},
         retry_queue=retry_queue,
+        cancel_queue=data.read_cancel_queue(dispatch_id),
+        cancel_confirm=cancel_pending or {},
     )
 
 
