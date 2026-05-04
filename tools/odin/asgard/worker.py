@@ -1094,8 +1094,11 @@ class ValkyrieWorker(threading.Thread):
             manifest, emit ``completed`` (or a malformed-bundle failure).
           - :data:`POLL_EXITED_NO_MANIFEST`: rsync-pull the bundle (best
             effort), classify via :meth:`_classify_remote`, emit
-            ``failed``. If ``inflight.timeout_kill_dispatched`` is set,
-            override the classification to ``kind="timeout"``.
+            ``failed``. Classification precedence (highest first):
+            ``inflight.timeout_kill_dispatched`` → ``kind="timeout"``;
+            ``inflight.kill_dispatched`` (operator kill via
+            :meth:`request_cancel`) → ``kind="killed"``; otherwise →
+            :meth:`_classify_remote`.
 
         Removes the entry from :attr:`_inflight` on the way out.
         """

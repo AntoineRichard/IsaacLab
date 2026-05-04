@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import json
 import queue
 import threading
 from dataclasses import dataclass, field
@@ -18,8 +17,8 @@ from tools.odin.asgard.jobs import JobEntry
 from tools.odin.asgard.tracker import Tracker
 from tools.odin.asgard.transport import RsyncResult, SSHResult
 from tools.odin.asgard.worker import (
-    JobInflight,
     POLL_EXITED_NO_MANIFEST,
+    JobInflight,
     ValkyrieWorker,
     WorkerOptions,
 )

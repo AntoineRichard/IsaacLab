@@ -86,9 +86,7 @@ def validate_tracker_payload(payload: dict[str, Any]) -> None:
     if not isinstance(payload["pid"], int):
         raise ValueError(f"tracker pid must be int, got {type(payload['pid']).__name__}")
     if not isinstance(payload["per_job_timeout_s"], int):
-        raise ValueError(
-            f"tracker per_job_timeout_s must be int, got {type(payload['per_job_timeout_s']).__name__}"
-        )
+        raise ValueError(f"tracker per_job_timeout_s must be int, got {type(payload['per_job_timeout_s']).__name__}")
 
 
 def write_tracker(bundle_dir: Path, tracker: Tracker) -> None:

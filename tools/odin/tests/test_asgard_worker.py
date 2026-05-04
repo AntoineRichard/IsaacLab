@@ -205,13 +205,15 @@ def test_worker_rejects_manifest_with_failed_training_phase(tmp_path: Path):
         def pull(self, host, remote_path: str, local_path: Path) -> RsyncResult:
             local_path.mkdir(parents=True, exist_ok=True)
             (local_path / "manifest.json").write_text(
-                json.dumps({
-                    "schema_version": "1.0",
-                    "phases": {
-                        "startup": {"status": "completed", "exit_code": 0},
-                        "training": {"status": "failed", "exit_code": -9},
-                    },
-                })
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "phases": {
+                            "startup": {"status": "completed", "exit_code": 0},
+                            "training": {"status": "failed", "exit_code": -9},
+                        },
+                    }
+                )
             )
             return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
 
@@ -236,13 +238,15 @@ def test_worker_rejects_manifest_with_nonzero_training_exit(tmp_path: Path):
         def pull(self, host, remote_path: str, local_path: Path) -> RsyncResult:
             local_path.mkdir(parents=True, exist_ok=True)
             (local_path / "manifest.json").write_text(
-                json.dumps({
-                    "schema_version": "1.0",
-                    "phases": {
-                        "startup": {"status": "completed", "exit_code": 0},
-                        "training": {"status": "completed", "exit_code": 1},
-                    },
-                })
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "phases": {
+                            "startup": {"status": "completed", "exit_code": 0},
+                            "training": {"status": "completed", "exit_code": 1},
+                        },
+                    }
+                )
             )
             return RsyncResult(exit_code=0, stdout="", stderr="", duration_s=0.0)
 
@@ -264,13 +268,15 @@ def test_worker_accepts_clean_completed_manifest(tmp_path: Path):
         def pull(self, host, remote_path: str, local_path: Path) -> RsyncResult:
             local_path.mkdir(parents=True, exist_ok=True)
             (local_path / "manifest.json").write_text(
-                json.dumps({
-                    "schema_version": "1.0",
-                    "phases": {
-                        "startup": {"status": "completed", "exit_code": 0},
-                        "training": {"status": "completed", "exit_code": 0},
-                    },
-                })
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "phases": {
+                            "startup": {"status": "completed", "exit_code": 0},
+                            "training": {"status": "completed", "exit_code": 0},
+                        },
+                    }
+                )
             )
             (local_path / "training.json").write_text(json.dumps({"schema_version": "1.0"}))
             (local_path / "startup.json").write_text(json.dumps({"schema_version": "1.0"}))
@@ -749,13 +755,17 @@ def test_worker_gpu_lost_recovery_succeeds_retries_same_host(tmp_path, monkeypat
     )
     bundle = tmp_path / job.bundle_dir_name
     bundle.mkdir(parents=True)
-    (bundle / "manifest.json").write_text(json.dumps({
-        "schema_version": "1.0",
-        "phases": {
-            "startup": {"status": "completed", "exit_code": 0},
-            "training": {"status": "completed", "exit_code": 0},
-        },
-    }))
+    (bundle / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "phases": {
+                    "startup": {"status": "completed", "exit_code": 0},
+                    "training": {"status": "completed", "exit_code": 0},
+                },
+            }
+        )
+    )
 
     class _FakeRsync:
         def pull(self, host, remote, local):
