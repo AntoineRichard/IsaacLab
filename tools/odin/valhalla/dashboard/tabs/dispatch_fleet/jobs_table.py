@@ -309,6 +309,19 @@ def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) 
     if attempts > 1:
         status_children.append(html.Span(f"×{attempts}", className="tab-a-attempts-badge"))
 
+    # Running jobs get the 👁 tail-toggle adjacent to the status pill — the
+    # tail isn't a failure detail, so the failure column is the wrong home.
+    if status == "running":
+        status_children.append(
+            html.Button(
+                "👁",
+                id={"type": "tab-a-running-tail-toggle", "run_id": run_id},
+                n_clicks=0,
+                className="tab-a-expand-toggle tab-a-running-tail-toggle",
+                title="Show / hide running stdout tail",
+            )
+        )
+
     if kind:
         is_queued = run_id in retry_queue
         retry_btn = html.Button(
@@ -328,16 +341,6 @@ def _data_row(job: dict, dispatch_id: str, retry_queue: set[str] | None = None) 
                 title="Show / hide failure details",
             ),
             retry_btn,
-        ]
-    elif status == "running":
-        failure_cell = [
-            html.Button(
-                "👁",
-                id={"type": "tab-a-running-tail-toggle", "run_id": run_id},
-                n_clicks=0,
-                className="tab-a-expand-toggle tab-a-running-tail-toggle",
-                title="Show / hide running stdout tail",
-            )
         ]
     else:
         failure_cell = "—"
