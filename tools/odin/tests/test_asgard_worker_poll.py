@@ -189,7 +189,6 @@ def test_finalize_done_emits_completed_after_pull_and_validate(tmp_path: Path):
 
 def test_finalize_exited_no_manifest_classifies_via_remote_stderr(tmp_path: Path):
     """Crashed mid-run: pull bundle (best effort), classify via remote stderr."""
-    bundle = tmp_path / "r-crash"  # noqa: F841
 
     class _RsyncBest:
         def pull(self, host, remote_path, local_path):
