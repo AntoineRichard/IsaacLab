@@ -28,9 +28,13 @@ budgets:
   Isaac-Cartpole-Direct-v0:
     rsl_rl: 300   # n=3, max=1.9m
   Isaac-Cartpole-RGB-Camera-Direct-v0:
-    skrl: 5400   # Same as Depth-Camera (max_iterations=1600 → ~1h30
-                 # natural exit). RGB also hits the upstream synthetic-
-                 # data hang in 2-5h, so 1h30 catches that case too.
+    skrl: 9000   # 2h30. RGB renders 3 channels vs Depth's 1, so per-tick
+                 # cost is ~50% higher: 102k ticks (max_iterations=1600
+                 # × 64 rollouts) takes ~108 min on Blackwell at the
+                 # observed ~15.8 ticks/s. Earlier observations had this
+                 # task hanging in the upstream synthetic-data render
+                 # loop after 2-5h; 2h30 still catches that before its
+                 # earliest hang threshold.
   Isaac-Cartpole-Showcase-Box-MultiDiscrete-Direct-v0:
     skrl: 6300   # n=3, max=69.0m
   Isaac-Cartpole-v0:
