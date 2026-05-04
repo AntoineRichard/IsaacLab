@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.odin.asgard.jobs import JobEntry
+from tools.odin.asgard.jobs import FailureInfo, JobEntry
 from tools.odin.asgard.runner import _consume_cancellations, _mark_cancellation_consumed
 from tools.odin.asgard.worker import StateEvent
 from tools.odin.valhalla.dashboard.cancel_db import CancelDB
@@ -143,7 +143,6 @@ def test_mark_cancellation_consumed_on_killed_event(tmp_path: Path):
     """A worker's failed/killed StateEvent triggers mark_consumed(killed)."""
     cancel_db = CancelDB(tmp_path)
     cancel_db.request("d1", "r-kill", kind="kill")
-    from tools.odin.asgard.jobs import FailureInfo
 
     ev = StateEvent(
         run_id="r-kill",
@@ -164,7 +163,6 @@ def test_mark_cancellation_consumed_ignores_unrelated_failed(tmp_path: Path):
     to any cancellation row — leave the row alone."""
     cancel_db = CancelDB(tmp_path)
     cancel_db.request("d1", "r-kill", kind="kill")
-    from tools.odin.asgard.jobs import FailureInfo
 
     ev = StateEvent(
         run_id="r-kill",
@@ -177,3 +175,25 @@ def test_mark_cancellation_consumed_ignores_unrelated_failed(tmp_path: Path):
 
     # Row stays pending — operator can still kill the next attempt.
     assert cancel_db.read_pending("d1") == {"r-kill": "kill"}
+
+
+def test_consume_cancellations_marks_noop_when_worker_missing_for_running_job(tmp_path: Path):
+    """Kill on a running job whose host has no live worker (host_down quarantine
+    raced ahead of the cancel) → mark noop. Pins the deliberate deviation from
+    the spec's 'leave pending' suggestion: the worker is gone, so a sticky
+    pending row would never be consumed via the worker's failed/killed event.
+    """
+    cancel_db = CancelDB(tmp_path)
+    cancel_db.request("d1", "r-kill", kind="kill")
+    job = _job("r-kill", status="running", assigned_to="v1")  # v1 absent below
+
+    _consume_cancellations(
+        cancel_db=cancel_db,
+        dispatch_id="d1",
+        jobs_by_id={"r-kill": job},
+        workers_by_host={},  # worker for "v1" is gone
+    )
+
+    rows = cancel_db.list_for_dispatch("d1")
+    assert len(rows) == 1
+    assert rows[0].outcome == "noop"
