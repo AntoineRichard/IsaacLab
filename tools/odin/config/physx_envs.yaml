@@ -173,7 +173,7 @@ groups:
     has_rl_games: true
     framework: skrl
     num_envs: 512
-    max_iterations: 32000
+    max_iterations: 16000
     keep: true
     status: current
     suspected_gap: null
@@ -207,7 +207,7 @@ groups:
     has_rl_games: true
     framework: skrl
     num_envs: 512
-    max_iterations: 32000
+    max_iterations: 16000
     keep: true
     status: current
     suspected_gap: null
