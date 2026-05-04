@@ -347,8 +347,9 @@ class DataLayer:
     def read_cancel_queue(self, dispatch_id: str) -> dict[str, str]:
         """Return ``{run_id: kind}`` for the dispatch's pending cancellations.
 
-        Stored in ``<runs_root>/.retry.sqlite`` (shared with the retry queue).
-        Empty / missing rows return an empty dict.
+        Stored in ``<runs_root>/.retry.sqlite`` (same SQLite file as the
+        retry queue, different table). Empty / missing rows return an
+        empty dict.
         """
         return self._get_cancel_db().read_pending(dispatch_id)
 
