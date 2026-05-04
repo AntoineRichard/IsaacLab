@@ -236,26 +236,6 @@ tbody tr:hover td { background: #1f242a; }
 .tab-a-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .tab-a-muted { color: #888; }
 
-/* Host IP cell with copy-to-clipboard button. The button sits flush
-   against the IP text, defaults to a low-contrast emoji so it doesn't
-   compete visually, and brightens on hover. The flash class swaps the
-   icon to a checkmark + green color for ~0.6s after a successful copy. */
-.tab-a-host-cell { white-space: nowrap; }
-.tab-a-host-text { user-select: text; }
-.tab-a-host-copy {
-  background: none;
-  border: none;
-  cursor: pointer;
-  margin-left: 4px;
-  padding: 0 2px;
-  font-size: 11px;
-  opacity: 0.35;
-  vertical-align: middle;
-  color: #aaa;
-}
-.tab-a-host-copy:hover { opacity: 1; }
-.tab-a-host-copy-flash { color: #4ade80; opacity: 1; }
-
 /* ---------- fleet table ---------- */
 
 #tab-a-fleet-table-content {
