@@ -1170,10 +1170,15 @@ class ValkyrieWorker(threading.Thread):
         self._inflight.pop(job.run_id, None)
 
     def _emit_failed(self, job: JobEntry, failure: FailureInfo) -> None:
-        """Stamp the job as ``failed`` and post the matching :class:`StateEvent`."""
-        job.status = "failed"
-        job.failure = failure
-        job.ended_at = _utc_now_iso()
+        """Stamp the job as ``failed`` and post the matching :class:`StateEvent`.
+
+        Self-loops (already-failed jobs) short-circuit at the helper level
+        and post no event — the worker should not be calling _emit_failed
+        on a job that's already terminal, but the no-op safety net is
+        cheap insurance.
+        """
+        if not job.transition_to("failed", failure=failure):
+            return
         self._state_chan.put(
             StateEvent(
                 run_id=job.run_id,
