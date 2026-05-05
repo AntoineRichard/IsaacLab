@@ -343,3 +343,22 @@ def test_reconcile_leaves_skip_for_running_job_unconsumed(tmp_path: Path):
     assert job.status == "running"
     # Skip row still pending — the runner will pick it up on the first tick.
     assert cancel_db.read_pending(tmp_path.name) == {"r-running-skip": "skip"}
+
+
+def test_adopted_completed_stamps_ended_at(tmp_path: Path):
+    """Bug 4 regression: reconcile flips status to 'completed' but historically
+    didn't stamp ended_at. After the transition_to refactor, ended_at must be
+    set whenever status flips to a terminal value."""
+    fleet = Fleet(fleet_name="t", hosts=[_host()])
+    job = _job()
+    ssh = _FakeSSH(
+        scripted={
+            "cat ": SSHResult(exit_code=0, stdout=_manifest_completed(), stderr="", duration_s=0.0),
+        }
+    )
+    rsync = _FakeRsync()
+
+    reconcile_orphans(fleet=fleet, jobs=[job], dispatch_dir=tmp_path, ssh=ssh, rsync=rsync)
+
+    assert job.status == "completed"
+    assert job.ended_at is not None  # Bug 4 regression

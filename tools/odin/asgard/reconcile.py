@@ -219,15 +219,17 @@ def reconcile_orphans(
         if manifest is not None:
             if _manifest_indicates_clean_completion(manifest):
                 _pull_bundle(host, j.run_id, dispatch_dir, rsync)
-                j.status = "completed"
+                j.transition_to("completed")
                 outcomes.append(ReconcileOutcome(run_id=j.run_id, action="adopted_completed"))
             else:
                 _pull_bundle(host, j.run_id, dispatch_dir, rsync)
-                j.status = "failed"
-                j.failure = FailureInfo(
-                    kind="hugin_crash",
-                    message="adopted from remote manifest after orphan reconciliation",
-                    details={"reconciled": True},
+                j.transition_to(
+                    "failed",
+                    failure=FailureInfo(
+                        kind="hugin_crash",
+                        message="adopted from remote manifest after orphan reconciliation",
+                        details={"reconciled": True},
+                    ),
                 )
                 outcomes.append(ReconcileOutcome(run_id=j.run_id, action="adopted_failed"))
             continue
@@ -239,7 +241,7 @@ def reconcile_orphans(
                 # (or the upstream manifest read returned None spuriously).
                 # Pull and adopt as completed.
                 _pull_bundle(host, j.run_id, dispatch_dir, rsync)
-                j.status = "completed"
+                j.transition_to("completed")
                 outcomes.append(ReconcileOutcome(run_id=j.run_id, action="adopted_completed"))
                 continue
             if poll_state == "alive":
@@ -249,16 +251,13 @@ def reconcile_orphans(
                 continue
             if poll_state == "exited-no-manifest":
                 _pull_bundle(host, j.run_id, dispatch_dir, rsync)
-                j.status = "failed"
-                j.failure = _classify_pulled_bundle(dispatch_dir / j.bundle_dir_name)
+                j.transition_to("failed", failure=_classify_pulled_bundle(dispatch_dir / j.bundle_dir_name))
                 outcomes.append(ReconcileOutcome(run_id=j.run_id, action="adopted_failed"))
                 continue
             if poll_state == "no-pidfile":
                 # Submit was interrupted before the pidfile write — no
                 # trainer ever ran. Re-pending.
-                j.status = "pending"
-                j.assigned_to = None
-                j.started_at = None
+                j.transition_to("pending")
                 outcomes.append(ReconcileOutcome(run_id=j.run_id, action="dead_re_pending"))
                 continue
             # poll_state is None (SSH failed) → fall through to legacy path
@@ -266,14 +265,10 @@ def reconcile_orphans(
 
         if _process_alive(host, j.run_id, ssh):
             _kill_remote(host, j.run_id, ssh)
-            j.status = "pending"
-            j.assigned_to = None
-            j.started_at = None
+            j.transition_to("pending")
             outcomes.append(ReconcileOutcome(run_id=j.run_id, action="killed_alive_orphan"))
         else:
-            j.status = "pending"
-            j.assigned_to = None
-            j.started_at = None
+            j.transition_to("pending")
             outcomes.append(ReconcileOutcome(run_id=j.run_id, action="dead_re_pending"))
 
     if cancel_db is not None:
@@ -284,11 +279,13 @@ def reconcile_orphans(
                 cancel_db.mark_consumed(dispatch_id, run_id, outcome="noop")
                 continue
             if kind == "skip" and job.status == "pending":
-                job.status = "failed"
-                job.failure = FailureInfo(
-                    kind="skipped",
-                    message="operator skipped before dispatch (applied at resume)",
-                    details={"reconciled": True},
+                job.transition_to(
+                    "failed",
+                    failure=FailureInfo(
+                        kind="skipped",
+                        message="operator skipped before dispatch (applied at resume)",
+                        details={"reconciled": True},
+                    ),
                 )
                 cancel_db.mark_consumed(dispatch_id, run_id, outcome="skipped")
                 outcomes.append(ReconcileOutcome(run_id=run_id, action="adopted_failed"))
