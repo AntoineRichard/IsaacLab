@@ -172,3 +172,78 @@ def test_main_submits_and_polls(tmp_path: Path, example_config: Path, example_ph
     assert state is not None
     assert state.osmo_workflow_id == "wf-test-1"
     assert state.jobs[0].status == "completed"
+
+
+def test_resume_reattaches_to_existing_dispatch(tmp_path: Path, example_config: Path, example_physx_yaml: Path):
+    """--resume LATEST should NOT create a new dispatch dir; it reuses the existing one."""
+    from unittest.mock import patch
+
+    from tools.odin.asgard.state import read_dispatch_state, write_dispatch_state
+    from tools.odin.bifrost import cli as bifrost_cli
+    from tools.odin.bifrost.client import TaskSnapshot, WorkflowSnapshot
+
+    runs_root = tmp_path / "odin_runs"
+
+    # First, do a dry-run to create a dispatch dir + state.
+    rc = bifrost_cli.main(
+        [
+            "--osmo-config",
+            str(example_config),
+            "--physx-yaml",
+            str(example_physx_yaml),
+            "--seeds",
+            "42",
+            "--runs-root",
+            str(runs_root),
+            "--dry-run",
+        ]
+    )
+    assert rc == 0
+    [dispatch_dir] = list(runs_root.iterdir())
+    # Pretend we'd submitted: stamp a workflow id.
+    state = read_dispatch_state(dispatch_dir)
+    assert state is not None
+    state.osmo_workflow_id = "wf-already-running"
+    write_dispatch_state(dispatch_dir, state)
+
+    class FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def submit(self, *a, **k):
+            raise AssertionError("resume must NOT call submit")
+
+        def status(self, wf):
+            assert wf == "wf-already-running"
+            cur = read_dispatch_state(dispatch_dir)
+            assert cur is not None
+            task_name = cur.jobs[0].osmo_task_name
+            return WorkflowSnapshot(wf, "COMPLETED", [TaskSnapshot(task_name, "COMPLETED", 0)])
+
+        def dataset_download(self, name, dest):
+            cur = read_dispatch_state(dispatch_dir)
+            assert cur is not None
+            run = cur.jobs[0].run_id
+            (Path(dest) / run).mkdir(parents=True, exist_ok=True)
+            (Path(dest) / run / "manifest.json").write_text("{}")
+
+    with patch("tools.odin.bifrost.cli.OsmoClient", side_effect=FakeClient):
+        rc = bifrost_cli.main(
+            [
+                "--osmo-config",
+                str(example_config),
+                "--physx-yaml",
+                str(example_physx_yaml),
+                "--seeds",
+                "42",
+                "--runs-root",
+                str(runs_root),
+                "--poll-interval",
+                "0",
+                "--resume",
+                "LATEST",
+            ]
+        )
+    assert rc == 0
+    # No new dispatch dir was created.
+    assert len(list(runs_root.iterdir())) == 1

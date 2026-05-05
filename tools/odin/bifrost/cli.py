@@ -31,6 +31,7 @@ from tools.odin.asgard.jobs import JobEntry
 from tools.odin.asgard.state import (
     SCHEMA_VERSION,
     DispatchState,
+    read_dispatch_state,
     write_dispatch_state,
 )
 from tools.odin.bifrost.bundle import download_and_validate_bundle
@@ -162,6 +163,15 @@ def _allocate_dispatch_id(now: dt.datetime | None = None) -> str:
     return (now or dt.datetime.now(dt.UTC)).strftime("%Y%m%d-%H%M%S")
 
 
+def _resolve_resume_dispatch(runs_root: Path, target: str) -> Path:
+    if target == "LATEST":
+        candidates = sorted([p for p in runs_root.iterdir() if p.is_dir()])
+        if not candidates:
+            raise FileNotFoundError(f"no dispatch dirs under {runs_root}")
+        return candidates[-1]
+    return runs_root / target
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     cfg = load_bifrost_config(args.osmo_config)
@@ -169,6 +179,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg = replace(cfg, pool=args.pool)
     if args.priority:
         cfg = replace(cfg, priority=args.priority)
+
+    if args.resume:
+        dispatch_dir = _resolve_resume_dispatch(args.runs_root, args.resume)
+        state = read_dispatch_state(dispatch_dir)
+        if state is None:
+            print(f"resume target {dispatch_dir} has no dispatch.json", file=sys.stderr)
+            return 2
+        if state.osmo_workflow_id is None:
+            print(
+                f"resume target {dispatch_dir} has no osmo_workflow_id (was --dry-run only?)",
+                file=sys.stderr,
+            )
+            return 2
+        client = OsmoClient(profile=cfg.osmo_profile)
+        validator = _manifest_validator()
+
+        def on_completed(job: JobEntry) -> None:
+            dataset_name = f"{cfg.bundle_dataset_prefix}-{state.dispatch_id}-{job.run_id}"
+            download_and_validate_bundle(
+                client=client,
+                dataset_name=dataset_name,
+                dispatch_dir=dispatch_dir,
+                run_id=job.run_id,
+                validator=validator,
+            )
+
+        poll_until_terminal(
+            client=client,
+            state=state,
+            dispatch_dir=dispatch_dir,
+            on_task_completed=on_completed,
+            poll_interval_s=float(args.poll_interval),
+        )
+        state.ended_at = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        write_dispatch_state(dispatch_dir, state)
+        return 0
 
     dispatch_id = _allocate_dispatch_id()
     dispatch_dir = args.runs_root / dispatch_id
