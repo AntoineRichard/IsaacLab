@@ -685,6 +685,11 @@ class ValkyrieWorker(threading.Thread):
             if rec.recovered:
                 self._state_chan.put(StateEvent(run_id=job.run_id, host=self.host.host, transition="recovered"))
                 if job.attempts <= self._options.max_infrastructure_retries:
+                    # Bug 3 fix: explicitly flip the JobEntry back to pending
+                    # before re-queueing. Without this, the entry stays as
+                    # 'running' with stale started_at while sitting in the
+                    # queue — operator sees a phantom 'running' row forever.
+                    job.transition_to("pending")
                     self._job_queue.put(job)
                     return
             else:
@@ -696,7 +701,10 @@ class ValkyrieWorker(threading.Thread):
                         failure=failure,
                     )
                 )
-                job.preferred_not = set(job.preferred_not) | {self.host.host}
+                # Re-queue with this host on preferred_not so a different
+                # worker picks it up. transition_to handles both flipping
+                # status to pending and adding the host to preferred_not.
+                job.transition_to("pending", add_preferred_not=self.host.host)
                 self._job_queue.put(job)
                 self._down_event.set()
                 return
