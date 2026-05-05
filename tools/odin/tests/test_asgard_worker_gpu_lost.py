@@ -24,15 +24,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from tools.odin.asgard import worker as worker_mod
 from tools.odin.asgard.fleet import ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry
 from tools.odin.asgard.recovery import RecoveryResult
 from tools.odin.asgard.transport import RsyncResult, SSHResult
 from tools.odin.asgard.worker import StateEvent, ValkyrieWorker, WorkerOptions
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers (mirror test_asgard_worker.py style)
@@ -229,3 +226,101 @@ def test_handle_synchronous_failure_gpu_lost_host_down_emits_host_down_event(tmp
 
     transitions = [e.transition for e in events]
     assert "host_down" in transitions
+
+
+# ---------------------------------------------------------------------------
+# I1 regression: _execute legacy-PTY gpu_lost retry loop
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _SequencedSSH:
+    """Fake SSH that replays a fixed list of SSHResults, one per call."""
+
+    results: list[SSHResult]
+    _call_count: int = field(default=0, init=False)
+
+    def run(self, host, cmd: str, *, timeout_s=None, stdout_tee=None, pty=True) -> SSHResult:
+        result = self.results[self._call_count]
+        self._call_count += 1
+        return result
+
+
+def _gpu_lost_ssh_result() -> SSHResult:
+    """Return an SSHResult whose stderr carries a GPU-loss signature."""
+    return SSHResult(
+        exit_code=1,
+        stdout="",
+        stderr="odin: gpu_unavailable",
+        duration_s=0.5,
+    )
+
+
+def _success_ssh_result() -> SSHResult:
+    return SSHResult(exit_code=0, stdout="", stderr="", duration_s=2.0)
+
+
+def _pending_job(run_id: str = "r_exec1") -> JobEntry:
+    """Return a JobEntry in 'pending' state, ready for _execute to submit."""
+    return JobEntry(
+        run_id=run_id,
+        task_id="Isaac-Anymal-C-Nav-v0",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1,
+        max_iterations=1,
+        seed=1,
+        bundle_dir_name=run_id,
+        status="pending",
+    )
+
+
+def _write_valid_manifest(bundle_dir: Path) -> None:
+    """Write a schema-v1 manifest.json that _validate_bundle accepts."""
+    import json
+
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": "1.0",
+        "phases": {
+            "training": {"status": "completed", "exit_code": 0},
+        },
+    }
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest))
+
+
+def test_execute_legacy_pty_gpu_lost_recovery_retries_and_completes(tmp_path):
+    """I1 regression: the legacy-PTY _execute retry loop's gpu_lost
+    recovery path must produce a final completed job after one
+    successful recovery + retry. The loop relies on transition_to('running')
+    self-looping safely on the second pass — this test catches any
+    refactor that breaks that contract.
+
+    Distinct from the _handle_synchronous_failure tests in this file:
+    those exercise the detached-mode submit-failure path. This one
+    exercises the legacy-PTY in-flight retry loop inside _execute.
+    """
+    bundle_dir_name = "r_exec1"
+
+    # Pre-create the ssh-tail.log directory so _classify can reference it via
+    # relative_to(dispatch_dir), and write a valid manifest.json so that
+    # _validate_bundle passes on the success pass (the _NoopRsync.pull does
+    # not actually create any files on disk).
+    logs_dir = tmp_path / bundle_dir_name / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "ssh-tail.log").touch()
+    _write_valid_manifest(tmp_path / bundle_dir_name)
+
+    # First SSH call: GPU-loss signature → _classify returns gpu_lost.
+    # Second SSH call: success → _classify returns None → success path.
+    ssh = _SequencedSSH(results=[_gpu_lost_ssh_result(), _success_ssh_result()])
+    worker = _make_worker(tmp_path, ssh=ssh)
+    job = _pending_job(bundle_dir_name)
+
+    with patch.object(worker_mod, "recover_valkyrie_gpu", return_value=_fake_recovery(recovered=True)):
+        worker._execute(job)
+
+    assert job.status == "completed"
+    assert job.attempts == 2
+    assert job.started_at is not None
+    assert job.ended_at is not None
