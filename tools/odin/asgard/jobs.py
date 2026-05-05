@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 from tools.odin.common.env_list import load_env_list
 
@@ -94,6 +95,10 @@ class JobEntry:
     preferred_not: set[str] = field(default_factory=set)
     started_at: str | None = None
     ended_at: str | None = None
+    # Substate annotation while status == "running". Distinguishes
+    # the active-training phase from finalization (rsync.pull). Renderers
+    # use this to show a "pulling bundle" badge without changing status.
+    running_substate: str | None = None  # "training" | "pulling_bundle" | None
     # Per-job wall-clock timeout in seconds. ``None`` means "use the
     # dispatcher-wide :attr:`DispatchOptions.per_job_timeout_s`". Populated by
     # :func:`tools.odin.asgard.runner.run_dispatch` from
@@ -101,6 +106,18 @@ class JobEntry:
     # Camera) get hours instead of the global 1h default while Cartpole stays
     # at 10 minutes.
     per_job_timeout_s: int | None = None
+
+    # Allowed-transition graph. See spec §4.1. Self-loops are not listed
+    # here — `transition_to` short-circuits same-state calls as no-ops
+    # before consulting this map.
+    _ALLOWED_TRANSITIONS: ClassVar[dict[str, frozenset[str]]] = {
+        # back-compat: legacy dispatch.json may carry "assigned"; reset_in_flight_to_pending flips it to pending
+        "assigned": frozenset({"pending"}),
+        "completed": frozenset({"pending"}),
+        "failed": frozenset({"pending"}),
+        "pending": frozenset({"running", "failed"}),
+        "running": frozenset({"completed", "failed", "pending"}),
+    }
 
 
 def _framework_slug(framework: str) -> str:

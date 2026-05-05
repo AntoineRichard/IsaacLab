@@ -648,7 +648,7 @@ def test_adopted_completed_stamps_ended_at(tmp_path):
     didn't stamp ended_at. After the transition_to refactor, ended_at must be
     set whenever status flips to a terminal value."""
     # Set up a fake fleet with one host + one running job + a clean remote manifest.
-    # Re-use the existing test's scaffolding (fake SSH that returns a
+    # Reuse the existing test's scaffolding (fake SSH that returns a
     # both-phases-completed manifest, fake rsync that succeeds). After running
     # reconcile_orphans, the JobEntry should have status='completed' AND
     # ended_at != None.
