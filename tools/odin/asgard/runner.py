@@ -303,13 +303,14 @@ def _sweep_pending_after_dispatch(state: DispatchState) -> None:
         return
     for j in state.jobs:
         if j.status == "pending":
-            j.status = "failed"
-            j.failure = FailureInfo(
-                kind="gpu_lost",
-                message="no healthy host available; all hosts marked down",
-                details={"preferred_not": sorted(j.preferred_not)},
+            j.transition_to(
+                "failed",
+                failure=FailureInfo(
+                    kind="gpu_lost",
+                    message="no healthy host available; all hosts marked down",
+                    details={"preferred_not": sorted(j.preferred_not)},
+                ),
             )
-            j.ended_at = _utc_now_iso()
 
 
 def _apply_retry_options(jobs: list[JobEntry], options: DispatchOptions) -> None:
@@ -331,18 +332,12 @@ def _apply_retry_options(jobs: list[JobEntry], options: DispatchOptions) -> None
         retry_set = set(options.retry_failed)
         for j in jobs:
             if j.run_id in retry_set and j.status == "failed":
-                j.status = "pending"
-                j.failure = None
+                j.transition_to("pending")
         return
     if options.retry_all_failed:
         for j in jobs:
             if j.status == "failed":
-                j.status = "pending"
-                j.failure = None
-                j.attempts = 0
-                j.assigned_to = None
-                j.started_at = None
-                j.ended_at = None
+                j.transition_to("pending", reset_attempts=True)
 
 
 def _consume_live_retries(
@@ -361,11 +356,7 @@ def _consume_live_retries(
         job = jobs_by_id.get(run_id)
         if job is None or job.status != "failed":
             continue
-        job.status = "pending"
-        job.failure = None
-        job.assigned_to = None
-        job.started_at = None
-        job.ended_at = None
+        job.transition_to("pending")
         job_q.put(job)
         live_retry_run_ids.add(run_id)
         added += 1
@@ -435,13 +426,14 @@ def _consume_cancellations(
             cancel_db.mark_consumed(dispatch_id, run_id, outcome="noop")
             continue
         if kind == "skip" and job.status == "pending":
-            job.status = "failed"
-            job.failure = FailureInfo(
-                kind="skipped",
-                message="operator skipped before dispatch",
-                details={"requested_at": _utc_now_iso()},
+            job.transition_to(
+                "failed",
+                failure=FailureInfo(
+                    kind="skipped",
+                    message="operator skipped before dispatch",
+                    details={"requested_at": _utc_now_iso()},
+                ),
             )
-            job.ended_at = _utc_now_iso()
             cancel_db.mark_consumed(dispatch_id, run_id, outcome="skipped")
             landed += 1
             continue
@@ -724,18 +716,19 @@ def run_dispatch(  # noqa: C901
     if not newton_capable_hosts:
         for j in merged_jobs:
             if j.backend == "newton" and j.status == "pending":
-                j.status = "failed"
-                j.failure = FailureInfo(
-                    kind="newton_floor",
-                    message=(
-                        f"no host meets Newton CUDA floor "
-                        f"{_NEWTON_CUDA_FLOOR[0]}.{_NEWTON_CUDA_FLOOR[1]}; "
-                        f"run `odin-cuda install --target "
-                        f"{_NEWTON_CUDA_FLOOR[0]}.{_NEWTON_CUDA_FLOOR[1]}`"
+                j.transition_to(
+                    "failed",
+                    failure=FailureInfo(
+                        kind="newton_floor",
+                        message=(
+                            f"no host meets Newton CUDA floor "
+                            f"{_NEWTON_CUDA_FLOOR[0]}.{_NEWTON_CUDA_FLOOR[1]}; "
+                            f"run `odin-cuda install --target "
+                            f"{_NEWTON_CUDA_FLOOR[0]}.{_NEWTON_CUDA_FLOOR[1]}`"
+                        ),
+                        details={"newton_cuda_floor": list(_NEWTON_CUDA_FLOOR)},
                     ),
-                    details={"newton_cuda_floor": list(_NEWTON_CUDA_FLOOR)},
                 )
-                j.ended_at = _utc_now_iso()
 
     # Seed the state and spawn workers.
     state = DispatchState(

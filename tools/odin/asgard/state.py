@@ -288,6 +288,4 @@ def reset_in_flight_to_pending(state: DispatchState) -> None:
     """
     for j in state.jobs:
         if j.status in ("running", "assigned"):
-            j.status = "pending"
-            j.assigned_to = None
-            j.started_at = None
+            j.transition_to("pending")
