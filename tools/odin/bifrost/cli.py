@@ -159,8 +159,74 @@ def _planned_to_job(row: _PlannedRow) -> JobEntry:
     )
 
 
-def _allocate_dispatch_id(now: dt.datetime | None = None) -> str:
-    return (now or dt.datetime.now(dt.UTC)).strftime("%Y%m%d-%H%M%S")
+def _planned_row_from_job(job: JobEntry) -> _PlannedRow:
+    """Reconstruct a :class:`_PlannedRow` from a previously recorded :class:`JobEntry`.
+
+    Used by the ``--retry-failed`` path so that retried jobs preserve the
+    exact ``run_id`` from the parent dispatch instead of getting a fresh one.
+
+    Args:
+        job: A job entry from the parent dispatch state.
+
+    Returns:
+        A planned row carrying the parent's identifiers.
+    """
+    return _PlannedRow(
+        run_id=job.run_id,
+        task_id=job.task_id,
+        framework=job.framework,
+        backend=job.backend,
+        seed=job.seed,
+        num_envs=job.num_envs,
+        max_iterations=job.max_iterations,
+    )
+
+
+def _find_parent_dispatch(runs_root: Path, retry_run_ids: set[str]) -> DispatchState | None:
+    """Find the most recent dispatch dir whose job list is a superset of *retry_run_ids*.
+
+    Args:
+        runs_root: Root directory that contains per-dispatch subdirectories.
+        retry_run_ids: Set of run_ids that must all appear in the candidate dispatch.
+
+    Returns:
+        The matching :class:`DispatchState`, or ``None`` if not found.
+    """
+    if not runs_root.exists():
+        return None
+    for d in sorted(runs_root.iterdir(), reverse=True):
+        if not d.is_dir():
+            continue
+        st = read_dispatch_state(d)
+        if st is None:
+            continue
+        present = {j.run_id for j in st.jobs}
+        if retry_run_ids <= present:
+            return st
+    return None
+
+
+def _allocate_dispatch_id(now: dt.datetime | None = None, runs_root: Path | None = None) -> str:
+    """Return a unique dispatch id string based on the current UTC timestamp.
+
+    If *runs_root* is given and a directory with the base timestamp name already
+    exists there, a monotone suffix ``-N`` is appended to avoid collisions when
+    two dispatches are created within the same second (e.g. in tests).
+
+    Args:
+        now: Optional datetime override, defaults to ``dt.datetime.now(dt.UTC)``.
+        runs_root: Optional parent directory; used only for collision avoidance.
+
+    Returns:
+        A string of the form ``YYYYMMDD-HHMMSS`` or ``YYYYMMDD-HHMMSS-N``.
+    """
+    base = (now or dt.datetime.now(dt.UTC)).strftime("%Y%m%d-%H%M%S")
+    if runs_root is None or not (runs_root / base).exists():
+        return base
+    n = 1
+    while (runs_root / f"{base}-{n}").exists():
+        n += 1
+    return f"{base}-{n}"
 
 
 def _resolve_resume_dispatch(runs_root: Path, target: str) -> Path:
@@ -216,7 +282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         write_dispatch_state(dispatch_dir, state)
         return 0
 
-    dispatch_id = _allocate_dispatch_id()
+    dispatch_id = _allocate_dispatch_id(runs_root=args.runs_root)
     dispatch_dir = args.runs_root / dispatch_id
     dispatch_dir.mkdir(parents=True, exist_ok=True)
 
@@ -230,6 +296,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not rows:
         print("No keep:true rows matched the include filter.", file=sys.stderr)
         return 2
+
+    parent_dispatch_id: str | None = None
+    if args.retry_failed:
+        retry_run_ids = {x.strip() for x in args.retry_failed.split(",") if x.strip()}
+        parent = _find_parent_dispatch(args.runs_root, retry_run_ids)
+        if parent is None:
+            print(
+                f"no recent dispatch contains all run_ids {sorted(retry_run_ids)}",
+                file=sys.stderr,
+            )
+            return 2
+        parent_dispatch_id = parent.dispatch_id
+        rows = [_planned_row_from_job(j) for j in parent.jobs if j.run_id in retry_run_ids]
+        if not rows:
+            print(
+                "retry-failed run_ids did not match any rows in parent dispatch",
+                file=sys.stderr,
+            )
+            return 2
 
     tarball_path: str | None = None
     if cfg.code_delivery.mode == "files_upload":
@@ -258,6 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         jobs=[_planned_to_job(r) for r in rows],
         dispatcher="osmo",
         osmo_workflow_id=None,
+        parent_dispatch_id=parent_dispatch_id,
     )
     write_dispatch_state(dispatch_dir, state)
 

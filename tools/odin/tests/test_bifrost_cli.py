@@ -247,3 +247,62 @@ def test_resume_reattaches_to_existing_dispatch(tmp_path: Path, example_config: 
     assert rc == 0
     # No new dispatch dir was created.
     assert len(list(runs_root.iterdir())) == 1
+
+
+def test_retry_failed_creates_child_dispatch_with_only_failed_rows(
+    tmp_path: Path, example_config: Path, example_physx_yaml: Path
+):
+    from tools.odin.asgard.jobs import FailureInfo
+    from tools.odin.asgard.state import read_dispatch_state, write_dispatch_state
+    from tools.odin.bifrost import cli as bifrost_cli
+
+    runs_root = tmp_path / "odin_runs"
+
+    # Stand up a parent dispatch via dry-run, then mark its row as failed.
+    rc = bifrost_cli.main(
+        [
+            "--osmo-config",
+            str(example_config),
+            "--physx-yaml",
+            str(example_physx_yaml),
+            "--seeds",
+            "42,43",
+            "--runs-root",
+            str(runs_root),
+            "--dry-run",
+        ]
+    )
+    assert rc == 0
+    [parent_dir] = list(runs_root.iterdir())
+    parent = read_dispatch_state(parent_dir)
+    assert parent is not None
+    parent.jobs[0].status = "failed"
+    parent.jobs[0].failure = FailureInfo(kind="hugin_crash", message="boom", details={})
+    parent.jobs[1].status = "completed"
+    write_dispatch_state(parent_dir, parent)
+
+    failed_run_id = parent.jobs[0].run_id
+    rc = bifrost_cli.main(
+        [
+            "--osmo-config",
+            str(example_config),
+            "--physx-yaml",
+            str(example_physx_yaml),
+            "--seeds",
+            "42,43",
+            "--runs-root",
+            str(runs_root),
+            "--retry-failed",
+            failed_run_id,
+            "--dry-run",
+        ]
+    )
+    assert rc == 0
+    dispatch_dirs = sorted(runs_root.iterdir())
+    assert len(dispatch_dirs) == 2
+    child_dir = dispatch_dirs[-1]
+    child = read_dispatch_state(child_dir)
+    assert child is not None
+    assert child.parent_dispatch_id == parent.dispatch_id
+    assert len(child.jobs) == 1
+    assert child.jobs[0].run_id == failed_run_id
