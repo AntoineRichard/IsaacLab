@@ -804,18 +804,16 @@ class ValkyrieWorker(threading.Thread):
         if failure is not None:
             if self._quarantine_check_and_handle(job=job, failure=failure, ssh_tail=ssh_tail):
                 return
-            job.status = "failed"
-            job.failure = failure
-            job.ended_at = _utc_now_iso()
-            self._state_chan.put(
-                StateEvent(
-                    run_id=job.run_id,
-                    host=self.host.host,
-                    transition="failed",
-                    failure=failure,
-                    ended_at=job.ended_at,
+            if job.transition_to("failed", failure=failure):
+                self._state_chan.put(
+                    StateEvent(
+                        run_id=job.run_id,
+                        host=self.host.host,
+                        transition="failed",
+                        failure=failure,
+                        ended_at=job.ended_at,
+                    )
                 )
-            )
             return
 
         # Success path: rsync pull the bundle back.
@@ -830,12 +828,10 @@ class ValkyrieWorker(threading.Thread):
             )
             if self._quarantine_check_and_handle(job=job, failure=rsync_failure, ssh_tail=ssh_tail):
                 return
-            job.status = "failed"
-            job.failure = rsync_failure
-            job.ended_at = _utc_now_iso()
-            self._state_chan.put(
-                StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=rsync_failure)
-            )
+            if job.transition_to("failed", failure=rsync_failure):
+                self._state_chan.put(
+                    StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=rsync_failure)
+                )
             return
 
         # Validate the bundle: manifest.json present, schema-v1 shape.
@@ -843,12 +839,10 @@ class ValkyrieWorker(threading.Thread):
         if bundle_failure is not None:
             if self._quarantine_check_and_handle(job=job, failure=bundle_failure, ssh_tail=ssh_tail):
                 return
-            job.status = "failed"
-            job.failure = bundle_failure
-            job.ended_at = _utc_now_iso()
-            self._state_chan.put(
-                StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=bundle_failure)
-            )
+            if job.transition_to("failed", failure=bundle_failure):
+                self._state_chan.put(
+                    StateEvent(run_id=job.run_id, host=self.host.host, transition="failed", failure=bundle_failure)
+                )
             return
 
         job.status = "completed"
