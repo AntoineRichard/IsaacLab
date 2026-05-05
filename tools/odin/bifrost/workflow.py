@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,7 @@ __all__ = [
     "osmo_safe_task_name",
     "RenderRow",
     "render_workflow_yaml",
+    "stage_source_tarball",
 ]
 
 
@@ -126,3 +128,29 @@ def render_workflow_yaml(
         cfg=cfg,
         tarball_path=tarball_path,
     )
+
+
+def stage_source_tarball(source_dir: Path, dest_tarball: Path, *, repo_root: Path) -> None:
+    """Tar ``source_dir`` into ``dest_tarball`` with paths relative to ``repo_root``.
+
+    The OSMO entry script extracts with ``tar -xzf ... -C /workspace/IsaacLab``,
+    so the tarball must contain paths like ``tools/odin/...`` (i.e. relative
+    to the IsaacLab repo root, not absolute and not relative to ``source_dir``).
+
+    Args:
+        source_dir: Directory to tar (typically ``<repo_root>/tools/odin``).
+        dest_tarball: Output path; parent dir created if missing.
+        repo_root: The path under which archive entries should be relative.
+
+    Raises:
+        ValueError: If ``source_dir`` is not under ``repo_root``.
+    """
+    source_dir = source_dir.resolve()
+    repo_root = repo_root.resolve()
+    try:
+        rel = source_dir.relative_to(repo_root)
+    except ValueError as e:
+        raise ValueError(f"source_dir {source_dir} not under repo_root {repo_root}") from e
+    dest_tarball.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(dest_tarball, "w:gz") as tar:
+        tar.add(source_dir, arcname=str(rel))

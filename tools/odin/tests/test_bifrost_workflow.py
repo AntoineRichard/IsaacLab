@@ -4,8 +4,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import re
+import tarfile
+from pathlib import Path
 
-from tools.odin.bifrost.workflow import osmo_safe_task_name
+from tools.odin.bifrost.workflow import osmo_safe_task_name, stage_source_tarball
 
 DNS_1123_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
@@ -152,3 +154,15 @@ def test_render_workflow_rsync_mode_omits_tarball():
     parsed = yaml.safe_load(out)
     paths = [f.get("path") for f in parsed["workflow"]["tasks"][0]["files"]]
     assert "/workspace/odin-source.tar.gz" not in paths
+
+
+def test_stage_source_tarball_produces_readable_archive(tmp_path: Path):
+    src = tmp_path / "src"
+    (src / "tools" / "odin").mkdir(parents=True)
+    (src / "tools" / "odin" / "hello.py").write_text("print('hi')\n")
+    out = tmp_path / "src.tar.gz"
+    stage_source_tarball(src / "tools" / "odin", out, repo_root=src)
+    assert out.exists()
+    with tarfile.open(out, "r:gz") as t:
+        names = t.getnames()
+    assert "tools/odin/hello.py" in names
