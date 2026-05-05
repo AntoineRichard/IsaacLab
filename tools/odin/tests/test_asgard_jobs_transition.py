@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tools.odin.asgard.jobs import FailureInfo, JobEntry
 
 
@@ -150,3 +152,39 @@ def test_now_defaults_to_utc_iso_when_none():
     job.transition_to("running", assigned_to="v1")  # now=None
     # _utc_now_iso() format: YYYY-MM-DDTHH:MM:SSZ
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", job.started_at) is not None
+
+
+@pytest.mark.parametrize(
+    "src,dst",
+    [
+        ("completed", "running"),
+        ("completed", "failed"),
+        ("failed", "running"),
+        ("failed", "completed"),
+        ("pending", "completed"),  # must go through running
+    ],
+)
+def test_illegal_edges_raise_value_error(src, dst):
+    job = _job(status=src)
+    with pytest.raises(ValueError, match=f"illegal transition {src!r} → {dst!r}"):
+        job.transition_to(dst, failure=FailureInfo(kind="x", message="y"))
+
+
+def test_running_to_failed_without_failure_raises():
+    job = _job(status="running", started_at="t0", assigned_to="v1")
+    with pytest.raises(ValueError, match="requires failure"):
+        job.transition_to("failed")
+
+
+def test_pending_to_running_without_assigned_to_raises():
+    job = _job(status="pending")
+    with pytest.raises(ValueError, match="requires assigned_to"):
+        job.transition_to("running")
+
+
+def test_running_to_completed_with_failure_raises():
+    """The 'completed' contract forbids passing failure. Catches legacy callers
+    that thought they could stamp failure on completion."""
+    job = _job(status="running", started_at="t0", assigned_to="v1")
+    with pytest.raises(ValueError, match="must not pass failure"):
+        job.transition_to("completed", failure=FailureInfo(kind="x", message="y"))
