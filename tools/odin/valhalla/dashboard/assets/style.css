@@ -432,6 +432,17 @@ tbody tr:hover td { background: #1f242a; }
   color: #aaa;
   border: 1px solid rgba(160, 160, 160, 0.3);
 }
+.tab-a-pulling-bundle-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+  font-size: 11px;
+  font-style: italic;
+  background: rgba(118, 185, 0, 0.10);
+  border: 1px solid rgba(118, 185, 0, 0.45);
+  color: #76b900;
+}
 
 .tab-a-retry-banner {
   background: rgba(118, 185, 0, 0.10);

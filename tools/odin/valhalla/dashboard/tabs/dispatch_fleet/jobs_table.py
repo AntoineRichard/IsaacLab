@@ -393,6 +393,19 @@ def _data_row(
     # Running jobs get the 👁 tail-toggle adjacent to the status pill — the
     # tail isn't a failure detail, so the failure column is the wrong home.
     if status == "running":
+        substate = job.get("running_substate")
+        if substate == "pulling_bundle":
+            status_children.append(
+                html.Span(
+                    "pulling bundle",
+                    className="tab-a-pulling-bundle-badge",
+                    title=(
+                        "Worker is rsync-pulling the bundle from the host. "
+                        "The trainer has finished; the dispatcher is waiting on "
+                        "the transfer to complete before flipping to 'completed'."
+                    ),
+                )
+            )
         status_children.append(
             html.Button(
                 "👁",
