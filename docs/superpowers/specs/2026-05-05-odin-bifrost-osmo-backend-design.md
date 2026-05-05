@@ -19,7 +19,7 @@ The design rests on one observation: OSMO already provides scheduling, image pul
 - Four-kind failure classification (`infrastructure` / `hugin_crash` / `hugin_malformed_bundle` / `timeout`) preserved across both backends.
 - `--resume`, `--retry-failed <run_ids>`, `--dry-run`, optional `--rsync` for active development.
 - Hugin/Munin code reaches the container via a `tools/odin/` tarball uploaded with `files: [{localpath: ...}]` (default), or via `--rsync` (dev), or assumed image-baked (out of scope for v1).
-- Atomic `dispatch.json` with two new optional fields: `backend` and `osmo_workflow_id`.
+- Atomic `dispatch.json` with new optional fields: `dispatcher`, `osmo_workflow_id`, `parent_dispatch_id`, plus per-job `osmo_task_name`. (Field name `dispatcher` chosen because the existing per-job `backend` field already means physics backend — `physx` / `newton`.)
 
 **Out of v1 (deferred, noted as follow-ups):**
 
@@ -191,34 +191,42 @@ Flags absent compared to asgard (intentional — OSMO subsumes them):
 
 ### 5.3 `dispatch.json` schema delta
 
-Today's schema (`tools/odin/asgard/state.py` v1.0) gains additive fields and bumps to **v1.1**. The bump is back-compatible: every existing reader (Valhalla aggregator, retry CLI, dashboard) treats the new fields as optional with `backend → "asgard"` as the implicit default. Old `dispatch.json` files from prior asgard runs continue to load unmodified. New optional top-level keys:
+Today's schema (`tools/odin/asgard/state.py` is at `SCHEMA_VERSION = "1.4"`) gains additive fields and bumps to **v1.5**. The bump is back-compatible by construction: `_schema_version_compatible` already accepts any same-major version, and every new field is optional with a sensible implicit default (`dispatcher → "asgard"`). Old `dispatch.json` files from prior asgard runs continue to load unmodified. New optional top-level keys:
 
 ```json
 {
-  "schema_version": "1.1",
+  "schema_version": "1.5",
   "dispatch_id": "20260505-150000",
-  "backend": "osmo",                                       // NEW: "osmo" | "asgard"; absent → "asgard"
-  "osmo_workflow_id": "odin-disp-20260505-150000-1",       // NEW: present iff backend == "osmo"
+  "started_at": "2026-05-05T15:00:00Z",
+  "dispatcher": "osmo",                                    // NEW top-level: "osmo" | "asgard"; absent → "asgard"
+  "osmo_workflow_id": "odin-disp-20260505-150000-1",       // NEW: present iff dispatcher == "osmo"
   "parent_dispatch_id": null,                              // NEW: set when this is a --retry-failed child
-  "fleet_snapshot_path": "fleet.yaml.snapshot",            // asgard-only; null for osmo
-  "preflight_path": "preflight.json",                      // asgard-only; null for osmo
+  "seeds": [42, 43, 44],
+  "commit_sha": "...",
+  "fleet": [],                                             // empty list for osmo (no host fleet)
   "jobs": [
     {
       "run_id": "rsl-rl_physx_Isaac-Ant-Direct-v0_20260505-150000_seed42",
-      "task": "Isaac-Ant-Direct-v0",
+      "task_id": "Isaac-Ant-Direct-v0",
       "framework": "rsl-rl",
-      "backend_phys": "physx",                              // not to be confused with the dispatcher backend
+      "backend": "physx",                                   // EXISTING field, physics backend
+      "num_envs": 4096,
+      "max_iterations": 500,
       "seed": 42,
-      "state": "completed",
-      "target_host": null,                                  // null for osmo
-      "osmo_task_name": "rsl-rl_physx_isaac-ant_seed42",    // NEW: present iff backend == "osmo"
+      "bundle_dir_name": "rsl-rl_physx_Isaac-Ant-Direct-v0_20260505-150000_seed42",
+      "status": "completed",
+      "assigned_to": null,                                  // SSH host for asgard; null for osmo
+      "osmo_task_name": "rsl-rl-physx-isaac-ant-seed42",    // NEW: present iff dispatcher == "osmo"; DNS-1123-safe
+      "attempts": 1,
       "failure": null
     }
-  ]
+  ],
+  "skipped": [],
+  "quarantined_hosts": []
 }
 ```
 
-`backend == "asgard"` records continue to write today's fields untouched. Aggregator and retry CLI must treat `backend` as optional (default `"asgard"`).
+For `dispatcher == "asgard"` (or absent), all existing fields keep their meaning. Aggregator and retry CLI must treat the new fields as optional (default `dispatcher → "asgard"`, `osmo_workflow_id → null`, `parent_dispatch_id → null`, `osmo_task_name → null`).
 
 ## 6. Lifecycle
 
@@ -314,10 +322,13 @@ workflow:
         :
         {%- endif %}
         cd /workspace/IsaacLab
+        # --runs_root pins Hugin/Munin's bundle root at the OSMO per-task output dir.
+        # Hugin/Munin then write `{{output}}/<run_id>/{manifest.json, training.json, ...}`
+        # which becomes the dataset content; bundle.py downloads to odin_runs/<dispatch_id>/.
         PYTHONPATH=. ./isaaclab.sh -p tools/odin/{{ row.framework_runner }}/run.py \
-          --task {{ row.task }} --backend {{ row.backend_phys }} --seed {{ row.seed }} \
+          --task {{ row.task_id }} --backend {{ row.backend }} --seed {{ row.seed }} \
           --num_envs {{ row.num_envs }} --max_iterations {{ row.max_iterations }} \
-          --bundle_root '{{ '{{output}}' }}'
+          --runs_root '{{ '{{output}}' }}'
     {%- if code_delivery.mode == "files_upload" %}
     # tarball_path is the CONTROLLER-LOCAL path; OSMO uploads it at submit time
     - localpath: {{ tarball_path }}
@@ -343,7 +354,7 @@ Notes on the template:
 - `'{{output}}'` is OSMO's special token for the per-task output directory; we double-brace-escape inside Jinja so the literal `{{output}}` survives the render and OSMO substitutes at runtime.
 - `osmo_task_name` is derived from `run_id` and must be DNS-1123-compliant (≤63 chars, lowercase alphanumeric + `-`, no leading/trailing `-`). Transform: lowercase, replace `[_.\s]+` with `-`, strip non-alphanumeric-or-dash, truncate to 63 chars, then suffix with a 6-hex hash of the full run_id if truncation occurred. Implementation in `bifrost.workflow.osmo_safe_task_name`.
 - `framework_runner` is `hugin` for `framework == rsl-rl` and `munin` for `framework == skrl`.
-- The runner CLI (`hugin/run.py`, `munin/run.py`) is expected to accept `--bundle_root <path>`. **Verify on first integration test**; if missing today, adding the flag is the spec's first implementation precondition (one-flag addition to both runners; matches asgard semantics where the bundle path is currently controlled by an env var or default).
+- **No new flag is needed on Hugin/Munin.** Both already accept `--runs_root` (defaults to `./odin_runs`). Setting `--runs_root '{{output}}'` makes Hugin write `{{output}}/<run_id>/{manifest.json, ...}`. After OSMO uploads `{{output}}` as the dataset content, downloading the dataset into `odin_runs/<dispatch_id>/` gives `odin_runs/<dispatch_id>/<run_id>/manifest.json` — the canonical layout, with no glue code.
 - `code_delivery.mode == "files_upload"` overlays the tarball onto the image-baked `/workspace/IsaacLab` tree. v1 ships only `tools/odin/`; if a future row needs newer `source/isaaclab/*` or `scripts/benchmarks/*`, expand `code_delivery.source_root` (it's already a config knob).
 
 ### 9.2 `client.py`
