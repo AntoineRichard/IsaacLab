@@ -126,8 +126,11 @@ class OvPhysxManager(PhysicsManager):
 
     @classmethod
     def forward(cls) -> None:
-        """No-op -- ovphysx does not have a fabric/rendering pipeline."""
-        pass
+        """Refresh ovphysx kinematic articulation state for same-frame reads."""
+        if cls._physx is None:
+            return
+        update_fk = cls._require_kinematic_fk(cls._physx)
+        update_fk()
 
     @classmethod
     def step(cls) -> None:
@@ -187,6 +190,26 @@ class OvPhysxManager(PhysicsManager):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _kinematic_fk_requirement_message(version: str | None = None) -> str:
+        """Return a user-facing error for wheels without kinematic FK support."""
+        detected = f" Detected ovphysx {version}." if version else ""
+        return (
+            "IsaacLab OVPhysX requires a local ovphysx wheel with "
+            "PhysX.update_articulations_kinematic() (>=0.4.2). Rebuild "
+            "/home/alex/physics/omni/ovphysx and force-reinstall the wheel into "
+            "IsaacLab's ovphysx launcher environment."
+            f"{detected}"
+        )
+
+    @classmethod
+    def _require_kinematic_fk(cls, physx: Any, version: str | None = None) -> Any:
+        """Return the ovphysx kinematic FK updater, or raise a clear version error."""
+        update_fk = getattr(physx, "update_articulations_kinematic", None)
+        if update_fk is None:
+            raise RuntimeError(cls._kinematic_fk_requirement_message(version))
+        return update_fk
+
     @classmethod
     def _warmup_and_load(cls) -> None:
         """Export the USD stage and load it into the ovphysx runtime.
@@ -214,9 +237,10 @@ class OvPhysxManager(PhysicsManager):
             parts = device_str.split(":")
             gpu_index = int(parts[1]) if len(parts) > 1 else 0
             ovphysx_device = "gpu"
+            active_cuda_gpus = str(gpu_index)
         else:
-            gpu_index = 0
             ovphysx_device = "cpu"
+            active_cuda_gpus = None
 
         if cls._locked_device is not None and ovphysx_device != cls._locked_device:
             raise RuntimeError(
@@ -237,7 +261,7 @@ class OvPhysxManager(PhysicsManager):
         logger.info("OvPhysxManager: exported USD stage to %s", stage_file)
 
         if cls._physx is None:
-            cls._construct_physx(ovphysx_device, gpu_index)
+            cls._construct_physx(ovphysx_device, active_cuda_gpus)
             cls._locked_device = ovphysx_device
         else:
             # Reuse path: the cached PhysX may still hold the prior stage (the
@@ -288,7 +312,7 @@ class OvPhysxManager(PhysicsManager):
         cls._warmup_done = True
 
     @classmethod
-    def _construct_physx(cls, ovphysx_device: str, gpu_index: int) -> None:
+    def _construct_physx(cls, ovphysx_device: str, active_cuda_gpus: str | None) -> None:
         """Bootstrap the ``ovphysx`` wheel and create the :class:`ovphysx.PhysX` instance.
 
         Runs once per process.  Configures worker threads, registers the
@@ -314,7 +338,14 @@ class OvPhysxManager(PhysicsManager):
 
         import ovphysx
 
-        cls._physx = ovphysx.PhysX(device=ovphysx_device, gpu_index=gpu_index)
+        ovphysx_version = getattr(ovphysx, "__version__", None)
+        try:
+            cls._physx = ovphysx.PhysX(device=ovphysx_device, active_cuda_gpus=active_cuda_gpus)
+        except TypeError as exc:
+            if "active_cuda_gpus" in str(exc):
+                raise RuntimeError(cls._kinematic_fk_requirement_message(ovphysx_version)) from exc
+            raise
+        cls._require_kinematic_fk(cls._physx, ovphysx_version)
 
         # Without worker threads the stepper runs simulate()+fetchResults()
         # synchronously, blocking the calling thread for the full GPU step time.

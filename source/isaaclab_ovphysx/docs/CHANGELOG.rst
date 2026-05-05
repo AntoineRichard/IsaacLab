@@ -44,6 +44,12 @@ Changed
 * Type-annotated ``binding_getter`` on
   :meth:`~isaaclab_ovphysx.assets.ArticulationData.__init__` as
   ``Callable[[int], Any] | None``.
+* Require ``ovphysx>=0.4.2`` and call
+  ``PhysX.update_articulations_kinematic()`` from
+  :meth:`~isaaclab_ovphysx.physics.OvPhysxManager.forward` and before
+  ``LINK_POSE`` reads, so same-frame link-pose reads after joint-position
+  writes match the PhysX backend. Older wheels raise a clear
+  :exc:`RuntimeError` during manager construction.
 * Expanded docstrings on the OVPhysX articulation Warp kernels
   (:func:`~isaaclab_ovphysx.assets.articulation.kernels.compute_soft_joint_pos_limits_func`,
   :func:`~isaaclab_ovphysx.assets.articulation.kernels.update_soft_joint_pos_limits`,

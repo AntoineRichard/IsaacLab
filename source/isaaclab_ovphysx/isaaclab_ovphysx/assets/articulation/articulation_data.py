@@ -1931,6 +1931,16 @@ class ArticulationData(BaseArticulationData):
         self._get_binding(tensor_type).read(view)
         buf.timestamp = self._sim_timestamp
 
+    def _update_articulations_kinematic(self) -> None:
+        """Refresh ovphysx articulation FK before same-frame link-pose reads."""
+        from isaaclab_ovphysx.physics.ovphysx_manager import OvPhysxManager
+
+        physx = OvPhysxManager.get_physx_instance()
+        if physx is None:
+            return
+        update_fk = OvPhysxManager._require_kinematic_fk(physx)
+        update_fk()
+
     def _read_transform_binding(self, tensor_type: int, buf: TimestampedBuffer) -> None:
         """Read a pose binding (float32 view of transformf buffer), skipping if fresh.
 
@@ -1950,6 +1960,8 @@ class ArticulationData(BaseArticulationData):
         view = self._get_read_view(tensor_type, buf.data, 7)
         if view is None:
             return
+        if tensor_type == TT.LINK_POSE:
+            self._update_articulations_kinematic()
         self._binding_read(tensor_type, binding, view)
         buf.timestamp = self._sim_timestamp
 
