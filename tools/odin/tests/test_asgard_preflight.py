@@ -246,7 +246,11 @@ def test_preflight_recovers_nvml_wedge_via_container_restart():
             "test -d": _ok(),
             "docker restart": _ok(),
         },
-        nvidia_seq=[nvml_fail, nvml_ok],
+        # Three nvidia-smi -L probes happen on the recovery happy path:
+        # (1) preflight's initial check, (2) recover_valkyrie_gpu's internal
+        # acceptance probe, (3) preflight's post-recover re-probe for the
+        # ``parse_gpu_class`` lookup.
+        nvidia_seq=[nvml_fail, nvml_ok, nvml_ok],
     )
     r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=True)
     assert r.ok is True
@@ -276,6 +280,64 @@ def test_preflight_no_auto_restart_marks_host_down():
     assert r.ok is False
     assert r.checks["gpu_present"] is False
     assert r.recovery_attempted is False
+
+
+def test_preflight_recovers_on_ssh_disconnect_during_nvidia_smi():
+    """SSH connection drops mid-``nvidia-smi -L`` (non-zero exit, stderr like
+    ``"Connection to <host> closed."``, possibly non-empty stdout) → preflight
+    must still attempt one container-restart recovery.
+
+    Regression for the 2026-05-05 incident where two hosts wedged with that
+    exact signature, the prior stderr-signature gate did not match, and
+    SSH-banner bytes on stdout defeated the ``not r.stdout.strip()`` clause —
+    so ``recovery_attempted`` stayed False and the dispatcher crashed at the
+    2/5-host preflight wall instead of self-healing.
+
+    Contract: by the time preflight reaches the GPU check, all four upstream
+    checks (ssh_reach, docker, container, isaaclab path) have already passed,
+    so any nvidia-smi failure is a sign that the GPU view in the container
+    has gone south. ``auto_restart=True`` should always try one container
+    restart; the specific failure signature should not gate the attempt."""
+    ssh_disconnect = SSHResult(
+        exit_code=255,
+        # SSH-banner / pty noise on stdout (e.g., MOTD remnants, control bytes)
+        # — non-empty so the prior ``not r.stdout.strip()`` clause was False.
+        stdout="kex_exchange_identification: read: Connection reset by peer\n",
+        stderr="Connection to v1 closed.\n",
+        duration_s=0.01,
+    )
+    nvml_ok = SSHResult(exit_code=0, stdout="GPU 0: NVIDIA L40\n", stderr="", duration_s=0.01)
+
+    class _SequencedSSH:
+        def __init__(self, scripted, nvidia_seq):
+            self.scripted = scripted
+            self.nvidia_seq = list(nvidia_seq)
+
+        def run(self, host, cmd, *, timeout_s=None, stdout_tee=None, pty=True):
+            if "nvidia-smi -L" in cmd:
+                return self.nvidia_seq.pop(0)
+            for k, v in self.scripted.items():
+                if k in cmd:
+                    return v
+            return SSHResult(exit_code=1, stdout="", stderr="", duration_s=0.0)
+
+    ssh = _SequencedSSH(
+        scripted={
+            "echo preflight-ok": _ok(),
+            "docker ps": _ok(),
+            "docker inspect": SSHResult(exit_code=0, stdout="running\n", stderr="", duration_s=0.01),
+            "test -d": _ok(),
+            "docker restart": _ok(),
+        },
+        # Three nvidia-smi probes (initial, recovery's internal acceptance,
+        # post-recover gpu_class re-probe) — see the wedge test above.
+        nvidia_seq=[ssh_disconnect, nvml_ok, nvml_ok],
+    )
+    r = preflight_valkyrie(_host(), ssh=ssh, auto_restart=True)
+    assert r.ok is True
+    assert r.checks["gpu_present"] is True
+    assert r.recovery_attempted is True
+    assert r.recovery_succeeded is True
 
 
 def test_preflight_recovery_failure_marks_host_down():

@@ -15,18 +15,6 @@ from tools.odin.asgard.transport import SSHRunner
 
 __all__ = ["PreflightResult", "preflight_valkyrie"]
 
-# Subset of worker._GPU_LOST_SIGNATURES that are fixable via container restart.
-# "Vulkan ERROR_INCOMPATIBLE_DRIVER" is excluded: that requires a host-level
-# driver fix that docker restart cannot resolve.
-_NVML_WEDGE_SIGNATURES = (
-    "Failed to initialize NVML",
-    "CUDA error: no CUDA-capable device is detected",
-)
-
-
-def _looks_wedged(stderr: str) -> bool:
-    return any(s in stderr for s in _NVML_WEDGE_SIGNATURES)
-
 
 def _parse_driver_to_cuda(driver_version: str) -> tuple[int, int] | None:
     """Map an NVIDIA driver version → max supported CUDA toolkit (major, minor).
@@ -241,7 +229,14 @@ def preflight_valkyrie(
         )
 
     # GPU absent — try one container-restart recovery if allowed.
-    if auto_restart and (_looks_wedged(r.stderr) or not r.stdout.strip()):
+    # By this point all four upstream checks (ssh_reach, docker_running,
+    # container_up, isaaclab_present) have passed, so any nvidia-smi failure
+    # signals a container-side GPU view gone bad — NVML wedge, lost
+    # /dev/nvidia*, SSH dropping mid-probe on a wedged host. A single
+    # ``docker restart`` clears all of these; trigger on any failure rather
+    # than a stderr-signature subset, which previously missed e.g. the
+    # SSH-disconnect-mid-probe case.
+    if auto_restart:
         rec = recover_valkyrie_gpu(host, ssh=ssh)
         if rec.recovered:
             from tools.odin.asgard.budgets import parse_gpu_class
