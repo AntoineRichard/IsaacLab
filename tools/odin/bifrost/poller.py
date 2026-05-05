@@ -50,8 +50,16 @@ TERMINAL_OSMO_STATES: frozenset[str] = frozenset({"COMPLETED", *OSMO_STATE_TO_FA
 
 
 def is_terminal(osmo_state: str) -> bool:
-    """Return True iff ``osmo_state`` is one of the known terminal task states."""
-    return osmo_state in TERMINAL_OSMO_STATES
+    """Return True iff ``osmo_state`` is one of the known terminal task states.
+
+    Accepts any string starting with ``FAILED`` so OSMO version drift
+    (a new ``FAILED_*`` variant we haven't enumerated yet) is still
+    treated as terminal — matching the safety-net behavior of
+    :func:`classify_terminal_state`.
+    """
+    if osmo_state in TERMINAL_OSMO_STATES:
+        return True
+    return osmo_state.startswith("FAILED")
 
 
 def classify_terminal_state(osmo_state: str) -> str | None:

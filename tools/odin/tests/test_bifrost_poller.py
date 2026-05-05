@@ -52,6 +52,9 @@ def test_is_terminal_recognizes_completed_and_failed_family():
     assert is_terminal("COMPLETED")
     assert is_terminal("FAILED")
     assert is_terminal("FAILED_BACKEND_ERROR")
+    # Forward-compat: unknown FAILED_* must still terminate the poll loop
+    assert is_terminal("FAILED_NOVEL_THING")
+    assert is_terminal("FAILED_SOME_NEW_REASON")
 
 
 def test_is_terminal_excludes_in_flight_states():
