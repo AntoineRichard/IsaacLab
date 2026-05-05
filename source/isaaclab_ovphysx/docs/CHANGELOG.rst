@@ -1,6 +1,79 @@
 Changelog
 ---------
 
+0.2.18 (2026-05-05)
+~~~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added :class:`~isaaclab_ovphysx.assets.Articulation` and
+  :class:`~isaaclab_ovphysx.assets.ArticulationData` mirroring the PhysX/Newton
+  articulation API: index/mask split for every state writer, simulation-parameter
+  writer, setter, and tendon setter; pull-on-demand timestamped buffers; first-class
+  CPU-only binding routing through pinned-host staging.
+* Added dedicated :meth:`~isaaclab_ovphysx.assets.Articulation.write_joint_dynamic_friction_coefficient_to_sim_index`,
+  :meth:`~isaaclab_ovphysx.assets.Articulation.write_joint_dynamic_friction_coefficient_to_sim_mask`,
+  :meth:`~isaaclab_ovphysx.assets.Articulation.write_joint_viscous_friction_coefficient_to_sim_index`,
+  and :meth:`~isaaclab_ovphysx.assets.Articulation.write_joint_viscous_friction_coefficient_to_sim_mask`
+  to mirror PhysX's per-component friction surface; each touches only its slot in the
+  combined ``(N, J, 3)`` ``DOF_FRICTION_PROPERTIES`` buffer.
+* Added deprecated non-indexed shorthand shims
+  :meth:`~isaaclab_ovphysx.assets.Articulation.write_joint_friction_coefficient_to_sim`,
+  :meth:`~isaaclab_ovphysx.assets.Articulation.write_joint_dynamic_friction_coefficient_to_sim`,
+  and :meth:`~isaaclab_ovphysx.assets.Articulation.write_joint_viscous_friction_coefficient_to_sim`
+  for migration parity with PhysX.
+
+Changed
+^^^^^^^
+
+* Reorganized :class:`~isaaclab_ovphysx.assets.Articulation` and
+  :class:`~isaaclab_ovphysx.assets.ArticulationData` to mirror PhysX's section
+  layout exactly: bare ``"""Section."""`` docstring blocks (replacing
+  ``# --- Section ---`` comment banners), with internal helpers and deprecated
+  surface placed at the bottom of each class.
+* Renamed the three friction-coefficient properties on
+  :class:`~isaaclab_ovphysx.assets.ArticulationData` to match PhysX:
+  ``joint_friction_static`` → :attr:`~isaaclab_ovphysx.assets.ArticulationData.joint_friction_coeff`,
+  ``joint_friction_dynamic`` → :attr:`~isaaclab_ovphysx.assets.ArticulationData.joint_dynamic_friction_coeff`,
+  ``joint_friction_viscous`` → :attr:`~isaaclab_ovphysx.assets.ArticulationData.joint_viscous_friction_coeff`.
+* Tightened :attr:`~isaaclab_ovphysx.assets.Articulation.instantaneous_wrench_composer`
+  and :attr:`~isaaclab_ovphysx.assets.Articulation.permanent_wrench_composer`
+  return types from ``WrenchComposer | None`` to ``WrenchComposer``,
+  matching PhysX/Newton.
+* Type-annotated ``binding_getter`` on
+  :meth:`~isaaclab_ovphysx.assets.ArticulationData.__init__` as
+  ``Callable[[int], Any] | None``.
+* Expanded docstrings on the OVPhysX articulation Warp kernels
+  (:func:`~isaaclab_ovphysx.assets.articulation.kernels.compute_soft_joint_pos_limits_func`,
+  :func:`~isaaclab_ovphysx.assets.articulation.kernels.update_soft_joint_pos_limits`,
+  :func:`~isaaclab_ovphysx.assets.articulation.kernels._fd_joint_acc`) to match
+  PhysX's documentation depth (purpose, ``Args:`` table with shape/dtype/SI units,
+  divergence notes where the OVPhysX implementation differs).
+
+Removed
+^^^^^^^
+
+* Removed OVPhysX-only :meth:`~isaaclab_ovphysx.assets.Articulation.set_external_force_and_torque_index`
+  and :meth:`~isaaclab_ovphysx.assets.Articulation.set_external_force_and_torque_mask`.
+  Use :attr:`~isaaclab_ovphysx.assets.Articulation.instantaneous_wrench_composer` /
+  :attr:`~isaaclab_ovphysx.assets.Articulation.permanent_wrench_composer` and call
+  ``add_forces_and_torques_index`` / ``add_forces_and_torques_mask`` on the composer
+  directly, matching PhysX/Newton.
+* Removed the OVPhysX-only ``set_spatial_tendon_limit_{index,mask}`` and
+  ``set_spatial_tendon_rest_length_{index,mask}`` ``NotImplementedError`` stubs;
+  the equivalents are not exposed by PhysX.
+* Removed redundant or behavior-divergent overrides of base-class shorthand
+  properties on :class:`~isaaclab_ovphysx.assets.ArticulationData`:
+  ``body_pose_w``, ``body_lin_vel_w``, ``body_ang_vel_w``, ``body_acc_w``,
+  ``body_link_acc_w``.  The defaults from
+  :class:`~isaaclab.assets.BaseArticulationData` apply and match PhysX.
+* Removed forward-compat ``body_inv_mass``, ``body_inv_inertia``,
+  ``fixed_tendon_limit``, ``spatial_tendon_limit``, and
+  ``spatial_tendon_rest_length`` properties on
+  :class:`~isaaclab_ovphysx.assets.ArticulationData` along with their backing
+  buffers; these had no PhysX equivalent.
+
 0.2.17 (2026-05-05)
 ~~~~~~~~~~~~~~~~~~~~
 
