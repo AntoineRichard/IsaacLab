@@ -830,6 +830,17 @@ class ValkyrieWorker(threading.Thread):
             return
 
         # Success path: rsync pull the bundle back.
+        # Bug 2: announce the finalize phase so the dashboard can render a
+        # "pulling bundle" badge instead of leaving the row stuck at 'running'
+        # while the rsync runs (~1h on slow ARM tiers for a 360 MB bundle).
+        self._state_chan.put(
+            StateEvent(
+                run_id=job.run_id,
+                host=self.host.host,
+                transition="finalizing",
+                running_substate="pulling_bundle",
+            )
+        )
         remote_bundle = f"{self.host.isaaclab_path}/odin_runs/{job.bundle_dir_name}"
         local_bundle = self._dispatch_dir / job.bundle_dir_name
         rsync_result = self._rsync.pull(self.host, remote_bundle, local_bundle)
@@ -1121,6 +1132,17 @@ class ValkyrieWorker(threading.Thread):
         Removes the entry from :attr:`_inflight` on the way out.
         """
         job = inflight.job
+        # Bug 2: announce the finalize phase so the dashboard can render a
+        # "pulling bundle" badge instead of leaving the row stuck at 'running'
+        # while the rsync runs (~1h on slow ARM tiers for a 360 MB bundle).
+        self._state_chan.put(
+            StateEvent(
+                run_id=job.run_id,
+                host=self.host.host,
+                transition="finalizing",
+                running_substate="pulling_bundle",
+            )
+        )
         remote_bundle = f"{self.host.isaaclab_path}/odin_runs/{job.bundle_dir_name}"
         local_bundle = self._dispatch_dir / job.bundle_dir_name
         rsync_result = self._rsync.pull(self.host, remote_bundle, local_bundle)

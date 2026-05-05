@@ -300,3 +300,71 @@ def test_sweep_timeouts_classifies_timeout_after_kill(tmp_path: Path):
         transitions.append((ev.transition, ev.failure.kind if ev.failure else None))
     failed = next(t for t in transitions if t[0] == "failed")
     assert failed[1] == "timeout"
+
+
+def test_finalize_terminal_emits_finalizing_event_before_rsync(tmp_path: Path):
+    """Bug 2 fix: when a job is done, the worker emits a 'finalizing'
+    StateEvent with running_substate='pulling_bundle' BEFORE invoking
+    rsync.pull, so the dashboard can show a 'pulling bundle' badge
+    instead of leaving the job's pill stuck at 'running' for the duration
+    of a slow transfer."""
+    # Capture the state-channel snapshot at the moment rsync.pull() fires.
+    transitions_at_pull_time: list[str] = []
+
+    class _OrderTrackingRsync(_RsyncMaterialize):
+        def pull(self, host, remote_path, local_path):
+            # Snapshot events already on the channel *before* this call returns.
+            q = worker._state_chan
+            snapshot: list = []
+            while not q.empty():
+                snapshot.append(q.get_nowait())
+            transitions_at_pull_time.extend(e.transition for e in snapshot)
+            # Put them back so _finalize_terminal can continue normally.
+            for ev in snapshot:
+                q.put(ev)
+            return super().pull(host, remote_path, local_path)
+
+    ssh = _ScriptedSSH()
+    rsync = _OrderTrackingRsync(materialize=True)
+    worker = _make_worker(tmp_path, ssh, rsync)
+    job = _job("r-finalizing")
+    job.transition_to("running", assigned_to=worker.host.host)
+    inflight = JobInflight(
+        job=job,
+        tracker=_tracker(worker.host, "r-finalizing"),
+        submitted_at_monotonic=0.0,
+    )
+    worker._inflight[job.run_id] = inflight
+
+    worker._finalize_terminal(inflight, POLL_DONE)
+
+    # --- assertion 1: finalizing was already on the channel when pull() ran ---
+    assert "finalizing" in transitions_at_pull_time, (
+        "finalizing StateEvent was not emitted before rsync.pull(); "
+        f"events seen at pull time: {transitions_at_pull_time!r}"
+    )
+
+    # --- assertion 2: drain the channel and check ordering + substate field ---
+    raw_events: list = []
+    while not worker._state_chan.empty():
+        raw_events.append(worker._state_chan.get_nowait())
+
+    # The finalizing event was already drained into transitions_at_pull_time and
+    # re-queued, so it appears in raw_events as well. Build the full ordered list.
+    all_transitions = [e.transition for e in raw_events]
+
+    assert "finalizing" in all_transitions, (
+        f"finalizing event missing from state channel after _finalize_terminal; got {all_transitions!r}"
+    )
+    assert "completed" in all_transitions, f"completed event missing from state channel; got {all_transitions!r}"
+
+    finalizing_idx = all_transitions.index("finalizing")
+    completed_idx = all_transitions.index("completed")
+    assert finalizing_idx < completed_idx, (
+        f"finalizing ({finalizing_idx}) must precede completed ({completed_idx}); all transitions: {all_transitions!r}"
+    )
+
+    finalizing_event = raw_events[finalizing_idx]
+    assert finalizing_event.running_substate == "pulling_bundle", (
+        f"Expected running_substate='pulling_bundle', got {finalizing_event.running_substate!r}"
+    )
