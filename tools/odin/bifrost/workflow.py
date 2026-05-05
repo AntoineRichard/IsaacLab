@@ -15,6 +15,12 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+from tools.odin.bifrost.config import BifrostConfig
 
 __all__ = [
     "osmo_safe_task_name",
@@ -61,13 +67,6 @@ def osmo_safe_task_name(run_id: str) -> str:
     keep = _DNS_1123_LABEL_MAX - _HASH_SUFFIX_LEN
     return f"{collapsed[:keep].rstrip('-')}-{digest}"
 
-
-from dataclasses import dataclass
-from pathlib import Path
-
-from jinja2 import Environment, FileSystemLoader, StrictUndefined
-
-from tools.odin.bifrost.config import BifrostConfig
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
