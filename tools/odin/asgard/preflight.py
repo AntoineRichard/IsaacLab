@@ -15,6 +15,15 @@ from tools.odin.asgard.transport import SSHRunner
 
 __all__ = ["PreflightResult", "preflight_valkyrie"]
 
+# Per-step SSH timeout for preflight checks. Sized for the slowest fleet
+# tier we run on (DGX Spark hosts have observed ~16-17s SSH handshakes
+# even for ``echo preflight-ok``); the homogeneous blackwell-pro-5000
+# fleet round-trips in <1s. Kept generous on purpose — genuine container
+# hangs (NVML wedge, frozen daemon) blow well past 60s and still surface
+# clearly as timeouts. Halving it because the fleet is fast is a
+# false economy: you trade visible margin for sporadic flakes.
+_PREFLIGHT_STEP_TIMEOUT_S = 60.0
+
 
 def _parse_driver_to_cuda(driver_version: str) -> tuple[int, int] | None:
     """Map an NVIDIA driver version → max supported CUDA toolkit (major, minor).
@@ -94,7 +103,7 @@ def _resolve_newton_availability(
     drv = ssh.run(
         host,
         f"docker exec {host.container_name} nvidia-smi --query-gpu=driver_version --format=csv,noheader",
-        timeout_s=15.0,
+        timeout_s=_PREFLIGHT_STEP_TIMEOUT_S,
     )
     cuda_version: tuple[int, int] | None = None
     if drv.exit_code == 0 and drv.stdout.strip():
@@ -161,7 +170,7 @@ def preflight_valkyrie(
     }
 
     # 1. ssh_reach — single round-trip echo.
-    r = ssh.run(host, "echo preflight-ok", timeout_s=15.0)
+    r = ssh.run(host, "echo preflight-ok", timeout_s=_PREFLIGHT_STEP_TIMEOUT_S)
     if r.exit_code != 0:
         return PreflightResult(
             host=host.host,
@@ -172,7 +181,7 @@ def preflight_valkyrie(
     checks["ssh_reach"] = True
 
     # 2. docker_running — daemon responsive.
-    r = ssh.run(host, "docker ps --format '{{.Names}}' 2>&1", timeout_s=15.0)
+    r = ssh.run(host, "docker ps --format '{{.Names}}' 2>&1", timeout_s=_PREFLIGHT_STEP_TIMEOUT_S)
     if r.exit_code != 0:
         return PreflightResult(
             host=host.host,
@@ -186,7 +195,7 @@ def preflight_valkyrie(
     r = ssh.run(
         host,
         f"docker inspect -f '{{{{.State.Status}}}}' {host.container_name}",
-        timeout_s=15.0,
+        timeout_s=_PREFLIGHT_STEP_TIMEOUT_S,
     )
     container_status = r.stdout.strip()
     if r.exit_code != 0 or container_status != "running":
@@ -199,7 +208,7 @@ def preflight_valkyrie(
     checks["container_up"] = True
 
     # 4. isaaclab_present — repo dir exists on the host.
-    r = ssh.run(host, f"test -d {host.isaaclab_path}", timeout_s=10.0)
+    r = ssh.run(host, f"test -d {host.isaaclab_path}", timeout_s=_PREFLIGHT_STEP_TIMEOUT_S)
     if r.exit_code != 0:
         return PreflightResult(
             host=host.host,
@@ -210,7 +219,7 @@ def preflight_valkyrie(
     checks["isaaclab_present"] = True
 
     # 5. gpu_present — at least one GPU visible inside the running container.
-    r = ssh.run(host, f"docker exec {host.container_name} nvidia-smi -L", timeout_s=15.0)
+    r = ssh.run(host, f"docker exec {host.container_name} nvidia-smi -L", timeout_s=_PREFLIGHT_STEP_TIMEOUT_S)
     if r.exit_code == 0 and r.stdout.strip():
         from tools.odin.asgard.budgets import parse_gpu_class
 
@@ -249,7 +258,9 @@ def preflight_valkyrie(
             message = f"{recover_msg}; {post_recover_msg}" if post_recover_msg else recover_msg
             # Re-probe nvidia-smi -L after the container restart so we can
             # populate gpu_class for the budget lookup.
-            post_r = ssh.run(host, f"docker exec {host.container_name} nvidia-smi -L", timeout_s=15.0)
+            post_r = ssh.run(
+                host, f"docker exec {host.container_name} nvidia-smi -L", timeout_s=_PREFLIGHT_STEP_TIMEOUT_S
+            )
             return PreflightResult(
                 host=host.host,
                 ok=True,
