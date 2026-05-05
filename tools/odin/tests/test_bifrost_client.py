@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ from tools.odin.bifrost.client import (
     OsmoClient,
     OsmoCliError,
     OsmoTransientError,
+    WorkflowSnapshot,
 )
 
 SUBMIT_STDOUT_OK = """\
@@ -99,3 +101,64 @@ def test_submit_raises_when_id_unparseable(tmp_path: Path):
     with patch("subprocess.run", return_value=_completed(stdout="weird output")):
         with pytest.raises(OsmoCliError, match="Workflow ID"):
             client.submit(yaml)
+
+
+STATUS_JSON_OK = json.dumps(
+    {
+        "id": "my-wf-1",
+        "status": "RUNNING",
+        "tasks": [
+            {"name": "rsl-rl-physx-x-seed42", "status": "COMPLETED", "exit_code": 0},
+            {"name": "rsl-rl-physx-x-seed43", "status": "FAILED", "exit_code": 137},
+            {"name": "rsl-rl-physx-x-seed44", "status": "RUNNING", "exit_code": None},
+        ],
+    }
+)
+
+STATUS_TABLE_OK = """\
+Workflow ID: my-wf-1
+Status: RUNNING
+
+Tasks:
+NAME                       STATUS      EXIT
+rsl-rl-physx-x-seed42      COMPLETED   0
+rsl-rl-physx-x-seed43      FAILED      137
+rsl-rl-physx-x-seed44      RUNNING     -
+"""
+
+
+def test_status_parses_json_output_when_available():
+    client = OsmoClient(profile="prod")
+    with patch("subprocess.run", return_value=_completed(stdout=STATUS_JSON_OK)) as run:
+        snap = client.status("my-wf-1")
+    cmd = run.call_args[0][0]
+    assert "--output" in cmd and "json" in cmd
+    assert isinstance(snap, WorkflowSnapshot)
+    assert snap.workflow_id == "my-wf-1"
+    assert snap.status == "RUNNING"
+    assert len(snap.tasks) == 3
+    completed = [t for t in snap.tasks if t.name.endswith("seed42")][0]
+    assert completed.status == "COMPLETED"
+    assert completed.exit_code == 0
+
+
+def test_status_falls_back_to_table_parser_when_json_unsupported():
+    """When `--output json` is unrecognized, retry without it and parse the table."""
+    client = OsmoClient(profile="prod")
+    json_attempt = _completed(returncode=2, stderr="unknown flag --output")
+    table_attempt = _completed(stdout=STATUS_TABLE_OK)
+    with patch("subprocess.run", side_effect=[json_attempt, table_attempt]) as run:
+        snap = client.status("my-wf-1")
+    assert run.call_count == 2
+    assert snap.workflow_id == "my-wf-1"
+    assert len(snap.tasks) == 3
+    seed44 = [t for t in snap.tasks if t.name.endswith("seed44")][0]
+    assert seed44.status == "RUNNING"
+    assert seed44.exit_code is None
+
+
+def test_status_raises_on_real_failure():
+    client = OsmoClient(profile="prod")
+    with patch("subprocess.run", return_value=_completed(returncode=1, stderr="HTTP 401 Unauthorized")):
+        with pytest.raises(OsmoAuthError):
+            client.status("my-wf-1")
