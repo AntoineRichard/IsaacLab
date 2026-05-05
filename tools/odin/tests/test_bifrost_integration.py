@@ -53,12 +53,7 @@ def test_bifrost_end_to_end_smoke(tmp_path: Path):
     )
     physx = tmp_path / "physx.yaml"
     physx.write_text(
-        "envs:\n"
-        "- task_id: smoke-task\n"
-        "  framework: rsl-rl\n"
-        "  num_envs: 1\n"
-        "  max_iterations: 1\n"
-        "  keep: true\n"
+        "envs:\n- task_id: smoke-task\n  framework: rsl-rl\n  num_envs: 1\n  max_iterations: 1\n  keep: true\n"
     )
 
     runs_root = tmp_path / "odin_runs"
