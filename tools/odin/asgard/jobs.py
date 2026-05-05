@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
 
 from tools.odin.common.env_list import load_env_list
 
 __all__ = ["JobEntry", "FailureInfo", "SkippedEntry", "build_queue_from_env_lists"]
+
+
+def _utc_now_iso() -> str:
+    """UTC timestamp in ``YYYY-MM-DDTHH:MM:SSZ`` form. Mirrors the
+    runner's ``_utc_now_iso`` so both modules produce identical strings."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass
@@ -118,6 +125,98 @@ class JobEntry:
         "pending": frozenset({"running", "failed"}),
         "running": frozenset({"completed", "failed", "pending"}),
     }
+
+    def transition_to(
+        self,
+        target: str,
+        *,
+        failure: FailureInfo | None = None,
+        assigned_to: str | None = None,
+        now: str | None = None,
+        reset_attempts: bool = False,
+        add_preferred_not: str | None = None,
+    ) -> bool:
+        """Transition this job to ``target`` per spec §4.2.
+
+        Validates the (current, target) edge against
+        :data:`_ALLOWED_TRANSITIONS`. Self-loops short-circuit as
+        no-ops and return ``False``. Legal cross-state edges apply
+        the per-target field contract and return ``True``. Illegal
+        edges raise ``ValueError``.
+
+        Args:
+            target: One of ``"pending"`` | ``"running"`` | ``"completed"`` | ``"failed"``.
+            failure: Required when ``target == "failed"``. Forbidden
+                when ``target == "completed"``.
+            assigned_to: Required when ``target == "running"``.
+            now: ISO-8601 UTC timestamp; defaults to :func:`_utc_now_iso`.
+            reset_attempts: Only honored when ``target == "pending"``.
+                When True, zeros ``attempts``.
+            add_preferred_not: Only honored when ``target == "pending"``.
+                When set, adds the host to ``preferred_not``.
+
+        Returns:
+            ``True`` when a cross-state edge applied (fields mutated).
+            ``False`` for self-loops (no mutation).
+
+        Raises:
+            ValueError: For illegal edges or contract violations.
+        """
+        # Self-loop short-circuit.
+        if target == self.status:
+            return False
+
+        # Legality check.
+        allowed = self._ALLOWED_TRANSITIONS.get(self.status, frozenset())
+        if target not in allowed:
+            raise ValueError(
+                f"illegal transition {self.status!r} → {target!r} for run_id={self.run_id!r}; "
+                f"allowed targets from {self.status!r}: {sorted(allowed)}"
+            )
+
+        # Contract checks.
+        if target == "running" and assigned_to is None:
+            raise ValueError(f"transition_to('running') requires assigned_to (run_id={self.run_id!r})")
+        if target == "failed" and failure is None:
+            raise ValueError(f"transition_to('failed') requires failure (run_id={self.run_id!r})")
+        if target == "completed" and failure is not None:
+            raise ValueError(f"transition_to('completed') must not pass failure (run_id={self.run_id!r})")
+
+        ts = now if now is not None else _utc_now_iso()
+
+        # Apply per-target field contract.
+        if target == "pending":
+            self.status = "pending"
+            self.started_at = None
+            self.ended_at = None
+            self.assigned_to = None
+            self.failure = None
+            self.running_substate = None
+            if reset_attempts:
+                self.attempts = 0
+            if add_preferred_not is not None:
+                # `preferred_not` is a set; copy-on-write to avoid mutating
+                # any caller's reference accidentally shared.
+                self.preferred_not = set(self.preferred_not) | {add_preferred_not}
+        elif target == "running":
+            self.status = "running"
+            self.started_at = ts
+            self.assigned_to = assigned_to
+            self.ended_at = None
+            self.failure = None
+            self.running_substate = "training"
+        elif target == "completed":
+            self.status = "completed"
+            self.ended_at = ts
+            self.failure = None
+            self.running_substate = None
+        elif target == "failed":
+            self.status = "failed"
+            self.ended_at = ts
+            self.failure = failure
+            self.running_substate = None
+
+        return True
 
 
 def _framework_slug(framework: str) -> str:
