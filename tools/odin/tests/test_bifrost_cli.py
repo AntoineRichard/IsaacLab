@@ -306,3 +306,71 @@ def test_retry_failed_creates_child_dispatch_with_only_failed_rows(
     assert child.parent_dispatch_id == parent.dispatch_id
     assert len(child.jobs) == 1
     assert child.jobs[0].run_id == failed_run_id
+
+
+def test_verbose_tail_writes_log_file(tmp_path: Path, example_config: Path, example_physx_yaml: Path):
+    from unittest.mock import patch
+
+    from tools.odin.asgard.state import read_dispatch_state
+    from tools.odin.bifrost import cli as bifrost_cli
+    from tools.odin.bifrost.client import TaskSnapshot, WorkflowSnapshot
+
+    runs_root = tmp_path / "odin_runs"
+
+    class FakeClient:
+        def __init__(self, *_a, **_k):
+            self.calls = 0
+
+        def submit(self, *a, **k):
+            return "wf-1"
+
+        def status(self, wf):
+            self.calls += 1
+            cur_dirs = sorted(runs_root.iterdir())
+            cur = read_dispatch_state(cur_dirs[-1])
+            assert cur is not None
+            task_name = cur.jobs[0].osmo_task_name
+            if self.calls == 1:
+                # Allow tail thread to attach.
+                return WorkflowSnapshot(wf, "RUNNING", [TaskSnapshot(task_name, "RUNNING", None)])
+            return WorkflowSnapshot(wf, "COMPLETED", [TaskSnapshot(task_name, "COMPLETED", 0)])
+
+        def logs(self, wf, task, *, follow):
+            yield b"hello from osmo\n"
+
+        def dataset_download(self, name, dest):
+            cur = read_dispatch_state(Path(dest))
+            assert cur is not None
+            run = cur.jobs[0].run_id
+            (Path(dest) / run).mkdir(parents=True, exist_ok=True)
+            (Path(dest) / run / "manifest.json").write_text("{}")
+
+    with patch("tools.odin.bifrost.cli.OsmoClient", side_effect=FakeClient):
+        rc = bifrost_cli.main(
+            [
+                "--osmo-config",
+                str(example_config),
+                "--physx-yaml",
+                str(example_physx_yaml),
+                "--seeds",
+                "42",
+                "--runs-root",
+                str(runs_root),
+                "--poll-interval",
+                "0",
+                "--verbose",
+            ]
+        )
+    assert rc == 0
+    [dispatch_dir] = list(runs_root.iterdir())
+    state = read_dispatch_state(dispatch_dir)
+    assert state is not None
+    log_path = dispatch_dir / state.jobs[0].run_id / "logs" / "osmo-tail.log"
+    # The tail thread is best-effort — give it a tiny window if needed.
+    import time as _time
+
+    deadline = _time.time() + 3.0
+    while not log_path.exists() and _time.time() < deadline:
+        _time.sleep(0.05)
+    assert log_path.exists(), f"expected tail log at {log_path}"
+    assert b"hello from osmo" in log_path.read_bytes()

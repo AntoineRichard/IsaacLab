@@ -20,6 +20,7 @@ import argparse
 import datetime as dt
 import fnmatch
 import sys
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -229,6 +230,70 @@ def _allocate_dispatch_id(now: dt.datetime | None = None, runs_root: Path | None
     return f"{base}-{n}"
 
 
+def _tail_first_running_task(
+    client,
+    state: DispatchState,
+    dispatch_dir: Path,
+    stop_event: threading.Event,
+) -> None:
+    """Best-effort live tail of the first task we observe RUNNING.
+
+    Single-task by design (per spec §6.1 step 8). When that task
+    terminates, we don't pick up another — the next dispatch's
+    ``--verbose`` will. Best-effort: any exception is swallowed.
+
+    Waits until the dispatch.json on disk records at least one job whose
+    status has advanced past ``"pending"`` (i.e. the poll loop has seen it
+    RUNNING at least once), then opens a ``follow=True`` log stream for
+    that job. Reading the persisted state avoids adding extra
+    ``client.status()`` calls that could disturb test counters.
+
+    Args:
+        client: An OSMO client instance with a ``logs()`` method.
+        state: The current dispatch state (used to obtain the workflow id
+            and to look up jobs before the first write). The on-disk
+            dispatch.json is polled to detect a transitioned job.
+        dispatch_dir: Root directory for this dispatch; log written to
+            ``<dispatch_dir>/<run_id>/logs/osmo-tail.log``.
+        stop_event: Set by the caller when polling is complete, signalling
+            the thread to exit.
+    """
+    workflow_id = state.osmo_workflow_id
+    while True:
+        # Read the freshest state from disk (written by the poll loop after
+        # each status check so we see the first RUNNING → "running" transition).
+        # We deliberately check the disk state BEFORE testing stop_event so that
+        # a very fast poll loop (e.g. poll_interval_s=0 in tests) cannot race
+        # past us before we've had a chance to find a RUNNING job.
+        on_disk = read_dispatch_state(dispatch_dir)
+        jobs = on_disk.jobs if on_disk is not None else state.jobs
+        job = next((j for j in jobs if j.status != "pending"), None)
+        if job is not None:
+            break
+        if stop_event.wait(0.02):
+            # Poll is done and we never saw a non-pending job (e.g. instant
+            # complete in tests where the first disk write already shows
+            # "completed" — still tail it).
+            on_disk = read_dispatch_state(dispatch_dir)
+            jobs = on_disk.jobs if on_disk is not None else state.jobs
+            job = next((j for j in jobs if j.osmo_task_name), None)
+            break
+    if job is None:
+        return
+    log_dir = dispatch_dir / job.run_id / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "osmo-tail.log"
+    try:
+        with log_path.open("ab") as fh:
+            for chunk in client.logs(workflow_id, job.osmo_task_name, follow=True):
+                fh.write(chunk)
+                fh.flush()
+                if stop_event.is_set():
+                    return
+    except Exception:
+        pass
+
+
 def _resolve_resume_dispatch(runs_root: Path, target: str) -> Path:
     if target == "LATEST":
         candidates = sorted([p for p in runs_root.iterdir() if p.is_dir()])
@@ -271,6 +336,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 validator=validator,
             )
 
+        tail_stop = threading.Event()
+        tail_thread: threading.Thread | None = None
+        if args.verbose:
+            tail_thread = threading.Thread(
+                target=_tail_first_running_task,
+                args=(client, state, dispatch_dir, tail_stop),
+                daemon=True,
+            )
+            tail_thread.start()
+
         poll_until_terminal(
             client=client,
             state=state,
@@ -278,6 +353,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             on_task_completed=on_completed,
             poll_interval_s=float(args.poll_interval),
         )
+        tail_stop.set()
+        if tail_thread is not None:
+            tail_thread.join(timeout=5)
+
         state.ended_at = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         write_dispatch_state(dispatch_dir, state)
         return 0
@@ -371,6 +450,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             validator=validator,
         )
 
+    tail_stop = threading.Event()
+    tail_thread: threading.Thread | None = None
+    if args.verbose:
+        tail_thread = threading.Thread(
+            target=_tail_first_running_task,
+            args=(client, state, dispatch_dir, tail_stop),
+            daemon=True,
+        )
+        tail_thread.start()
+
     poll_until_terminal(
         client=client,
         state=state,
@@ -378,6 +467,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         on_task_completed=on_completed,
         poll_interval_s=float(args.poll_interval),
     )
+    tail_stop.set()
+    if tail_thread is not None:
+        tail_thread.join(timeout=5)
+
     state.ended_at = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     write_dispatch_state(dispatch_dir, state)
     return 0
