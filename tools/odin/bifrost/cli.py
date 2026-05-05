@@ -33,7 +33,10 @@ from tools.odin.asgard.state import (
     DispatchState,
     write_dispatch_state,
 )
+from tools.odin.bifrost.bundle import download_and_validate_bundle
+from tools.odin.bifrost.client import OsmoClient
 from tools.odin.bifrost.config import load_bifrost_config
+from tools.odin.bifrost.poller import poll_until_terminal
 from tools.odin.bifrost.workflow import (
     RenderRow,
     osmo_safe_task_name,
@@ -216,9 +219,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[dry-run] wrote {workflow_yaml_path}")
         return 0
 
-    # Submit + poll path lands in T14.
-    print("submission path not yet implemented; use --dry-run for now", file=sys.stderr)
-    return 1
+    client = OsmoClient(profile=cfg.osmo_profile)
+    rsync_pairs: list[tuple[str, str]] = []
+    if args.rsync:
+        rsync_pairs.append((cfg.code_delivery.source_root, "/workspace/IsaacLab/" + cfg.code_delivery.source_root))
+    workflow_id = client.submit(workflow_yaml_path, rsync_pairs=rsync_pairs)
+    state.osmo_workflow_id = workflow_id
+    write_dispatch_state(dispatch_dir, state)
+
+    validator = _manifest_validator()
+
+    def on_completed(job: JobEntry) -> None:
+        dataset_name = f"{cfg.bundle_dataset_prefix}-{dispatch_id}-{job.run_id}"
+        download_and_validate_bundle(
+            client=client,
+            dataset_name=dataset_name,
+            dispatch_dir=dispatch_dir,
+            run_id=job.run_id,
+            validator=validator,
+        )
+
+    poll_until_terminal(
+        client=client,
+        state=state,
+        dispatch_dir=dispatch_dir,
+        on_task_completed=on_completed,
+        poll_interval_s=float(args.poll_interval),
+    )
+    state.ended_at = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    write_dispatch_state(dispatch_dir, state)
+    return 0
+
+
+def _manifest_validator():
+    """Return a callable that validates a bundle directory's manifest.
+
+    Stub implementation: a manifest is "valid" if the file exists. Replace
+    with the canonical validator from ``tools.odin.common.manifest`` when
+    that exposes a public ``validate(path) -> bool`` API.
+    """
+
+    def _validate(bundle_dir: Path) -> bool:
+        return (bundle_dir / "manifest.json").exists()
+
+    return _validate
 
 
 if __name__ == "__main__":
