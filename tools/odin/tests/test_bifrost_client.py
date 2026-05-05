@@ -11,11 +11,10 @@ import pytest
 
 from tools.odin.bifrost.client import (
     OsmoAuthError,
-    OsmoCliError,
     OsmoClient,
+    OsmoCliError,
     OsmoTransientError,
 )
-
 
 SUBMIT_STDOUT_OK = """\
 Workflow submit successful.
@@ -71,6 +70,15 @@ def test_submit_raises_transient_on_503(tmp_path: Path):
     yaml.write_text("workflow: {}\n")
     client = OsmoClient(profile="prod")
     with patch("subprocess.run", return_value=_completed(returncode=1, stderr="HTTP 503 Service Unavailable")):
+        with pytest.raises(OsmoTransientError):
+            client.submit(yaml)
+
+
+def test_submit_raises_transient_on_connection_timeout_single_word(tmp_path: Path):
+    yaml = tmp_path / "wf.yaml"
+    yaml.write_text("workflow: {}\n")
+    client = OsmoClient(profile="prod")
+    with patch("subprocess.run", return_value=_completed(returncode=1, stderr="connection timeout")):
         with pytest.raises(OsmoTransientError):
             client.submit(yaml)
 

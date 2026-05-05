@@ -18,8 +18,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 __all__ = [
     "OsmoAuthError",
@@ -42,7 +42,7 @@ class OsmoTransientError(OsmoCliError):
 
 
 _AUTH_PATTERN = re.compile(r"HTTP 40[13]|unauthori[sz]ed", re.IGNORECASE)
-_TRANSIENT_PATTERN = re.compile(r"HTTP 5\d\d|connection (reset|refused|timed? out)", re.IGNORECASE)
+_TRANSIENT_PATTERN = re.compile(r"HTTP 5\d\d|connection (reset|refused|timed?\s+out|timeout)", re.IGNORECASE)
 _WORKFLOW_ID_PATTERN = re.compile(r"^Workflow ID\s+-\s+(\S+)", re.MULTILINE)
 
 
