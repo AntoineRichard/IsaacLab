@@ -717,6 +717,54 @@ def test_apply_state_event_gpu_lost_does_not_add_quarantined_host(tmp_path):
     assert state.quarantined_hosts == []
 
 
+def test_apply_state_event_finalizing_sets_running_substate():
+    """The 'finalizing' transition only updates running_substate; status
+    stays 'running' (the truth model is unchanged — bundle isn't actually
+    pulled yet)."""
+    from tools.odin.asgard import runner as runner_mod
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState
+    from tools.odin.asgard.worker import StateEvent
+
+    job = JobEntry(
+        run_id="r1",
+        task_id="t",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1,
+        max_iterations=1,
+        seed=42,
+        bundle_dir_name="r1",
+        status="running",
+        assigned_to="v1",
+        started_at="t0",
+        running_substate="training",
+    )
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="d",
+        started_at="t0",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="",
+        jobs=[job],
+        skipped=[],
+        fleet=[],
+        quarantined_hosts=[],
+    )
+    ev = StateEvent(
+        run_id="r1",
+        host="v1",
+        transition="finalizing",
+        running_substate="pulling_bundle",
+    )
+
+    delta = runner_mod._apply_state_event(state, ev)
+    assert delta == 0  # finalizing doesn't advance the remaining counter
+    assert job.status == "running"  # truth model unchanged
+    assert job.running_substate == "pulling_bundle"
+
+
 def test_run_dispatch_marks_newton_jobs_failed_when_no_capable_host(tmp_path: Path, monkeypatch):
     """When no host has newton_available=True after provisioning, pending newton
     jobs are marked failed with kind='newton_floor' and an upgrade-hint message."""

@@ -227,6 +227,12 @@ def _apply_state_event(
                 f.status = "busy"
                 f.current_run_id = ev.run_id
         return 0
+    if ev.transition == "finalizing":
+        if j is not None:
+            # Annotation on running state — does not change status. The
+            # dashboard reads running_substate to show "pulling bundle".
+            j.running_substate = ev.running_substate
+        return 0
     if ev.transition == "completed":
         if j is not None:
             j.transition_to("completed", now=ev.ended_at)
