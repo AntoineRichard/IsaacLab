@@ -32,7 +32,12 @@ _DISPATCH_ID_RE = re.compile(r"^\d{8}-\d{6}$")
 _REMOTE_ODIN_RUNS_ROOT = "/workspace/isaaclab/odin_runs"
 _RUNNING_TAIL_DEFAULT_LINES = 50
 _RUNNING_TAIL_SOURCE_PREFIX = "__odin_tail_source__:"
-_RUNNING_TAIL_TIMEOUT_S = 10
+# Outer timeout for the SSH+docker-exec round-trip that fetches a tail
+# of the running stdout. Sized for the slowest fleet tier we run on
+# (DGX Spark / GB10 hosts have ~16-17s SSH handshakes alone — see the
+# matching constants in asgard/preflight.py and asgard/bootstrap.py);
+# the homogeneous blackwell-pro-5000 fleet round-trips in <1s.
+_RUNNING_TAIL_TIMEOUT_S = 60
 _subprocess_run = subprocess.run
 
 

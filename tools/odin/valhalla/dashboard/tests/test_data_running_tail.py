@@ -25,7 +25,9 @@ def _install_fake_run(monkeypatch, result: _Result, calls: list[list[str]]):
     def _fake_run(argv, *, capture_output, timeout, check):
         calls.append(list(argv))
         assert capture_output is True
-        assert timeout == 10
+        # Mirrors data._RUNNING_TAIL_TIMEOUT_S — sized for slow ARM (DGX Spark)
+        # SSH handshakes; bump in lockstep if the constant moves.
+        assert timeout == 60
         assert check is False
         return result
 
