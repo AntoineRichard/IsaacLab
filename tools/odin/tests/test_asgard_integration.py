@@ -925,3 +925,157 @@ def test_loopback_detached_dispatch_skip_and_kill_via_db(tmp_path: Path, stub_pr
     bundle = dispatch_dir / killed.bundle_dir_name
     # Partial logs preserved per kill-flow spec.
     assert (bundle / "logs" / "hugin-stderr.log").exists()
+
+
+def test_loopback_dispatch_recovers_from_synchronous_gpu_lost(
+    tmp_path: Path,
+    stub_provisioner,
+    monkeypatch,
+):
+    """Bug 3 end-to-end regression: a pre-submit GPU probe failure
+    triggers worker._handle_synchronous_failure(gpu_lost), recovery
+    succeeds, and the job re-runs successfully on the second attempt
+    with status='completed' in the final dispatch.json. Crucially:
+    the JobEntry must NOT spend any time stuck at status='running'
+    after the synchronous failure — the first call site that sees
+    the JobEntry post-recovery must observe status='pending'.
+
+    This test exercises the detached-mode submit path (pty=False), where
+    the remote stderr is captured as a real pipe and the
+    ``odin: gpu_unavailable`` marker can be matched by ``_submit_job``'s
+    GPU-loss check before falling through to ``_handle_synchronous_failure``.
+    """
+    if not _ssh_localhost_works():
+        pytest.skip("ssh localhost does not work without a password; skipping integration test")
+
+    from tools.odin.asgard import worker as worker_mod
+    from tools.odin.asgard.recovery import RecoveryResult
+
+    # Track how many submit attempts have been made per host so we can flip
+    # from failure to success on the second call.
+    seen_per_host: dict[str, int] = {}
+
+    def _fake_submit(host, job, *, submitted_at, per_job_timeout_s):
+        n = seen_per_host.get(host.host, 0)
+        seen_per_host[host.host] = n + 1
+        if n == 0:
+            # First submit: synthesize a pre-submit GPU probe failure.
+            # Emitting the 'odin: gpu_unavailable: ...' marker on stderr with
+            # exit 1 is exactly what the real nvidia-smi probe section of
+            # _build_submit_script does when nvidia-smi returns non-zero.
+            # _submit_job's GPU-loss branch sees this and returns a gpu_lost
+            # FailureInfo → _handle_synchronous_failure → recovery → re-queue.
+            return "echo 'odin: gpu_unavailable: nvidia-smi -L failed' 1>&2 && exit 1"
+        # Second submit: write a minimal valid bundle and echo the sentinel so
+        # _submit_job treats it as success (exit 0 + odin-submit: ok).
+        bundle_dir = f"{host.isaaclab_path}/odin_runs/{job.bundle_dir_name}"
+        manifest = {
+            "schema_version": "1.0",
+            "phases": {"startup": {"status": "completed"}, "training": {"status": "completed"}},
+        }
+        training = {"schema_version": "1.0"}
+        startup = {"schema_version": "1.0"}
+        manifest_s = json.dumps(manifest).replace("'", r"\'")
+        training_s = json.dumps(training).replace("'", r"\'")
+        startup_s = json.dumps(startup).replace("'", r"\'")
+        return (
+            f"mkdir -p {bundle_dir}/logs && "
+            f"echo $$ > {bundle_dir}/.run.pid && "
+            f"printf '%s' '{manifest_s}' > {bundle_dir}/manifest.json && "
+            f"printf '%s' '{training_s}' > {bundle_dir}/training.json && "
+            f"printf '%s' '{startup_s}' > {bundle_dir}/startup.json && "
+            f"echo 'odin-submit: ok run_id={job.run_id} bundle={job.bundle_dir_name}'"
+        )
+
+    def _fake_poll(host, bundle_ids):
+        bundles = " ".join(bundle_ids)
+        return (
+            f"for bundle in {bundles}; do "
+            f"if [ -f {host.isaaclab_path}/odin_runs/$bundle/manifest.json ]; then "
+            f'echo "$bundle done"; '
+            f"elif [ -f {host.isaaclab_path}/odin_runs/$bundle/.run.pid ]; then "
+            f"pid=$(cat {host.isaaclab_path}/odin_runs/$bundle/.run.pid); "
+            f'if kill -0 "$pid" 2>/dev/null; then echo "$bundle alive"; '
+            f'else echo "$bundle exited-no-manifest"; fi; '
+            f'else echo "$bundle no-pidfile"; fi; '
+            f"done"
+        )
+
+    monkeypatch.setattr(worker_mod, "_build_submit_script", _fake_submit)
+    monkeypatch.setattr(worker_mod, "_build_poll_script", _fake_poll)
+
+    # Mock GPU recovery to succeed immediately.
+    monkeypatch.setattr(
+        worker_mod,
+        "recover_valkyrie_gpu",
+        lambda host, *, ssh: RecoveryResult(
+            host=host.host,
+            container_name=host.container_name,
+            attempted=True,
+            recovered=True,
+            duration_s=1.0,
+            message="ok",
+        ),
+    )
+
+    # Build a one-row env list (mirrors test_loopback_dispatch_recovers_from_gpu_lost).
+    el = EnvList()
+    el.groups["direct/ant"] = [
+        EnvEntry(
+            task_id="Isaac-Ant-Direct-v0",
+            entry_point="isaaclab_tasks.direct.ant:AntEnv",
+            env_cfg_entry_point="isaaclab_tasks.direct.ant.ant_env_cfg:AntEnvCfg",
+            group="direct/ant",
+            has_rsl_rl=True,
+            has_skrl=True,
+            has_rl_games=False,
+            framework="rsl_rl",
+            num_envs=4096,
+            max_iterations=10,
+            keep=True,
+            status="current",
+        )
+    ]
+    physx_yaml = tmp_path / "physx.yaml"
+    write_env_list(physx_yaml, el, generator="test")
+
+    repo_root = Path.cwd()
+    host = ValkyrieConfig(
+        host="localhost",
+        ssh_user=os.environ.get("USER", "root"),
+        isaaclab_path=str(repo_root),
+    )
+    fleet = Fleet(fleet_name="loopback-sync-gpu-recovery", hosts=[host])
+    dispatch_dir = tmp_path / "odin_runs" / "20260504-syncgpu"
+    dispatch_dir.mkdir(parents=True)
+
+    state = run_dispatch(
+        fleet=fleet,
+        physx_yaml=physx_yaml,
+        newton_yaml=None,
+        dispatch_dir=dispatch_dir,
+        options=DispatchOptions(
+            seeds=[42],
+            per_job_timeout_s=60,
+            skip_aggregate=True,
+            detached_mode=True,
+            poll_interval_s=0,
+        ),
+        ssh=ShellSSHRunner(),
+        rsync=ShellRsyncRunner(),
+    )
+
+    # The job must have recovered and completed on its second attempt.
+    assert len(state.jobs) == 1
+    assert state.jobs[0].status == "completed", f"job failed: {state.jobs[0].failure}"
+    assert state.jobs[0].ended_at is not None  # Bug 4 invariant: always set on terminal
+    assert state.jobs[0].attempts == 2  # one failed synchronous submit, one successful
+
+    # On-disk dispatch.json mirrors the in-memory state.
+    dj = json.loads((dispatch_dir / "dispatch.json").read_text())
+    assert dj["jobs"][0]["status"] == "completed"
+    assert dj["jobs"][0]["attempts"] == 2
+
+    # Bundle was pulled back on the recovered attempt.
+    bundle = dispatch_dir / state.jobs[0].bundle_dir_name
+    assert (bundle / "manifest.json").exists()
