@@ -1,0 +1,33 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# Reference bifrost-osmo.yaml. Copy to bifrost-osmo.yaml and edit.
+osmo_profile: prod
+pool: rtx-pro-6000-eval
+priority: NORMAL
+
+image:
+  reference: nvcr.io/nvidia/isaac-lab:2.2.0
+  pull_credential: ngc-readonly
+
+defaults:
+  resources:
+    cpu: 16
+    gpu: 1
+    memory: 64Gi
+    storage: 64Gi
+    platform: rtx-pro-6000
+  exec_timeout: 14400
+  queue_timeout: 7200
+
+retry:
+  reschedule_codes: "3001-3006"
+  restart_codes: ""
+
+bundle_dataset_prefix: odin
+
+code_delivery:
+  mode: files_upload
+  source_root: tools/odin
