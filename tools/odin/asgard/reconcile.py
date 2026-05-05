@@ -94,10 +94,22 @@ def _read_remote_manifest(host: ValkyrieConfig, run_id: str, ssh: SSHRunner) -> 
 
 
 def _manifest_indicates_clean_completion(manifest: dict) -> bool:
+    """Return True iff the manifest reports a fully-clean run.
+
+    Hugin's manifest writer stamps a placeholder ``phases.startup =
+    {status: "completed", exit_code: 0}`` before startup actually runs
+    (``hugin/run.py:138``). A reconcile pass that reads the manifest at
+    that instant would see every *present* phase looking healthy and
+    erroneously adopt the run as completed (Bug 1 in the
+    state-tracking audit). To prevent that, require BOTH ``startup``
+    AND ``training`` phases to be present AND completed AND exit=0.
+    A manifest with only the startup placeholder is rejected.
+    """
     phases = manifest.get("phases", {})
-    if not phases:
+    required = {"startup", "training"}
+    if not required.issubset(phases.keys()):
         return False
-    return all(phase.get("status") == "completed" and phase.get("exit_code") == 0 for phase in phases.values())
+    return all(phases[k].get("status") == "completed" and phases[k].get("exit_code") == 0 for k in required)
 
 
 def _process_alive(host: ValkyrieConfig, run_id: str, ssh: SSHRunner) -> bool:

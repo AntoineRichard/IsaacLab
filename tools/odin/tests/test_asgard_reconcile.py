@@ -362,3 +362,52 @@ def test_adopted_completed_stamps_ended_at(tmp_path: Path):
 
     assert job.status == "completed"
     assert job.ended_at is not None  # Bug 4 regression
+
+
+def test_manifest_indicates_clean_completion_rejects_startup_only_placeholder():
+    """Bug 1 regression: hugin/run.py:138 stamps a placeholder
+    phases.startup={status: completed} BEFORE startup actually runs. If
+    reconcile reads the manifest at that moment, every present phase looks
+    healthy and the run gets adopted as completed even though training
+    never even started.
+
+    The fix: require BOTH 'startup' and 'training' phases to be present
+    AND completed AND exit=0. A startup-only manifest cannot be trusted."""
+    from tools.odin.asgard.reconcile import _manifest_indicates_clean_completion
+
+    placeholder = {"phases": {"startup": {"status": "completed", "exit_code": 0}}}
+    assert _manifest_indicates_clean_completion(placeholder) is False
+
+
+def test_manifest_indicates_clean_completion_accepts_both_phases_completed():
+    """Sanity: the legitimate clean-completion manifest still adopts."""
+    from tools.odin.asgard.reconcile import _manifest_indicates_clean_completion
+
+    healthy = {
+        "phases": {
+            "startup": {"status": "completed", "exit_code": 0},
+            "training": {"status": "completed", "exit_code": 0},
+        }
+    }
+    assert _manifest_indicates_clean_completion(healthy) is True
+
+
+def test_manifest_indicates_clean_completion_rejects_training_failed():
+    """Defensive: training phase failed must reject."""
+    from tools.odin.asgard.reconcile import _manifest_indicates_clean_completion
+
+    crashed = {
+        "phases": {
+            "startup": {"status": "completed", "exit_code": 0},
+            "training": {"status": "failed", "exit_code": 1},
+        }
+    }
+    assert _manifest_indicates_clean_completion(crashed) is False
+
+
+def test_manifest_indicates_clean_completion_rejects_empty_phases():
+    """Defensive: empty phases dict must reject."""
+    from tools.odin.asgard.reconcile import _manifest_indicates_clean_completion
+
+    assert _manifest_indicates_clean_completion({"phases": {}}) is False
+    assert _manifest_indicates_clean_completion({}) is False
