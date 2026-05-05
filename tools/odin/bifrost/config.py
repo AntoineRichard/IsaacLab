@@ -166,9 +166,7 @@ def load_bifrost_config(path: Path) -> BifrostConfig:
         raise BifrostConfigError("code_delivery must be a mapping")
     cd_mode = _require_str(cd_d, "mode", "code_delivery")
     if cd_mode not in _CODE_DELIVERY_MODES:
-        raise BifrostConfigError(
-            f"code_delivery.mode must be one of {sorted(_CODE_DELIVERY_MODES)}; got {cd_mode!r}"
-        )
+        raise BifrostConfigError(f"code_delivery.mode must be one of {sorted(_CODE_DELIVERY_MODES)}; got {cd_mode!r}")
     code_delivery = CodeDeliverySpec(
         mode=cd_mode,
         source_root=_require_str(cd_d, "source_root", "code_delivery"),

@@ -9,7 +9,6 @@ import pytest
 
 from tools.odin.bifrost.config import BifrostConfig, BifrostConfigError, load_bifrost_config
 
-
 VALID_YAML = """\
 osmo_profile: prod
 pool: rtx-pro-6000-eval
