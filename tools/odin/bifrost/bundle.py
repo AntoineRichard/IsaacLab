@@ -14,9 +14,10 @@ canonical layout.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
 __all__ = ["BundleResult", "download_and_validate_bundle"]
 

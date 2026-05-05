@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from tools.odin.bifrost.bundle import BundleResult, download_and_validate_bundle
+from tools.odin.bifrost.bundle import download_and_validate_bundle
 
 
 def _client_writing_manifest(content: dict, run_subdir: str = "rsl-rl_physx_X_seed42"):
