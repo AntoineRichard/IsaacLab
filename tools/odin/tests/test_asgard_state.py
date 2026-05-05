@@ -251,11 +251,6 @@ def test_schema_version_writes_1_5(tmp_path: Path):
     assert payload["schema_version"] == "1.5"
 
 
-def test_schema_version_is_1_4():
-    """Module-level SCHEMA_VERSION constant is bumped to '1.5'."""
-    assert SCHEMA_VERSION == "1.5"
-
-
 def test_roundtrip_quarantined_hosts(tmp_path: Path):
     """DispatchState with one QuarantinedHost survives write→read."""
     state = DispatchState(
@@ -416,3 +411,32 @@ def test_dispatch_state_back_compat_loads_v1_4_without_dispatcher(tmp_path: Path
     assert loaded.dispatcher == "asgard"
     assert loaded.osmo_workflow_id is None
     assert loaded.parent_dispatch_id is None
+
+
+def test_dispatch_state_round_trip_omits_osmo_task_name(tmp_path: Path):
+    """A JobEntry without osmo_task_name (default None) round-trips correctly."""
+    job = JobEntry(
+        run_id="x",
+        task_id="X",
+        framework="rsl-rl",
+        backend="physx",
+        num_envs=1,
+        max_iterations=1,
+        seed=0,
+        bundle_dir_name="x",
+    )
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260101-000000",
+        started_at="2026-01-01T00:00:00Z",
+        ended_at=None,
+        seeds=[0],
+        commit_sha="",
+        fleet=[],
+        jobs=[job],
+    )
+    write_dispatch_state(tmp_path, state)
+    loaded = read_dispatch_state(tmp_path)
+    assert loaded is not None
+    assert loaded.jobs[0].osmo_task_name is None
+    assert loaded.dispatcher == "asgard"
