@@ -13,13 +13,16 @@ and on a periodic heartbeat.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry
+from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry, _utc_now_iso
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "DispatchState",
@@ -34,6 +37,69 @@ __all__ = [
 
 SCHEMA_VERSION = "1.4"
 _DISPATCH_FILENAME = "dispatch.json"
+
+
+def _validate_job_entry_invariants(job: JobEntry, strict: bool) -> None:
+    """Validate the field invariants implied by ``job.status`` (spec §4.3).
+
+    Strict mode raises ``AssertionError`` on the first violation, naming
+    the run_id and the offending field. Lenient mode auto-repairs the
+    JobEntry in place (filling missing timestamps with
+    :func:`~tools.odin.asgard.jobs._utc_now_iso`, replacing missing
+    ``failure`` with a stub) and logs a WARN for each repair.
+
+    Used by :func:`write_dispatch_state` immediately before serializing
+    to ``dispatch.json``.
+    """
+    violations: list[str] = []
+
+    if job.status in {"completed", "failed"}:
+        if job.ended_at is None:
+            violations.append("ended_at")
+        if job.status == "failed" and job.failure is None:
+            violations.append("failure")
+    elif job.status == "running":
+        if job.started_at is None:
+            violations.append("started_at")
+        if job.assigned_to is None:
+            violations.append("assigned_to")
+    elif job.status == "pending":
+        if job.started_at is not None:
+            violations.append("started_at")
+        if job.ended_at is not None:
+            violations.append("ended_at")
+        if job.assigned_to is not None:
+            violations.append("assigned_to")
+        if job.failure is not None:
+            violations.append("failure")
+
+    if not violations:
+        return
+
+    if strict:
+        raise AssertionError(
+            f"JobEntry invariant violation for run_id={job.run_id!r} in status={job.status!r}: {violations}"
+        )
+
+    # Lenient mode: auto-repair.
+    for fname in violations:
+        if job.status in {"completed", "failed"} and fname == "ended_at":
+            job.ended_at = _utc_now_iso()
+        elif job.status == "failed" and fname == "failure":
+            job.failure = FailureInfo(
+                kind="unknown",
+                message="state-write invariant violation; see logs",
+            )
+        elif job.status == "pending":
+            setattr(job, fname, None)
+        # 'running' violations cannot be auto-repaired safely (we don't
+        # know what host or timestamp to fill in); fall through to log.
+        _log.warning(
+            "auto-repaired JobEntry invariant: run_id=%s status=%s field=%s",
+            job.run_id,
+            job.status,
+            fname,
+        )
 
 
 @dataclass
