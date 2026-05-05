@@ -113,6 +113,9 @@ class JobEntry:
     # Camera) get hours instead of the global 1h default while Cartpole stays
     # at 10 minutes.
     per_job_timeout_s: int | None = None
+    # OSMO task name for jobs submitted via the Bifrost dispatcher. ``None``
+    # for all Asgard-dispatched jobs.
+    osmo_task_name: str | None = None
 
     # Allowed-transition graph. See spec §4.1. Self-loops are not listed
     # here — `transition_to` short-circuits same-state calls as no-ops
