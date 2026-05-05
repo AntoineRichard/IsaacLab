@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tools.odin.asgard.budgets import Budgets, load_budgets
+from tools.odin.asgard.budgets import load_budgets
 from tools.odin.asgard.cleanup import sweep_orphan_trainers
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
 from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry, build_queue_from_env_lists
@@ -212,10 +212,16 @@ def _apply_state_event(
         jobs_by_id = {jj.run_id: jj for jj in state.jobs}
     j = jobs_by_id.get(ev.run_id)
     if ev.transition == "running":
-        if j is not None:
-            j.status = "running"
-            j.started_at = ev.started_at
-            j.assigned_to = ev.host
+        if j is not None and j.status in ("pending", "running"):
+            # Worker has already incremented attempts at submit time
+            # (worker.py:_submit_job). transition_to('running') does
+            # not touch attempts — it only sets status, started_at,
+            # assigned_to, and running_substate='training'.
+            # Guard: legacy-PTY mode posts the 'running' event before
+            # calling transition_to on the worker side, so the runner
+            # may race here and see a job that has already advanced to
+            # 'failed'. Skip if the job is past 'running'.
+            j.transition_to("running", assigned_to=ev.host, now=ev.started_at)
         for f in state.fleet:
             if f.host == ev.host:
                 f.status = "busy"
@@ -223,8 +229,7 @@ def _apply_state_event(
         return 0
     if ev.transition == "completed":
         if j is not None:
-            j.status = "completed"
-            j.ended_at = ev.ended_at
+            j.transition_to("completed", now=ev.ended_at)
         for f in state.fleet:
             if f.host == ev.host:
                 f.status = "idle"
@@ -233,10 +238,8 @@ def _apply_state_event(
             print(f"[{_utc_now_iso()}] COMPLETE {j.run_id} on {ev.host}")
         return 1
     if ev.transition == "failed":
-        if j is not None:
-            j.status = "failed"
-            j.failure = ev.failure
-            j.ended_at = ev.ended_at
+        if j is not None and ev.failure is not None:
+            j.transition_to("failed", failure=ev.failure, now=ev.ended_at)
         for f in state.fleet:
             if f.host == ev.host:
                 f.status = "idle"
@@ -263,13 +266,10 @@ def _apply_state_event(
         # Worker re-queued the in-flight job; reset its dispatch.json row from
         # 'running' back to 'pending' so it (a) is eligible to be picked up by
         # another healthy worker, and (b) is caught by the post-dispatch sweep
-        # if no host remains. Without this reset the job stays as 'running'
-        # forever in the final state.
+        # if no host remains.
         for j in state.jobs:
             if j.run_id == ev.run_id and j.status == "running":
-                j.status = "pending"
-                j.assigned_to = None
-                j.started_at = None
+                j.transition_to("pending")
         if ev.failure is not None and ev.failure.kind == "circuit_breaker":
             from tools.odin.asgard.state import QuarantinedHost
 
