@@ -68,6 +68,7 @@ def test_roundtrip_preserves_failure_info(tmp_path: Path):
         message="exit code 1",
         details={"exit_code": 1, "log_tail_path": "run-x/logs/ssh-tail.log"},
     )
+    j.ended_at = "2026-04-22T22:10:00Z"
     j.attempts = 1
     write_dispatch_state(tmp_path, _state([j]))
 
@@ -90,7 +91,9 @@ def test_atomic_write_no_partial(tmp_path: Path, monkeypatch):
     write_dispatch_state(tmp_path, state1)
     first_mtime = (tmp_path / "dispatch.json").stat().st_mtime_ns
 
-    state2 = _state([_job("run-a", status="running"), _job("run-b")])
+    state2 = _state(
+        [_job("run-a", status="running", started_at="2026-04-22T22:01:00Z", assigned_to="h1"), _job("run-b")]
+    )
     real_replace = os.replace
     call_count = {"n": 0}
 
@@ -339,6 +342,7 @@ def test_failure_kind_gpu_lost_round_trips(tmp_path: Path):
             "log_tail_path": "run-gl/logs/ssh-tail.log",
         },
     )
+    j.ended_at = "2026-04-22T22:10:00Z"
     j.attempts = 2
     write_dispatch_state(tmp_path, _state([j]))
 

@@ -325,9 +325,24 @@ def read_dispatch_state(dispatch_dir: Path) -> DispatchState | None:
 def write_dispatch_state(dispatch_dir: Path, state: DispatchState) -> None:
     """Atomically rewrite ``<dispatch_dir>/dispatch.json``.
 
+    Validates each JobEntry's invariants before writing (spec §4.3).
+    Strict mode (default; controlled by the
+    ``ODIN_DISPATCH_STRICT_INVARIANTS`` env var) raises on the first
+    inconsistent JobEntry. Lenient mode auto-repairs in place and
+    logs a WARN for each repair.
+
+    Strict mode is recommended for tests + dev; production deployments
+    can set ``ODIN_DISPATCH_STRICT_INVARIANTS=false`` to keep the
+    dispatcher running in the face of upstream state-handling bugs at
+    the cost of a few seconds of stale dispatch.json output.
+
     Writes to a sibling temporary file then ``os.replace``s over the final
     path, so a concurrent reader never observes a truncated file.
     """
+    strict = os.environ.get("ODIN_DISPATCH_STRICT_INVARIANTS", "true").lower() != "false"
+    for job in state.jobs:
+        _validate_job_entry_invariants(job, strict=strict)
+
     dispatch_dir.mkdir(parents=True, exist_ok=True)
     payload = _state_to_dict(state)
     fd, tmp_path_str = tempfile.mkstemp(prefix=".dispatch_", suffix=".json.tmp", dir=str(dispatch_dir))
