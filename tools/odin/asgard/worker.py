@@ -127,6 +127,12 @@ class StateEvent:
     failure: FailureInfo | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    # Bug 2 (UX): annotation on the running state. When set, the runner
+    # propagates this onto the matching JobEntry's running_substate. The
+    # dashboard renders a "pulling bundle" badge while the value is
+    # "pulling_bundle". Untouched on terminal transitions (transition_to
+    # clears running_substate as part of its contract).
+    running_substate: str | None = None
 
 
 def _utc_now_iso() -> str:
