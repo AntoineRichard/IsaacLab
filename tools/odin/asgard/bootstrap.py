@@ -27,6 +27,13 @@ from tools.odin.asgard.transport import RsyncRunner, SSHRunner
 
 __all__ = ["BootstrapResult", "bootstrap_valkyrie", "bootstrap_fleet"]
 
+# Per-step SSH timeout for short housekeeping commands. See the matching
+# constant in ``preflight.py`` — DGX Spark hosts take ~16-17s for an
+# ``echo`` round-trip, so tight per-step timeouts spuriously fail bootstrap
+# on slow ARM tiers. ``container_start`` uses a separate, much larger
+# ``build_timeout_s`` because the first-run image build can take 30 min.
+_BOOTSTRAP_STEP_TIMEOUT_S = 60
+
 
 @dataclass
 class BootstrapResult:
@@ -74,8 +81,8 @@ def bootstrap_valkyrie(
 
     Pipeline (short-circuits on any step failure):
 
-      1. SSH reach — a 15 s ``echo bootstrap-ok`` probe.
-      2. Docker daemon reach — a 15 s ``docker ps`` probe.
+      1. SSH reach — short ``echo bootstrap-ok`` probe.
+      2. Docker daemon reach — short ``docker ps`` probe.
       3. Wipe — ``rm -rf {isaaclab_path}`` (always, for idempotent re-runs).
       4. Rsync — push ``working_tree`` to ``{isaaclab_path}``.
       4b. Configure headless — write ``docker/.container.cfg`` with
@@ -110,7 +117,7 @@ def bootstrap_valkyrie(
     step_durations_s: dict[str, float] = {}
 
     # 1. SSH reach.
-    r = ssh.run(host, "echo bootstrap-ok", timeout_s=15)
+    r = ssh.run(host, "echo bootstrap-ok", timeout_s=_BOOTSTRAP_STEP_TIMEOUT_S)
     if r.exit_code != 0:
         return BootstrapResult(
             host=host.host,
@@ -120,7 +127,7 @@ def bootstrap_valkyrie(
         )
 
     # 2. Docker daemon reach.
-    r = ssh.run(host, "docker ps --format '{{.Names}}' 2>&1", timeout_s=15)
+    r = ssh.run(host, "docker ps --format '{{.Names}}' 2>&1", timeout_s=_BOOTSTRAP_STEP_TIMEOUT_S)
     if r.exit_code != 0:
         return BootstrapResult(
             host=host.host,
@@ -172,7 +179,7 @@ def bootstrap_valkyrie(
     r = ssh.run(
         host,
         f'printf "{cfg_body}" > {host.isaaclab_path}/docker/.container.cfg',
-        timeout_s=15,
+        timeout_s=_BOOTSTRAP_STEP_TIMEOUT_S,
     )
     step_durations_s["configure_headless"] = _time_step() - t0
     if r.exit_code != 0:
@@ -195,7 +202,7 @@ def bootstrap_valkyrie(
     r = ssh.run(
         host,
         f"mkdir -p {host.isaaclab_path}/odin_runs",
-        timeout_s=15,
+        timeout_s=_BOOTSTRAP_STEP_TIMEOUT_S,
     )
     step_durations_s["create_odin_runs"] = _time_step() - t0
     if r.exit_code != 0:
@@ -232,7 +239,7 @@ def bootstrap_valkyrie(
     r = ssh.run(
         host,
         f"docker exec {host.container_name} ln -sf /isaac-sim /workspace/isaaclab/_isaac_sim",
-        timeout_s=15,
+        timeout_s=_BOOTSTRAP_STEP_TIMEOUT_S,
     )
     step_durations_s["fix_isaac_sim_symlink"] = _time_step() - t0
     if r.exit_code != 0:
@@ -249,7 +256,7 @@ def bootstrap_valkyrie(
     r = ssh.run(
         host,
         f"docker inspect -f '{{{{.State.Status}}}}' {host.container_name}",
-        timeout_s=15,
+        timeout_s=_BOOTSTRAP_STEP_TIMEOUT_S,
     )
     step_durations_s["container_verify"] = _time_step() - t0
     status = r.stdout.strip()
