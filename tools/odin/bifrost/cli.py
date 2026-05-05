@@ -20,9 +20,10 @@ import argparse
 import datetime as dt
 import fnmatch
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import yaml
 
@@ -155,7 +156,7 @@ def _planned_to_job(row: _PlannedRow) -> JobEntry:
 
 
 def _allocate_dispatch_id(now: dt.datetime | None = None) -> str:
-    return (now or dt.datetime.utcnow()).strftime("%Y%m%d-%H%M%S")
+    return (now or dt.datetime.now(dt.UTC)).strftime("%Y%m%d-%H%M%S")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -200,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     state = DispatchState(
         schema_version=SCHEMA_VERSION,
         dispatch_id=dispatch_id,
-        started_at=dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        started_at=dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         ended_at=None,
         seeds=list(args.seeds),
         commit_sha="",
