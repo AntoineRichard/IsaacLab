@@ -352,3 +352,84 @@ def test_failure_kind_gpu_lost_round_trips(tmp_path: Path):
     assert rj.failure.kind == "gpu_lost"
     assert rj.failure.details["exit_code"] == 1
     assert rj.attempts == 2
+
+
+def test_running_substate_round_trips_through_dispatch_json(tmp_path: Path):
+    """C1 regression: the running_substate field must survive
+    write_dispatch_state → read_dispatch_state. Without this, the
+    dashboard's 'pulling bundle' badge breaks across dispatcher
+    restarts because the field is stripped on serialize."""
+    job = _job("r1", status="running", started_at="2026-04-22T22:00:00Z", assigned_to="v1")
+    job.running_substate = "pulling_bundle"
+    state = _state([job])
+    write_dispatch_state(tmp_path, state)
+
+    reloaded = read_dispatch_state(tmp_path)
+    assert reloaded is not None
+    assert len(reloaded.jobs) == 1
+    assert reloaded.jobs[0].running_substate == "pulling_bundle"
+
+
+def test_running_substate_training_round_trips(tmp_path: Path):
+    """running_substate='training' also round-trips correctly."""
+    job = _job("r2", status="running", started_at="2026-04-22T22:00:00Z", assigned_to="v1")
+    job.running_substate = "training"
+    state = _state([job])
+    write_dispatch_state(tmp_path, state)
+
+    reloaded = read_dispatch_state(tmp_path)
+    assert reloaded is not None
+    assert reloaded.jobs[0].running_substate == "training"
+
+
+def test_running_substate_none_round_trips(tmp_path: Path):
+    """running_substate=None round-trips correctly."""
+    job = _job("r3", status="running", started_at="2026-04-22T22:00:00Z", assigned_to="v1")
+    # Explicitly set to None to ensure it survives
+    job.running_substate = None
+    state = _state([job])
+    write_dispatch_state(tmp_path, state)
+
+    reloaded = read_dispatch_state(tmp_path)
+    assert reloaded is not None
+    assert reloaded.jobs[0].running_substate is None
+
+
+def test_running_substate_absent_in_legacy_dispatch_json_reads_as_none(tmp_path: Path):
+    """Backward-compatibility: dispatch.json files written by older code
+    don't have the running_substate key. read_dispatch_state must
+    tolerate the absence and return None."""
+    legacy = """{
+  "schema_version": "1.4",
+  "dispatch_id": "d",
+  "started_at": "2026-04-22T22:00:00Z",
+  "ended_at": null,
+  "seeds": [42],
+  "commit_sha": "abc123",
+  "fleet": [{"host": "h1", "status": "idle", "current_run_id": null, "last_error": null}],
+  "jobs": [{
+    "run_id": "r1",
+    "task_id": "Isaac-Ant-Direct-v0",
+    "framework": "rsl_rl",
+    "backend": "physx",
+    "num_envs": 4096,
+    "max_iterations": 300,
+    "seed": 42,
+    "bundle_dir_name": "r1",
+    "status": "running",
+    "started_at": "2026-04-22T22:00:00Z",
+    "assigned_to": "v1",
+    "ended_at": null,
+    "failure": null,
+    "preferred_not": [],
+    "attempts": 0,
+    "per_job_timeout_s": null
+  }],
+  "skipped": [],
+  "quarantined_hosts": []
+}"""
+    (tmp_path / "dispatch.json").write_text(legacy)
+
+    loaded = read_dispatch_state(tmp_path)
+    assert loaded is not None
+    assert loaded.jobs[0].running_substate is None

@@ -161,6 +161,7 @@ def _job_to_dict(j: JobEntry) -> dict[str, Any]:
         "attempts": j.attempts,
         "started_at": j.started_at,
         "ended_at": j.ended_at,
+        "running_substate": j.running_substate,
         "preferred_not": sorted(j.preferred_not),
         "per_job_timeout_s": j.per_job_timeout_s,
     }
@@ -196,6 +197,7 @@ def _job_from_dict(d: dict[str, Any]) -> JobEntry:
         assigned_to=d.get("assigned_to"),
         attempts=int(d.get("attempts", 0)),
         failure=failure,
+        running_substate=d.get("running_substate"),
         preferred_not=set(d.get("preferred_not") or []),
         started_at=d.get("started_at"),
         ended_at=d.get("ended_at"),
