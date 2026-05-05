@@ -19,7 +19,7 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -206,3 +206,70 @@ class OsmoClient:
                 exit_code = None if exit_str in ("-", "") else int(exit_str)
                 tasks.append(TaskSnapshot(name=name, status=status, exit_code=exit_code))
         return WorkflowSnapshot(workflow_id=workflow_id, status=wf_status, tasks=tasks)
+
+    def dataset_download(self, name: str, dest_dir: Path) -> None:
+        """Download an OSMO dataset to a local directory.
+
+        Creates ``dest_dir`` (and parents) if missing.
+
+        Args:
+            name: OSMO dataset name (typically ``{prefix}-{dispatch_id}-{run_id}``).
+            dest_dir: Local directory to download into.
+
+        Raises:
+            OsmoAuthError, OsmoTransientError, OsmoCliError: per :func:`_classify`.
+        """
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [self._exe, "dataset", "download", name, str(dest_dir)]
+        cp = self._run(cmd)
+        if cp.returncode != 0:
+            raise _classify(cp.stderr)(f"`osmo dataset download` failed: {cp.stderr.strip()}")
+
+    def cancel(self, workflow_id: str) -> None:
+        """Cancel an in-flight workflow.
+
+        Args:
+            workflow_id: The OSMO workflow ID.
+
+        Raises:
+            OsmoAuthError, OsmoTransientError, OsmoCliError: per :func:`_classify`.
+        """
+        cp = self._run([self._exe, "workflow", "cancel", workflow_id])
+        if cp.returncode != 0:
+            raise _classify(cp.stderr)(f"`osmo workflow cancel` failed: {cp.stderr.strip()}")
+
+    def logs(self, workflow_id: str, task_name: str, *, follow: bool = False) -> Iterator[bytes]:
+        """Yield log bytes from the named task.
+
+        With ``follow=False``, runs the command to completion and yields
+        the captured stdout as a single bytes chunk. With ``follow=True``,
+        streams stdout line-by-line until the subprocess exits.
+
+        Args:
+            workflow_id: The OSMO workflow ID.
+            task_name: The task name (must match an OSMO task name in the workflow).
+            follow: If True, follow the live stream (like ``tail -f``).
+
+        Yields:
+            Bytes chunks of stdout.
+
+        Raises:
+            OsmoAuthError, OsmoTransientError, OsmoCliError: on non-zero exit (non-follow path only).
+        """
+        cmd = [self._exe, "workflow", "logs", workflow_id, task_name]
+        if follow:
+            cmd.append("--follow")
+            return self._stream_logs(cmd)
+        cp = self._run(cmd)
+        if cp.returncode != 0:
+            raise _classify(cp.stderr)(f"`osmo workflow logs` failed: {cp.stderr.strip()}")
+        return iter([cp.stdout.encode()])
+
+    def _stream_logs(self, cmd: list[str]) -> Iterator[bytes]:
+        proc = subprocess.Popen(cmd, env=self._env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
+        assert proc.stdout is not None
+        try:
+            yield from iter(proc.stdout.readline, b"")
+        finally:
+            proc.stdout.close()
+            proc.wait()

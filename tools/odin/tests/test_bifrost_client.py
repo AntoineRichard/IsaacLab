@@ -162,3 +162,47 @@ def test_status_raises_on_real_failure():
     with patch("subprocess.run", return_value=_completed(returncode=1, stderr="HTTP 401 Unauthorized")):
         with pytest.raises(OsmoAuthError):
             client.status("my-wf-1")
+
+
+def test_dataset_download_invokes_correct_command(tmp_path: Path):
+    client = OsmoClient(profile="prod")
+    dest = tmp_path / "bundle"
+    with patch("subprocess.run", return_value=_completed()) as run:
+        client.dataset_download("odin-disp1-run42", dest)
+    cmd = run.call_args[0][0]
+    assert cmd[:3] == ["osmo", "dataset", "download"]
+    assert "odin-disp1-run42" in cmd
+    assert str(dest) in cmd
+
+
+def test_dataset_download_creates_dest_dir(tmp_path: Path):
+    client = OsmoClient(profile="prod")
+    dest = tmp_path / "nested" / "bundle"
+    with patch("subprocess.run", return_value=_completed()):
+        client.dataset_download("odin-disp1-run42", dest)
+    assert dest.exists()
+
+
+def test_dataset_download_raises_on_failure(tmp_path: Path):
+    client = OsmoClient(profile="prod")
+    with patch("subprocess.run", return_value=_completed(returncode=1, stderr="HTTP 503")):
+        with pytest.raises(OsmoTransientError):
+            client.dataset_download("odin-disp1-run42", tmp_path / "x")
+
+
+def test_cancel_invokes_correct_command():
+    client = OsmoClient(profile="prod")
+    with patch("subprocess.run", return_value=_completed()) as run:
+        client.cancel("my-wf-1")
+    cmd = run.call_args[0][0]
+    assert cmd == ["osmo", "workflow", "cancel", "my-wf-1"]
+
+
+def test_logs_invokes_correct_command_no_follow():
+    client = OsmoClient(profile="prod")
+    with patch("subprocess.run", return_value=_completed(stdout="line1\nline2\n")) as run:
+        out = list(client.logs("my-wf-1", "task-a", follow=False))
+    cmd = run.call_args[0][0]
+    assert cmd[:3] == ["osmo", "workflow", "logs"]
+    assert "--follow" not in cmd
+    assert b"line1" in out[0]
