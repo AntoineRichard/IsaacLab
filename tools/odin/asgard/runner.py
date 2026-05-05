@@ -234,7 +234,12 @@ def _apply_state_event(
             j.running_substate = ev.running_substate
         return 0
     if ev.transition == "completed":
-        if j is not None:
+        # Guard against stale events arriving after the job has already
+        # advanced past 'running' (e.g., a resume re-attach race that
+        # re-emits an event already consumed). Without the guard,
+        # transition_to would raise ValueError for an illegal edge from
+        # a terminal state, which would crash the dispatcher main loop.
+        if j is not None and j.status == "running":
             j.transition_to("completed", now=ev.ended_at)
         for f in state.fleet:
             if f.host == ev.host:
@@ -244,7 +249,11 @@ def _apply_state_event(
             print(f"[{_utc_now_iso()}] COMPLETE {j.run_id} on {ev.host}")
         return 1
     if ev.transition == "failed":
-        if j is not None and ev.failure is not None:
+        # Guard against stale events arriving after a terminal state
+        # transition. 'failed' is reachable from 'pending' (skip-cancel
+        # path) and 'running' (training crash, infrastructure error),
+        # but not from another terminal — those would be illegal edges.
+        if j is not None and ev.failure is not None and j.status in ("pending", "running"):
             j.transition_to("failed", failure=ev.failure, now=ev.ended_at)
         for f in state.fleet:
             if f.host == ev.host:

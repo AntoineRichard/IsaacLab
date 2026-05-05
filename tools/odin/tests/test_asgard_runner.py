@@ -1088,3 +1088,91 @@ def test_run_dispatch_consumes_live_retry_for_current_dispatch(tmp_path: Path):
     assert rows[0].retry_dispatch_id == dispatch_id
     assert rows[0].retry_outcome == "completed"
     assert RetryDB(dispatch_dir.parent).read_pending(dispatch_id) == set()
+
+
+def test_apply_state_event_completed_ignores_stale_event_on_terminal_job():
+    """I2 regression: a stale 'completed' StateEvent arriving after the
+    job has already advanced to 'failed' (or 'completed') must be
+    silently ignored, not crash the dispatcher with an illegal-edge
+    ValueError."""
+    from tools.odin.asgard.jobs import FailureInfo, JobEntry
+    from tools.odin.asgard.runner import _apply_state_event
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState
+    from tools.odin.asgard.worker import StateEvent
+
+    job = JobEntry(
+        run_id="r1",
+        task_id="t",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1,
+        max_iterations=1,
+        seed=42,
+        bundle_dir_name="r1",
+        status="failed",
+        started_at="t0",
+        assigned_to="v1",
+        ended_at="t1",
+        failure=FailureInfo(kind="hugin_crash", message="boom"),
+    )
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="d",
+        started_at="t0",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[],
+        jobs=[job],
+    )
+    stale = StateEvent(run_id="r1", host="v1", transition="completed", ended_at="t2")
+
+    # Must not raise. Job state must remain 'failed'.
+    _apply_state_event(state, stale)
+    assert job.status == "failed"
+    assert job.ended_at == "t1"  # unchanged from before
+
+
+def test_apply_state_event_failed_ignores_stale_event_on_completed_job():
+    """I2 regression sibling: a stale 'failed' StateEvent arriving after
+    the job has already adopted 'completed' must be silently ignored."""
+    from tools.odin.asgard.jobs import FailureInfo, JobEntry
+    from tools.odin.asgard.runner import _apply_state_event
+    from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState
+    from tools.odin.asgard.worker import StateEvent
+
+    job = JobEntry(
+        run_id="r1",
+        task_id="t",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1,
+        max_iterations=1,
+        seed=42,
+        bundle_dir_name="r1",
+        status="completed",
+        started_at="t0",
+        assigned_to="v1",
+        ended_at="t1",
+    )
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="d",
+        started_at="t0",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="abc",
+        fleet=[],
+        jobs=[job],
+    )
+    stale = StateEvent(
+        run_id="r1",
+        host="v1",
+        transition="failed",
+        failure=FailureInfo(kind="x", message="y"),
+        ended_at="t2",
+    )
+
+    _apply_state_event(state, stale)
+    assert job.status == "completed"  # unchanged
+    assert job.ended_at == "t1"  # unchanged
