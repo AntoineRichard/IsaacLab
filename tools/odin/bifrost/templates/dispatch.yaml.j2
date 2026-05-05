@@ -1,0 +1,61 @@
+workflow:
+  name: odin-disp-{{ dispatch_id }}
+  pool: {{ cfg.pool }}
+  resources:
+    default:
+      cpu: {{ cfg.defaults.resources.cpu }}
+      gpu: {{ cfg.defaults.resources.gpu }}
+      memory: {{ cfg.defaults.resources.memory }}
+      storage: {{ cfg.defaults.resources.storage }}
+      platform: {{ cfg.defaults.resources.platform }}
+  timeouts:
+    exec: {{ cfg.defaults.exec_timeout }}
+    queue: {{ cfg.defaults.queue_timeout }}
+  tasks:
+{% for row in rows %}
+  - name: {{ row.osmo_task_name }}
+    image: {{ cfg.image.reference }}
+{% if cfg.image.pull_credential %}
+    credentials:
+      registry: {{ cfg.image.pull_credential }}
+{% endif %}
+    environment:
+      ACCEPT_EULA: "Y"
+      NO_NUCLEUS: "Y"
+      OMNI_KIT_ALLOW_ROOT: "1"
+      ODIN_DISPATCH_ID: "{{ dispatch_id }}"
+      ODIN_RUN_ID: "{{ row.run_id }}"
+    command: ["bash"]
+    args: ["/tmp/entry.sh"]
+    files:
+    - path: /tmp/entry.sh
+      contents: |
+        set -euxo pipefail
+{% if cfg.code_delivery.mode == "files_upload" %}
+        tar -xzf /workspace/odin-source.tar.gz -C /workspace/IsaacLab
+{% endif %}
+        cd /workspace/IsaacLab
+        PYTHONPATH=. ./isaaclab.sh -p tools/odin/{{ row.framework_runner }}/run.py \
+          --task {{ row.task_id }} \
+          --backend {{ row.backend }} \
+          --seed {{ row.seed }} \
+          --num_envs {{ row.num_envs }} \
+          --max_iterations {{ row.max_iterations }} \
+          --runs_root '{{ '{{output}}' }}'
+{% if cfg.code_delivery.mode == "files_upload" %}
+    - localpath: {{ tarball_path }}
+      path: /workspace/odin-source.tar.gz
+{% endif %}
+    outputs:
+    - dataset:
+        name: {{ cfg.bundle_dataset_prefix }}-{{ dispatch_id }}-{{ row.run_id }}
+{% if cfg.retry.reschedule_codes or cfg.retry.restart_codes %}
+    exitActions:
+{% if cfg.retry.reschedule_codes %}
+      RESCHEDULE: {{ cfg.retry.reschedule_codes }}
+{% endif %}
+{% if cfg.retry.restart_codes %}
+      RESTART: {{ cfg.retry.restart_codes }}
+{% endif %}
+{% endif %}
+{% endfor %}

@@ -16,7 +16,11 @@ from __future__ import annotations
 import hashlib
 import re
 
-__all__ = ["osmo_safe_task_name"]
+__all__ = [
+    "osmo_safe_task_name",
+    "RenderRow",
+    "render_workflow_yaml",
+]
 
 
 _DNS_1123_LABEL_MAX = 63
@@ -56,3 +60,70 @@ def osmo_safe_task_name(run_id: str) -> str:
     digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:6]
     keep = _DNS_1123_LABEL_MAX - _HASH_SUFFIX_LEN
     return f"{collapsed[:keep].rstrip('-')}-{digest}"
+
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+from tools.odin.bifrost.config import BifrostConfig
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+@dataclass(frozen=True)
+class RenderRow:
+    """One row of the workflow render context.
+
+    Maps 1:1 to a single task in the OSMO workflow YAML.
+    """
+
+    run_id: str
+    osmo_task_name: str
+    framework: str  # rsl-rl | skrl
+    framework_runner: str  # hugin | munin
+    task_id: str  # gym task id, e.g. Isaac-Ant-Direct-v0
+    backend: str  # physx | newton
+    seed: int
+    num_envs: int
+    max_iterations: int
+
+
+def render_workflow_yaml(
+    *,
+    dispatch_id: str,
+    rows: list[RenderRow],
+    cfg: BifrostConfig,
+    tarball_path: str | None,
+) -> str:
+    """Render the OSMO workflow YAML for one dispatch.
+
+    Args:
+        dispatch_id: Odin dispatch id (``YYYYMMDD-HHMMSS``).
+        rows: One per ``(task, seed)`` to dispatch.
+        cfg: Validated config from :func:`load_bifrost_config`.
+        tarball_path: Controller-local path to the source tarball; required
+            when ``cfg.code_delivery.mode == "files_upload"``, ignored
+            otherwise.
+
+    Returns:
+        The rendered workflow YAML as a string. Caller writes it to disk
+        and passes the path to ``osmo workflow submit``.
+    """
+    if cfg.code_delivery.mode == "files_upload" and not tarball_path:
+        raise ValueError("tarball_path is required when code_delivery.mode == files_upload")
+    env = Environment(
+        loader=FileSystemLoader(str(_TEMPLATES_DIR)),
+        undefined=StrictUndefined,
+        trim_blocks=False,
+        lstrip_blocks=False,
+        keep_trailing_newline=True,
+    )
+    template = env.get_template("dispatch.yaml.j2")
+    return template.render(
+        dispatch_id=dispatch_id,
+        rows=rows,
+        cfg=cfg,
+        tarball_path=tarball_path,
+    )
