@@ -650,8 +650,7 @@ class ValkyrieWorker(threading.Thread):
                 started_at=started_at,
             )
         )
-        job.started_at = started_at
-        job.assigned_to = self.host.host
+        job.transition_to("running", assigned_to=self.host.host, now=started_at)
         job.attempts += 1
         result = self._submit_job(job)
         if result.ok:
@@ -742,7 +741,7 @@ class ValkyrieWorker(threading.Thread):
             self._state_chan.put(
                 StateEvent(run_id=job.run_id, host=self.host.host, transition="running", started_at=started_at)
             )
-            job.started_at = started_at
+            job.transition_to("running", assigned_to=self.host.host, now=started_at)
             job.attempts += 1
 
             ssh_tail = self._dispatch_dir / job.bundle_dir_name / "logs" / "ssh-tail.log"
@@ -794,7 +793,7 @@ class ValkyrieWorker(threading.Thread):
                             failure=failure,
                         )
                     )
-                    job.preferred_not = set(job.preferred_not) | {self.host.host}
+                    job.transition_to("pending", add_preferred_not=self.host.host)
                     self._job_queue.put(job)
                     self._down_event.set()
                     return  # Do not terminal-fail; job is back on the queue.
@@ -845,17 +844,16 @@ class ValkyrieWorker(threading.Thread):
                 )
             return
 
-        job.status = "completed"
-        job.ended_at = _utc_now_iso()
-        self._state_chan.put(
-            StateEvent(
-                run_id=job.run_id,
-                host=self.host.host,
-                transition="completed",
-                ended_at=job.ended_at,
+        if job.transition_to("completed"):
+            self._state_chan.put(
+                StateEvent(
+                    run_id=job.run_id,
+                    host=self.host.host,
+                    transition="completed",
+                    ended_at=job.ended_at,
+                )
             )
-        )
-        self._fail_tracker.note_success()
+            self._fail_tracker.note_success()
 
     # -- circuit-breaker helper ---------------------------------------------
 
@@ -1128,17 +1126,16 @@ class ValkyrieWorker(threading.Thread):
                 self._emit_failed(job, bundle_failure)
                 self._inflight.pop(job.run_id, None)
                 return
-            job.status = "completed"
-            job.ended_at = _utc_now_iso()
-            self._state_chan.put(
-                StateEvent(
-                    run_id=job.run_id,
-                    host=self.host.host,
-                    transition="completed",
-                    ended_at=job.ended_at,
+            if job.transition_to("completed"):
+                self._state_chan.put(
+                    StateEvent(
+                        run_id=job.run_id,
+                        host=self.host.host,
+                        transition="completed",
+                        ended_at=job.ended_at,
+                    )
                 )
-            )
-            self._fail_tracker.note_success()
+                self._fail_tracker.note_success()
             self._inflight.pop(job.run_id, None)
             return
 

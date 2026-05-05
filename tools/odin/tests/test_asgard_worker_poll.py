@@ -169,6 +169,7 @@ def test_finalize_done_emits_completed_after_pull_and_validate(tmp_path: Path):
     rsync = _RsyncMaterialize(materialize=True)
     worker = _make_worker(tmp_path, ssh, rsync)
     job = _job("r-done")
+    job.transition_to("running", assigned_to=worker.host.host)
     inflight = JobInflight(
         job=job,
         tracker=_tracker(worker.host, "r-done"),
