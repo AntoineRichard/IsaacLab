@@ -8,10 +8,11 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import numpy as np
+import torch
 import warp as wp
 
 from pxr import UsdPhysics
@@ -520,3 +521,47 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         binding = self._ovphysx.create_tensor_binding(pattern=self._binding_patterns[body_idx], tensor_type=tensor_type)
         self._bindings[tensor_type][body_idx] = binding
         return binding
+
+    # ------------------------------------------------------------------
+    # Internal helpers -- ID resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_env_ids(self, env_ids) -> wp.array:
+        """Resolve environment indices to a warp int32 array on ``self._device`` (mirrors PhysX).
+
+        Tests sometimes hand us indices on CPU even when the sim runs on GPU; we move the
+        resolved array onto ``self._device`` so kernel launches don't fail on a device
+        mismatch.
+        """
+        if env_ids is None or env_ids == slice(None):
+            return self._ALL_INDICES_ENV
+        if isinstance(env_ids, list):
+            return wp.array(env_ids, dtype=wp.int32, device=self._device)
+        if isinstance(env_ids, torch.Tensor):
+            return wp.from_torch(env_ids.to(torch.int32), dtype=wp.int32)
+        if isinstance(env_ids, wp.array) and str(env_ids.device) != self._device:
+            env_ids = wp.clone(env_ids, device=self._device)
+        return env_ids
+
+    def _resolve_body_ids(self, body_ids) -> wp.array:
+        """Resolve body indices to a warp int32 array on ``self._device`` (mirrors PhysX)."""
+        if body_ids is None or body_ids == slice(None):
+            return self._ALL_INDICES_BODY
+        if isinstance(body_ids, list):
+            return wp.array(body_ids, dtype=wp.int32, device=self._device)
+        return body_ids
+
+    def _iter_body_ids_cpu(self, body_ids: wp.array) -> Iterable[int]:
+        """Iterate over body IDs on CPU.
+
+        Warp arrays cannot drive Python control flow; this helper converts
+        a warp int32 array to an iterator of Python ints on CPU.
+
+        Args:
+            body_ids: A warp array of int32 body indices.
+
+        Returns:
+            An iterator over the body IDs as Python integers.
+        """
+        cpu = wp.to_torch(body_ids).cpu().numpy().tolist()
+        return iter(cpu)
