@@ -14,9 +14,11 @@ __all__ = [
     "NewtonCfg",
     "NewtonCollisionPipelineCfg",
     "NewtonManager",
+    "NewtonPhoenXManager",
     "NewtonShapeCfg",
     "NewtonSolverCfg",
     "NewtonXPBDManager",
+    "PhoenXSolverCfg",
     "XPBDSolverCfg",
 ]
 
@@ -33,5 +35,7 @@ from .newton_manager_cfg import (
     NewtonShapeCfg,
     NewtonSolverCfg,
 )
+from .phoenx_manager import NewtonPhoenXManager
+from .phoenx_manager_cfg import PhoenXSolverCfg
 from .xpbd_manager import NewtonXPBDManager
 from .xpbd_manager_cfg import XPBDSolverCfg
