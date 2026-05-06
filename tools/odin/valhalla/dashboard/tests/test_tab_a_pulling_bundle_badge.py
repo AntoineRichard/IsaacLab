@@ -43,8 +43,7 @@ def _walk(node):
 
 def test_running_row_with_pulling_bundle_substate_renders_badge():
     section = render_jobs_section(_payload([_job(running_substate="pulling_bundle")]))
-    badges = [n for n in _walk(section)
-              if getattr(n, "className", "") == "tab-a-pulling-bundle-badge"]
+    badges = [n for n in _walk(section) if getattr(n, "className", "") == "tab-a-pulling-bundle-badge"]
     assert len(badges) == 1
     assert "pulling bundle" in (badges[0].children or "").lower()
 
@@ -52,14 +51,12 @@ def test_running_row_with_pulling_bundle_substate_renders_badge():
 def test_running_row_without_substate_does_not_render_badge():
     """Default substate (training) → no badge shown."""
     section = render_jobs_section(_payload([_job(running_substate=None)]))
-    badges = [n for n in _walk(section)
-              if getattr(n, "className", "") == "tab-a-pulling-bundle-badge"]
+    badges = [n for n in _walk(section) if getattr(n, "className", "") == "tab-a-pulling-bundle-badge"]
     assert badges == []
 
 
 def test_running_row_with_training_substate_does_not_render_badge():
     """Explicit 'training' substate → no badge (only pulling_bundle gets one)."""
     section = render_jobs_section(_payload([_job(running_substate="training")]))
-    badges = [n for n in _walk(section)
-              if getattr(n, "className", "") == "tab-a-pulling-bundle-badge"]
+    badges = [n for n in _walk(section) if getattr(n, "className", "") == "tab-a-pulling-bundle-badge"]
     assert badges == []
