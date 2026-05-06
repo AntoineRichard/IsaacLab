@@ -105,7 +105,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         raise NotImplementedError("phase 4")
 
     def update(self, dt: float) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 2")
+        self._data.update(dt)
 
     def find_bodies(self, name_keys: str | Sequence[str], preserve_order: bool = False):  # type: ignore[override]
         raise NotImplementedError("phase 3")
@@ -447,7 +447,8 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         # Step 8: Apply initial state from configuration.
         self._process_cfg()
 
-        # TODO(phase 2): self.update(0.0)
+        # Step 9: Prime buffers with zero acceleration history.
+        self.update(0.0)
 
     def _create_buffers(self) -> None:
         """Pre-allocate asset-side index arrays."""

@@ -164,6 +164,10 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
             dt: The time step for the update [s]. This must be a positive value.
         """
         self._sim_timestamp += dt
+        # Mirrors RigidObject's update() pattern.
+        # Priming an FD-dependent derived property ensures the first read
+        # returns sensible (zero) acceleration.
+        _ = self.body_com_acc_w
 
     # ------------------------------------------------------------------
     # Names
