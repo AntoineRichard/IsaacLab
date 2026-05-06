@@ -29,11 +29,15 @@ def _job(status: str = "pending", **overrides) -> JobEntry:
     return JobEntry(**defaults)
 
 
-def test_allowed_transitions_graph_has_eight_legal_edges():
-    """The graph encodes seven edges from spec §4.1 plus one back-compat 'assigned'→'pending' edge — eight total."""
+def test_allowed_transitions_graph_has_nine_legal_edges():
+    """The graph encodes seven edges from spec §4.1, plus one back-compat
+    'assigned'→'pending' edge, plus one OSMO/Bifrost fast-completion edge
+    'pending'→'completed' (workflow schedulers can report a task terminal
+    without ever observing it in 'running') — nine total."""
     expected = {
         ("assigned", "pending"),
         ("pending", "running"),
+        ("pending", "completed"),
         ("pending", "failed"),
         ("running", "completed"),
         ("running", "failed"),
@@ -161,7 +165,14 @@ def test_now_defaults_to_utc_iso_when_none():
         ("completed", "failed"),
         ("failed", "running"),
         ("failed", "completed"),
-        ("pending", "completed"),  # must go through running
+        # ('pending', 'completed') used to be illegal but is now legal
+        # for the OSMO/Bifrost fast-completion path. Replaced with the
+        # remaining illegal pending edge: 'pending' → 'running' is legal,
+        # 'pending' → 'failed' is legal, 'pending' → 'completed' is legal,
+        # so the only illegal target from pending is the (non-status)
+        # 'pending' itself — which short-circuits as a self-loop, not an
+        # illegal edge. There is no remaining illegal pending → X case
+        # to parametrize, so we keep the four cases above only.
     ],
 )
 def test_illegal_edges_raise_value_error(src, dst):

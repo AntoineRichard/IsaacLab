@@ -245,18 +245,13 @@ def test_read_skipped_without_native_backend_defaults_to_none(tmp_path: Path):
     assert s.skipped[0].native_backend is None
 
 
-def test_schema_version_writes_1_4(tmp_path: Path):
-    """New dispatches write schema_version='1.4'."""
+def test_schema_version_writes_1_5(tmp_path: Path):
+    """New dispatches write schema_version='1.5'."""
     write_dispatch_state(tmp_path, _state_with_skipped([_job("run-a")], []))
     import json
 
     payload = json.loads((tmp_path / "dispatch.json").read_text())
-    assert payload["schema_version"] == "1.4"
-
-
-def test_schema_version_is_1_4():
-    """Module-level SCHEMA_VERSION constant is bumped to '1.4'."""
-    assert SCHEMA_VERSION == "1.4"
+    assert payload["schema_version"] == "1.5"
 
 
 def test_roundtrip_quarantined_hosts(tmp_path: Path):
@@ -433,3 +428,104 @@ def test_running_substate_absent_in_legacy_dispatch_json_reads_as_none(tmp_path:
     loaded = read_dispatch_state(tmp_path)
     assert loaded is not None
     assert loaded.jobs[0].running_substate is None
+
+
+# ---------------------------------------------------------------------------
+# v1.5 schema tests (osmo fields)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_version_is_1_5():
+    assert SCHEMA_VERSION == "1.5"
+
+
+def test_dispatch_state_round_trip_with_osmo_fields(tmp_path: Path):
+    # Note: status="completed" requires ended_at per the strict-invariants
+    # tripwire added in the state-tracking audit; supplying it here keeps
+    # the round-trip valid.
+    job = JobEntry(
+        run_id="rsl-rl_physx_X_seed42",
+        task_id="X",
+        framework="rsl-rl",
+        backend="physx",
+        num_envs=4096,
+        max_iterations=500,
+        seed=42,
+        bundle_dir_name="rsl-rl_physx_X_seed42",
+        status="completed",
+        ended_at="2026-05-05T15:30:00Z",
+        osmo_task_name="rsl-rl-physx-x-seed42",
+    )
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260505-150000",
+        started_at="2026-05-05T15:00:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="deadbeef",
+        fleet=[],
+        jobs=[job],
+        dispatcher="osmo",
+        osmo_workflow_id="odin-disp-20260505-150000-1",
+        parent_dispatch_id=None,
+    )
+    write_dispatch_state(tmp_path, state)
+    loaded = read_dispatch_state(tmp_path)
+    assert loaded is not None
+    assert loaded.dispatcher == "osmo"
+    assert loaded.osmo_workflow_id == "odin-disp-20260505-150000-1"
+    assert loaded.parent_dispatch_id is None
+    assert loaded.jobs[0].osmo_task_name == "rsl-rl-physx-x-seed42"
+
+
+def test_dispatch_state_back_compat_loads_v1_4_without_dispatcher(tmp_path: Path):
+    """An old dispatch.json with no `dispatcher` field loads with dispatcher='asgard'."""
+    import json
+
+    payload = {
+        "schema_version": "1.4",
+        "dispatch_id": "20260101-000000",
+        "started_at": "2026-01-01T00:00:00Z",
+        "ended_at": None,
+        "seeds": [42],
+        "commit_sha": "",
+        "fleet": [],
+        "jobs": [],
+        "skipped": [],
+        "quarantined_hosts": [],
+    }
+    (tmp_path / "dispatch.json").write_text(json.dumps(payload))
+    loaded = read_dispatch_state(tmp_path)
+    assert loaded is not None
+    assert loaded.dispatcher == "asgard"
+    assert loaded.osmo_workflow_id is None
+    assert loaded.parent_dispatch_id is None
+
+
+def test_dispatch_state_round_trip_omits_osmo_task_name(tmp_path: Path):
+    """A JobEntry without osmo_task_name (default None) round-trips correctly."""
+    job = JobEntry(
+        run_id="x",
+        task_id="X",
+        framework="rsl-rl",
+        backend="physx",
+        num_envs=1,
+        max_iterations=1,
+        seed=0,
+        bundle_dir_name="x",
+    )
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260101-000000",
+        started_at="2026-01-01T00:00:00Z",
+        ended_at=None,
+        seeds=[0],
+        commit_sha="",
+        fleet=[],
+        jobs=[job],
+    )
+    write_dispatch_state(tmp_path, state)
+    loaded = read_dispatch_state(tmp_path)
+    assert loaded is not None
+    assert loaded.jobs[0].osmo_task_name is None
+    assert loaded.dispatcher == "asgard"

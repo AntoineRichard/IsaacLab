@@ -339,6 +339,103 @@ PYTHONPATH=. ./isaaclab.sh -p tools/odin/valhalla/dashboard/retry_cli.py \
     --runs_root odin_runs export-resume-cmd 20260430-110509
 ```
 
+## Dispatching to OSMO (Bifrost)
+
+`tools/odin/bifrost/cli.py` (the `odin-bifrost-dispatch` entry point) is the
+peer of `odin-dispatch` for sites where the compute is managed by
+[OSMO](https://github.com/NVIDIA/OSMO). Bifrost submits a single OSMO
+workflow with N parallel tasks (one per `(env, seed)` row); bundles return
+as datasets and land at `odin_runs/<dispatch_id>/<run_id>/` — the same
+layout that asgard produces. Valhalla aggregation is unchanged.
+
+There is no fleet config: OSMO owns scheduling, image pull, infrastructure
+retry (`exitActions`), and output upload. A `bifrost-osmo.yaml` only
+captures *what to ask OSMO for*. Copy
+`tools/odin/config/bifrost-osmo.yaml.example` and edit:
+
+```yaml
+osmo_profile: prod
+pool: rtx-pro-6000-eval
+priority: NORMAL
+image:
+  reference: nvcr.io/nvidia/isaac-lab:2.2.0
+  pull_credential: ngc-readonly
+defaults:
+  resources: {cpu: 16, gpu: 1, memory: 64Gi, storage: 64Gi, platform: rtx-pro-6000}
+  exec_timeout: 14400
+  queue_timeout: 7200
+retry:
+  reschedule_codes: "3001-3006"
+  restart_codes: ""
+bundle_dataset_prefix: odin
+code_delivery:
+  mode: files_upload    # files_upload | rsync | image_baked
+  source_root: tools/odin
+```
+
+### Running a bifrost dispatch
+
+```bash
+PYTHONPATH=. ./isaaclab.sh -p tools/odin/bifrost/cli.py \
+    --osmo-config bifrost-osmo.yaml \
+    --physx-yaml tools/odin/config/physx_envs.yaml \
+    [--newton-yaml tools/odin/config/newton_envs.yaml] \
+    --seeds 42,43,44 \
+    [--include 'Isaac-Ant-*'] \
+    [--pool rtx-pro-6000-eval] \
+    [--priority HIGH|NORMAL|LOW] \
+    [--rsync] \
+    [--dry-run] \
+    [--resume <dispatch_id|LATEST>] \
+    [--retry-failed <run_ids>] \
+    [--poll-interval 15] \
+    [--verbose]
+```
+
+`--dry-run` renders the workflow YAML and writes `dispatch.json` without
+submitting — handy for inspecting what bifrost would send to OSMO.
+
+### Failure handling
+
+OSMO terminal task states map to Odin's four-kind failure classification
+in `tools/odin/bifrost/poller.py::OSMO_STATE_TO_FAILURE_KIND`:
+
+| OSMO state                                                       | Odin `failure.kind`        |
+|---|---|
+| `COMPLETED`                                                      | (success)                  |
+| `FAILED`                                                         | `hugin_crash`              |
+| `FAILED_EXEC_TIMEOUT`                                            | `timeout`                  |
+| `FAILED_BACKEND_ERROR`, `FAILED_PREEMPTED`, `FAILED_EVICTED`,    | `infrastructure`           |
+| `FAILED_IMAGE_PULL`, `FAILED_START_*`, `FAILED_QUEUE_TIMEOUT`,   |                            |
+| `FAILED_SERVER_ERROR`, `FAILED_CANCELED`                         |                            |
+| `COMPLETED` with missing/malformed manifest                      | `hugin_malformed_bundle`   |
+
+OSMO automatically reschedules `FAILED_BACKEND_ERROR` and friends per
+the `retry.reschedule_codes` range in the config — bifrost only reports
+the kind once OSMO gives up.
+
+User-class retries (`hugin_crash`, `timeout`, `hugin_malformed_bundle`)
+are explicit operator action via `--retry-failed`, which submits a new
+workflow with only the named rows and links the new dispatch back via
+`parent_dispatch_id`.
+
+### State on disk
+
+```
+odin_runs/
+└── 20260505-150000/
+    ├── dispatch.json           # schema 1.5; dispatcher: "osmo"; osmo_workflow_id: ...
+    ├── workflow.yaml           # the rendered OSMO workflow
+    ├── odin-source.tar.gz      # uploaded with files_upload mode
+    └── <run_id>/
+        ├── manifest.json
+        ├── training.json
+        ├── startup.json
+        ├── training_data/
+        └── logs/
+            └── osmo-tail.log   # only if --verbose
+```
+
 ## Aggregating a dispatch (T4.1 — Valhalla)
 
 Every dispatch auto-produces `odin_runs/<dispatch_id>/aggregate.json` at

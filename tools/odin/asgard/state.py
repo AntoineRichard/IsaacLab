@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-SCHEMA_VERSION = "1.4"
+SCHEMA_VERSION = "1.5"
 _DISPATCH_FILENAME = "dispatch.json"
 
 
@@ -141,6 +141,9 @@ class DispatchState:
     jobs: list[JobEntry]
     skipped: list[SkippedEntry] = field(default_factory=list)
     quarantined_hosts: list[QuarantinedHost] = field(default_factory=list)
+    dispatcher: str = "asgard"  # "asgard" | "osmo"
+    osmo_workflow_id: str | None = None
+    parent_dispatch_id: str | None = None
 
 
 # --- Serialization -----------------------------------------------------------
@@ -164,6 +167,7 @@ def _job_to_dict(j: JobEntry) -> dict[str, Any]:
         "running_substate": j.running_substate,
         "preferred_not": sorted(j.preferred_not),
         "per_job_timeout_s": j.per_job_timeout_s,
+        "osmo_task_name": j.osmo_task_name,
     }
     if j.failure is None:
         d["failure"] = None
@@ -202,6 +206,7 @@ def _job_from_dict(d: dict[str, Any]) -> JobEntry:
         started_at=d.get("started_at"),
         ended_at=d.get("ended_at"),
         per_job_timeout_s=d.get("per_job_timeout_s"),
+        osmo_task_name=d.get("osmo_task_name"),
     )
 
 
@@ -251,6 +256,9 @@ def _state_to_dict(s: DispatchState) -> dict[str, Any]:
         "quarantined_hosts": [
             {"host": q.host, "reason": q.reason, "last_run_id": q.last_run_id, "at": q.at} for q in s.quarantined_hosts
         ],
+        "dispatcher": s.dispatcher,
+        "osmo_workflow_id": s.osmo_workflow_id,
+        "parent_dispatch_id": s.parent_dispatch_id,
     }
 
 
@@ -303,6 +311,9 @@ def _state_from_dict(d: dict[str, Any]) -> DispatchState:
             )
             for q in (d.get("quarantined_hosts") or [])
         ],
+        dispatcher=str(d.get("dispatcher") or "asgard"),
+        osmo_workflow_id=d.get("osmo_workflow_id"),
+        parent_dispatch_id=d.get("parent_dispatch_id"),
     )
 
 

@@ -113,6 +113,9 @@ class JobEntry:
     # Camera) get hours instead of the global 1h default while Cartpole stays
     # at 10 minutes.
     per_job_timeout_s: int | None = None
+    # OSMO task name for jobs submitted via the Bifrost dispatcher. ``None``
+    # for all Asgard-dispatched jobs.
+    osmo_task_name: str | None = None
 
     # Allowed-transition graph. See spec §4.1. Self-loops are not listed
     # here — `transition_to` short-circuits same-state calls as no-ops
@@ -122,7 +125,13 @@ class JobEntry:
         "assigned": frozenset({"pending"}),
         "completed": frozenset({"pending"}),
         "failed": frozenset({"pending"}),
-        "pending": frozenset({"running", "failed"}),
+        # ``pending → completed`` and ``pending → failed`` are the OSMO/Bifrost
+        # fast-path: a workflow scheduler can report a task as terminal
+        # without bifrost ever observing it in the "running" state (cache
+        # hits, fast scheduling, instant failures). The Asgard worker path
+        # always goes through running first, so this edge is OSMO-only in
+        # practice.
+        "pending": frozenset({"running", "completed", "failed"}),
         "running": frozenset({"completed", "failed", "pending"}),
     }
 
