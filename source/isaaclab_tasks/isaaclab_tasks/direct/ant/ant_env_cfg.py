@@ -62,7 +62,9 @@ class AntPhysicsCfg(PresetCfg):
     )
     newton_phoenx: NewtonCfg = NewtonCfg(
         solver_cfg=PhoenXSolverCfg(
-            substeps=2,
+            substeps=8,
+            solver_iterations=16,
+            velocity_iterations=2,
             velocity_readout="substep_average",
         ),
         num_substeps=1,
