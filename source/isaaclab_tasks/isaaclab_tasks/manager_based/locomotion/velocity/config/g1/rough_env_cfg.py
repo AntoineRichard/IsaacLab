@@ -145,8 +145,27 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
 
-        # terminations
-        self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
+        # Drop reward / termination terms that depend on the contact-force sensor
+        # when the active physics preset disables it (``newton_phoenx``: PhoenX
+        # has no contact-sensor backend on the Newton manager today).
+        # Detection note: ``__post_init__`` runs before Hydra's
+        # ``resolve_presets`` mutates ``self.scene.contact_forces`` to ``None``,
+        # so we sniff ``sys.argv`` for the ``newton_phoenx`` preset selection
+        # directly.  Once IsaacLab grows a post-resolve cfg hook, this can move
+        # to ``if self.scene.contact_forces is None``.
+        import sys
+
+        contact_disabled = any(
+            arg.startswith("presets=") and "newton_phoenx" in arg.split("=", 1)[1].split(",") for arg in sys.argv
+        )
+        if contact_disabled:
+            self.scene.contact_forces = None
+            self.rewards.feet_air_time = None
+            self.rewards.feet_slide = None
+            self.terminations.base_contact = None
+        else:
+            # terminations
+            self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
 
 
 @configclass

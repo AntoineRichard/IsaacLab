@@ -77,6 +77,10 @@ class RoughPhysicsCfg(PresetCfg):
 class VelocityEnvContactSensorCfg(PresetCfg):
     default = PhysXContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
     newton_mjwarp = NewtonContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
+    # PhoenX manager has no contact sensor backend yet — disable the sensor for this preset.
+    # Tasks that consume ``contact_forces`` should null out their dependent reward / termination
+    # terms in ``__post_init__`` when ``scene.contact_forces is None``.
+    newton_phoenx = None
     physx = default
 
 
