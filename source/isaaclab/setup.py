@@ -43,7 +43,7 @@ INSTALL_REQUIRES = [
     "botocore",
     # livestream
     "starlette==0.49.1",
-    "omniverseclient",
+    "omniverseclient==2.71.1.7015",
     # odin dashboard
     "dash>=2.18.0",
     "plotly>=5.24.0",
