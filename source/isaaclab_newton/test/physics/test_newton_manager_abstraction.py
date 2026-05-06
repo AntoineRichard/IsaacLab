@@ -36,11 +36,13 @@ from isaaclab_newton.physics import (
     NewtonKaminoManager,
     NewtonManager,
     NewtonMJWarpManager,
+    NewtonPhoenXManager,
     NewtonSolverCfg,
     NewtonXPBDManager,
+    PhoenXSolverCfg,
     XPBDSolverCfg,
 )
-from newton.solvers import SolverFeatherstone, SolverKamino, SolverMuJoCo, SolverXPBD
+from newton.solvers import SolverFeatherstone, SolverKamino, SolverMuJoCo, SolverPhoenX, SolverXPBD
 
 from isaaclab.sim import SimulationCfg, build_simulation_context
 
@@ -99,6 +101,14 @@ SOLVER_MATRIX = [
         True,
         id="kamino_newton_pipeline",
     ),
+    pytest.param(
+        lambda: PhoenXSolverCfg(),
+        NewtonPhoenXManager,
+        SolverPhoenX,
+        False,
+        True,
+        id="phoenx",
+    ),
 ]
 
 
@@ -140,7 +150,8 @@ def test_newton_cfg_post_init_propagates_class_type(
 
 
 @pytest.mark.parametrize(
-    "manager", [NewtonMJWarpManager, NewtonXPBDManager, NewtonFeatherstoneManager, NewtonKaminoManager]
+    "manager",
+    [NewtonMJWarpManager, NewtonXPBDManager, NewtonFeatherstoneManager, NewtonKaminoManager, NewtonPhoenXManager],
 )
 def test_subclass_of_newton_manager(manager):
     """All concrete managers inherit from :class:`NewtonManager`."""
@@ -156,7 +167,8 @@ def test_abstract_build_solver_raises():
 
 
 @pytest.mark.parametrize(
-    "manager", [NewtonMJWarpManager, NewtonXPBDManager, NewtonFeatherstoneManager, NewtonKaminoManager]
+    "manager",
+    [NewtonMJWarpManager, NewtonXPBDManager, NewtonFeatherstoneManager, NewtonKaminoManager, NewtonPhoenXManager],
 )
 def test_manager_name_starts_with_newton(manager):
     """The ``"newton"`` prefix is required by :class:`InteractiveScene` and the
