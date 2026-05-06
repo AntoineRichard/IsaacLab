@@ -284,3 +284,34 @@ def test_mjwarp_internal_contacts_with_collision_cfg_raises():
 
         with pytest.raises(ValueError, match="collision_cfg cannot be set"):
             sim.reset()
+
+
+def test_phoenx_with_collision_cfg_raises():
+    """``PhoenXSolverCfg`` rejects a user-supplied ``collision_cfg``.
+
+    PhoenX's warm-start path requires :class:`~newton.CollisionPipeline` with
+    phoenx-specific ``contact_matching``, attached automatically by
+    :class:`~newton.solvers.SolverPhoenX` at construction. Letting the base
+    pipeline override it would silently degrade contact-matching, so the
+    check fires in :meth:`NewtonPhoenXManager._build_solver` (i.e. on
+    ``sim.reset()``) rather than at cfg construction time.
+    """
+    sim_cfg = SimulationCfg(
+        dt=1.0 / 120.0,
+        device="cuda:0",
+        gravity=(0.0, 0.0, -9.81),
+        physics=NewtonCfg(
+            solver_cfg=PhoenXSolverCfg(),
+            collision_cfg=NewtonCollisionPipelineCfg(),
+            use_cuda_graph=False,
+        ),
+    )
+
+    with build_simulation_context(sim_cfg=sim_cfg) as sim:
+        builder = NewtonManager.create_builder()
+        body = builder.add_body(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=body, axis=(0, 0, 1))
+        NewtonManager.set_builder(builder)
+
+        with pytest.raises(ValueError, match="collision_cfg cannot be set"):
+            sim.reset()
