@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg, PhoenXSolverCfg
 from isaaclab_ovphysx.physics import OvPhysxCfg
 from isaaclab_physx.physics import PhysxCfg
 
@@ -57,6 +57,15 @@ class AntPhysicsCfg(PresetCfg):
             collision_detector_max_contacts_per_pair=8,
         ),
         num_substeps=2,
+        debug_mode=False,
+        use_cuda_graph=True,
+    )
+    newton_phoenx: NewtonCfg = NewtonCfg(
+        solver_cfg=PhoenXSolverCfg(
+            substeps=2,
+            velocity_readout="substep_average",
+        ),
+        num_substeps=1,
         debug_mode=False,
         use_cuda_graph=True,
     )
