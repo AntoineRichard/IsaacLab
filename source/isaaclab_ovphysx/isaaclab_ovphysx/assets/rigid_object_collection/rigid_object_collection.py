@@ -5,4 +5,8 @@
 
 """OVPhysX-backed rigid object collection asset."""
 
-pass
+
+class RigidObjectCollection:
+    """OVPhysX-backed rigid object collection asset."""
+
+    pass

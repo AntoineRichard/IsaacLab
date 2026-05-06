@@ -5,4 +5,8 @@
 
 """OVPhysX-backed rigid object collection data container."""
 
-pass
+
+class RigidObjectCollectionData:
+    """OVPhysX-backed rigid object collection data container."""
+
+    pass
