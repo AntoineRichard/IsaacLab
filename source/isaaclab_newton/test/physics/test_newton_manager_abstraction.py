@@ -315,3 +315,45 @@ def test_phoenx_with_collision_cfg_raises():
 
         with pytest.raises(ValueError, match="collision_cfg cannot be set"):
             sim.reset()
+
+
+@pytest.mark.parametrize(
+    "velocity_readout",
+    ["substep_end", "finite_difference", "substep_average"],
+)
+def test_phoenx_velocity_readout_modes(velocity_readout):
+    """Each ``velocity_readout`` mode steps cleanly and produces finite ``body_qd``.
+
+    Three modes share the same export path but stamp ``state_out.body_qd``
+    differently — see :class:`~newton.solvers.SolverPhoenX`. We assert no
+    exceptions and that ``state_out.body_qd`` is finite after a few steps;
+    the matrix test in :func:`test_initialize_solver_populates_canonical_state`
+    already covers ``"substep_end"`` through ``sim.step``, this widens
+    coverage to the other two modes the task presets may use.
+    """
+    import torch
+
+    sim_cfg = SimulationCfg(
+        dt=1.0 / 120.0,
+        device="cuda:0",
+        gravity=(0.0, 0.0, -9.81),
+        physics=NewtonCfg(
+            solver_cfg=PhoenXSolverCfg(velocity_readout=velocity_readout),
+            use_cuda_graph=False,
+        ),
+    )
+
+    with build_simulation_context(sim_cfg=sim_cfg) as sim:
+        builder = NewtonManager.create_builder()
+        body = builder.add_body(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=body, axis=(0, 0, 1))
+        NewtonManager.set_builder(builder)
+
+        sim.reset()
+        for _ in range(5):
+            sim.step(render=False)
+
+        body_qd = torch.from_numpy(NewtonManager._state_0.body_qd.numpy())
+        assert torch.isfinite(body_qd).all(), (
+            f"body_qd contains non-finite values for velocity_readout={velocity_readout!r}: {body_qd}"
+        )
