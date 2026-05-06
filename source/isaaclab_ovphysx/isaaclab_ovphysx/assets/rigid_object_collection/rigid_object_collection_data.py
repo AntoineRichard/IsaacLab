@@ -788,8 +788,6 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         mass_flat = wp.zeros(B * N, dtype=wp.float32, device=self.device)
         inertia_flat = wp.zeros(B * N * 9, dtype=wp.float32, device=self.device)
         for b in range(B):
-            inertia_binding = self._root_view[TT.RIGID_BODY_INERTIA][b]
-
             # Read mass (N floats) into column b of mass_flat.
             mass_col = wp.array(
                 ptr=mass_flat.ptr + b * N * 4,
@@ -808,13 +806,7 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
                 device=self.device,
                 copy=False,
             )
-            inertia_binding_shape = inertia_binding.shape
-            if TT.RIGID_BODY_INERTIA in TT._CPU_ONLY_TYPES and str(inertia_col.device) != "cpu":
-                staging_inertia = wp.zeros(inertia_binding_shape, dtype=wp.float32, device="cpu", pinned=True)
-                inertia_binding.read(staging_inertia)
-                wp.copy(inertia_col, staging_inertia.reshape((N, 9)))
-            else:
-                inertia_binding.read(inertia_col)
+            self._read_binding_into(TT.RIGID_BODY_INERTIA, b, inertia_col)
 
         # Strided (N, B) view for mass, (N, B, 9) view for inertia.
         self._body_mass = wp.array(
