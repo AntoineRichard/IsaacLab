@@ -505,7 +505,7 @@ def _expand_row(job: dict, ssh_tail_lines: list[str] | None) -> html.Tr:
             className="tab-a-failure-message",
         ),
         html.Button(
-            "▸ Show ssh-tail.log (last 50 lines)",
+            "▸ Show failure log (last 50 lines)",
             id={"type": "tab-a-ssh-tail-button", "run_id": run_id},
             n_clicks=0,
             className="tab-a-ssh-tail-button",
@@ -518,7 +518,9 @@ def _expand_row(job: dict, ssh_tail_lines: list[str] | None) -> html.Tr:
         else:
             body.append(
                 html.P(
-                    f"ssh-tail.log not found at {run_id}/logs/ssh-tail.log (or unreadable)",
+                    f"no failure log found in {run_id}/logs/ "
+                    f"(checked: ssh-tail.log, training.stderr.log, "
+                    f"hugin-stderr.log, startup.stderr.log)",
                     className="tab-a-ssh-tail-empty",
                 )
             )

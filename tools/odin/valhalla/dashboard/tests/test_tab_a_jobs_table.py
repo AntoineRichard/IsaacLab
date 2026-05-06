@@ -203,7 +203,11 @@ def test_jobs_expanded_row_ssh_tail_lines_empty_renders_not_found():
     blob = " ".join(
         getattr(c, "children", "") for c in _walk(component) if isinstance(getattr(c, "children", None), str)
     )
-    assert "ssh-tail.log not found" in blob
+    # The dashboard now falls through ssh-tail.log → training.stderr.log →
+    # hugin-stderr.log → startup.stderr.log; the empty-state message names
+    # all four candidates.
+    assert "no failure log found" in blob
+    assert "training.stderr.log" in blob
 
 
 def test_jobs_expanded_row_no_message_renders_friendly_text():
