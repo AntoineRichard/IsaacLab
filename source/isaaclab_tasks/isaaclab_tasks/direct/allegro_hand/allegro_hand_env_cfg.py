@@ -44,6 +44,19 @@ class ObjectCfg(PresetCfg):
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.17, 0.56), rot=(0.0, 0.0, 0.0, 1.0)),
     )
+    newton_mjwarp = ArticulationCfg(
+        prim_path="/World/envs/env_.*/object",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
+            mass_props=sim_utils.MassPropertiesCfg(density=400.0),
+            scale=(1.2, 1.2, 1.2),
+        ),
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, -0.17, 0.565), rot=(0.0, 0.0, 0.0, 1.0), joint_pos={}, joint_vel={}
+        ),
+        actuators={},
+        articulation_root_prim_path="",
+    )
     ovphysx = RigidObjectCfg(
         prim_path="/World/envs/env_.*/object",
         spawn=sim_utils.UsdFileCfg(
@@ -63,19 +76,6 @@ class ObjectCfg(PresetCfg):
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.17, 0.56), rot=(0.0, 0.0, 0.0, 1.0)),
     )
-    newton = ArticulationCfg(
-        prim_path="/World/envs/env_.*/object",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-            mass_props=sim_utils.MassPropertiesCfg(density=400.0),
-            scale=(1.2, 1.2, 1.2),
-        ),
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, -0.17, 0.565), rot=(0.0, 0.0, 0.0, 1.0), joint_pos={}, joint_vel={}
-        ),
-        actuators={},
-        articulation_root_prim_path="",
-    )
     default = physx
 
 
@@ -84,8 +84,7 @@ class PhysicsCfg(PresetCfg):
     physx = PhysxCfg(
         bounce_threshold_velocity=0.2,
     )
-    ovphysx: OvPhysxCfg = OvPhysxCfg()
-    newton = NewtonCfg(
+    newton_mjwarp = NewtonCfg(
         solver_cfg=MJWarpSolverCfg(
             solver="newton",
             integrator="implicitfast",
@@ -100,6 +99,7 @@ class PhysicsCfg(PresetCfg):
         num_substeps=2,
         debug_mode=False,
     )
+    ovphysx = OvPhysxCfg()
     default = physx
 
 
@@ -182,6 +182,8 @@ class AllegroHandEnvCfg(DirectRLEnvCfg):
     vel_obs_scale = 0.2
     success_tolerance = 0.2
     max_consecutive_success = 0
+    success_count_threshold: int = 1
+    """Minimum number of goals reached in an episode to count it as a successful episode."""
     av_factor = 0.1
     act_moving_average = 1.0
     force_torque_obs_scale = 10.0

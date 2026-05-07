@@ -4,8 +4,7 @@
 #
 # Usage: ./scripts/run_ovphysx.sh [your_script.py or -m pytest ...]
 #
-# CI note: the OVPhysX wheel's device mode is a process-global C++/Carbonite
-# static (gap G5 in docs/superpowers/specs/2026-04-28-ovphysx-wheel-gaps-for-marco.md).
+# CI note: the OVPhysX wheel's device mode is process-global C++ state.
 # To exercise both CPU and GPU coverage, invoke this script TWICE in separate
 # processes -- e.g.
 #   ./scripts/run_ovphysx.sh -m pytest <path> -k 'cpu'

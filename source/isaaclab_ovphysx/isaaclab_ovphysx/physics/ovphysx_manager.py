@@ -196,9 +196,8 @@ class OvPhysxManager(PhysicsManager):
         detected = f" Detected ovphysx {version}." if version else ""
         return (
             "IsaacLab OVPhysX requires a local ovphysx wheel with "
-            "PhysX.update_articulations_kinematic() (>=0.4.2). Rebuild "
-            "/home/alex/physics/omni/ovphysx and force-reinstall the wheel into "
-            "IsaacLab's ovphysx launcher environment."
+            "PhysX.update_articulations_kinematic() (>=0.4.2). Rebuild ovphysx "
+            "and install the updated wheel into IsaacLab's ovphysx launcher environment."
             f"{detected}"
         )
 

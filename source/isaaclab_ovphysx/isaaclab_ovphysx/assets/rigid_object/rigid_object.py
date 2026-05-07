@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-import logging
+import re
 import warnings
 from collections.abc import Sequence
 from typing import Any
@@ -30,8 +30,6 @@ from isaaclab_ovphysx.assets.kernels import _body_wrench_to_world
 from isaaclab_ovphysx.physics import OvPhysxManager
 
 from .rigid_object_data import RigidObjectData
-
-logger = logging.getLogger(__name__)
 
 
 class RigidObject(BaseRigidObject):
@@ -179,8 +177,7 @@ class RigidObject(BaseRigidObject):
             device=self._device,
         )
         binding = self._get_binding(TT.RIGID_BODY_WRENCH)
-        if binding is not None:
-            binding.write(self._wrench_buf_flat)
+        binding.write(self._wrench_buf_flat)
         inst.reset()
 
     def update(self, dt: float) -> None:
@@ -984,7 +981,16 @@ class RigidObject(BaseRigidObject):
         # raise AttributeError (masked by hasattr) and fall back to "cuda:0" even when the
         # simulation is running on CPU, causing a device mismatch in binding.read().
         self._device = OvPhysxManager.get_device()
-        self._binding_pattern = self.cfg.prim_path
+        # Convert IsaacLab prim-path notation to the glob patterns ovphysx
+        # expects.  IsaacLab uses two conventions:
+        #   /World/envs/env_.*/object       -- regex dot-star for "any env index"
+        #   /World/envs/{ENV_REGEX_NS}/object -- explicit placeholder
+        # ovphysx ``create_tensor_binding`` uses fnmatch-style globs, so both
+        # map to ``*``.  Mirrors the Articulation backend's resolution
+        # (articulation.py:562-563).
+        pattern = re.sub(r"\{ENV_REGEX_NS\}", "*", self.cfg.prim_path)
+        pattern = re.sub(r"\.\*", "*", pattern)
+        self._binding_pattern = pattern
 
         # Validate the prim tree before creating tensor bindings -- the wheel
         # silently produces a 0-prim binding when the pattern matches nothing,
@@ -1028,7 +1034,8 @@ class RigidObject(BaseRigidObject):
                 )
 
         # Step 4: Eagerly create every binding the data container reads at init,
-        # so failures surface here rather than as KeyError downstream.
+        # so failures surface here with a helpful message rather than as a raw
+        # wheel exception (or a KeyError) at first writer call.
         for tt in (
             TT.RIGID_BODY_POSE,
             TT.RIGID_BODY_VELOCITY,
@@ -1037,7 +1044,9 @@ class RigidObject(BaseRigidObject):
             TT.RIGID_BODY_COM_POSE,
             TT.RIGID_BODY_INERTIA,
         ):
-            if self._get_binding(tt) is None:
+            try:
+                self._get_binding(tt)
+            except Exception as e:
                 raise RuntimeError(
                     f"OVPhysX could not create rigid-body binding {tt!r}. "
                     f"Check that prim_path={self._binding_pattern!r} matches "
@@ -1045,7 +1054,7 @@ class RigidObject(BaseRigidObject):
                     f"ovphysx wheel exposes the RIGID_BODY_* TensorType. "
                     f"Note: pattern resolution may currently include articulation "
                     f"links; an explicit selection policy is on the wheel-side roadmap."
-                )
+                ) from e
 
         # Step 5: Read counts and body names from the root-pose binding.
         root_pose = self._bindings[TT.RIGID_BODY_POSE]
@@ -1065,7 +1074,7 @@ class RigidObject(BaseRigidObject):
             self._body_names = ["base_link"]
 
         # Step 6: Create the data container (mirrors PhysX: takes bindings + device).
-        self._data = RigidObjectData(self._bindings, self._device)
+        self._data = RigidObjectData(self._bindings, self._device, check_shapes=self._check_shapes)
 
         # Allocate asset-side buffers and apply the initial state from the configuration.
         self._create_buffers()
@@ -1146,18 +1155,19 @@ class RigidObject(BaseRigidObject):
                 buffer to bind (e.g. :attr:`~isaaclab_ovphysx.tensor_types.RIGID_BODY_POSE`).
 
         Returns:
-            A TensorBinding object, or ``None`` if the binding could not be created.
+            The cached TensorBinding for ``tensor_type``.
+
+        Raises:
+            Whatever the wheel raises if ``create_tensor_binding`` fails.
+            :meth:`_initialize_impl` eagerly creates every binding the writers
+            consume, so post-init calls hit the cache and cannot fail.
         """
         binding = self._bindings.get(tensor_type)
         if binding is not None:
             return binding
-        try:
-            binding = self._ovphysx.create_tensor_binding(pattern=self._binding_pattern, tensor_type=tensor_type)
-            self._bindings[tensor_type] = binding
-            return binding
-        except Exception:
-            logger.debug("Could not create tensor binding for type %s", tensor_type)
-            return None
+        binding = self._ovphysx.create_tensor_binding(pattern=self._binding_pattern, tensor_type=tensor_type)
+        self._bindings[tensor_type] = binding
+        return binding
 
     def _invalidate_initialize_callback(self, event) -> None:
         """Invalidates the scene elements."""

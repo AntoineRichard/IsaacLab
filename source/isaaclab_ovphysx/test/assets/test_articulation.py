@@ -41,10 +41,8 @@ CI note
 -------
 Because the lock is process-global, full coverage requires **two separate
 ``./scripts/run_ovphysx.sh -m pytest`` invocations** -- once with ``-k 'cpu'``
-and once with ``-k 'cuda:0'``.  Tracked as gap G5 in
-``docs/superpowers/specs/2026-04-28-ovphysx-wheel-gaps-for-marco.md``; until
-the wheel exposes a way to reset Carbonite device state, this is the supported
-pattern.
+and once with ``-k 'cuda:0'``.  Until the wheel exposes a way to reset
+Carbonite device state, this is the supported pattern.
 """
 
 from __future__ import annotations
@@ -81,17 +79,16 @@ wp.init()
 _OMNI_PHYSX_SCHEMAS_GAP_REASON = (
     "Schema-level fixed-joint creation in :mod:`isaaclab.sim.schemas` imports "
     "``omni.physx.scripts.utils``, which is a Kit-only module not shipped by "
-    "the ovphysx wheel.  See "
-    "docs/superpowers/specs/2026-04-28-ovphysx-wheel-gaps-for-marco.md."
+    "the ovphysx wheel."
 )
 
 _MATERIAL_GAP_REASON = (
     "Requires a ``RIGID_BODY_MATERIAL`` TensorType (or a view-helper) on the "
     "ovphysx wheel side.  ``Articulation.root_view`` is a per-tensor-type "
     "bindings dict on OVPhysX, so ``root_view.get_material_properties()`` / "
-    "``set_material_properties()`` / ``max_shapes`` are not available.  See "
-    "docs/superpowers/specs/2026-04-28-ovphysx-wheel-gaps-for-marco.md."
+    "``set_material_properties()`` / ``max_shapes`` are not available."
 )
+
 
 def _read_binding_to_torch(articulation: Articulation, tensor_type: int, device: str | torch.device) -> torch.Tensor:
     """Read an OVPhysX TensorBinding into a torch tensor on *device*.
