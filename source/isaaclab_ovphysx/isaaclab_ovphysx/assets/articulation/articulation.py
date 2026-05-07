@@ -3420,7 +3420,7 @@ class Articulation(BaseArticulation):
         spatial tendons.  Only the four wheel-supported tensor types are
         written; ``ARTICULATION_SPATIAL_TENDON_LIMIT`` and
         ``ARTICULATION_SPATIAL_TENDON_REST_LENGTH`` are forward-compat
-        stubs for wheel support that is not available yet.
+        stubs (see ``docs/superpowers/specs/2026-04-28-ovphysx-wheel-gaps-for-marco.md``).
 
         Args:
             spatial_tendon_ids: Accepted for PhysX API parity; ignored.

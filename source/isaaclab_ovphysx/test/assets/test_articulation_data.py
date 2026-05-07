@@ -27,8 +27,20 @@ class TestArticulationData:
     def test_joint_acc_uses_inverse_dt(self):
         """Finite-difference joint acceleration should divide by ``dt``."""
         mock_bindings = MockOvPhysxBindingSet(num_instances=1, num_joints=2, num_bodies=1)
-        data = ArticulationData(mock_bindings.bindings, device="cpu")
-        data._create_buffers()
+        data = ArticulationData(
+            mock_bindings.bindings,
+            device="cpu",
+            num_instances=1,
+            num_bodies=1,
+            num_joints=2,
+            num_fixed_tendons=0,
+            num_spatial_tendons=0,
+            body_names=["body_0"],
+            joint_names=["joint_0", "joint_1"],
+            fixed_tendon_names=[],
+            spatial_tendon_names=[],
+        )
+        data.is_primed = True
 
         mock_bindings.bindings[TT.DOF_VELOCITY]._data[...] = np.array([[1.0, -2.0]], dtype=np.float32)
 

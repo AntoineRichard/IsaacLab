@@ -163,7 +163,8 @@ _MATERIAL_GAP_REASON = (
     "Requires RIGID_BODY_MATERIAL TensorType (or a view-helper) on the ovphysx "
     "wheel side.  RigidObject.root_view is a per-tensor-type bindings dict on "
     "OVPhysX, so root_view.get_material_properties() / set_material_properties() "
-    "are not available."
+    "are not available.  See "
+    "docs/superpowers/specs/2026-04-28-ovphysx-wheel-gaps-for-marco.md."
 )
 
 
