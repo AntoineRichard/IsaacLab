@@ -33,7 +33,7 @@ Expected: `tools/odin/asgard/state.py` and `tools/odin/asgard/worker.py` are now
 - [ ] **Step 0.2: Confirm test runner works.**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_state.py -q
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_state.py -q
 ```
 
 Expected: passes (any number of tests). If the test directory is missing or the command errors, surface that to the user before continuing.
@@ -45,11 +45,11 @@ Expected: passes (any number of tests). If the test directory is missing or the 
 **Files:**
 - Modify: `tools/odin/asgard/jobs.py:86-118` (JobEntry dataclass)
 - Modify: `tools/odin/asgard/state.py:38` (SCHEMA_VERSION), `:152-180` (`_job_to_dict`), `:183-210` (`_job_from_dict`)
-- Test: `tools/odin/tests/asgard/test_state.py` (add new test)
+- Test: `tools/odin/tests/test_asgard_state.py` (add new test)
 
 - [ ] **Step 1.1: Write the failing serialization test**
 
-Append to `tools/odin/tests/asgard/test_state.py`:
+Append to `tools/odin/tests/test_asgard_state.py`:
 
 ```python
 def test_job_entry_last_heartbeat_at_round_trip(tmp_path):
@@ -132,7 +132,7 @@ def test_dispatch_state_schema_version_is_minor_bump():
 - [ ] **Step 1.2: Run the new tests to verify they fail**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_state.py::test_job_entry_last_heartbeat_at_round_trip tools/odin/tests/asgard/test_state.py::test_job_entry_missing_last_heartbeat_at_is_none tools/odin/tests/asgard/test_state.py::test_dispatch_state_schema_version_is_minor_bump -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_state.py::test_job_entry_last_heartbeat_at_round_trip tools/odin/tests/test_asgard_state.py::test_job_entry_missing_last_heartbeat_at_is_none tools/odin/tests/test_asgard_state.py::test_dispatch_state_schema_version_is_minor_bump -v
 ```
 
 Expected: 3 failures. The first errors with `AttributeError: 'JobEntry' object has no attribute 'last_heartbeat_at'`; the schema test currently asserts `SCHEMA_VERSION == "1.5"` is the major-1 line which already passes — but the rationale requires the bump to land in Step 1.3.
@@ -173,7 +173,7 @@ Add it to `_job_from_dict` in the `JobEntry(...)` constructor call (after `osmo_
 - [ ] **Step 1.4: Run the new tests + the existing state suite**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_state.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_state.py -v
 ```
 
 Expected: all tests pass. If a pre-existing test references the old schema version literally (`"1.5"`), update only that literal — do not weaken any other assertion.
@@ -181,7 +181,7 @@ Expected: all tests pass. If a pre-existing test references the old schema versi
 - [ ] **Step 1.5: Commit**
 
 ```bash
-git add tools/odin/asgard/jobs.py tools/odin/asgard/state.py tools/odin/tests/asgard/test_state.py
+git add tools/odin/asgard/jobs.py tools/odin/asgard/state.py tools/odin/tests/test_asgard_state.py
 git commit -m "asgard: add JobEntry.last_heartbeat_at + bump schema to 1.6"
 ```
 
@@ -192,7 +192,7 @@ git commit -m "asgard: add JobEntry.last_heartbeat_at + bump schema to 1.6"
 **Files:**
 - Modify: `tools/odin/asgard/worker.py:108-135` (StateEvent dataclass)
 - Modify: `tools/odin/asgard/runner.py:187-300` (`_apply_state_event`)
-- Test: `tools/odin/tests/asgard/test_runner_apply_state_event.py` (likely exists; add new tests)
+- Test: `tools/odin/tests/test_asgard_runner_apply_state_event.py` (likely exists; add new tests)
 
 - [ ] **Step 2.1: Write the failing event-handler test**
 
@@ -258,7 +258,7 @@ def test_apply_state_event_heartbeat_for_terminal_job_is_noop():
 - [ ] **Step 2.2: Run the new tests to verify they fail**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_runner_apply_state_event.py::test_apply_state_event_heartbeat_bumps_last_heartbeat_at tools/odin/tests/asgard/test_runner_apply_state_event.py::test_apply_state_event_heartbeat_for_terminal_job_is_noop -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_runner_apply_state_event.py::test_apply_state_event_heartbeat_bumps_last_heartbeat_at tools/odin/tests/test_asgard_runner_apply_state_event.py::test_apply_state_event_heartbeat_for_terminal_job_is_noop -v
 ```
 
 Expected: 2 failures. The first errors because `StateEvent` has no `at` field; the second because `_apply_state_event` has no `heartbeat` branch.
@@ -320,7 +320,7 @@ In `tools/odin/asgard/runner.py`, add this branch immediately before the final `
 - [ ] **Step 2.5: Run the new tests + existing runner tests**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_runner_apply_state_event.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_runner_apply_state_event.py -v
 ```
 
 Expected: all tests pass.
@@ -328,7 +328,7 @@ Expected: all tests pass.
 - [ ] **Step 2.6: Commit**
 
 ```bash
-git add tools/odin/asgard/worker.py tools/odin/asgard/runner.py tools/odin/tests/asgard/test_runner_apply_state_event.py
+git add tools/odin/asgard/worker.py tools/odin/asgard/runner.py tools/odin/tests/test_asgard_runner_apply_state_event.py
 git commit -m "asgard: handle StateEvent(transition='heartbeat') in _apply_state_event"
 ```
 
@@ -338,11 +338,11 @@ git commit -m "asgard: handle StateEvent(transition='heartbeat') in _apply_state
 
 **Files:**
 - Modify: `tools/odin/asgard/worker.py` (`ValkyrieWorker.run` lifecycle, new helper)
-- Test: `tools/odin/tests/asgard/test_worker_heartbeat.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_worker_heartbeat.py` *(new)*
 
 - [ ] **Step 3.1: Write the failing heartbeat-thread test**
 
-Create `tools/odin/tests/asgard/test_worker_heartbeat.py`:
+Create `tools/odin/tests/test_asgard_worker_heartbeat.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -444,7 +444,7 @@ def test_heartbeat_loop_double_stop_is_noop():
 - [ ] **Step 3.2: Run the new tests to verify they fail**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_worker_heartbeat.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_worker_heartbeat.py -v
 ```
 
 Expected: 3 failures with `ImportError: cannot import name '_heartbeat_loop'`.
@@ -499,7 +499,7 @@ def _heartbeat_loop(
 - [ ] **Step 3.4: Run the new tests to verify they pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_worker_heartbeat.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_worker_heartbeat.py -v
 ```
 
 Expected: 3 passes.
@@ -547,7 +547,7 @@ If the worker has multiple exit paths, route them through one cleanup helper rat
 - [ ] **Step 3.6: Run the existing worker test suite**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_worker.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_worker.py -v
 ```
 
 Expected: all existing worker tests still pass. The heartbeat thread is daemon and idle when `_inflight` is empty, so it must not perturb any prior behavior.
@@ -555,7 +555,7 @@ Expected: all existing worker tests still pass. The heartbeat thread is daemon a
 - [ ] **Step 3.7: Commit**
 
 ```bash
-git add tools/odin/asgard/worker.py tools/odin/tests/asgard/test_worker_heartbeat.py
+git add tools/odin/asgard/worker.py tools/odin/tests/test_asgard_worker_heartbeat.py
 git commit -m "asgard: emit periodic heartbeat events for in-flight jobs"
 ```
 
@@ -565,11 +565,11 @@ git commit -m "asgard: emit periodic heartbeat events for in-flight jobs"
 
 **Files:**
 - Create: `tools/odin/asgard/heimdall.py`
-- Test: `tools/odin/tests/asgard/test_heimdall_types.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_heimdall_types.py` *(new)*
 
 - [ ] **Step 4.1: Write the failing dataclass test**
 
-Create `tools/odin/tests/asgard/test_heimdall_types.py`:
+Create `tools/odin/tests/test_asgard_heimdall_types.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -625,7 +625,7 @@ def test_heimdall_snapshot_construction():
 - [ ] **Step 4.2: Run to verify it fails**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_types.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_types.py -v
 ```
 
 Expected: `ModuleNotFoundError: No module named 'tools.odin.asgard.heimdall'`.
@@ -703,7 +703,7 @@ class HeimdallSnapshot:
 - [ ] **Step 4.4: Run tests to verify pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_types.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_types.py -v
 ```
 
 Expected: 3 passes.
@@ -711,7 +711,7 @@ Expected: 3 passes.
 - [ ] **Step 4.5: Commit**
 
 ```bash
-git add tools/odin/asgard/heimdall.py tools/odin/tests/asgard/test_heimdall_types.py
+git add tools/odin/asgard/heimdall.py tools/odin/tests/test_asgard_heimdall_types.py
 git commit -m "asgard: add heimdall.py module skeleton + dataclasses"
 ```
 
@@ -721,11 +721,11 @@ git commit -m "asgard: add heimdall.py module skeleton + dataclasses"
 
 **Files:**
 - Modify: `tools/odin/asgard/heimdall.py` (add I/O functions)
-- Test: `tools/odin/tests/asgard/test_heimdall_fleet_json.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_heimdall_fleet_json.py` *(new)*
 
 - [ ] **Step 5.1: Write the failing round-trip test**
 
-Create `tools/odin/tests/asgard/test_heimdall_fleet_json.py`:
+Create `tools/odin/tests/test_asgard_heimdall_fleet_json.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -816,7 +816,7 @@ def test_fleet_json_atomic_write_no_partial(tmp_path):
 - [ ] **Step 5.2: Run to verify it fails**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_fleet_json.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_fleet_json.py -v
 ```
 
 Expected: 3 ImportError-style failures on `read_fleet_json` / `write_fleet_json`.
@@ -897,7 +897,7 @@ def read_fleet_json(dispatch_dir: Path) -> dict[str, Any] | None:
 - [ ] **Step 5.4: Run tests to verify pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_fleet_json.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_fleet_json.py -v
 ```
 
 Expected: 3 passes.
@@ -905,7 +905,7 @@ Expected: 3 passes.
 - [ ] **Step 5.5: Commit**
 
 ```bash
-git add tools/odin/asgard/heimdall.py tools/odin/tests/asgard/test_heimdall_fleet_json.py
+git add tools/odin/asgard/heimdall.py tools/odin/tests/test_asgard_heimdall_fleet_json.py
 git commit -m "asgard: add fleet.json read/write with atomic semantics"
 ```
 
@@ -915,11 +915,11 @@ git commit -m "asgard: add fleet.json read/write with atomic semantics"
 
 **Files:**
 - Modify: `tools/odin/asgard/heimdall.py` (add `HeimdallWatcher`)
-- Test: `tools/odin/tests/asgard/test_heimdall_watcher_lifecycle.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_heimdall_watcher_lifecycle.py` *(new)*
 
 - [ ] **Step 6.1: Write the failing lifecycle test**
 
-Create `tools/odin/tests/asgard/test_heimdall_watcher_lifecycle.py`:
+Create `tools/odin/tests/test_asgard_heimdall_watcher_lifecycle.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -1020,7 +1020,7 @@ def test_watcher_start_twice_raises(tmp_path):
 - [ ] **Step 6.2: Run to verify it fails**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_watcher_lifecycle.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_watcher_lifecycle.py -v
 ```
 
 Expected: 4 ImportError failures.
@@ -1123,7 +1123,7 @@ from pathlib import Path
 - [ ] **Step 6.4: Run tests to verify pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_watcher_lifecycle.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_watcher_lifecycle.py -v
 ```
 
 Expected: 4 passes.
@@ -1131,7 +1131,7 @@ Expected: 4 passes.
 - [ ] **Step 6.5: Commit**
 
 ```bash
-git add tools/odin/asgard/heimdall.py tools/odin/tests/asgard/test_heimdall_watcher_lifecycle.py
+git add tools/odin/asgard/heimdall.py tools/odin/tests/test_asgard_heimdall_watcher_lifecycle.py
 git commit -m "asgard: add HeimdallWatcher lifecycle (no probing yet)"
 ```
 
@@ -1141,11 +1141,11 @@ git commit -m "asgard: add HeimdallWatcher lifecycle (no probing yet)"
 
 **Files:**
 - Modify: `tools/odin/asgard/heimdall.py` (replace `_run` body, add probe helpers)
-- Test: `tools/odin/tests/asgard/test_heimdall_probe.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_heimdall_probe.py` *(new)*
 
 - [ ] **Step 7.1: Write the failing probe-gate test**
 
-Create `tools/odin/tests/asgard/test_heimdall_probe.py`:
+Create `tools/odin/tests/test_asgard_heimdall_probe.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -1315,7 +1315,7 @@ def test_watcher_writes_fleet_json_each_tick(tmp_path):
 - [ ] **Step 7.2: Run to verify it fails**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_probe.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_probe.py -v
 ```
 
 Expected: 6 ImportError failures on `_probe_host` and `_tick_once`.
@@ -1445,7 +1445,7 @@ Replace the placeholder `_run` body with a real loop, and add `_tick_once` for t
 - [ ] **Step 7.4: Run probe tests to verify pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_probe.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_probe.py -v
 ```
 
 Expected: 6 passes.
@@ -1453,7 +1453,7 @@ Expected: 6 passes.
 - [ ] **Step 7.5: Re-run lifecycle tests** (no regression)
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_watcher_lifecycle.py tools/odin/tests/asgard/test_heimdall_fleet_json.py tools/odin/tests/asgard/test_heimdall_types.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_watcher_lifecycle.py tools/odin/tests/test_asgard_heimdall_fleet_json.py tools/odin/tests/test_asgard_heimdall_types.py -v
 ```
 
 Expected: all pass.
@@ -1461,7 +1461,7 @@ Expected: all pass.
 - [ ] **Step 7.6: Commit**
 
 ```bash
-git add tools/odin/asgard/heimdall.py tools/odin/tests/asgard/test_heimdall_probe.py
+git add tools/odin/asgard/heimdall.py tools/odin/tests/test_asgard_heimdall_probe.py
 git commit -m "asgard: implement HeimdallWatcher probe cycle with K-failure gate"
 ```
 
@@ -1471,11 +1471,11 @@ git commit -m "asgard: implement HeimdallWatcher probe cycle with K-failure gate
 
 **Files:**
 - Modify: `tools/odin/asgard/heimdall.py` (`_compute_stale_jobs`)
-- Test: `tools/odin/tests/asgard/test_heimdall_stale_jobs.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_heimdall_stale_jobs.py` *(new)*
 
 - [ ] **Step 8.1: Write the failing stale-job test**
 
-Create `tools/odin/tests/asgard/test_heimdall_stale_jobs.py`:
+Create `tools/odin/tests/test_asgard_heimdall_stale_jobs.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -1614,7 +1614,7 @@ def test_only_running_jobs_are_evaluated(tmp_path):
 - [ ] **Step 8.2: Run to verify it fails**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_stale_jobs.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_stale_jobs.py -v
 ```
 
 Expected: tests fail because `_compute_stale_jobs` returns `[]`.
@@ -1664,7 +1664,7 @@ Replace the placeholder body in `tools/odin/asgard/heimdall.py`:
 - [ ] **Step 8.4: Run tests to verify pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_stale_jobs.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_stale_jobs.py -v
 ```
 
 Expected: 5 passes.
@@ -1672,7 +1672,7 @@ Expected: 5 passes.
 - [ ] **Step 8.5: Run the full Heimdall test suite**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_*.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_*.py -v
 ```
 
 Expected: all pass.
@@ -1680,7 +1680,7 @@ Expected: all pass.
 - [ ] **Step 8.6: Commit**
 
 ```bash
-git add tools/odin/asgard/heimdall.py tools/odin/tests/asgard/test_heimdall_stale_jobs.py
+git add tools/odin/asgard/heimdall.py tools/odin/tests/test_asgard_heimdall_stale_jobs.py
 git commit -m "asgard: compute stale jobs via heartbeat staleness in HeimdallWatcher"
 ```
 
@@ -1690,11 +1690,11 @@ git commit -m "asgard: compute stale jobs via heartbeat staleness in HeimdallWat
 
 **Files:**
 - Modify: `tools/odin/asgard/runner.py` (add `_consume_heimdall_snapshot`)
-- Test: `tools/odin/tests/asgard/test_heimdall_consumer.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_heimdall_consumer.py` *(new)*
 
 - [ ] **Step 9.1: Write the failing host-flip test**
 
-Create `tools/odin/tests/asgard/test_heimdall_consumer.py`:
+Create `tools/odin/tests/test_asgard_heimdall_consumer.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -1860,7 +1860,7 @@ def test_idempotent_consumption_skips_duplicate_snapshot():
 - [ ] **Step 9.2: Run to verify it fails**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_consumer.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_consumer.py -v
 ```
 
 Expected: 4 ImportError-style failures on `_consume_heimdall_snapshot`.
@@ -1974,7 +1974,7 @@ _log = logging.getLogger(__name__)
 - [ ] **Step 9.4: Run tests to verify pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_consumer.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_consumer.py -v
 ```
 
 Expected: 4 passes.
@@ -1982,7 +1982,7 @@ Expected: 4 passes.
 - [ ] **Step 9.5: Commit**
 
 ```bash
-git add tools/odin/asgard/runner.py tools/odin/tests/asgard/test_heimdall_consumer.py
+git add tools/odin/asgard/runner.py tools/odin/tests/test_asgard_heimdall_consumer.py
 git commit -m "asgard: handle host-flip recovery + quarantine in heimdall consumer"
 ```
 
@@ -1992,7 +1992,7 @@ git commit -m "asgard: handle host-flip recovery + quarantine in heimdall consum
 
 **Files:**
 - Modify: `tools/odin/asgard/runner.py` (`_consume_heimdall_snapshot` stale-job branch)
-- Test: `tools/odin/tests/asgard/test_heimdall_consumer.py` (append)
+- Test: `tools/odin/tests/test_asgard_heimdall_consumer.py` (append)
 
 - [ ] **Step 10.1: Write the failing stale-job tests**
 
@@ -2097,7 +2097,7 @@ def test_stale_job_skipped_if_already_terminal():
 - [ ] **Step 10.2: Run to verify failure**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_consumer.py::test_stale_job_with_healthy_host_marks_failed_timeout tools/odin/tests/asgard/test_heimdall_consumer.py::test_stale_job_with_unhealthy_host_requeues_as_infrastructure tools/odin/tests/asgard/test_heimdall_consumer.py::test_stale_job_skipped_if_already_terminal -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_consumer.py::test_stale_job_with_healthy_host_marks_failed_timeout tools/odin/tests/test_asgard_heimdall_consumer.py::test_stale_job_with_unhealthy_host_requeues_as_infrastructure tools/odin/tests/test_asgard_heimdall_consumer.py::test_stale_job_skipped_if_already_terminal -v
 ```
 
 Expected: 3 failures (consumer ignores stale_jobs).
@@ -2173,7 +2173,7 @@ def _consume_heimdall_snapshot(
 - [ ] **Step 10.4: Run tests to verify pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_consumer.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_consumer.py -v
 ```
 
 Expected: all consumer tests pass.
@@ -2181,7 +2181,7 @@ Expected: all consumer tests pass.
 - [ ] **Step 10.5: Commit**
 
 ```bash
-git add tools/odin/asgard/runner.py tools/odin/tests/asgard/test_heimdall_consumer.py
+git add tools/odin/asgard/runner.py tools/odin/tests/test_asgard_heimdall_consumer.py
 git commit -m "asgard: classify stale jobs by host health in heimdall consumer"
 ```
 
@@ -2192,11 +2192,11 @@ git commit -m "asgard: classify stale jobs by host health in heimdall consumer"
 **Files:**
 - Modify: `tools/odin/asgard/runner.py` (DispatchOptions, `run_dispatch`)
 - Modify: `tools/odin/asgard/cli.py`
-- Test: `tools/odin/tests/asgard/test_runner_heimdall_wiring.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_runner_heimdall_wiring.py` *(new)*
 
 - [ ] **Step 11.1: Write the failing wiring test**
 
-Create `tools/odin/tests/asgard/test_runner_heimdall_wiring.py`:
+Create `tools/odin/tests/test_asgard_runner_heimdall_wiring.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -2226,7 +2226,7 @@ def test_dispatch_options_no_heimdall_flag_can_be_set():
 - [ ] **Step 11.2: Run to verify failure**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_runner_heimdall_wiring.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_runner_heimdall_wiring.py -v
 ```
 
 Expected: failures because `no_heimdall` is not a `DispatchOptions` field.
@@ -2274,7 +2274,7 @@ And forward those into the `DispatchOptions(...)` construction:
 - [ ] **Step 11.4: Verify the wiring tests pass**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_runner_heimdall_wiring.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_runner_heimdall_wiring.py -v
 ```
 
 Expected: 2 passes.
@@ -2329,7 +2329,7 @@ In the `finally` block of `run_dispatch`, before any other cleanup that depends 
 - [ ] **Step 11.6: Sanity-run the full asgard test suite**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/ -v
+./isaaclab.sh -p -m pytest tools/odin/tests/ -v -k "asgard or heimdall"
 ```
 
 Expected: all asgard tests pass (no regressions). Heimdall wiring is opt-in by absence of `--no-heimdall` but the test suite uses `DispatchOptions` directly with `no_heimdall=False`, so existing tests run with the watcher enabled. If any existing dispatcher-level test fails because the watcher's daemon thread leaks, set `no_heimdall=True` in those tests (the simplest fix; the watcher behavior is now covered by the dedicated test files).
@@ -2337,7 +2337,7 @@ Expected: all asgard tests pass (no regressions). Heimdall wiring is opt-in by a
 - [ ] **Step 11.7: Commit**
 
 ```bash
-git add tools/odin/asgard/runner.py tools/odin/asgard/cli.py tools/odin/tests/asgard/test_runner_heimdall_wiring.py
+git add tools/odin/asgard/runner.py tools/odin/asgard/cli.py tools/odin/tests/test_asgard_runner_heimdall_wiring.py
 git commit -m "asgard: start/stop HeimdallWatcher in run_dispatch + add CLI flags"
 ```
 
@@ -2347,11 +2347,11 @@ git commit -m "asgard: start/stop HeimdallWatcher in run_dispatch + add CLI flag
 
 **Files:**
 - Modify: `tools/odin/asgard/reconcile.py` (around `reconcile_orphans` at `:170`)
-- Test: `tools/odin/tests/asgard/test_reconcile_recovery_first.py` *(new, regression)*
+- Test: `tools/odin/tests/test_asgard_reconcile_recovery_first.py` *(new, regression)*
 
 - [ ] **Step 12.1: Write the regression test**
 
-Create `tools/odin/tests/asgard/test_reconcile_recovery_first.py`:
+Create `tools/odin/tests/test_asgard_reconcile_recovery_first.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -2449,7 +2449,7 @@ def test_reconcile_orphan_flips_to_pending_when_recovery_fails(tmp_path):
 - [ ] **Step 12.2: Verify the regression tests fail before the fix**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_reconcile_recovery_first.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_reconcile_recovery_first.py -v
 ```
 
 Expected: both tests fail. The most likely failure is `TypeError: reconcile_orphans() got an unexpected keyword argument 'recover_fn'` (until Step 12.3 adds the parameter). After Step 12.3 lands, the first test must pass because recovery is invoked and succeeds; the second test must pass because recovery is invoked and fails, falling through to the existing flip-to-pending path.
@@ -2479,7 +2479,7 @@ The exact insertion point depends on the existing code structure; the implemento
 - [ ] **Step 12.4: Run the regression tests**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_reconcile_recovery_first.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_reconcile_recovery_first.py -v
 ```
 
 Expected: 2 passes.
@@ -2487,7 +2487,7 @@ Expected: 2 passes.
 - [ ] **Step 12.5: Run the existing reconcile suite**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_reconcile*.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_reconcile*.py -v
 ```
 
 Expected: all existing reconcile tests still pass.
@@ -2495,7 +2495,7 @@ Expected: all existing reconcile tests still pass.
 - [ ] **Step 12.6: Commit**
 
 ```bash
-git add tools/odin/asgard/reconcile.py tools/odin/tests/asgard/test_reconcile_recovery_first.py
+git add tools/odin/asgard/reconcile.py tools/odin/tests/test_asgard_reconcile_recovery_first.py
 git commit -m "asgard: try recovery before flipping orphan running jobs to pending"
 ```
 
@@ -2505,11 +2505,11 @@ git commit -m "asgard: try recovery before flipping orphan running jobs to pendi
 
 **Files:**
 - Create: `tools/odin/valhalla/dashboard/tabs/dispatch_fleet/heimdall_card.py`
-- Test: `tools/odin/tests/valhalla/test_heimdall_card.py` *(new)*
+- Test: `tools/odin/tests/test_valhalla_heimdall_card.py` *(new)*
 
 - [ ] **Step 13.1: Write the failing renderer test**
 
-Create `tools/odin/tests/valhalla/test_heimdall_card.py`:
+Create `tools/odin/tests/test_valhalla_heimdall_card.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -2603,7 +2603,7 @@ def test_render_card_shows_recent_events():
 - [ ] **Step 13.2: Run to verify failure**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/valhalla/test_heimdall_card.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_valhalla_heimdall_card.py -v
 ```
 
 Expected: ImportError on `render_heimdall_card` / `render_empty_state`.
@@ -2744,7 +2744,7 @@ def render_heimdall_card(payload: dict, *, now_iso: str | None = None) -> html.D
 - [ ] **Step 13.4: Run renderer tests**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/valhalla/test_heimdall_card.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_valhalla_heimdall_card.py -v
 ```
 
 Expected: 5 passes.
@@ -2752,7 +2752,7 @@ Expected: 5 passes.
 - [ ] **Step 13.5: Commit**
 
 ```bash
-git add tools/odin/valhalla/dashboard/tabs/dispatch_fleet/heimdall_card.py tools/odin/tests/valhalla/test_heimdall_card.py
+git add tools/odin/valhalla/dashboard/tabs/dispatch_fleet/heimdall_card.py tools/odin/tests/test_valhalla_heimdall_card.py
 git commit -m "valhalla: add Heimdall dashboard card renderer"
 ```
 
@@ -2835,11 +2835,11 @@ git commit -m "valhalla: render Heimdall card alongside fleet table"
 ## Task 15: 22h-wedge regression test
 
 **Files:**
-- Test: `tools/odin/tests/asgard/test_heimdall_22h_wedge_regression.py` *(new)*
+- Test: `tools/odin/tests/test_asgard_heimdall_22h_wedge_regression.py` *(new)*
 
 - [ ] **Step 15.1: Write the regression test**
 
-Create `tools/odin/tests/asgard/test_heimdall_22h_wedge_regression.py`:
+Create `tools/odin/tests/test_asgard_heimdall_22h_wedge_regression.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -2953,7 +2953,7 @@ def test_22h_wedge_is_detected_and_quarantined(tmp_path):
 To confirm the test really exercises Heimdall, simulate "Heimdall absent" by skipping the consumer call. Temporarily comment out the `_consume_heimdall_snapshot(...)` call. Run:
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_22h_wedge_regression.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_22h_wedge_regression.py -v
 ```
 
 Expected: FAIL — both jobs still in `running`. Restore the consumer call and re-run to confirm PASS.
@@ -2961,7 +2961,7 @@ Expected: FAIL — both jobs still in `running`. Restore the consumer call and r
 - [ ] **Step 15.3: Run the full Heimdall + regression suite**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_*.py tools/odin/tests/asgard/test_reconcile_recovery_first.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_*.py tools/odin/tests/test_asgard_reconcile_recovery_first.py -v
 ```
 
 Expected: all pass.
@@ -2969,7 +2969,7 @@ Expected: all pass.
 - [ ] **Step 15.4: Commit**
 
 ```bash
-git add tools/odin/tests/asgard/test_heimdall_22h_wedge_regression.py
+git add tools/odin/tests/test_asgard_heimdall_22h_wedge_regression.py
 git commit -m "asgard: add regression test for 22h-wedge mid-dispatch incident"
 ```
 
@@ -2978,11 +2978,11 @@ git commit -m "asgard: add regression test for 22h-wedge mid-dispatch incident"
 ## Task 16: End-to-end integration test (slow-marked, ssh localhost)
 
 **Files:**
-- Test: `tools/odin/tests/asgard/test_heimdall_e2e.py` *(new, slow-marked)*
+- Test: `tools/odin/tests/test_asgard_heimdall_e2e.py` *(new, slow-marked)*
 
 - [ ] **Step 16.1: Write the integration test**
 
-Create `tools/odin/tests/asgard/test_heimdall_e2e.py`:
+Create `tools/odin/tests/test_asgard_heimdall_e2e.py`:
 
 ```python
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -3079,7 +3079,7 @@ def test_heimdall_detects_flipped_host_e2e(tmp_path):
 - [ ] **Step 16.2: Run only the e2e test (it should be skipped or pass)**
 
 ```bash
-./isaaclab.sh -p -m pytest tools/odin/tests/asgard/test_heimdall_e2e.py -v
+./isaaclab.sh -p -m pytest tools/odin/tests/test_asgard_heimdall_e2e.py -v
 ```
 
 Expected: PASS where `ssh localhost` works, SKIP otherwise.
@@ -3087,7 +3087,7 @@ Expected: PASS where `ssh localhost` works, SKIP otherwise.
 - [ ] **Step 16.3: Commit**
 
 ```bash
-git add tools/odin/tests/asgard/test_heimdall_e2e.py
+git add tools/odin/tests/test_asgard_heimdall_e2e.py
 git commit -m "asgard: add slow-marked Heimdall end-to-end integration test"
 ```
 
