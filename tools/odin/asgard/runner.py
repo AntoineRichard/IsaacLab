@@ -104,6 +104,12 @@ class DispatchOptions:
     # single-global-timeout behaviour. See
     # :func:`tools.odin.asgard.budgets.load_budgets`.
     budgets_yaml: Path | None = None
+    # Disable the Heimdall fleet watcher (periodic re-probe + stale-job
+    # detection). Default ``False`` (Heimdall on). See
+    # :class:`tools.odin.asgard.heimdall.HeimdallWatcher`.
+    no_heimdall: bool = False
+    heimdall_probe_interval_s: int = 300
+    heimdall_stale_threshold_s: int = 180
 
 
 def _utc_now_iso() -> str:
@@ -976,6 +982,44 @@ def run_dispatch(  # noqa: C901
     live_retry_poll_s = max(0.05, options.live_retry_poll_s)
     last_retry_poll = time.monotonic()
     last_write = time.monotonic()
+
+    watcher: HeimdallWatcher | None = None
+    last_heimdall_consumed_at: str | None = None
+    if not options.no_heimdall:
+        watcher = HeimdallWatcher(
+            fleet=fleet,
+            dispatch_dir=dispatch_dir,
+            ssh=ssh,
+            state_view=lambda: state,
+            probe_interval_s=options.heimdall_probe_interval_s,
+            stale_threshold_s=options.heimdall_stale_threshold_s,
+        )
+        watcher.start()
+
+    def _consume_heimdall_if_ready() -> None:
+        nonlocal last_heimdall_consumed_at
+        if watcher is None:
+            return
+        if not watcher.is_alive():
+            _log.warning("heimdall: watcher thread is not alive; continuing without it")
+            return
+        snap = watcher.latest()
+        if snap is None:
+            return
+
+        def _set(v: str) -> None:
+            nonlocal last_heimdall_consumed_at
+            last_heimdall_consumed_at = v
+
+        _consume_heimdall_snapshot(
+            snap,
+            state,
+            fleet,
+            ssh=ssh,
+            last_consumed_at=last_heimdall_consumed_at,
+            set_last_consumed=_set,
+        )
+
     while remaining > 0 and any(w.is_alive() for w in workers):
         try:
             ev: StateEvent = state_chan.get(timeout=min(1.0, live_retry_poll_s))
@@ -1004,6 +1048,7 @@ def run_dispatch(  # noqa: C901
                     write_dispatch_state(dispatch_dir, state)
                     last_write = now
                 last_retry_poll = now
+            _consume_heimdall_if_ready()
             if time.monotonic() - last_write >= 5.0:
                 write_dispatch_state(dispatch_dir, state)
                 last_write = time.monotonic()
@@ -1051,6 +1096,9 @@ def run_dispatch(  # noqa: C901
         job_q.put(None)
     for w in workers:
         w.join(timeout=30.0)
+
+    if watcher is not None:
+        watcher.stop(timeout_s=10.0)
 
     _sweep_pending_after_dispatch(state)
 

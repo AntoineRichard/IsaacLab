@@ -143,6 +143,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "missing from the table."
         ),
     )
+    parser.add_argument(
+        "--no-heimdall",
+        action="store_true",
+        help="Disable the Heimdall fleet watcher (periodic re-probe + stale-job kill).",
+    )
+    parser.add_argument(
+        "--heimdall-probe-interval-s",
+        type=int,
+        default=300,
+        help="Heimdall probe interval in seconds (default: 300).",
+    )
+    parser.add_argument(
+        "--heimdall-stale-threshold-s",
+        type=int,
+        default=180,
+        help="Mark a job stale if its heartbeat is older than this many seconds (default: 180).",
+    )
     args = parser.parse_args(argv)
 
     if args.physx_yaml is None and args.newton_yaml is None:
@@ -180,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
         poll_interval_s=args.poll_interval,
         live_retry_poll_s=args.live_retry_poll_s,
         budgets_yaml=args.budgets_yaml,
+        no_heimdall=args.no_heimdall,
+        heimdall_probe_interval_s=args.heimdall_probe_interval_s,
+        heimdall_stale_threshold_s=args.heimdall_stale_threshold_s,
     )
 
     print(f"odin-dispatch: dispatch_id={dispatch_dir.name} fleet={fleet.fleet_name} hosts={len(fleet.hosts)}")
