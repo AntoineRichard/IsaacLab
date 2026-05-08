@@ -61,9 +61,26 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         cfg.validate()
         self.cfg = cfg.copy()
         self._is_initialized = False
+        # Spawn the rigid objects -- one prim per object_cfg.
+        for rigid_body_cfg in self.cfg.rigid_objects.values():
+            if rigid_body_cfg.spawn is not None:
+                rigid_body_cfg.spawn.func(
+                    rigid_body_cfg.prim_path,
+                    rigid_body_cfg.spawn,
+                    translation=rigid_body_cfg.init_state.pos,
+                    orientation=rigid_body_cfg.init_state.rot,
+                )
+            matching_prims = sim_utils.find_matching_prims(rigid_body_cfg.prim_path)
+            if len(matching_prims) == 0:
+                raise RuntimeError(f"Could not find prim with path {rigid_body_cfg.prim_path}.")
+        # Body name storage populated by ``_initialize_impl``.
+        self._body_names_list: list[str] = []
         # Single binding per tensor type (mirrors Articulation).
         # Populated lazily via _get_binding() or eagerly in _initialize_impl().
         self._bindings: dict[int, Any] = {}
+        # Register callbacks (initialize / invalidate / prim deletion).
+        self._register_callbacks()
+        self._debug_vis_handle = None
 
     # ------------------------------------------------------------------
     # Properties
