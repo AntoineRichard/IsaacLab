@@ -12,6 +12,7 @@ import queue
 import textwrap
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,6 +145,57 @@ class StateEvent:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _heartbeat_loop(
+    *,
+    host_name: str,
+    state_chan: queue.Queue[StateEvent],
+    inflight_view: Callable[[], list[str]],
+    interval_s: float,
+    stop_event: threading.Event,
+) -> None:
+    """Emit one ``StateEvent(transition='heartbeat')`` per in-flight ``run_id``, periodically.
+
+    The loop wakes every ``interval_s`` seconds (or as soon as ``stop_event``
+    is set, whichever comes first), snapshots the in-flight ``run_id`` list
+    via ``inflight_view``, and posts one heartbeat event per id onto
+    ``state_chan``. Heimdall consumes these via the runner's
+    :func:`~tools.odin.asgard.runner._apply_state_event` to keep
+    :attr:`~tools.odin.asgard.jobs.JobEntry.last_heartbeat_at` fresh.
+
+    A pre-set ``stop_event`` is honored immediately — the function returns
+    without emitting any events.
+
+    Args:
+        host_name: ``ValkyrieConfig.host``; copied into every emitted event.
+        state_chan: The ``queue.Queue`` the owning :class:`ValkyrieWorker`
+            uses for its other state events.
+        inflight_view: Callable returning a list of ``run_id`` strings
+            currently in flight on the owning worker. Called once per tick;
+            the worker's ``_inflight`` dict iteration is not safe across
+            mutation, so callers should pass ``lambda: list(self._inflight)``
+            (a snapshot of keys).
+        interval_s: Seconds between ticks.
+        stop_event: Set by the worker on shutdown. The loop returns on the
+            next wake.
+    """
+    if stop_event.is_set():
+        return
+    while not stop_event.is_set():
+        run_ids = inflight_view()
+        ts = _utc_now_iso()
+        for run_id in run_ids:
+            state_chan.put(
+                StateEvent(
+                    run_id=run_id,
+                    host=host_name,
+                    transition="heartbeat",
+                    at=ts,
+                )
+            )
+        if stop_event.wait(timeout=interval_s):
+            return
 
 
 # docker exec exits 125 when the docker command itself failed (container not
@@ -552,14 +604,39 @@ class ValkyrieWorker(threading.Thread):
         # so the run loop can flip its own sentinel-seen flag without
         # juggling tuple returns.
         self._sentinel_just_seen: bool = False
+        # Heartbeat thread emits one ``StateEvent(transition='heartbeat')``
+        # per in-flight ``run_id`` every ``_heartbeat_interval_s`` seconds.
+        # Heimdall consumes these to detect stale jobs whose worker thread
+        # has wedged (rsync hang, blocking SSH call, etc.).
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+        self._heartbeat_interval_s = 30.0
 
     # -- public entry point -------------------------------------------------
 
     def run(self) -> None:
-        if self._options.detached_mode:
-            self._run_detached()
-        else:
-            self._run_legacy_pty()
+        self._heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            kwargs={
+                "host_name": self.host.host,
+                "state_chan": self._state_chan,
+                "inflight_view": lambda: list(self._inflight.keys()),
+                "interval_s": self._heartbeat_interval_s,
+                "stop_event": self._heartbeat_stop,
+            },
+            name=f"heartbeat-{self.host.host}",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+        try:
+            if self._options.detached_mode:
+                self._run_detached()
+            else:
+                self._run_legacy_pty()
+        finally:
+            self._heartbeat_stop.set()
+            if self._heartbeat_thread is not None:
+                self._heartbeat_thread.join(timeout=2.0)
 
     def _run_legacy_pty(self) -> None:
         while not self._shutdown.is_set() and not self._down_event.is_set():
