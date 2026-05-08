@@ -33,15 +33,168 @@ from isaaclab_ovphysx.physics import OvPhysxManager
 
 from .rigid_object_collection_data import RigidObjectCollectionData
 
+# ---------------------------------------------------------------------------
+# Internal adapter — presents B per-body RIGID_BODY bindings as a single
+# (N, B, D) binding, preserving the dict-keyed interface the data class relies on.
+# ---------------------------------------------------------------------------
+
+
+class _FusedRigidBodyBinding:
+    """Adapter wrapping B per-body ``RIGID_BODY_*`` bindings as one ``(N, B, D)`` view.
+
+    The OVPhysX ``RIGID_BODY_*`` tensor types return flat ``(N, D)`` arrays for a
+    single-body pattern.  A rigid-object collection contains *B* distinct body types,
+    each backed by its own ``(N, D)`` binding.  This adapter presents the union as a
+    single binding with ``shape = (N, B, D)`` and ``count = N``, satisfying the
+    interface expected by :class:`RigidObjectCollectionData`.
+
+    **Reads** assemble the B ``(N, D)`` staging reads into the caller-supplied
+    ``(N, B, D)`` destination (warp array or NumPy array).
+
+    **Writes** deassemble a ``(N, B, D)`` source into per-body ``(N, D)`` tensors and
+    dispatch each to its corresponding per-body binding.
+
+    The adapter is device-agnostic: staging buffers are allocated on the same device
+    as the destination array at first use (GPU for GPU bindings, CPU for CPU-only
+    bindings).  This avoids cross-device copies for CPU-resident quantities such as
+    mass, COM pose, and inertia.
+
+    Args:
+        per_body_bindings: List of B ``TensorBinding`` objects, one per body type.
+            Each must expose ``.count``, ``.shape``, ``.read()``, and ``.write()``.
+        N: Number of environment instances.
+        B: Number of body types.
+        device: Simulation device string (e.g. ``"cuda:0"``).  Used as the default
+            device for write staging; read staging is adapted to the destination device.
+    """
+
+    def __init__(self, per_body_bindings: list, N: int, B: int, device: str) -> None:
+        if not per_body_bindings:
+            raise ValueError("per_body_bindings must contain at least one binding.")
+        self._per_body = per_body_bindings
+        self._N = N
+        self._B = B
+        self._device = device
+        # Infer D from the first per-body binding's shape.
+        # RIGID_BODY_MASS has shape (N,); others have (N, D).
+        first_shape = per_body_bindings[0].shape
+        self._D: int = first_shape[1] if len(first_shape) > 1 else 1
+        self._scalar = len(first_shape) == 1  # True for RIGID_BODY_MASS (shape (N,))
+        # Public attributes mirroring TensorBinding.
+        self.count: int = N
+        self.shape: tuple = (N, B) if self._scalar else (N, B, self._D)
+        # Per-device staging buffers for reads: keyed by device string.
+        self._read_staging: dict[str, list[wp.array]] = {}
+        # Per-device staging buffers for writes: keyed by device string.
+        self._write_staging: dict[str, list[wp.array]] = {}
+
+    # ------------------------------------------------------------------
+    # Staging buffer helpers
+    # ------------------------------------------------------------------
+
+    def _get_staging(self, cache: dict, staging_device: str) -> list[wp.array]:
+        """Return (creating if needed) a list of B staging arrays on *staging_device*."""
+        if staging_device in cache:
+            return cache[staging_device]
+        if self._scalar:
+            bufs = [wp.zeros((self._N,), dtype=wp.float32, device=staging_device) for _ in range(self._B)]
+        else:
+            bufs = [wp.zeros((self._N, self._D), dtype=wp.float32, device=staging_device) for _ in range(self._B)]
+        cache[staging_device] = bufs
+        return bufs
+
+    # ------------------------------------------------------------------
+    # Read
+    # ------------------------------------------------------------------
+
+    def read(self, dst) -> None:
+        """Read all per-body bindings and assemble into *dst*.
+
+        Args:
+            dst: Destination array.  May be a :class:`warp.array` (GPU or CPU) or a
+                :class:`numpy.ndarray`.  Must have shape matching :attr:`shape`
+                (``(N, B)`` for scalar quantities, ``(N, B, D)`` otherwise) and
+                dtype ``float32``.
+        """
+        if isinstance(dst, np.ndarray):
+            self._read_numpy(dst)
+        else:
+            self._read_warp(dst)
+
+    def _read_numpy(self, dst: np.ndarray) -> None:
+        """Read into a NumPy array (CPU path, used by ``_read_cpu`` in :class:`RigidObjectCollectionData`)."""
+        for b, binding in enumerate(self._per_body):
+            per_body_np = np.zeros(binding.shape, dtype=np.float32)
+            binding.read(per_body_np)
+            if self._scalar:
+                dst[:, b] = per_body_np  # (N,) → column b of (N, B)
+            else:
+                dst[:, b, :] = per_body_np  # (N, D) → column b of (N, B, D)
+
+    def _read_warp(self, dst: wp.array) -> None:
+        """Read into a warp float32 array.
+
+        Per-body staging buffers are allocated on the same device as *dst* so that
+        GPU bindings write to GPU staging and CPU-only bindings write to CPU staging,
+        avoiding illegal cross-device reads.
+        """
+        staging_device = str(dst.device)
+        staging = self._get_staging(self._read_staging, staging_device)
+        for b, binding in enumerate(self._per_body):
+            binding.read(staging[b])
+        # Assemble staging[b] into dst via torch zero-copy views.
+        dst_t = wp.to_torch(dst)
+        if self._scalar:
+            dst_2d = dst_t.view(self._N, self._B)
+            for b in range(self._B):
+                dst_2d[:, b].copy_(wp.to_torch(staging[b]))
+        else:
+            dst_3d = dst_t.view(self._N, self._B, self._D)
+            for b in range(self._B):
+                dst_3d[:, b, :].copy_(wp.to_torch(staging[b]))
+
+    # ------------------------------------------------------------------
+    # Write
+    # ------------------------------------------------------------------
+
+    def write(self, tensor, indices=None, mask=None) -> None:
+        """Deassemble *tensor* ``(N, B, D)`` and write to each per-body binding.
+
+        Each per-body binding receives the full ``(N, D)`` column for its body index
+        along with the optional *indices* or *mask* filter, matching the OVPhysX
+        ``TensorBinding.write`` contract (full-shape tensor, selective row application).
+
+        Args:
+            tensor: Source warp float32 array with shape matching :attr:`shape`.
+            indices: Optional int32 warp/torch array of environment row indices.
+            mask: Optional bool warp array mask (takes precedence over *indices*).
+        """
+        write_device = str(tensor.device) if isinstance(tensor, wp.array) else self._device
+        staging = self._get_staging(self._write_staging, write_device)
+        src_t = wp.to_torch(tensor)
+        if self._scalar:
+            src_2d = src_t.view(self._N, self._B)
+            for b, binding in enumerate(self._per_body):
+                col = src_2d[:, b].contiguous()
+                staging[b].assign(wp.from_torch(col, dtype=wp.float32))
+                binding.write(staging[b], indices=indices, mask=mask)
+        else:
+            src_3d = src_t.view(self._N, self._B, self._D)
+            for b, binding in enumerate(self._per_body):
+                col = src_3d[:, b, :].contiguous()
+                staging[b].assign(wp.from_torch(col, dtype=wp.float32))
+                binding.write(staging[b], indices=indices, mask=mask)
+
 
 class RigidObjectCollection(BaseRigidObjectCollection):
     """OVPhysX-backed rigid object collection asset.
 
-    Uses the OVPhysX 0.4.3+ fused multi-prim binding
-    (``create_tensor_binding(prim_paths=[...])``) to represent all bodies in the
-    collection as a single binding per tensor type, returning data of shape
-    ``(num_instances, num_bodies, D)``.  This mirrors the Articulation
-    single-binding architecture and avoids per-body Python loops.
+    Uses one ``RIGID_BODY_*`` :class:`TensorBinding` per body type per tensor type.
+    Each per-body binding covers all environment instances for that body type
+    (shape ``(num_instances, D)``).  A :class:`_FusedRigidBodyBinding` adapter
+    wraps the *B* per-body bindings so that the data class and write helpers see a
+    single binding with shape ``(num_instances, num_bodies, D)`` — the same interface
+    produced by the articulation-mode mock used in iface tests.
     """
 
     cfg: RigidObjectCollectionCfg
@@ -1146,39 +1299,42 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         # Step 3: Total number of distinct body types.
         self._num_bodies = len(self._prim_paths)
 
-        # Step 4: Eagerly create one fused binding per tensor type, spanning all
-        # body prims via the new prim_paths= parameter (ovphysx 0.4.3+).
-        # Failures surface here with a helpful message rather than downstream.
-        for tt in (
-            TT.LINK_POSE,
-            TT.LINK_VELOCITY,
-            TT.LINK_WRENCH,
-            TT.BODY_MASS,
-            TT.BODY_COM_POSE,
-            TT.BODY_INERTIA,
-        ):
-            try:
-                self._get_binding(tt)
-            except Exception as e:
-                raise RuntimeError(
-                    f"OVPhysX could not create fused rigid-body binding {tt!r} for collection"
-                    f" (prim_paths={self._prim_paths!r})."
-                    f" Check that each prim path matches at least one UsdPhysics.RigidBodyAPI prim"
-                    f" and that the ovphysx wheel exposes the required TensorType."
-                ) from e
+        # Step 4: For each supported tensor type, create one RIGID_BODY_* binding per
+        # body type (pattern), then wrap the B per-body bindings in a
+        # _FusedRigidBodyBinding adapter stored under the ARTICULATION_LINK_* key that
+        # RigidObjectCollectionData uses.  This preserves the data-class interface while
+        # querying the correct OVPhysX tensor type for non-articulated rigid bodies.
+        #
+        # Mapping: data-class key → (per-body RIGID_BODY tensor type, data class key)
+        _TT_MAP = (
+            (TT.LINK_POSE, TT.RIGID_BODY_POSE),
+            (TT.LINK_VELOCITY, TT.RIGID_BODY_VELOCITY),
+            (TT.LINK_WRENCH, TT.RIGID_BODY_WRENCH),
+            (TT.BODY_MASS, TT.RIGID_BODY_MASS),
+            (TT.BODY_COM_POSE, TT.RIGID_BODY_COM_POSE),
+            (TT.BODY_INERTIA, TT.RIGID_BODY_INERTIA),
+        )
+        for fused_key, rb_tt in _TT_MAP:
+            per_body = []
+            for pattern in self._prim_paths:
+                try:
+                    b = self._ovphysx.create_tensor_binding(pattern=pattern, tensor_type=rb_tt)
+                    per_body.append(b)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"OVPhysX could not create RIGID_BODY binding {rb_tt!r} for"
+                        f" pattern {pattern!r}."
+                        f" Check that the prim path matches at least one"
+                        f" UsdPhysics.RigidBodyAPI prim."
+                    ) from e
+            # Determine N from the first binding's count.
+            N = per_body[0].count
+            B = len(per_body)
+            self._bindings[fused_key] = _FusedRigidBodyBinding(per_body, N, B, self._device)
 
-        # Step 5: Read num_instances from the LINK_POSE binding and validate
-        # that all bindings agree on the same count.
-        ref_count = self._bindings[TT.LINK_POSE].count
-        for tt, binding in self._bindings.items():
-            if binding.count != ref_count:
-                raise RuntimeError(
-                    f"Instance count mismatch for tensor type {tt!r}:"
-                    f" LINK_POSE has {ref_count} instances but {tt!r}"
-                    f" has {binding.count} instances."
-                    " All bindings in the collection must agree on num_instances."
-                )
-        self._num_instances = ref_count
+        # Step 5: Read num_instances from the LINK_POSE fused binding.
+        # All fused bindings share the same N (verified implicitly by construction).
+        self._num_instances = self._bindings[TT.LINK_POSE].count
 
         # Step 6: Create the data container.
         self._data = RigidObjectCollectionData(
@@ -1256,31 +1412,21 @@ class RigidObjectCollection(BaseRigidObjectCollection):
     # ------------------------------------------------------------------
 
     def _get_binding(self, tensor_type: int):
-        """Return a cached fused TensorBinding, creating it on first access.
+        """Return the cached :class:`_FusedRigidBodyBinding` for *tensor_type*.
 
-        Mirrors :meth:`~isaaclab_ovphysx.assets.Articulation._get_binding` exactly:
-        a single binding per tensor type, no body index, created via
-        ``create_tensor_binding(prim_paths=[...])``.
+        All bindings are eagerly created in :meth:`_initialize_impl` and stored
+        under the ``TT.LINK_*`` / ``TT.BODY_*`` keys that
+        :class:`RigidObjectCollectionData` uses.  This method simply returns the
+        cached entry.
 
         Args:
             tensor_type: The TensorType constant identifying which simulation
-                buffer to bind.
+                buffer to bind (e.g. :attr:`~isaaclab_ovphysx.tensor_types.LINK_POSE`).
 
         Returns:
-            The cached :class:`TensorBinding`, or ``None`` if creation fails.
+            The cached :class:`_FusedRigidBodyBinding`, or ``None`` if not found.
         """
-        binding = self._bindings.get(tensor_type)
-        if binding is not None:
-            return binding
-        try:
-            binding = self._ovphysx.create_tensor_binding(
-                prim_paths=self._prim_paths,
-                tensor_type=tensor_type,
-            )
-            self._bindings[tensor_type] = binding
-            return binding
-        except Exception:
-            return None
+        return self._bindings.get(tensor_type)
 
     def _make_float32_view(self, wp_array: wp.array, binding) -> wp.array:
         """Return a float32 view of *wp_array* matching the binding's flat shape.
