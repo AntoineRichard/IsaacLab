@@ -116,6 +116,12 @@ class JobEntry:
     # OSMO task name for jobs submitted via the Bifrost dispatcher. ``None``
     # for all Asgard-dispatched jobs.
     osmo_task_name: str | None = None
+    # Last heartbeat timestamp emitted by the worker thread for this job.
+    # Set by ``_apply_state_event`` on ``StateEvent(transition='heartbeat')``.
+    # Heimdall reads this to detect stale jobs whose worker thread is wedged
+    # (rsync hang, blocking SSH call, etc.). ``None`` on pre-Heimdall
+    # dispatches and on jobs that have not yet emitted any heartbeat.
+    last_heartbeat_at: str | None = None
 
     # Allowed-transition graph. See spec §4.1. Self-loops are not listed
     # here — `transition_to` short-circuits same-state calls as no-ops
