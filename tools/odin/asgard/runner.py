@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,7 @@ from pathlib import Path
 from tools.odin.asgard.budgets import load_budgets
 from tools.odin.asgard.cleanup import sweep_orphan_trainers
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
+from tools.odin.asgard.heimdall import HeimdallSnapshot, HeimdallWatcher, HostHealth  # noqa: F401
 from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry, build_queue_from_env_lists
 from tools.odin.asgard.preflight import preflight_valkyrie
 from tools.odin.asgard.provisioner import provision_valkyrie
@@ -35,6 +38,8 @@ from tools.odin.valhalla.dashboard.cancel_db import CancelDB
 from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 __all__ = ["DispatchOptions", "resolve_dispatch_dir", "run_dispatch"]
+
+_log = logging.getLogger(__name__)
 
 # Minimum CUDA toolkit version required for Newton (warp) workloads.
 _NEWTON_CUDA_FLOOR: tuple[int, int] = (12, 4)
@@ -493,6 +498,114 @@ def _mark_cancellation_consumed(
     if ev.failure.kind != "killed":
         return
     cancel_db.mark_consumed(dispatch_id, ev.run_id, outcome="killed")
+
+
+def _consume_heimdall_snapshot(
+    snap: HeimdallSnapshot | None,
+    state: DispatchState,
+    fleet: Fleet,
+    *,
+    ssh,
+    last_consumed_at: str | None,
+    set_last_consumed: Callable[[str], None],
+    recover_fn: Callable | None = None,
+    kill_fn: Callable | None = None,
+) -> None:
+    """Apply one :class:`HeimdallSnapshot` to ``state`` exactly once.
+
+    Idempotent on ``snap.generated_at == last_consumed_at``: a duplicate
+    snapshot is a no-op so multi-tick loops never double-act.
+
+    Host flips from healthy → unhealthy trigger one
+    :func:`~tools.odin.asgard.recovery.recover_valkyrie_gpu` attempt; on
+    success the host stays in the active fleet, on failure the host is
+    quarantined and any in-flight jobs assigned to it are flipped to
+    pending with the host added to ``preferred_not``.
+
+    Stale jobs are killed best-effort and classified by host health:
+    healthy host → ``timeout`` (no retry); unhealthy host →
+    ``infrastructure`` (re-queued via the existing infra-retry path).
+
+    Args:
+        snap: Latest snapshot from
+            :meth:`~tools.odin.asgard.heimdall.HeimdallWatcher.latest`.
+            ``None`` is a no-op.
+        state: Mutable :class:`DispatchState`; the runner is the sole
+            writer.
+        fleet: Same fleet the watcher is probing; used to look up
+            :class:`~tools.odin.asgard.fleet.ValkyrieConfig` for recovery
+            and remote-process kills.
+        ssh: Same :class:`~tools.odin.asgard.transport.SSHRunner` the
+            runner uses elsewhere; passed into ``recover_fn`` and the
+            default ``kill_fn``.
+        last_consumed_at: Previous snapshot's ``generated_at`` (or ``None``
+            on first tick).
+        set_last_consumed: Callback the consumer invokes with
+            ``snap.generated_at`` after a successful pass.
+        recover_fn: Override for
+            :func:`~tools.odin.asgard.recovery.recover_valkyrie_gpu`;
+            tests inject a stub. Production passes ``None``.
+        kill_fn: Override for the remote ``pkill -f <run_id>`` step used
+            on stale-job detection; tests inject a stub. Production
+            passes ``None``.
+    """
+    if snap is None or snap.generated_at == last_consumed_at:
+        return
+
+    if recover_fn is None:
+        from tools.odin.asgard.recovery import recover_valkyrie_gpu
+
+        recover_fn = recover_valkyrie_gpu
+    if kill_fn is None:
+
+        def kill_fn(host, run_id, ssh, *, timeout_s):
+            cmd = f"docker exec {host.container_name} sh -c 'pkill -f {run_id} || true'"
+            try:
+                ssh.run(host, cmd, timeout_s=timeout_s, pty=False)
+            except Exception as exc:
+                _log.warning("heimdall: kill_fn ssh exception: %r", exc)
+
+    prev_state: dict[str, HostHealth] = getattr(state, "_heimdall_host_state", {}) or {}
+    host_lookup = {h.host: h for h in fleet.hosts}
+
+    for host_name, h in snap.hosts.items():
+        prev = prev_state.get(host_name)
+        prev_was_healthy = prev.healthy if prev is not None else True
+        if not (prev_was_healthy and not h.healthy):
+            continue
+        host_cfg = host_lookup.get(host_name)
+        if host_cfg is None:
+            _log.warning("heimdall: flip on unknown host %r", host_name)
+            continue
+        rec = recover_fn(host_cfg, ssh=ssh)
+        if getattr(rec, "recovered", False):
+            for f in state.fleet:
+                if f.host == host_name:
+                    f.last_error = "gpu_lost: heimdall recovery succeeded"
+            continue
+        from tools.odin.asgard.state import QuarantinedHost
+
+        state.quarantined_hosts.append(
+            QuarantinedHost(
+                host=host_name,
+                reason="heimdall_recovery_failed",
+                last_run_id="",
+                at=_utc_now_iso(),
+            )
+        )
+        for f in state.fleet:
+            if f.host == host_name:
+                f.status = "down"
+                f.last_error = f"heimdall: {getattr(rec, 'message', 'recovery failed')}"
+                f.current_run_id = None
+        for j in state.jobs:
+            if j.assigned_to == host_name and j.status == "running":
+                j.transition_to("pending", add_preferred_not=host_name)
+
+    # Stale-job handling lands in Task 10.
+
+    state._heimdall_host_state = dict(snap.hosts)
+    set_last_consumed(snap.generated_at)
 
 
 def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntry]:
