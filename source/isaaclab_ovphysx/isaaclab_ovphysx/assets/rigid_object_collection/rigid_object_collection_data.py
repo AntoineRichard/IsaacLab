@@ -113,10 +113,6 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         self.GRAVITY_VEC_W = ProxyArray(wp.from_torch(gravity_dir, dtype=wp.vec3f))
         self.FORWARD_VEC_B = ProxyArray(wp.from_torch(forward_vec, dtype=wp.vec3f))
 
-        # Placeholders populated by RigidObjectCollection._process_cfg().
-        self._default_body_pose: wp.array | None = None
-        self._default_body_vel: wp.array | None = None
-
         self._create_buffers()
 
     # ------------------------------------------------------------------
@@ -169,32 +165,36 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
     # ------------------------------------------------------------------
 
     @property
-    def default_body_pose(self) -> wp.array | None:
+    def default_body_pose(self) -> ProxyArray:
         """Default body pose ``[pos, quat]`` in local environment frame.
 
         Shape is (num_instances, num_bodies), dtype = ``wp.transformf``.
         In torch this resolves to (num_instances, num_bodies, 7).
         Set by :meth:`~RigidObjectCollection._process_cfg` during initialization.
         """
-        return self._default_body_pose
+        if self._default_body_pose_ta is None:
+            self._default_body_pose_ta = ProxyArray(self._default_body_pose)
+        return self._default_body_pose_ta
 
     @default_body_pose.setter
     def default_body_pose(self, value: wp.array) -> None:
-        self._default_body_pose = value
+        self._default_body_pose.assign(value)
 
     @property
-    def default_body_vel(self) -> wp.array | None:
+    def default_body_vel(self) -> ProxyArray:
         """Default body velocity ``[lin_vel, ang_vel]`` in local environment frame.
 
         Shape is (num_instances, num_bodies), dtype = ``wp.spatial_vectorf``.
         In torch this resolves to (num_instances, num_bodies, 6).
         Set by :meth:`~RigidObjectCollection._process_cfg` during initialization.
         """
-        return self._default_body_vel
+        if self._default_body_vel_ta is None:
+            self._default_body_vel_ta = ProxyArray(self._default_body_vel)
+        return self._default_body_vel_ta
 
     @default_body_vel.setter
     def default_body_vel(self, value: wp.array) -> None:
-        self._default_body_vel = value
+        self._default_body_vel.assign(value)
 
     @property
     def default_body_state(self) -> ProxyArray:
@@ -830,8 +830,10 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
             )
             self._body_inertia.timestamp = self._sim_timestamp
 
-        # -- Defaults (set by _process_cfg after __init__).
-        # These remain None until _process_cfg writes them.
+        # -- Defaults (allocated here, filled by _process_cfg after __init__).
+        # Zero-initialized buffers; populated by RigidObjectCollection._process_cfg.
+        self._default_body_pose = wp.zeros((N, B), dtype=wp.transformf, device=self.device)
+        self._default_body_vel = wp.zeros((N, B), dtype=wp.spatial_vectorf, device=self.device)
 
         # Initialize ProxyArray wrappers.
         self._pin_proxy_arrays()
