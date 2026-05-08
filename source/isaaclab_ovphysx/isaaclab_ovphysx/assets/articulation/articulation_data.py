@@ -1364,6 +1364,7 @@ class ArticulationData(BaseArticulationData):
         self._body_com_pose_w = TimestampedBuffer((N, L), dev, wp.transformf)
         self._body_com_vel_w = TimestampedBuffer((N, L), dev, wp.spatial_vectorf)
         self._body_com_acc_w = TimestampedBuffer((N, L), dev, wp.spatial_vectorf)
+        self._body_incoming_joint_wrench_buf = TimestampedBuffer((N, L), dev, wp.spatial_vectorf)
         # -- Joint state buffers
         self._joint_pos_buf = TimestampedBuffer((N, D), dev, wp.float32)
         self._joint_vel_buf = TimestampedBuffer((N, D), dev, wp.float32)
@@ -1747,6 +1748,7 @@ class ArticulationData(BaseArticulationData):
         self._body_com_vel_w_ta: ProxyArray | None = None
         self._body_com_acc_w_ta: ProxyArray | None = None
         self._body_com_pose_b_ta: ProxyArray | None = None
+        self._body_incoming_joint_wrench_b_ta: ProxyArray | None = None
         # Body properties
         self._body_mass_ta: ProxyArray | None = None
         self._body_inertia_ta: ProxyArray | None = None
@@ -1928,6 +1930,16 @@ class ArticulationData(BaseArticulationData):
         self._get_binding(tensor_type).read(view)
         buf.timestamp = self._sim_timestamp
 
+    def _update_articulations_kinematic(self) -> None:
+        """Refresh ovphysx articulation FK before same-frame link-pose reads."""
+        from isaaclab_ovphysx.physics.ovphysx_manager import OvPhysxManager
+
+        physx = OvPhysxManager.get_physx_instance()
+        if physx is None:
+            return
+        update_fk = OvPhysxManager._require_kinematic_fk(physx)
+        update_fk()
+
     def _read_transform_binding(self, tensor_type: int, buf: TimestampedBuffer) -> None:
         """Read a pose binding (float32 view of transformf buffer), skipping if fresh.
 
@@ -1947,6 +1959,8 @@ class ArticulationData(BaseArticulationData):
         view = self._get_read_view(tensor_type, buf.data, 7)
         if view is None:
             return
+        if tensor_type == TT.LINK_POSE:
+            self._update_articulations_kinematic()
         self._binding_read(tensor_type, binding, view)
         buf.timestamp = self._sim_timestamp
 

@@ -140,7 +140,7 @@ intersphinx_mapping = {
     "torch": ("https://docs.pytorch.org/docs/2.11/", None),
     "isaacsim": ("https://docs.isaacsim.omniverse.nvidia.com/6.0.0/py/", None),
     "gymnasium": ("https://gymnasium.farama.org/", None),
-    "warp": ("https://nvidia.github.io/warp/", None),
+    "warp": ("https://nvidia.github.io/warp/latest/", None),
     "omniverse": ("https://docs.omniverse.nvidia.com/dev-guide/latest", None),
 }
 
