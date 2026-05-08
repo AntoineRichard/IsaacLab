@@ -24,9 +24,11 @@ from isaaclab.assets.rigid_object_collection import (
     RigidObjectCollectionCfg,
 )
 from isaaclab.utils.string import resolve_matching_names
+from isaaclab.utils.wrench_composer import WrenchComposer
 
 from isaaclab_ovphysx import tensor_types as TT
 from isaaclab_ovphysx.assets import kernels as shared_kernels
+from isaaclab_ovphysx.assets.kernels import _body_wrench_to_world
 from isaaclab_ovphysx.physics import OvPhysxManager
 
 from .rigid_object_collection_data import RigidObjectCollectionData
@@ -85,12 +87,22 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         return self._bindings
 
     @property
-    def instantaneous_wrench_composer(self):  # type: ignore[override]
-        raise NotImplementedError("phase 4")
+    def instantaneous_wrench_composer(self) -> WrenchComposer:  # type: ignore[override]
+        """Returns the instantaneous wrench composer for the rigid object collection.
+
+        Returns a :class:`~isaaclab.utils.wrench_composer.WrenchComposer` instance. Wrenches added or set to this wrench
+        composer will be applied for a single simulation step and then cleared.
+        """
+        return self._instantaneous_wrench_composer
 
     @property
-    def permanent_wrench_composer(self):  # type: ignore[override]
-        raise NotImplementedError("phase 4")
+    def permanent_wrench_composer(self) -> WrenchComposer:  # type: ignore[override]
+        """Returns the permanent wrench composer for the rigid object collection.
+
+        Returns a :class:`~isaaclab.utils.wrench_composer.WrenchComposer` instance. Wrenches added or set to this wrench
+        composer will be applied every simulation step until explicitly reset.
+        """
+        return self._permanent_wrench_composer
 
     # ------------------------------------------------------------------
     # Core operations
@@ -102,10 +114,48 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         object_ids: slice | None = None,
         env_mask: wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 4")
+        """Reset the wrench composers for the specified environments.
+
+        Args:
+            env_ids: Environment indices to reset. If None, all environments are reset.
+            object_ids: Unused — included for interface compatibility with the base class.
+            env_mask: Boolean environment mask. If provided, takes precedence over ``env_ids``.
+        """
+        self._instantaneous_wrench_composer.reset(env_ids=env_ids, env_mask=env_mask)
+        self._permanent_wrench_composer.reset(env_ids=env_ids, env_mask=env_mask)
 
     def write_data_to_sim(self) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 4")
+        """Write external wrench to the simulation.
+
+        .. note::
+            We write external wrench to the simulation here since this function is called before the simulation step.
+            This ensures that the external wrench is applied at every simulation step.
+        """
+        inst = self._instantaneous_wrench_composer
+        perm = self._permanent_wrench_composer
+        if not inst.active and not perm.active:
+            return
+        if inst.active:
+            if perm.active:
+                inst.add_raw_buffers_from(perm)
+            force_b = inst.out_force_b.warp
+            torque_b = inst.out_torque_b.warp
+        else:
+            force_b = perm.out_force_b.warp
+            torque_b = perm.out_torque_b.warp
+
+        poses = self._data.body_link_pose_w.warp  # (N, B) wp.transformf
+        wp.launch(
+            _body_wrench_to_world,
+            dim=(self._num_instances, self._num_bodies),
+            inputs=[force_b, torque_b, poses],
+            outputs=[self._wrench_buf],
+            device=self._device,
+        )
+        for b in range(self._num_bodies):
+            binding = self._get_binding(TT.RIGID_BODY_WRENCH, body_idx=b)
+            binding.write(self._wrench_buf_flat[b])
+        inst.reset()
 
     def update(self, dt: float) -> None:  # type: ignore[override]
         self._data.update(dt)
@@ -1234,6 +1284,34 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         # All-true boolean masks used as defaults in mask-based kernel calls.
         self._ALL_TRUE_ENV_MASK = wp.array(np.ones(N, dtype=bool), dtype=wp.bool, device=self._device)
         self._ALL_TRUE_BODY_MASK = wp.array(np.ones(B, dtype=bool), dtype=wp.bool, device=self._device)
+
+        # External wrench buffers (mirrors rigid_object._create_buffers, extended to 2D).
+        # Body-major flat base: body b occupies rows [b*N : (b+1)*N].
+        # Per-body contiguous (N, 9) views alias the same allocation, so the
+        # per-body binding writes never copy.  A strided (N, B, 9) view on top
+        # lets the kernel write all bodies in a single launch.
+        self._wrench_buf_base = wp.zeros(B * N * 9, dtype=wp.float32, device=self._device)
+        # Per-body contiguous (N, 9) sub-views used by per-body binding.write().
+        self._wrench_buf_flat = [
+            wp.array(
+                ptr=self._wrench_buf_base.ptr + b * N * 9 * 4,
+                shape=(N, 9),
+                dtype=wp.float32,
+                device=self._device,
+                copy=False,
+            )
+            for b in range(B)
+        ]
+        # Strided (N, B, 9) view: [i, j, k] → flat[j*N*9 + i*9 + k].
+        self._wrench_buf = wp.array(
+            ptr=self._wrench_buf_base.ptr,
+            shape=(N, B, 9),
+            dtype=wp.float32,
+            strides=(9 * 4, N * 9 * 4, 4),
+            device=self._device,
+        )
+        self._instantaneous_wrench_composer = WrenchComposer(self)
+        self._permanent_wrench_composer = WrenchComposer(self)
 
         # Set body names into the data container (mirrors PhysX collection).
         self._data.body_names = self._body_names
