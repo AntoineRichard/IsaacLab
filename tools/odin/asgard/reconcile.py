@@ -176,6 +176,7 @@ def reconcile_orphans(
     rsync: RsyncRunner,
     detached_mode: bool = False,
     cancel_db: _CancelDBLike | None = None,
+    recover_fn=None,
 ) -> list[ReconcileOutcome]:
     """Reconcile every ``running`` job against its prior remote host.
 
@@ -214,11 +215,23 @@ def reconcile_orphans(
             to failed; kills are applied to in-flight jobs after the
             re-attach by seeding ``worker._cancel_request`` (handled in
             the runner, not here).
+        recover_fn: Override for
+            :func:`~tools.odin.asgard.recovery.recover_valkyrie_gpu`,
+            called before flipping a ``running`` job back to ``pending``
+            on the legacy fall-through path. On recovery success the
+            job is left in ``running`` (heimdall picks it up); on
+            failure the existing flip-to-pending behaviour applies.
+            Tests inject a stub. Production passes ``None``.
 
     Returns:
         List of :class:`ReconcileOutcome` — one per reconciled job.
         Skipped jobs do not appear in the output.
     """
+    if recover_fn is None:
+        from tools.odin.asgard.recovery import recover_valkyrie_gpu
+
+        recover_fn = recover_valkyrie_gpu
+
     outcomes: list[ReconcileOutcome] = []
     for j in jobs:
         if j.status != "running":
@@ -280,6 +293,17 @@ def reconcile_orphans(
             j.transition_to("pending")
             outcomes.append(ReconcileOutcome(run_id=j.run_id, action="killed_alive_orphan"))
         else:
+            # Heimdall integration (2026-05-08): try one host recovery
+            # before flipping back to pending. The 2026-05-05 incident
+            # ("3 Shadow-Vision rows flipped to pending unnecessarily")
+            # was caused by a transiently-unreachable host triggering
+            # this exact path. If recovery brings the host back, leave
+            # the job in 'running' for the next dispatch loop — Heimdall
+            # will catch genuine staleness via the heartbeat path.
+            rec = recover_fn(host, ssh=ssh)
+            if getattr(rec, "recovered", False):
+                outcomes.append(ReconcileOutcome(run_id=j.run_id, action="reattached_inflight"))
+                continue
             j.transition_to("pending")
             outcomes.append(ReconcileOutcome(run_id=j.run_id, action="dead_re_pending"))
 
