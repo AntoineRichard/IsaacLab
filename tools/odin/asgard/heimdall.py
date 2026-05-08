@@ -17,20 +17,33 @@ activity to ``<dispatch_dir>/fleet.json`` for the Valhalla dashboard.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
+import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from tools.odin.asgard.fleet import Fleet
+from tools.odin.asgard.transport import SSHRunner
+
+if TYPE_CHECKING:
+    from tools.odin.asgard.state import DispatchState
 
 __all__ = [
     "FLEET_JSON_SCHEMA_VERSION",
     "HeimdallSnapshot",
+    "HeimdallWatcher",
     "HostHealth",
     "StaleJob",
     "read_fleet_json",
     "write_fleet_json",
 ]
+
+
+_log = logging.getLogger(__name__)
 
 
 FLEET_JSON_SCHEMA_VERSION = "1.0"
@@ -133,3 +146,82 @@ def read_fleet_json(dispatch_dir: Path) -> dict[str, Any] | None:
         return None
     with path.open("r") as fh:
         return json.load(fh)
+
+
+# --- Watcher -----------------------------------------------------------------
+
+
+class HeimdallWatcher:
+    """Periodic fleet probe + stale-job watcher.
+
+    The watcher owns its own daemon thread and is the sole writer of
+    ``fleet.json``. Consumers (the dispatcher main loop, the Valhalla
+    dashboard) call :meth:`latest` to read the most recent
+    :class:`HeimdallSnapshot` and never mutate watcher state.
+
+    Thread safety: :meth:`latest` and the publishing path inside the
+    probing thread are guarded by a single :class:`threading.Lock`. The
+    probing path may run concurrently with main-loop consumption.
+    """
+
+    def __init__(
+        self,
+        fleet: Fleet,
+        dispatch_dir: Path,
+        ssh: SSHRunner,
+        state_view: Callable[[], "DispatchState"],
+        *,
+        probe_interval_s: int = 300,
+        stale_threshold_s: int = 180,
+        flip_after_k_failures: int = 2,
+        probe_timeout_s: int = 15,
+        recent_events_max: int = 20,
+    ) -> None:
+        self._fleet = fleet
+        self._dispatch_dir = Path(dispatch_dir)
+        self._ssh = ssh
+        self._state_view = state_view
+        self._probe_interval_s = probe_interval_s
+        self._stale_threshold_s = stale_threshold_s
+        self._flip_after_k_failures = flip_after_k_failures
+        self._probe_timeout_s = probe_timeout_s
+        self._recent_events_max = recent_events_max
+
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._latest: HeimdallSnapshot | None = None
+        self._host_state: dict[str, HostHealth] = {}
+        self._recent_events: list[dict] = []
+
+    def start(self) -> None:
+        """Spawn the probing thread.
+
+        Raises:
+            RuntimeError: If the watcher has already been started.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError("HeimdallWatcher already started")
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name="heimdall-watcher", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout_s: float = 10.0) -> None:
+        """Signal stop and join the probing thread (idempotent)."""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout_s)
+        self._thread = None
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def latest(self) -> HeimdallSnapshot | None:
+        """Return the most recent published snapshot, or ``None`` before the first tick."""
+        with self._lock:
+            return self._latest
+
+    def _run(self) -> None:
+        # Probe loop body lands in Task 7. Until then, just block until stop
+        # so the lifecycle tests can exercise start/stop without surprises.
+        self._stop_event.wait()
