@@ -50,6 +50,7 @@ def build_layout(dispatch_id: str) -> html.Div:
             dcc.Interval(id="tab-a-cancel-revert", interval=500, disabled=False),
             html.Div(id="tab-a-header"),
             html.Div(id="tab-a-fleet-table"),
+            html.Div(id="tab-a-heimdall-card", className="heimdall-card-host"),
             html.Div(
                 id="tab-a-jobs-section",
                 children=[
