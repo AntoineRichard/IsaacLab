@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -35,7 +35,14 @@ from .rigid_object_collection_data import RigidObjectCollectionData
 
 
 class RigidObjectCollection(BaseRigidObjectCollection):
-    """OVPhysX-backed rigid object collection asset."""
+    """OVPhysX-backed rigid object collection asset.
+
+    Uses the OVPhysX 0.4.3+ fused multi-prim binding
+    (``create_tensor_binding(prim_paths=[...])``) to represent all bodies in the
+    collection as a single binding per tensor type, returning data of shape
+    ``(num_instances, num_bodies, D)``.  This mirrors the Articulation
+    single-binding architecture and avoids per-body Python loops.
+    """
 
     cfg: RigidObjectCollectionCfg
     """Configuration instance for the rigid object collection."""
@@ -50,11 +57,9 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             cfg: A configuration instance.
         """
         super().__init__(cfg)
-        # Bindings are stored per tensor-type, per body.
-        # Layout: _bindings[tensor_type] is a list of length num_bodies,
-        # where _bindings[tensor_type][b] is the TensorBinding for body b.
-        # Entries start as None and are populated lazily via _get_binding().
-        self._bindings: dict[int, list[Any]] = {}
+        # Single binding per tensor type (mirrors Articulation).
+        # Populated lazily via _get_binding() or eagerly in _initialize_impl().
+        self._bindings: dict[int, Any] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -74,15 +79,16 @@ class RigidObjectCollection(BaseRigidObjectCollection):
 
     @property
     def body_names(self) -> list[str]:
-        return list(self._body_names)
+        return list(self._body_names_list)
 
     @property
     def root_view(self):
-        """Per-body TensorBinding dictionary.
+        """Fused TensorBinding dictionary.
 
         Returns the internal bindings dict keyed by TensorType constant.
-        Each value is a list of length :attr:`num_bodies` containing one
-        :class:`~isaaclab_ovphysx.TensorBinding` per body.
+        Each value is a single :class:`~isaaclab_ovphysx.TensorBinding` spanning
+        all bodies in the collection, with shape
+        ``(num_instances, num_bodies, D)``.
         """
         return self._bindings
 
@@ -152,9 +158,9 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             outputs=[self._wrench_buf],
             device=self._device,
         )
-        for b in range(self._num_bodies):
-            binding = self._get_binding(TT.RIGID_BODY_WRENCH, body_idx=b)
-            binding.write(self._wrench_buf_flat[b])
+        binding = self._get_binding(TT.LINK_WRENCH)
+        if binding is not None:
+            binding.write(self._wrench_buf)
         inst.reset()
 
     def update(self, dt: float) -> None:  # type: ignore[override]
@@ -269,10 +275,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_com_state_w.timestamp = -1.0
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
-        # Push updated per-body link poses to simulation via bindings.
-        for b in self._iter_body_ids_cpu(body_ids):
-            binding = self._get_binding(TT.RIGID_BODY_POSE, body_idx=b)
-            binding.write(self.data._body_link_pose_w_flat[b].view(wp.float32), indices=env_ids)
+        # Push updated link poses to simulation via single fused binding.
+        binding = self._get_binding(TT.LINK_POSE)
+        view = self._make_float32_view(self.data._body_link_pose_w.data, binding)
+        binding.write(view, indices=env_ids)
 
     def write_body_link_pose_to_sim_mask(
         self,
@@ -321,10 +327,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_com_state_w.timestamp = -1.0
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
-        # Push updated per-body link poses to simulation via bindings.
-        for b in self._iter_body_ids_cpu(body_ids):
-            binding = self._get_binding(TT.RIGID_BODY_POSE, body_idx=b)
-            binding.write(self.data._body_link_pose_w_flat[b].view(wp.float32), indices=env_ids)
+        # Push updated link poses to simulation via single fused binding.
+        binding = self._get_binding(TT.LINK_POSE)
+        view = self._make_float32_view(self.data._body_link_pose_w.data, binding)
+        binding.write(view, indices=env_ids)
 
     def write_body_com_pose_to_sim_index(
         self,
@@ -367,10 +373,11 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
-        # Push updated per-body link poses to simulation via bindings (OVPhysX only exposes link frame).
-        for b in self._iter_body_ids_cpu(body_ids):
-            binding = self._get_binding(TT.RIGID_BODY_POSE, body_idx=b)
-            binding.write(self.data._body_link_pose_w_flat[b].view(wp.float32), indices=env_ids)
+        # Push updated link poses to simulation via single fused binding
+        # (OVPhysX only exposes link frame).
+        binding = self._get_binding(TT.LINK_POSE)
+        view = self._make_float32_view(self.data._body_link_pose_w.data, binding)
+        binding.write(view, indices=env_ids)
 
     def write_body_com_pose_to_sim_mask(
         self,
@@ -421,10 +428,11 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
-        # Push updated per-body link poses to simulation via bindings (OVPhysX only exposes link frame).
-        for b in self._iter_body_ids_cpu(body_ids):
-            binding = self._get_binding(TT.RIGID_BODY_POSE, body_idx=b)
-            binding.write(self.data._body_link_pose_w_flat[b].view(wp.float32), indices=env_ids)
+        # Push updated link poses to simulation via single fused binding
+        # (OVPhysX only exposes link frame).
+        binding = self._get_binding(TT.LINK_POSE)
+        view = self._make_float32_view(self.data._body_link_pose_w.data, binding)
+        binding.write(view, indices=env_ids)
 
     # ------------------------------------------------------------------
     # Velocity writers (3 pairs)
@@ -537,10 +545,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
-        # Push updated per-body COM velocities to simulation via bindings.
-        for b in self._iter_body_ids_cpu(body_ids):
-            binding = self._get_binding(TT.RIGID_BODY_VELOCITY, body_idx=b)
-            binding.write(self.data._body_com_vel_w_flat[b].view(wp.float32), indices=env_ids)
+        # Push updated COM velocities to simulation via single fused binding.
+        binding = self._get_binding(TT.LINK_VELOCITY)
+        view = self._make_float32_view(self.data._body_com_vel_w.data, binding)
+        binding.write(view, indices=env_ids)
 
     def write_body_link_velocity_to_sim_mask(
         self,
@@ -603,10 +611,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
-        # Push updated per-body COM velocities to simulation via bindings.
-        for b in self._iter_body_ids_cpu(body_ids):
-            binding = self._get_binding(TT.RIGID_BODY_VELOCITY, body_idx=b)
-            binding.write(self.data._body_com_vel_w_flat[b].view(wp.float32), indices=env_ids)
+        # Push updated COM velocities to simulation via single fused binding.
+        binding = self._get_binding(TT.LINK_VELOCITY)
+        view = self._make_float32_view(self.data._body_com_vel_w.data, binding)
+        binding.write(view, indices=env_ids)
 
     def write_body_com_velocity_to_sim_index(
         self,
@@ -653,10 +661,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
         self.data._body_link_state_w.timestamp = -1.0
-        # Push updated per-body COM velocities to simulation via bindings.
-        for b in self._iter_body_ids_cpu(body_ids):
-            binding = self._get_binding(TT.RIGID_BODY_VELOCITY, body_idx=b)
-            binding.write(self.data._body_com_vel_w_flat[b].view(wp.float32), indices=env_ids)
+        # Push updated COM velocities to simulation via single fused binding.
+        binding = self._get_binding(TT.LINK_VELOCITY)
+        view = self._make_float32_view(self.data._body_com_vel_w.data, binding)
+        binding.write(view, indices=env_ids)
 
     def write_body_com_velocity_to_sim_mask(
         self,
@@ -711,10 +719,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
         self.data._body_link_state_w.timestamp = -1.0
-        # Push updated per-body COM velocities to simulation via bindings.
-        for b in self._iter_body_ids_cpu(body_ids):
-            binding = self._get_binding(TT.RIGID_BODY_VELOCITY, body_idx=b)
-            binding.write(self.data._body_com_vel_w_flat[b].view(wp.float32), indices=env_ids)
+        # Push updated COM velocities to simulation via single fused binding.
+        binding = self._get_binding(TT.LINK_VELOCITY)
+        view = self._make_float32_view(self.data._body_com_vel_w.data, binding)
+        binding.write(view, indices=env_ids)
 
     # ------------------------------------------------------------------
     # Property setters (3 pairs)
@@ -730,7 +738,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         """Set body masses over selected env / body indices into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
-        ``RIGID_BODY_MASS`` is a CPU-only OVPhysX binding.
+        ``BODY_MASS`` is a CPU-only OVPhysX binding.
 
         .. note::
             This method expects partial data.
@@ -748,23 +756,13 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             shared_kernels.write_2d_data_to_buffer_with_indices,
             dim=(env_ids.shape[0], body_ids.shape[0]),
             inputs=[masses, env_ids, body_ids],
-            outputs=[self.data._body_mass],
+            outputs=[self.data._body_mass.data],
             device=self._device,
         )
-        # Push each body column to its CPU-only binding via pinned-host staging.
         cpu_env_ids = self._get_cpu_env_ids(env_ids)
-        for b in self._iter_body_ids_cpu(body_ids):
-            # _mass_flat_base is (B*N,) float32 body-major; body b occupies [b*N : (b+1)*N].
-            gpu_col = wp.array(
-                ptr=self.data._mass_flat_base.ptr + b * self._num_instances * 4,
-                shape=(self._num_instances,),
-                dtype=wp.float32,
-                device=self._device,
-                copy=False,
-            )
-            wp.copy(self._cpu_mass_staging[b], gpu_col)
-            binding = self._get_binding(TT.RIGID_BODY_MASS, body_idx=b)
-            binding.write(self._cpu_mass_staging[b], indices=cpu_env_ids)
+        wp.copy(self.data._cpu_body_mass, self.data._body_mass.data)
+        binding = self._get_binding(TT.BODY_MASS)
+        binding.write(self.data._cpu_body_mass, indices=cpu_env_ids)
 
     def set_masses_mask(
         self,
@@ -776,7 +774,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         """Set body masses over selected env / body masks into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
-        ``RIGID_BODY_MASS`` is a CPU-only OVPhysX binding.
+        ``BODY_MASS`` is a CPU-only OVPhysX binding.
 
         .. note::
             This method expects full data.
@@ -794,32 +792,18 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
         else:
             env_ids = self._ALL_INDICES_ENV
-        if body_mask is not None:
-            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
-            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
-        else:
-            body_ids = self._ALL_INDICES_BODY
         self.assert_shape_and_dtype(masses, (self._num_instances, self._num_bodies), wp.float32, "masses")
         wp.launch(
             shared_kernels.write_2d_data_to_buffer_with_mask,
             dim=(self._num_instances, self._num_bodies),
             inputs=[masses, self._resolve_env_mask(env_mask), self._resolve_body_mask(body_mask)],
-            outputs=[self.data._body_mass],
+            outputs=[self.data._body_mass.data],
             device=self._device,
         )
-        # Push each body column to its CPU-only binding via pinned-host staging.
         cpu_env_ids = self._get_cpu_env_ids(env_ids)
-        for b in self._iter_body_ids_cpu(body_ids):
-            gpu_col = wp.array(
-                ptr=self.data._mass_flat_base.ptr + b * self._num_instances * 4,
-                shape=(self._num_instances,),
-                dtype=wp.float32,
-                device=self._device,
-                copy=False,
-            )
-            wp.copy(self._cpu_mass_staging[b], gpu_col)
-            binding = self._get_binding(TT.RIGID_BODY_MASS, body_idx=b)
-            binding.write(self._cpu_mass_staging[b], indices=cpu_env_ids)
+        wp.copy(self.data._cpu_body_mass, self.data._body_mass.data)
+        binding = self._get_binding(TT.BODY_MASS)
+        binding.write(self.data._cpu_body_mass, indices=cpu_env_ids)
 
     def set_coms_index(
         self,
@@ -831,7 +815,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         """Set body center-of-mass poses over selected env / body indices into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
-        ``RIGID_BODY_COM_POSE`` is a CPU-only OVPhysX binding.
+        ``BODY_COM_POSE`` is a CPU-only OVPhysX binding.
 
         .. note::
             This method expects partial data.
@@ -854,29 +838,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         )
         # Invalidate derived buffers that depend on body_com_pose_b.
         self.data._body_com_pose_w.timestamp = -1.0
-        # Push each body column to its CPU-only binding via pinned-host staging.
         cpu_env_ids = self._get_cpu_env_ids(env_ids)
-        tf_size = 7 * 4  # 7 floats × 4 bytes per wp.transformf
-        for b in self._iter_body_ids_cpu(body_ids):
-            # _body_com_pose_b_base is (B*N,) transformf body-major; view body b as (N*7,) float32.
-            gpu_col_f32 = wp.array(
-                ptr=self.data._body_com_pose_b_base.ptr + b * self._num_instances * tf_size,
-                shape=(self._num_instances * 7,),
-                dtype=wp.float32,
-                device=self._device,
-                copy=False,
-            )
-            # _cpu_com_staging[b] is (N, 7) float32; view as flat (N*7,) for the copy.
-            cpu_col_flat = wp.array(
-                ptr=self._cpu_com_staging[b].ptr,
-                shape=(self._num_instances * 7,),
-                dtype=wp.float32,
-                device="cpu",
-                copy=False,
-            )
-            wp.copy(cpu_col_flat, gpu_col_f32)
-            binding = self._get_binding(TT.RIGID_BODY_COM_POSE, body_idx=b)
-            binding.write(self._cpu_com_staging[b], indices=cpu_env_ids)
+        wp.copy(self.data._cpu_body_coms, self.data._body_com_pose_b.data)
+        binding = self._get_binding(TT.BODY_COM_POSE)
+        binding.write(self.data._cpu_body_coms, indices=cpu_env_ids)
 
     def set_coms_mask(
         self,
@@ -888,7 +853,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         """Set body center-of-mass poses over selected env / body masks into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
-        ``RIGID_BODY_COM_POSE`` is a CPU-only OVPhysX binding.
+        ``BODY_COM_POSE`` is a CPU-only OVPhysX binding.
 
         .. note::
             This method expects full data.
@@ -906,11 +871,6 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
         else:
             env_ids = self._ALL_INDICES_ENV
-        if body_mask is not None:
-            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
-            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
-        else:
-            body_ids = self._ALL_INDICES_BODY
         self.assert_shape_and_dtype(coms, (self._num_instances, self._num_bodies), wp.transformf, "coms")
         wp.launch(
             shared_kernels.write_body_com_pose_to_buffer_mask,
@@ -921,27 +881,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         )
         # Invalidate derived buffers that depend on body_com_pose_b.
         self.data._body_com_pose_w.timestamp = -1.0
-        # Push each body column to its CPU-only binding via pinned-host staging.
         cpu_env_ids = self._get_cpu_env_ids(env_ids)
-        tf_size = 7 * 4  # 7 floats × 4 bytes per wp.transformf
-        for b in self._iter_body_ids_cpu(body_ids):
-            gpu_col_f32 = wp.array(
-                ptr=self.data._body_com_pose_b_base.ptr + b * self._num_instances * tf_size,
-                shape=(self._num_instances * 7,),
-                dtype=wp.float32,
-                device=self._device,
-                copy=False,
-            )
-            cpu_col_flat = wp.array(
-                ptr=self._cpu_com_staging[b].ptr,
-                shape=(self._num_instances * 7,),
-                dtype=wp.float32,
-                device="cpu",
-                copy=False,
-            )
-            wp.copy(cpu_col_flat, gpu_col_f32)
-            binding = self._get_binding(TT.RIGID_BODY_COM_POSE, body_idx=b)
-            binding.write(self._cpu_com_staging[b], indices=cpu_env_ids)
+        wp.copy(self.data._cpu_body_coms, self.data._body_com_pose_b.data)
+        binding = self._get_binding(TT.BODY_COM_POSE)
+        binding.write(self.data._cpu_body_coms, indices=cpu_env_ids)
 
     def set_inertias_index(
         self,
@@ -953,7 +896,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         """Set body inertia tensors over selected env / body indices into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
-        ``RIGID_BODY_INERTIA`` is a CPU-only OVPhysX binding.
+        ``BODY_INERTIA`` is a CPU-only OVPhysX binding.
 
         .. note::
             This method expects partial data.
@@ -973,23 +916,13 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             shared_kernels.write_body_inertia_to_buffer_index,
             dim=(env_ids.shape[0], body_ids.shape[0]),
             inputs=[inertias, env_ids, body_ids],
-            outputs=[self.data._body_inertia],
+            outputs=[self.data._body_inertia.data],
             device=self._device,
         )
-        # Push each body column to its CPU-only binding via pinned-host staging.
         cpu_env_ids = self._get_cpu_env_ids(env_ids)
-        for b in self._iter_body_ids_cpu(body_ids):
-            # _inertia_flat_base is (B*N*9,) float32 body-major; body b occupies [b*N*9 : (b+1)*N*9].
-            gpu_col = wp.array(
-                ptr=self.data._inertia_flat_base.ptr + b * self._num_instances * 9 * 4,
-                shape=(self._num_instances, 9),
-                dtype=wp.float32,
-                device=self._device,
-                copy=False,
-            )
-            wp.copy(self._cpu_inertia_staging[b], gpu_col)
-            binding = self._get_binding(TT.RIGID_BODY_INERTIA, body_idx=b)
-            binding.write(self._cpu_inertia_staging[b], indices=cpu_env_ids)
+        wp.copy(self.data._cpu_body_inertia, self.data._body_inertia.data)
+        binding = self._get_binding(TT.BODY_INERTIA)
+        binding.write(self.data._cpu_body_inertia, indices=cpu_env_ids)
 
     def set_inertias_mask(
         self,
@@ -1001,7 +934,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         """Set body inertia tensors over selected env / body masks into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
-        ``RIGID_BODY_INERTIA`` is a CPU-only OVPhysX binding.
+        ``BODY_INERTIA`` is a CPU-only OVPhysX binding.
 
         .. note::
             This method expects full data.
@@ -1021,32 +954,18 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
         else:
             env_ids = self._ALL_INDICES_ENV
-        if body_mask is not None:
-            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
-            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
-        else:
-            body_ids = self._ALL_INDICES_BODY
         self.assert_shape_and_dtype(inertias, (self._num_instances, self._num_bodies, 9), wp.float32, "inertias")
         wp.launch(
             shared_kernels.write_body_inertia_to_buffer_mask,
             dim=(self._num_instances, self._num_bodies),
             inputs=[inertias, self._resolve_env_mask(env_mask), self._resolve_body_mask(body_mask)],
-            outputs=[self.data._body_inertia],
+            outputs=[self.data._body_inertia.data],
             device=self._device,
         )
-        # Push each body column to its CPU-only binding via pinned-host staging.
         cpu_env_ids = self._get_cpu_env_ids(env_ids)
-        for b in self._iter_body_ids_cpu(body_ids):
-            gpu_col = wp.array(
-                ptr=self.data._inertia_flat_base.ptr + b * self._num_instances * 9 * 4,
-                shape=(self._num_instances, 9),
-                dtype=wp.float32,
-                device=self._device,
-                copy=False,
-            )
-            wp.copy(self._cpu_inertia_staging[b], gpu_col)
-            binding = self._get_binding(TT.RIGID_BODY_INERTIA, body_idx=b)
-            binding.write(self._cpu_inertia_staging[b], indices=cpu_env_ids)
+        wp.copy(self.data._cpu_body_inertia, self.data._body_inertia.data)
+        binding = self._get_binding(TT.BODY_INERTIA)
+        binding.write(self.data._cpu_body_inertia, indices=cpu_env_ids)
 
     # ------------------------------------------------------------------
     # Deprecated state writers
@@ -1127,7 +1046,9 @@ class RigidObjectCollection(BaseRigidObjectCollection):
 
         For each body in :attr:`cfg.rigid_objects`, validates the prim tree,
         converts the IsaacLab prim path to an fnmatch glob, and eagerly creates
-        per-body TensorBindings for all standard rigid-body tensor types.
+        a single fused :class:`TensorBinding` per tensor type using the new
+        ``prim_paths=[...]`` API introduced in ovphysx 0.4.3.
+
         Then creates the :class:`RigidObjectCollectionData` container and primes
         the asset-side buffers.
         """
@@ -1140,8 +1061,8 @@ class RigidObjectCollection(BaseRigidObjectCollection):
 
         # Step 2: Iterate over each body in the collection config.
         # Build per-body glob patterns and body names; validate the prim tree.
-        self._binding_patterns: list[str] = []
-        self._body_names: list[str] = []
+        self._prim_paths: list[str] = []
+        self._body_names_list: list[str] = []
 
         for name, obj_cfg in self.cfg.rigid_objects.items():
             # Convert IsaacLab prim-path notation to the fnmatch-style glob that
@@ -1198,52 +1119,50 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             if suffix:
                 pattern = pattern + suffix
 
-            self._binding_patterns.append(pattern)
-            self._body_names.append(name)
+            self._prim_paths.append(pattern)
+            self._body_names_list.append(name)
 
         # Step 3: Total number of distinct body types.
-        self._num_bodies = len(self._binding_patterns)
+        self._num_bodies = len(self._prim_paths)
 
-        # Step 4: Eagerly create per-body bindings for all standard tensor types.
-        # This surfaces any wheel-side failures here, with a helpful message, rather
-        # than as a raw exception on first write.
+        # Step 4: Eagerly create one fused binding per tensor type, spanning all
+        # body prims via the new prim_paths= parameter (ovphysx 0.4.3+).
+        # Failures surface here with a helpful message rather than downstream.
         for tt in (
-            TT.RIGID_BODY_POSE,
-            TT.RIGID_BODY_VELOCITY,
-            TT.RIGID_BODY_WRENCH,
-            TT.RIGID_BODY_MASS,
-            TT.RIGID_BODY_COM_POSE,
-            TT.RIGID_BODY_INERTIA,
+            TT.LINK_POSE,
+            TT.LINK_VELOCITY,
+            TT.LINK_WRENCH,
+            TT.BODY_MASS,
+            TT.BODY_COM_POSE,
+            TT.BODY_INERTIA,
         ):
-            for b in range(self._num_bodies):
-                try:
-                    self._get_binding(tt, body_idx=b)
-                except Exception as e:
-                    raise RuntimeError(
-                        f"OVPhysX could not create rigid-body binding {tt!r} for body"
-                        f" '{self._body_names[b]}' (pattern={self._binding_patterns[b]!r})."
-                        f" Check that the prim path matches at least one UsdPhysics.RigidBodyAPI"
-                        f" prim and that the ovphysx wheel exposes the RIGID_BODY_* TensorType."
-                    ) from e
+            try:
+                self._get_binding(tt)
+            except Exception as e:
+                raise RuntimeError(
+                    f"OVPhysX could not create fused rigid-body binding {tt!r} for collection"
+                    f" (prim_paths={self._prim_paths!r})."
+                    f" Check that each prim path matches at least one UsdPhysics.RigidBodyAPI prim"
+                    f" and that the ovphysx wheel exposes the required TensorType."
+                ) from e
 
-        # Step 5: Read num_instances from the POSE binding of body 0 and validate
-        # that all per-body bindings agree on the same count.
-        ref_count = self._bindings[TT.RIGID_BODY_POSE][0].count
-        for tt in self._bindings:
-            for b, binding in enumerate(self._bindings[tt]):
-                if binding.count != ref_count:
-                    raise RuntimeError(
-                        f"Per-body instance count mismatch for tensor type {tt!r}:"
-                        f" body 0 has {ref_count} instances but body '{self._body_names[b]}'"
-                        f" (index {b}) has {binding.count} instances."
-                        " All bodies in the collection must have the same number of environment instances."
-                    )
+        # Step 5: Read num_instances from the LINK_POSE binding and validate
+        # that all bindings agree on the same count.
+        ref_count = self._bindings[TT.LINK_POSE].count
+        for tt, binding in self._bindings.items():
+            if binding.count != ref_count:
+                raise RuntimeError(
+                    f"Instance count mismatch for tensor type {tt!r}:"
+                    f" LINK_POSE has {ref_count} instances but {tt!r}"
+                    f" has {binding.count} instances."
+                    " All bindings in the collection must agree on num_instances."
+                )
         self._num_instances = ref_count
 
         # Step 6: Create the data container.
         self._data = RigidObjectCollectionData(
             root_view=self._bindings,
-            num_objects=self._num_bodies,
+            num_bodies=self._num_bodies,
             device=self._device,
         )
 
@@ -1268,53 +1187,19 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self._cpu_all_env_ids = wp.zeros(N, dtype=wp.int32, device="cpu", pinned=True)
         wp.copy(self._cpu_all_env_ids, self._ALL_INDICES_ENV)
 
-        # Per-body pinned CPU staging buffers for CPU-only write paths.
-        # Each entry holds one body-column worth of data for all N instances.
-        # Used by set_masses_*, set_coms_*, set_inertias_* to stage GPU data
-        # onto the CPU before calling binding.write() (RIGID_BODY_MASS /
-        # RIGID_BODY_COM_POSE / RIGID_BODY_INERTIA are CPU-only bindings).
-        # Shapes match the wheel's binding.write() expected layout:
-        #   mass      -> (N,)     float32  (one scalar per instance)
-        #   com_pose  -> (N, 7)   float32  (position + quaternion per instance)
-        #   inertia   -> (N, 9)   float32  (row-major 3×3 matrix per instance)
-        self._cpu_mass_staging = [wp.zeros(N, dtype=wp.float32, device="cpu", pinned=True) for _ in range(B)]
-        self._cpu_com_staging = [wp.zeros((N, 7), dtype=wp.float32, device="cpu", pinned=True) for _ in range(B)]
-        self._cpu_inertia_staging = [wp.zeros((N, 9), dtype=wp.float32, device="cpu", pinned=True) for _ in range(B)]
-
         # All-true boolean masks used as defaults in mask-based kernel calls.
         self._ALL_TRUE_ENV_MASK = wp.array(np.ones(N, dtype=bool), dtype=wp.bool, device=self._device)
         self._ALL_TRUE_BODY_MASK = wp.array(np.ones(B, dtype=bool), dtype=wp.bool, device=self._device)
 
-        # External wrench buffers (mirrors rigid_object._create_buffers, extended to 2D).
-        # Body-major flat base: body b occupies rows [b*N : (b+1)*N].
-        # Per-body contiguous (N, 9) views alias the same allocation, so the
-        # per-body binding writes never copy.  A strided (N, B, 9) view on top
-        # lets the kernel write all bodies in a single launch.
-        self._wrench_buf_base = wp.zeros(B * N * 9, dtype=wp.float32, device=self._device)
-        # Per-body contiguous (N, 9) sub-views used by per-body binding.write().
-        self._wrench_buf_flat = [
-            wp.array(
-                ptr=self._wrench_buf_base.ptr + b * N * 9 * 4,
-                shape=(N, 9),
-                dtype=wp.float32,
-                device=self._device,
-                copy=False,
-            )
-            for b in range(B)
-        ]
-        # Strided (N, B, 9) view: [i, j, k] → flat[j*N*9 + i*9 + k].
-        self._wrench_buf = wp.array(
-            ptr=self._wrench_buf_base.ptr,
-            shape=(N, B, 9),
-            dtype=wp.float32,
-            strides=(9 * 4, N * 9 * 4, 4),
-            device=self._device,
-        )
+        # External wrench buffer: direct (N, B, 9) contiguous allocation.
+        # The fused LINK_WRENCH binding writes from a single (N, B, 9) buffer.
+        self._wrench_buf = wp.zeros((N, B, 9), dtype=wp.float32, device=self._device)
+
         self._instantaneous_wrench_composer = WrenchComposer(self)
         self._permanent_wrench_composer = WrenchComposer(self)
 
         # Set body names into the data container (mirrors PhysX collection).
-        self._data.body_names = self._body_names
+        self._data.body_names = self._body_names_list
 
     def _process_cfg(self) -> None:
         """Post-processing of configuration parameters.
@@ -1349,37 +1234,56 @@ class RigidObjectCollection(BaseRigidObjectCollection):
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _get_binding(self, tensor_type: int, body_idx: int):
-        """Return a cached per-body TensorBinding, creating it on first access.
+    def _get_binding(self, tensor_type: int):
+        """Return a cached fused TensorBinding, creating it on first access.
 
-        Bindings are lightweight handles into OVPhysX's shared GPU buffers.
-        Creating one does not allocate new GPU memory; the underlying buffers
-        are allocated once by PhysX regardless of how many bindings reference
-        them.
-
-        The binding cache is stored in ``self._bindings`` as a dict from
-        ``tensor_type`` to a list of length :attr:`num_bodies`.
+        Mirrors :meth:`~isaaclab_ovphysx.assets.Articulation._get_binding` exactly:
+        a single binding per tensor type, no body index, created via
+        ``create_tensor_binding(prim_paths=[...])``.
 
         Args:
             tensor_type: The TensorType constant identifying which simulation
-                buffer to bind (e.g. :attr:`~isaaclab_ovphysx.tensor_types.RIGID_BODY_POSE`).
-            body_idx: The index of the body within the collection (0-based).
+                buffer to bind.
 
         Returns:
-            The cached TensorBinding for ``tensor_type`` and ``body_idx``.
-
-        Raises:
-            Whatever the OVPhysX wheel raises if ``create_tensor_binding`` fails.
+            The cached :class:`TensorBinding`, or ``None`` if creation fails.
         """
-        if tensor_type not in self._bindings:
-            # Initialise with None placeholders for all bodies.
-            self._bindings[tensor_type] = [None] * self._num_bodies
-        binding = self._bindings[tensor_type][body_idx]
+        binding = self._bindings.get(tensor_type)
         if binding is not None:
             return binding
-        binding = self._ovphysx.create_tensor_binding(pattern=self._binding_patterns[body_idx], tensor_type=tensor_type)
-        self._bindings[tensor_type][body_idx] = binding
-        return binding
+        try:
+            binding = self._ovphysx.create_tensor_binding(
+                prim_paths=self._prim_paths,
+                tensor_type=tensor_type,
+            )
+            self._bindings[tensor_type] = binding
+            return binding
+        except Exception:
+            return None
+
+    def _make_float32_view(self, wp_array: wp.array, binding) -> wp.array:
+        """Return a float32 view of *wp_array* matching the binding's flat shape.
+
+        For structured-dtype buffers (e.g. ``wp.transformf``, ``wp.spatial_vectorf``),
+        reinterprets the GPU memory as ``wp.float32`` with shape ``binding.shape``.
+        For plain ``wp.float32`` buffers, returns the array as-is.
+
+        Args:
+            wp_array: Source warp array (may be structured dtype).
+            binding: TensorBinding whose ``.shape`` gives the target float32 shape.
+
+        Returns:
+            A ``wp.float32`` view of the same memory.
+        """
+        if wp_array.dtype == wp.float32:
+            return wp_array
+        return wp.array(
+            ptr=wp_array.ptr,
+            shape=binding.shape,
+            dtype=wp.float32,
+            device=str(wp_array.device),
+            copy=False,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers -- ID resolution
@@ -1447,21 +1351,6 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         if isinstance(body_mask, wp.array) and str(body_mask.device) != self._device:
             body_mask = wp.clone(body_mask, device=self._device)
         return body_mask
-
-    def _iter_body_ids_cpu(self, body_ids: wp.array) -> Iterable[int]:
-        """Iterate over body IDs on CPU.
-
-        Warp arrays cannot drive Python control flow; this helper converts
-        a warp int32 array to an iterator of Python ints on CPU.
-
-        Args:
-            body_ids: A warp array of int32 body indices.
-
-        Returns:
-            An iterator over the body IDs as Python integers.
-        """
-        cpu = wp.to_torch(body_ids).cpu().numpy().tolist()
-        return iter(cpu)
 
     def _get_cpu_env_ids(self, env_ids: wp.array) -> wp.array:
         """Return CPU int32 env indices for CPU-only binding writes.

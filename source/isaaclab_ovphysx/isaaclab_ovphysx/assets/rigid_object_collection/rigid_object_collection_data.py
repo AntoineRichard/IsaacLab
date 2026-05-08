@@ -7,10 +7,10 @@
 
 from __future__ import annotations
 
-import math
 import warnings
 from typing import Any
 
+import numpy as np
 import torch
 import warp as wp
 
@@ -25,7 +25,7 @@ from isaaclab_ovphysx.physics import OvPhysxManager as SimulationManager
 
 
 class RigidObjectCollectionData(BaseRigidObjectCollectionData):
-    """Data container for a rigid object collection.
+    """Data container for a rigid object collection backed by OVPhysX.
 
     This class contains the data for a rigid object collection in the simulation.
     The data includes the state of all the bodies in the collection. The data is
@@ -54,21 +54,12 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         tensor API on first access per timestamp and cache the result.
 
     .. note::
-        **Per-body bindings.** Unlike PhysX, OVPhysX does not expose a fused
-        multi-prim view. Each body in the collection has its own
-        :class:`~isaaclab_ovphysx.TensorBinding` keyed by tensor type. To produce
-        ``(num_instances, num_bodies, D)`` arrays, properties loop over bodies and
-        read each per-body binding into the appropriate slice of a pre-allocated
-        contiguous buffer.
-
-    .. note::
-        **Buffer layout.** Internally, state buffers are allocated as flat
-        ``(num_bodies * num_instances,)`` arrays in body-major order
-        (body ``b``, instance ``i`` → index ``b * num_instances + i``).
-        A strided :class:`warp.array` view with shape
-        ``(num_instances, num_bodies)`` and strides
-        ``(element_size, num_instances * element_size)`` is exposed to kernels,
-        matching the transposition performed by the PhysX collection backend.
+        **Single fused binding.** OVPhysX 0.4.3+ exposes a fused multi-prim
+        binding created with ``prim_paths=[...]``.  Each binding returns data of
+        shape ``(num_instances, num_bodies, D)``, matching the Articulation body
+        binding convention.  One binding read fills the entire
+        ``(num_instances, num_bodies, D)`` buffer; no per-body Python loops are
+        needed.
     """
 
     __backend_name__: str = "ovphysx"
@@ -76,35 +67,36 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
 
     def __init__(
         self,
-        root_view: dict[int, list[Any]],
-        num_objects: int,
+        root_view: dict[int, Any],
+        num_bodies: int,
         device: str,
-        check_shapes: bool = True,
     ):
         """Initialize the rigid object collection data.
 
         Args:
-            root_view: Per-body TensorBinding dict, keyed by TensorType constant.
-                Each value is a list of length ``num_objects`` containing one
-                TensorBinding per body in the collection.
-            num_objects: The number of object types managed by the collection.
+            root_view: Fused TensorBinding dict, keyed by TensorType constant.
+                Each value is a single :class:`TensorBinding` spanning all bodies
+                in the collection (shape ``(num_instances, num_bodies, D)``).
+            num_bodies: The number of object types managed by the collection.
             device: The device used for processing (e.g. ``"cuda:0"`` or ``"cpu"``).
-            check_shapes: Whether to enforce internal shape/dtype invariants on
-                lazy reads. Defaults to ``True``; production callers may thread
-                this from
-                :attr:`~isaaclab.assets.AssetBaseCfg.disable_shape_checks`.
         """
-        super().__init__(root_view, num_objects, device)
+        super().__init__(root_view, num_bodies, device)
         # Store the bindings dict (equivalent to the view in PhysX).
-        self._root_view = root_view
-        self.num_bodies = num_objects
-        self._check_shapes = check_shapes
+        self._bindings = root_view
+        self._binding_getter = None  # may be set externally after construction
+        self.num_bodies = num_bodies
+        self._num_bodies = num_bodies
         # Set initial time stamp.
         self._sim_timestamp = 0.0
         self._is_primed = False
+        # Pinned-host staging buffers for CPU-only bindings (keyed by tensor_type).
+        self._cpu_staging_buffers: dict[int, wp.array] = {}
+        # Cache for float32 read views (keyed by (tensor_type, ptr)).
+        self._read_view_cache: dict = {}
 
-        # Read num_instances from the POSE binding of body 0.
-        self.num_instances = self._root_view[TT.RIGID_BODY_POSE][0].count
+        # Read num_instances from the LINK_POSE binding.
+        self.num_instances = self._bindings[TT.LINK_POSE].count
+        self._num_instances = self.num_instances
 
         if SimulationManager._sim is not None and hasattr(SimulationManager._sim, "cfg"):
             gravity = SimulationManager._sim.cfg.gravity
@@ -124,10 +116,6 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         # Placeholders populated by RigidObjectCollection._process_cfg().
         self._default_body_pose: wp.array | None = None
         self._default_body_vel: wp.array | None = None
-
-        # Pinned-host staging buffers for CPU-only bindings on a non-CPU sim
-        # (lazily allocated, keyed by (tensor_type, body_idx)).
-        self._cpu_staging_buffers: dict[tuple[int, int], wp.array] = {}
 
         self._create_buffers()
 
@@ -256,9 +244,7 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         the world. The orientation is provided in (x, y, z, w) format.
         """
         if self._body_link_pose_w.timestamp < self._sim_timestamp:
-            for b in range(self.num_bodies):
-                self._read_binding_into(TT.RIGID_BODY_POSE, b, self._body_link_pose_w_flat[b])
-            self._body_link_pose_w.timestamp = self._sim_timestamp
+            self._read_transform_binding(TT.LINK_POSE, self._body_link_pose_w)
             # Invalidate sliced sub-component proxies so they are rebuilt from the
             # updated buffer on next access.
             self._body_link_pos_w_ta = None
@@ -332,9 +318,7 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         center of mass frame relative to the world.
         """
         if self._body_com_vel_w.timestamp < self._sim_timestamp:
-            for b in range(self.num_bodies):
-                self._read_binding_into(TT.RIGID_BODY_VELOCITY, b, self._body_com_vel_w_flat[b])
-            self._body_com_vel_w.timestamp = self._sim_timestamp
+            self._read_spatial_vector_binding(TT.LINK_VELOCITY, self._body_com_vel_w)
             self._body_com_lin_vel_w_ta = None
             self._body_com_ang_vel_w_ta = None
         if self._body_com_vel_w_ta is None:
@@ -384,9 +368,7 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         (x, y, z, w) format.
         """
         if self._body_com_pose_b.timestamp < self._sim_timestamp:
-            for b in range(self.num_bodies):
-                self._read_binding_into(TT.RIGID_BODY_COM_POSE, b, self._body_com_pose_b_flat[b])
-            self._body_com_pose_b.timestamp = self._sim_timestamp
+            self._read_transform_binding(TT.BODY_COM_POSE, self._body_com_pose_b)
             self._body_com_pos_b_ta = None
             self._body_com_quat_b_ta = None
         if self._body_com_pose_b_ta is None:
@@ -401,7 +383,7 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         In torch this resolves to (num_instances, num_bodies).
         """
         if self._body_mass_ta is None:
-            self._body_mass_ta = ProxyArray(self._body_mass)
+            self._body_mass_ta = ProxyArray(self._body_mass.data)
         return self._body_mass_ta
 
     @property
@@ -414,7 +396,7 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         In torch this resolves to (num_instances, num_bodies, 9).
         """
         if self._body_inertia_ta is None:
-            self._body_inertia_ta = ProxyArray(self._body_inertia)
+            self._body_inertia_ta = ProxyArray(self._body_inertia.data)
         return self._body_inertia_ta
 
     # ------------------------------------------------------------------
@@ -780,12 +762,9 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         """Eagerly allocate every per-body TimestampedBuffer and the slots for
         cached :class:`ProxyArray` wrappers.
 
-        Buffers for ``(num_instances, num_bodies)`` structured data use a
-        body-major flat allocation (shape ``(num_bodies * num_instances,)``
-        dtype ``T``) plus a strided 2D view (shape ``(num_instances, num_bodies)``
-        strides ``(T_size, num_instances * T_size)``). This allows contiguous
-        per-body reads from OVPhysX bindings while still giving kernels a proper
-        2D indexed array.
+        Buffers use direct ``(num_instances, num_bodies, D)`` shapes, matching
+        the fused binding output.  No flat+strided tricks are needed because the
+        fused binding returns a contiguous ``(N, B, D)`` array directly.
         """
         super()._create_buffers()
 
@@ -817,137 +796,39 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         self._projected_gravity_b = TimestampedBuffer((N, B), self.device, wp.vec3f)
         self._heading_w = TimestampedBuffer((N, B), self.device, wp.float32)
 
-        # -- Per-body contiguous read buffers.
-        #
-        # OVPhysX ``binding.read()`` requires a flat contiguous float32 target;
-        # it cannot write directly into a column of the 2D buffer above.
-        # We allocate one contiguous ``(N,)`` buffer per body for each tensor type
-        # that needs a per-body loop read, then expose strided 2D *views* of these
-        # flat buffers to the rest of the class.
-        #
-        # Layout: ``_body_link_pose_w_flat[b]`` is a contiguous ``(N,)``
-        # ``wp.transformf`` array for body ``b``.  The 2D strided view is built
-        # on top of a flat ``(B * N,)`` base array allocated just below.
-        #
-        # The strided view uses:
-        #   shape   = (N, B)
-        #   strides = (T_size, N * T_size)    (body-major → instance-major transpose)
-        #
-        # Reading body ``b`` into ``_body_link_pose_w_flat[b]`` fills bytes
-        # ``[b*N*T_size, (b+1)*N*T_size)`` of the flat base, which is exactly the
-        # column ``[:, b]`` of the strided view.
-
-        # transformf: 7 floats × 4 bytes = 28 bytes
-        tf_size = wp.types.type_size_in_bytes(wp.transformf)  # 28
-        # spatial_vectorf: 6 floats × 4 bytes = 24 bytes
-        sv_size = wp.types.type_size_in_bytes(wp.spatial_vectorf)  # 24
-
-        # Flat base arrays (body-major: body b occupies [b*N : (b+1)*N]).
-        self._body_link_pose_w_base = wp.zeros(B * N, dtype=wp.transformf, device=self.device)
-        self._body_com_vel_w_base = wp.zeros(B * N, dtype=wp.spatial_vectorf, device=self.device)
-        self._body_com_pose_b_base = wp.zeros(B * N, dtype=wp.transformf, device=self.device)
-
-        # Per-body contiguous sub-views (shape (N,), used by _read_binding_into).
-        self._body_link_pose_w_flat = [
-            wp.array(
-                ptr=self._body_link_pose_w_base.ptr + b * N * tf_size,
-                shape=(N,),
-                dtype=wp.transformf,
-                device=self.device,
-                copy=False,
-            )
-            for b in range(B)
-        ]
-        self._body_com_vel_w_flat = [
-            wp.array(
-                ptr=self._body_com_vel_w_base.ptr + b * N * sv_size,
-                shape=(N,),
-                dtype=wp.spatial_vectorf,
-                device=self.device,
-                copy=False,
-            )
-            for b in range(B)
-        ]
-        self._body_com_pose_b_flat = [
-            wp.array(
-                ptr=self._body_com_pose_b_base.ptr + b * N * tf_size,
-                shape=(N,),
-                dtype=wp.transformf,
-                device=self.device,
-                copy=False,
-            )
-            for b in range(B)
-        ]
-
-        # Strided (N, B) 2D views on top of the flat base arrays — same memory,
-        # transposed stride so that [i, b] → flat[b*N + i].
-        # These replace the TimestampedBuffer.data for properties that use per-body reads.
-        self._body_link_pose_w.data = wp.array(
-            ptr=self._body_link_pose_w_base.ptr,
-            shape=(N, B),
-            dtype=wp.transformf,
-            strides=(tf_size, N * tf_size),
-            device=self.device,
-        )
-        self._body_com_vel_w.data = wp.array(
-            ptr=self._body_com_vel_w_base.ptr,
-            shape=(N, B),
-            dtype=wp.spatial_vectorf,
-            strides=(sv_size, N * sv_size),
-            device=self.device,
-        )
-        self._body_com_pose_b.data = wp.array(
-            ptr=self._body_com_pose_b_base.ptr,
-            shape=(N, B),
-            dtype=wp.transformf,
-            strides=(tf_size, N * tf_size),
-            device=self.device,
-        )
-
         # -- Body properties: mass (N, B) and inertia (N, B, 9).
-        # Read each body's binding (CPU-only types) into a staging buffer and pack.
-        mass_flat = wp.zeros(B * N, dtype=wp.float32, device=self.device)
-        inertia_flat = wp.zeros(B * N * 9, dtype=wp.float32, device=self.device)
-        for b in range(B):
-            # Read mass (N floats) into column b of mass_flat.
-            mass_col = wp.array(
-                ptr=mass_flat.ptr + b * N * 4,
-                shape=(N,),
-                dtype=wp.float32,
-                device=self.device,
-                copy=False,
+        # Initialised eagerly from the CPU-only bindings.
+        self._body_mass = TimestampedBuffer((N, B), self.device, wp.float32)
+        self._body_inertia = TimestampedBuffer((N, B, 9), self.device, wp.float32)
+
+        # Pinned CPU staging buffers used by mass/com/inertia setters (mirrors Articulation).
+        pinned = self.device != "cpu"
+        self._cpu_body_mass = wp.zeros((N, B), dtype=wp.float32, device="cpu", pinned=pinned)
+        self._cpu_body_coms = wp.zeros((N, B, 7), dtype=wp.float32, device="cpu", pinned=pinned)
+        self._cpu_body_inertia = wp.zeros((N, B, 9), dtype=wp.float32, device="cpu", pinned=pinned)
+
+        # Eagerly read mass and inertia (CPU-only bindings) at construction time.
+        # Use numpy round-trip (same pattern as ArticulationData._create_buffers).
+        def _read_cpu(tensor_type):
+            binding = self._get_binding(tensor_type)
+            if binding is None:
+                return None
+            np_buf = np.zeros(binding.shape, dtype=np.float32)
+            binding.read(np_buf)
+            return np_buf
+
+        np_mass = _read_cpu(TT.BODY_MASS)
+        if np_mass is not None:
+            wp.copy(self._body_mass.data, wp.from_numpy(np_mass, dtype=wp.float32, device=self.device))
+            self._body_mass.timestamp = self._sim_timestamp
+
+        np_inertia = _read_cpu(TT.BODY_INERTIA)
+        if np_inertia is not None:
+            wp.copy(
+                self._body_inertia.data,
+                wp.from_numpy(np_inertia, dtype=wp.float32, device=self.device),
             )
-            self._read_binding_into(TT.RIGID_BODY_MASS, b, mass_col)
-
-            # Read inertia (N * 9 floats) into the appropriate block of inertia_flat.
-            inertia_col = wp.array(
-                ptr=inertia_flat.ptr + b * N * 9 * 4,
-                shape=(N, 9),
-                dtype=wp.float32,
-                device=self.device,
-                copy=False,
-            )
-            self._read_binding_into(TT.RIGID_BODY_INERTIA, b, inertia_col)
-
-        # Strided (N, B) view for mass, (N, B, 9) view for inertia.
-        self._body_mass = wp.array(
-            ptr=mass_flat.ptr,
-            shape=(N, B),
-            dtype=wp.float32,
-            strides=(4, N * 4),
-            device=self.device,
-        )
-        self._body_inertia = wp.array(
-            ptr=inertia_flat.ptr,
-            shape=(N, B, 9),
-            dtype=wp.float32,
-            strides=(9 * 4, N * 9 * 4, 4),
-            device=self.device,
-        )
-
-        # Keep references so the flat bases are not garbage-collected.
-        self._mass_flat_base = mass_flat
-        self._inertia_flat_base = inertia_flat
+            self._body_inertia.timestamp = self._sim_timestamp
 
         # -- Defaults (set by _process_cfg after __init__).
         # These remain None until _process_cfg writes them.
@@ -1010,39 +891,48 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_binding(self, tensor_type: int, body_idx: int):
-        """Return the binding for the given tensor type and body index, or None."""
-        body_list = self._root_view.get(tensor_type)
-        if body_list is None or body_idx >= len(body_list):
-            return None
-        return body_list[body_idx]
+    def _get_binding(self, tensor_type: int):
+        """Return the binding for the given tensor type, or None.
 
-    def _read_binding_into(self, tensor_type: int, body_idx: int, dst: wp.array) -> None:
-        """Read the OVPhysX TensorBinding for *tensor_type* and *body_idx* into *dst*.
-
-        Adapter that replaces PhysX's view-getter pattern: the wheel exposes
-        ``binding.read(target)`` rather than a getter returning a :class:`warp.array`,
-        so we read into a flat float32 view of *dst*. CPU-only bindings on a non-CPU
-        sim go through a lazily-allocated pinned-host ``wp.array`` to satisfy the
-        wheel's device constraint.
+        Mirrors :meth:`~isaaclab_ovphysx.assets.Articulation._get_binding` exactly:
+        a single binding per tensor type, no body index.
 
         Args:
-            tensor_type: The TensorType constant identifying which simulation buffer
-                to read.
-            body_idx: The body index within the collection (0-based).
-            dst: The destination :class:`warp.array` to write into. Must have at
-                least as many bytes as the binding.
+            tensor_type: The TensorType constant identifying which simulation buffer.
+
+        Returns:
+            The cached :class:`TensorBinding`, or ``None`` if not available.
         """
-        binding = self._root_view[tensor_type][body_idx]
-        if self._check_shapes:
-            dst_bytes = dst.size * wp.types.type_size_in_bytes(dst.dtype)
-            binding_bytes = 4 * math.prod(binding.shape)
-            assert dst_bytes >= binding_bytes, (
-                f"_read_binding_into: dst buffer too small for binding tt={tensor_type!r}, body={body_idx} "
-                f"({dst_bytes} B < {binding_bytes} B). Caller allocated dst with "
-                f"shape={tuple(dst.shape)}, dtype={dst.dtype}; binding shape={tuple(binding.shape)}."
-            )
-        # Build a flat float32 view of dst matching the binding's shape.
+        b = self._bindings.get(tensor_type)
+        if b is not None:
+            return b
+        if self._binding_getter is not None:
+            b = self._binding_getter(tensor_type)
+            if b is not None:
+                self._bindings[tensor_type] = b
+            return b
+        return None
+
+    def _binding_read(self, tensor_type: int, binding, dst: wp.array) -> None:
+        """Read *binding* into *dst*, staging through pinned-host for CPU-only bindings.
+
+        Mirrors :meth:`~isaaclab_ovphysx.assets.articulation.ArticulationData._binding_read`.
+
+        Args:
+            tensor_type: TensorType key identifying the binding.
+            binding: OVPhysX TensorBinding whose ``read`` method is called.
+            dst: Destination :class:`wp.array` on the simulation device.
+        """
+        if tensor_type not in TT._CPU_ONLY_TYPES or self.device == "cpu":
+            binding.read(dst)
+            return
+        # Route through a lazily-allocated pinned-host staging buffer.
+        staging = self._cpu_staging_buffers.get(tensor_type)
+        if staging is None:
+            staging = wp.zeros(binding.shape, dtype=wp.float32, device="cpu", pinned=True)
+            self._cpu_staging_buffers[tensor_type] = staging
+        binding.read(staging)
+        # Build a flat float32 view of dst matching the binding's flat shape.
         if dst.dtype == wp.float32:
             view = dst
         else:
@@ -1053,16 +943,89 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
                 device=str(dst.device),
                 copy=False,
             )
-        key = (tensor_type, body_idx)
-        if tensor_type in TT._CPU_ONLY_TYPES and str(view.device) != "cpu":
-            staging = self._cpu_staging_buffers.get(key)
-            if staging is None:
-                staging = wp.zeros(binding.shape, dtype=wp.float32, device="cpu", pinned=True)
-                self._cpu_staging_buffers[key] = staging
-            binding.read(staging)
-            wp.copy(view, staging)
+        wp.copy(view, staging)
+
+    def _get_read_view(self, tensor_type: int, wp_array: wp.array, floats_per_elem: int = 0) -> wp.array | None:
+        """Return a stable float32 view of a warp buffer for reading from a binding.
+
+        For structured-dtype buffers (transformf, spatial_vectorf), the view
+        reinterprets the same GPU memory as a flat float32 array matching the
+        binding's shape.  For plain float32 buffers, returns the array as-is.
+
+        The returned view is cached so that ``binding.read(view)`` sees the
+        same object on every call.
+
+        Mirrors :meth:`~isaaclab_ovphysx.assets.articulation.ArticulationData._get_read_view`.
+
+        Args:
+            tensor_type: TensorType key.
+            wp_array: Destination warp array.
+            floats_per_elem: Number of float32 elements per logical element
+                (e.g. 7 for transformf, 6 for spatial_vectorf).  Pass 0 to
+                return the array as-is.
+
+        Returns:
+            Float32 view suitable for ``binding.read()``, or ``None``.
+        """
+        cache_key = (tensor_type, wp_array.ptr)
+        cached = self._read_view_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        binding = self._get_binding(tensor_type)
+        if binding is None:
+            self._read_view_cache[cache_key] = None
+            return None
+
+        if floats_per_elem > 0:
+            view = wp.array(
+                ptr=wp_array.ptr,
+                shape=binding.shape,
+                dtype=wp.float32,
+                device=str(wp_array.device),
+                copy=False,
+            )
         else:
-            binding.read(view)
+            view = wp_array
+
+        self._read_view_cache[cache_key] = view
+        return view
+
+    def _read_transform_binding(self, tensor_type: int, buf: TimestampedBuffer) -> None:
+        """Read a pose binding (float32 view of transformf buffer), skipping if fresh.
+
+        CPU-only bindings (e.g. ``BODY_COM_POSE``) are routed through a
+        pinned-host staging buffer via :meth:`_binding_read`.
+
+        Args:
+            tensor_type: TensorType key.
+            buf: Timestamped :class:`wp.transformf` buffer to refresh.
+        """
+        if buf.timestamp >= self._sim_timestamp:
+            return
+        binding = self._get_binding(tensor_type)
+        if binding is None:
+            return
+        view = self._get_read_view(tensor_type, buf.data, 7)
+        if view is None:
+            return
+        self._binding_read(tensor_type, binding, view)
+        buf.timestamp = self._sim_timestamp
+
+    def _read_spatial_vector_binding(self, tensor_type: int, buf: TimestampedBuffer) -> None:
+        """Read a velocity binding (float32 view of spatial_vectorf buffer), skipping if fresh.
+
+        Args:
+            tensor_type: TensorType key.
+            buf: Timestamped :class:`wp.spatial_vectorf` buffer to refresh.
+        """
+        if buf.timestamp >= self._sim_timestamp:
+            return
+        view = self._get_read_view(tensor_type, buf.data, 6)
+        if view is None:
+            return
+        self._get_binding(tensor_type).read(view)
+        buf.timestamp = self._sim_timestamp
 
     def _get_pos_from_transform(self, transform: wp.array) -> wp.array:
         """Generates a position array from a transform array."""
