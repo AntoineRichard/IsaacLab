@@ -119,6 +119,10 @@ class StateEvent:
       another healthy worker can pick it up) and stops pulling further
       jobs from the queue (its own ``_down_event`` is set).
     - ``shutdown_idle``: worker received its sentinel and exited cleanly.
+    - ``heartbeat``: liveness ping from the worker thread for an in-flight
+      job. ``at`` carries the emit timestamp; the runner bumps the matching
+      :attr:`~tools.odin.asgard.jobs.JobEntry.last_heartbeat_at`. Used by
+      Heimdall for stale-job detection.
     """
 
     run_id: str
@@ -133,6 +137,9 @@ class StateEvent:
     # "pulling_bundle". Untouched on terminal transitions (transition_to
     # clears running_substate as part of its contract).
     running_substate: str | None = None
+    # Generic timestamp used by transitions that do not fit started_at /
+    # ended_at semantics. Today only set by ``transition="heartbeat"``.
+    at: str | None = None
 
 
 def _utc_now_iso() -> str:

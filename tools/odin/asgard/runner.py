@@ -297,6 +297,15 @@ def _apply_state_event(
                 )
             )
         return 0
+    if ev.transition == "heartbeat":
+        # Liveness ping from the worker thread. Bump the JobEntry's
+        # ``last_heartbeat_at`` so Heimdall's staleness check has an
+        # up-to-date reference. Silently ignore for jobs that have already
+        # transitioned to a terminal state — late heartbeats can race past
+        # ``completed`` / ``failed`` events.
+        if j is not None and j.status == "running" and ev.at is not None:
+            j.last_heartbeat_at = ev.at
+        return 0
     return 0
 
 
