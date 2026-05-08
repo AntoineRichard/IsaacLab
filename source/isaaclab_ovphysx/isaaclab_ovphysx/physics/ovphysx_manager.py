@@ -314,10 +314,7 @@ class OvPhysxManager(PhysicsManager):
 
         import ovphysx
 
-        # COMPAT(ovphysx<=0.3.7 → 0.4.0+): the wheel renamed ``gpu_index: int`` to
-        # ``active_cuda_gpus: str`` (comma-separated CUDA ordinals).  Pass the single
-        # ordinal as a string to mirror the previous single-GPU behaviour.
-        cls._physx = ovphysx.PhysX(device=ovphysx_device, active_cuda_gpus=str(gpu_index))
+        cls._physx = ovphysx.PhysX(device=ovphysx_device, gpu_index=gpu_index)
 
         # Without worker threads the stepper runs simulate()+fetchResults()
         # synchronously, blocking the calling thread for the full GPU step time.
