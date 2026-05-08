@@ -1,6 +1,8 @@
 workflow:
   name: odin-disp-{{ dispatch_id }}
-  pool: {{ cfg.pool }}
+  timeout:
+    exec_timeout: {{ cfg.defaults.exec_timeout }}s
+    queue_timeout: {{ cfg.defaults.queue_timeout }}s
   resources:
     default:
       cpu: {{ cfg.defaults.resources.cpu }}
@@ -8,17 +10,10 @@ workflow:
       memory: {{ cfg.defaults.resources.memory }}
       storage: {{ cfg.defaults.resources.storage }}
       platform: {{ cfg.defaults.resources.platform }}
-  timeouts:
-    exec: {{ cfg.defaults.exec_timeout }}
-    queue: {{ cfg.defaults.queue_timeout }}
   tasks:
 {% for row in rows %}
   - name: {{ row.osmo_task_name }}
     image: {{ cfg.image.reference }}
-{% if cfg.image.pull_credential %}
-    credentials:
-      registry: {{ cfg.image.pull_credential }}
-{% endif %}
     environment:
       ACCEPT_EULA: "Y"
       NO_NUCLEUS: "Y"
@@ -32,23 +27,41 @@ workflow:
       contents: |
         set -euxo pipefail
 {% if cfg.code_delivery.mode == "files_upload" %}
-        tar -xzf /workspace/odin-source.tar.gz -C /workspace/IsaacLab
+        tar -xzf /workspace/odin-source.tar.gz -C /workspace/isaaclab
 {% endif %}
-        cd /workspace/IsaacLab
-        PYTHONPATH=. ./isaaclab.sh -p tools/odin/{{ row.framework_runner }}/run.py \
+        cd /workspace/isaaclab
+        set +e
+        # Override site-packages with live source/* so the image's stale wheels
+        # don't shadow newer code on this branch.
+        SRC_PATHS=$(ls -d /workspace/isaaclab/source/isaaclab* 2>/dev/null | tr '\n' ':')
+        export PYTHONPATH="${SRC_PATHS}:.:${PYTHONPATH:-}"
+        ./isaaclab.sh -p tools/odin/{{ row.framework_runner }}/run.py \
           --task {{ row.task_id }} \
           --backend {{ row.backend }} \
           --seed {{ row.seed }} \
           --num_envs {{ row.num_envs }} \
           --max_iterations {{ row.max_iterations }} \
           --runs_root '{{ '{{output}}' }}'
+        rc=$?
+        echo "=== entry.sh: exit_code=$rc ==="
+        echo "=== bundle contents ==="
+        find {{ '{{output}}' }} -type f | head -30
+        echo "=== training.stderr.log ==="
+        find {{ '{{output}}' }} -name 'training.stderr.log' -exec cat {} \;
+        echo "=== training.stdout.log (last 50 lines) ==="
+        find {{ '{{output}}' }} -name 'training.stdout.log' -exec tail -50 {} \;
+        echo "=== startup.stderr.log ==="
+        find {{ '{{output}}' }} -name 'startup.stderr.log' -exec cat {} \;
+        exit $rc
 {% if cfg.code_delivery.mode == "files_upload" %}
-    - localpath: {{ tarball_path }}
+    - localpath: odin-source.tar.gz
       path: /workspace/odin-source.tar.gz
 {% endif %}
+{% if cfg.bundle_dataset_prefix %}
     outputs:
     - dataset:
         name: {{ cfg.bundle_dataset_prefix }}-{{ dispatch_id }}-{{ row.run_id }}
+{% endif %}
 {% if cfg.retry.reschedule_codes or cfg.retry.restart_codes %}
     exitActions:
 {% if cfg.retry.reschedule_codes %}

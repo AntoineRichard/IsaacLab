@@ -114,7 +114,7 @@ class OsmoClient:
             check=False,
         )
 
-    def submit(self, yaml_path: Path, *, rsync_pairs: Iterable[tuple[str, str]] = ()) -> str:
+    def submit(self, yaml_path: Path, *, rsync_pairs: Iterable[tuple[str, str]] = (), pool: str | None = None) -> str:
         """Submit a workflow YAML and return the workflow_id.
 
         Args:
@@ -129,6 +129,8 @@ class OsmoClient:
             OsmoAuthError, OsmoTransientError, OsmoCliError: per :func:`_classify`.
         """
         cmd: list[str] = [self._exe, "workflow", "submit", str(yaml_path)]
+        if pool is not None:
+            cmd.extend(["--pool", pool])
         for local, remote in rsync_pairs:
             cmd.extend(["--rsync", f"{local}:{remote}"])
         cp = self._run(cmd)

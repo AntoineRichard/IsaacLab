@@ -87,7 +87,12 @@ class _PlannedRow:
 def _load_envs_yaml(path: Path) -> list[dict[str, Any]]:
     with path.open() as fh:
         data = yaml.safe_load(fh) or {}
-    return [e for e in (data.get("envs") or []) if e.get("keep") is True]
+    rows: list[dict[str, Any]] = []
+    for group_rows in (data.get("groups") or {}).values():
+        for env in group_rows or []:
+            if env.get("keep") is True:
+                rows.append(env)
+    return rows
 
 
 def _matches_include(task_id: str, include_glob: str | None) -> bool:
@@ -115,8 +120,9 @@ def _build_rows(
             framework = str(env["framework"])
             num_envs = int(env["num_envs"])
             max_iter = int(env["max_iterations"])
+            framework_slug = framework.replace("_", "-")
             for seed in seeds:
-                run_id = f"{framework}_{backend}_{task_id}_{dispatch_id}_seed{seed}"
+                run_id = f"{framework_slug}_{backend}_{task_id}_{dispatch_id}_seed{seed}"
                 rows.append(
                     _PlannedRow(
                         run_id=run_id,
@@ -136,7 +142,7 @@ def _planned_to_render(row: _PlannedRow) -> RenderRow:
         run_id=row.run_id,
         osmo_task_name=osmo_safe_task_name(row.run_id),
         framework=row.framework,
-        framework_runner="hugin" if row.framework == "rsl-rl" else "munin",
+        framework_runner="hugin" if row.framework in ("rsl-rl", "rsl_rl") else "munin",
         task_id=row.task_id,
         backend=row.backend,
         seed=row.seed,
@@ -434,7 +440,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     rsync_pairs: list[tuple[str, str]] = []
     if args.rsync:
         rsync_pairs.append((cfg.code_delivery.source_root, "/workspace/IsaacLab/" + cfg.code_delivery.source_root))
-    workflow_id = client.submit(workflow_yaml_path, rsync_pairs=rsync_pairs)
+    workflow_id = client.submit(workflow_yaml_path, rsync_pairs=rsync_pairs, pool=cfg.pool)
     state.osmo_workflow_id = workflow_id
     write_dispatch_state(dispatch_dir, state)
 
