@@ -56,7 +56,11 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         Args:
             cfg: A configuration instance.
         """
-        super().__init__(cfg)
+        # Note: We never call the parent constructor as it tries to call its own spawning which we don't want.
+        # Mirrors :class:`isaaclab_physx.assets.RigidObjectCollection`.
+        cfg.validate()
+        self.cfg = cfg.copy()
+        self._is_initialized = False
         # Single binding per tensor type (mirrors Articulation).
         # Populated lazily via _get_binding() or eagerly in _initialize_impl().
         self._bindings: dict[int, Any] = {}
