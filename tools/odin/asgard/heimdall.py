@@ -316,8 +316,38 @@ class HeimdallWatcher:
         return results
 
     def _compute_stale_jobs(self, host_health: dict[str, HostHealth]) -> list[StaleJob]:
-        # Lands in Task 8. Probe-only tests pass with this no-op.
-        return []
+        try:
+            state = self._state_view()
+        except Exception as exc:
+            _log.warning("heimdall: state_view failed: %r", exc)
+            return []
+        now = datetime.now(timezone.utc)
+        stale: list[StaleJob] = []
+        for job in state.jobs:
+            if job.status != "running":
+                continue
+            baseline_iso = job.last_heartbeat_at or job.started_at
+            if baseline_iso is None:
+                continue
+            try:
+                baseline = datetime.strptime(baseline_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            age = (now - baseline).total_seconds()
+            if age <= self._stale_threshold_s:
+                continue
+            host_name = job.assigned_to or ""
+            host_was_healthy = host_name in host_health and host_health[host_name].healthy
+            stale.append(
+                StaleJob(
+                    run_id=job.run_id,
+                    host=host_name,
+                    last_heartbeat_at=baseline_iso,
+                    age_seconds=age,
+                    host_was_healthy=host_was_healthy,
+                )
+            )
+        return stale
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
