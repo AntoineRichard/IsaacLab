@@ -602,7 +602,31 @@ def _consume_heimdall_snapshot(
             if j.assigned_to == host_name and j.status == "running":
                 j.transition_to("pending", add_preferred_not=host_name)
 
-    # Stale-job handling lands in Task 10.
+    jobs_by_id = {j.run_id: j for j in state.jobs}
+    for sj in snap.stale_jobs:
+        j = jobs_by_id.get(sj.run_id)
+        if j is None or j.status != "running":
+            continue  # already terminal or unknown — race-tolerant
+        host_cfg = host_lookup.get(sj.host)
+        if host_cfg is not None:
+            try:
+                kill_fn(host_cfg, sj.run_id, ssh, timeout_s=10)
+            except Exception as exc:
+                _log.warning("heimdall: kill_fn raised: %r", exc)
+        if sj.host_was_healthy:
+            j.transition_to(
+                "failed",
+                failure=FailureInfo(
+                    kind="timeout",
+                    message=(
+                        f"heimdall: stale heartbeat (age={sj.age_seconds:.0f}s) "
+                        "with healthy host — trainer wedge"
+                    ),
+                ),
+                now=_utc_now_iso(),
+            )
+        else:
+            j.transition_to("pending", add_preferred_not=sj.host)
 
     state._heimdall_host_state = dict(snap.hosts)
     set_last_consumed(snap.generated_at)

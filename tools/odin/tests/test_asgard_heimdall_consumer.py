@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
-from tools.odin.asgard.heimdall import HeimdallSnapshot, HostHealth
+from tools.odin.asgard.heimdall import HeimdallSnapshot, HostHealth, StaleJob
 from tools.odin.asgard.jobs import JobEntry
 from tools.odin.asgard.recovery import RecoveryResult
 from tools.odin.asgard.runner import _consume_heimdall_snapshot
@@ -226,3 +226,152 @@ def test_idempotent_consumption_skips_duplicate_snapshot():
         recover_fn=recover_fn,
     )
     assert calls == ["a"]
+
+
+def _stale_snap(hosts, stale):
+    return HeimdallSnapshot(
+        generated_at="2026-05-08T14:01:00Z",
+        hosts=hosts,
+        stale_jobs=stale,
+        recent_events=[],
+    )
+
+
+def _no_recover(h, ssh):
+    return RecoveryResult(
+        host=h.host,
+        container_name=h.container_name,
+        attempted=False,
+        recovered=False,
+        duration_s=0.0,
+        message="not invoked",
+    )
+
+
+def test_stale_job_with_healthy_host_marks_failed_timeout():
+    fleet = Fleet(fleet_name="t", hosts=[ValkyrieConfig(host="a", ssh_user="u")])
+    state = _state(
+        [_running_job("r1", "a")],
+        [FleetSnapshot(host="a", status="busy", current_run_id="r1")],
+    )
+    state._heimdall_host_state = {"a": _hh("a", True)}
+    snap = _stale_snap(
+        {"a": _hh("a", True)},
+        [
+            StaleJob(
+                run_id="r1",
+                host="a",
+                last_heartbeat_at="2026-05-08T13:55:00Z",
+                age_seconds=360.0,
+                host_was_healthy=True,
+            )
+        ],
+    )
+    last_consumed = [None]
+    kill_calls: list[str] = []
+
+    def kill_fn(host, run_id, ssh, *, timeout_s):
+        kill_calls.append(run_id)
+
+    def setter(v):
+        last_consumed[0] = v
+
+    _consume_heimdall_snapshot(
+        snap,
+        state,
+        fleet,
+        ssh=_OkSSH(),
+        last_consumed_at=last_consumed[0],
+        set_last_consumed=setter,
+        recover_fn=_no_recover,
+        kill_fn=kill_fn,
+    )
+    assert kill_calls == ["r1"]
+    assert state.jobs[0].status == "failed"
+    assert state.jobs[0].failure is not None
+    assert state.jobs[0].failure.kind == "timeout"
+
+
+def test_stale_job_with_unhealthy_host_requeues_as_infrastructure():
+    fleet = Fleet(fleet_name="t", hosts=[ValkyrieConfig(host="a", ssh_user="u")])
+    state = _state(
+        [_running_job("r1", "a")],
+        [FleetSnapshot(host="a", status="busy", current_run_id="r1")],
+    )
+    state._heimdall_host_state = {"a": _hh("a", False)}  # already unhealthy — no fresh flip
+    snap = _stale_snap(
+        {"a": _hh("a", False)},
+        [
+            StaleJob(
+                run_id="r1",
+                host="a",
+                last_heartbeat_at="2026-05-08T13:55:00Z",
+                age_seconds=360.0,
+                host_was_healthy=False,
+            )
+        ],
+    )
+    last_consumed = [None]
+
+    def setter(v):
+        last_consumed[0] = v
+
+    def kill_fn(host, run_id, ssh, *, timeout_s):
+        pass
+
+    _consume_heimdall_snapshot(
+        snap,
+        state,
+        fleet,
+        ssh=_OkSSH(),
+        last_consumed_at=last_consumed[0],
+        set_last_consumed=setter,
+        recover_fn=_no_recover,
+        kill_fn=kill_fn,
+    )
+    assert state.jobs[0].status == "pending"
+    assert "a" in state.jobs[0].preferred_not
+
+
+def test_stale_job_skipped_if_already_terminal():
+    fleet = Fleet(fleet_name="t", hosts=[ValkyrieConfig(host="a", ssh_user="u")])
+    j = _running_job("r1", "a")
+    j.transition_to("completed", now="2026-05-08T13:59:00Z")
+    state = _state(
+        [j],
+        [FleetSnapshot(host="a", status="idle", current_run_id=None)],
+    )
+    state._heimdall_host_state = {"a": _hh("a", True)}
+    snap = _stale_snap(
+        {"a": _hh("a", True)},
+        [
+            StaleJob(
+                run_id="r1",
+                host="a",
+                last_heartbeat_at="2026-05-08T13:55:00Z",
+                age_seconds=360.0,
+                host_was_healthy=True,
+            )
+        ],
+    )
+    last_consumed = [None]
+    kill_calls: list[str] = []
+
+    def kill_fn(host, run_id, ssh, *, timeout_s):
+        kill_calls.append(run_id)
+
+    def setter(v):
+        last_consumed[0] = v
+
+    _consume_heimdall_snapshot(
+        snap,
+        state,
+        fleet,
+        ssh=_OkSSH(),
+        last_consumed_at=last_consumed[0],
+        set_last_consumed=setter,
+        recover_fn=_no_recover,
+        kill_fn=kill_fn,
+    )
+    assert kill_calls == []
+    assert state.jobs[0].status == "completed"
