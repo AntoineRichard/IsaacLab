@@ -23,7 +23,6 @@ from tools.odin.asgard.heimdall import HeimdallWatcher
 from tools.odin.asgard.state import SCHEMA_VERSION, DispatchState
 from tools.odin.asgard.transport import ShellSSHRunner
 
-
 pytestmark = pytest.mark.slow
 
 

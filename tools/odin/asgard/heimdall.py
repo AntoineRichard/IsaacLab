@@ -200,7 +200,7 @@ class HeimdallWatcher:
         fleet: Fleet,
         dispatch_dir: Path,
         ssh: SSHRunner,
-        state_view: Callable[[], "DispatchState"],
+        state_view: Callable[[], DispatchState],
         *,
         probe_interval_s: int = 300,
         stale_threshold_s: int = 180,

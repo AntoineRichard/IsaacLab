@@ -625,8 +625,7 @@ def _consume_heimdall_snapshot(
                 failure=FailureInfo(
                     kind="timeout",
                     message=(
-                        f"heimdall: stale heartbeat (age={sj.age_seconds:.0f}s) "
-                        "with healthy host — trainer wedge"
+                        f"heimdall: stale heartbeat (age={sj.age_seconds:.0f}s) with healthy host — trainer wedge"
                     ),
                 ),
                 now=_utc_now_iso(),

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from tools.odin.asgard.heimdall import (
     FLEET_JSON_SCHEMA_VERSION,
     HostHealth,
@@ -82,15 +84,13 @@ def test_fleet_json_atomic_write_no_partial(tmp_path):
         pass
 
     # Pass an object that asdict() will reject as not-a-dataclass.
-    try:
+    with contextlib.suppress(TypeError, AttributeError):
         write_fleet_json(
             tmp_path,
             generated_at="2026-05-08T14:33:18Z",
             hosts={"host-a": NotSerializable()},  # type: ignore[dict-item]
             recent_events=[],
         )
-    except (TypeError, AttributeError):
-        pass
 
     assert (tmp_path / "fleet.json").read_text() == initial
     leftovers = list(tmp_path.glob(".fleet_*.json.tmp"))

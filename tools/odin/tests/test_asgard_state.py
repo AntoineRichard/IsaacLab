@@ -535,8 +535,8 @@ def test_job_entry_last_heartbeat_at_round_trip(tmp_path):
     """JobEntry.last_heartbeat_at survives write_dispatch_state → read_dispatch_state."""
     from tools.odin.asgard.jobs import JobEntry
     from tools.odin.asgard.state import (
-        DispatchState,
         SCHEMA_VERSION,
+        DispatchState,
         read_dispatch_state,
         write_dispatch_state,
     )
