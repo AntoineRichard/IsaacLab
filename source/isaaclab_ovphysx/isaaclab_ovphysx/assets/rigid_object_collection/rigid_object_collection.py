@@ -660,7 +660,44 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set body masses over selected env / body indices into the simulation.
+
+        This is a CPU-only write routed through pinned-host staging because
+        ``RIGID_BODY_MASS`` is a CPU-only OVPhysX binding.
+
+        .. note::
+            This method expects partial data.
+
+        Args:
+            masses: Body masses [kg]. Shape is (len(env_ids), len(body_ids))
+                with dtype wp.float32.
+            body_ids: Body indices. If None, then all indices are used.
+            env_ids: Environment indices. If None, then all indices are used.
+        """
+        env_ids = self._resolve_env_ids(env_ids)
+        body_ids = self._resolve_body_ids(body_ids)
+        self.assert_shape_and_dtype(masses, (env_ids.shape[0], body_ids.shape[0]), wp.float32, "masses")
+        wp.launch(
+            shared_kernels.write_2d_data_to_buffer_with_indices,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[masses, env_ids, body_ids],
+            outputs=[self.data._body_mass],
+            device=self._device,
+        )
+        # Push each body column to its CPU-only binding via pinned-host staging.
+        cpu_env_ids = self._get_cpu_env_ids(env_ids)
+        for b in self._iter_body_ids_cpu(body_ids):
+            # _mass_flat_base is (B*N,) float32 body-major; body b occupies [b*N : (b+1)*N].
+            gpu_col = wp.array(
+                ptr=self.data._mass_flat_base.ptr + b * self._num_instances * 4,
+                shape=(self._num_instances,),
+                dtype=wp.float32,
+                device=self._device,
+                copy=False,
+            )
+            wp.copy(self._cpu_mass_staging[b], gpu_col)
+            binding = self._get_binding(TT.RIGID_BODY_MASS, body_idx=b)
+            binding.write(self._cpu_mass_staging[b], indices=cpu_env_ids)
 
     def set_masses_mask(
         self,
@@ -669,7 +706,53 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set body masses over selected env / body masks into the simulation.
+
+        This is a CPU-only write routed through pinned-host staging because
+        ``RIGID_BODY_MASS`` is a CPU-only OVPhysX binding.
+
+        .. note::
+            This method expects full data.
+
+        Args:
+            masses: Body masses [kg]. Shape is (num_instances, num_bodies)
+                with dtype wp.float32.
+            body_mask: Body mask. If None, all bodies are updated.
+                Shape is (num_bodies,).
+            env_mask: Environment mask. If None, all instances are updated.
+                Shape is (num_instances,).
+        """
+        if env_mask is not None:
+            env_mask_t = wp.to_torch(env_mask) if isinstance(env_mask, wp.array) else env_mask
+            env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
+        else:
+            env_ids = self._ALL_INDICES_ENV
+        if body_mask is not None:
+            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
+            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
+        else:
+            body_ids = self._ALL_INDICES_BODY
+        self.assert_shape_and_dtype(masses, (self._num_instances, self._num_bodies), wp.float32, "masses")
+        wp.launch(
+            shared_kernels.write_2d_data_to_buffer_with_mask,
+            dim=(self._num_instances, self._num_bodies),
+            inputs=[masses, self._resolve_env_mask(env_mask), self._resolve_body_mask(body_mask)],
+            outputs=[self.data._body_mass],
+            device=self._device,
+        )
+        # Push each body column to its CPU-only binding via pinned-host staging.
+        cpu_env_ids = self._get_cpu_env_ids(env_ids)
+        for b in self._iter_body_ids_cpu(body_ids):
+            gpu_col = wp.array(
+                ptr=self.data._mass_flat_base.ptr + b * self._num_instances * 4,
+                shape=(self._num_instances,),
+                dtype=wp.float32,
+                device=self._device,
+                copy=False,
+            )
+            wp.copy(self._cpu_mass_staging[b], gpu_col)
+            binding = self._get_binding(TT.RIGID_BODY_MASS, body_idx=b)
+            binding.write(self._cpu_mass_staging[b], indices=cpu_env_ids)
 
     def set_coms_index(
         self,
@@ -678,7 +761,55 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set body center-of-mass poses over selected env / body indices into the simulation.
+
+        This is a CPU-only write routed through pinned-host staging because
+        ``RIGID_BODY_COM_POSE`` is a CPU-only OVPhysX binding.
+
+        .. note::
+            This method expects partial data.
+
+        Args:
+            coms: Body center-of-mass poses [m, quaternion (w, x, y, z)].
+                Shape is (len(env_ids), len(body_ids)) with dtype wp.transformf.
+            body_ids: Body indices. If None, then all indices are used.
+            env_ids: Environment indices. If None, then all indices are used.
+        """
+        env_ids = self._resolve_env_ids(env_ids)
+        body_ids = self._resolve_body_ids(body_ids)
+        self.assert_shape_and_dtype(coms, (env_ids.shape[0], body_ids.shape[0]), wp.transformf, "coms")
+        wp.launch(
+            shared_kernels.write_body_com_pose_to_buffer_index,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[coms, env_ids, body_ids],
+            outputs=[self.data._body_com_pose_b.data],
+            device=self._device,
+        )
+        # Invalidate derived buffers that depend on body_com_pose_b.
+        self.data._body_com_pose_w.timestamp = -1.0
+        # Push each body column to its CPU-only binding via pinned-host staging.
+        cpu_env_ids = self._get_cpu_env_ids(env_ids)
+        tf_size = 7 * 4  # 7 floats × 4 bytes per wp.transformf
+        for b in self._iter_body_ids_cpu(body_ids):
+            # _body_com_pose_b_base is (B*N,) transformf body-major; view body b as (N*7,) float32.
+            gpu_col_f32 = wp.array(
+                ptr=self.data._body_com_pose_b_base.ptr + b * self._num_instances * tf_size,
+                shape=(self._num_instances * 7,),
+                dtype=wp.float32,
+                device=self._device,
+                copy=False,
+            )
+            # _cpu_com_staging[b] is (N, 7) float32; view as flat (N*7,) for the copy.
+            cpu_col_flat = wp.array(
+                ptr=self._cpu_com_staging[b].ptr,
+                shape=(self._num_instances * 7,),
+                dtype=wp.float32,
+                device="cpu",
+                copy=False,
+            )
+            wp.copy(cpu_col_flat, gpu_col_f32)
+            binding = self._get_binding(TT.RIGID_BODY_COM_POSE, body_idx=b)
+            binding.write(self._cpu_com_staging[b], indices=cpu_env_ids)
 
     def set_coms_mask(
         self,
@@ -687,7 +818,63 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set body center-of-mass poses over selected env / body masks into the simulation.
+
+        This is a CPU-only write routed through pinned-host staging because
+        ``RIGID_BODY_COM_POSE`` is a CPU-only OVPhysX binding.
+
+        .. note::
+            This method expects full data.
+
+        Args:
+            coms: Body center-of-mass poses [m, quaternion (w, x, y, z)].
+                Shape is (num_instances, num_bodies) with dtype wp.transformf.
+            body_mask: Body mask. If None, all bodies are updated.
+                Shape is (num_bodies,).
+            env_mask: Environment mask. If None, all instances are updated.
+                Shape is (num_instances,).
+        """
+        if env_mask is not None:
+            env_mask_t = wp.to_torch(env_mask) if isinstance(env_mask, wp.array) else env_mask
+            env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
+        else:
+            env_ids = self._ALL_INDICES_ENV
+        if body_mask is not None:
+            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
+            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
+        else:
+            body_ids = self._ALL_INDICES_BODY
+        self.assert_shape_and_dtype(coms, (self._num_instances, self._num_bodies), wp.transformf, "coms")
+        wp.launch(
+            shared_kernels.write_body_com_pose_to_buffer_mask,
+            dim=(self._num_instances, self._num_bodies),
+            inputs=[coms, self._resolve_env_mask(env_mask), self._resolve_body_mask(body_mask)],
+            outputs=[self.data._body_com_pose_b.data],
+            device=self._device,
+        )
+        # Invalidate derived buffers that depend on body_com_pose_b.
+        self.data._body_com_pose_w.timestamp = -1.0
+        # Push each body column to its CPU-only binding via pinned-host staging.
+        cpu_env_ids = self._get_cpu_env_ids(env_ids)
+        tf_size = 7 * 4  # 7 floats × 4 bytes per wp.transformf
+        for b in self._iter_body_ids_cpu(body_ids):
+            gpu_col_f32 = wp.array(
+                ptr=self.data._body_com_pose_b_base.ptr + b * self._num_instances * tf_size,
+                shape=(self._num_instances * 7,),
+                dtype=wp.float32,
+                device=self._device,
+                copy=False,
+            )
+            cpu_col_flat = wp.array(
+                ptr=self._cpu_com_staging[b].ptr,
+                shape=(self._num_instances * 7,),
+                dtype=wp.float32,
+                device="cpu",
+                copy=False,
+            )
+            wp.copy(cpu_col_flat, gpu_col_f32)
+            binding = self._get_binding(TT.RIGID_BODY_COM_POSE, body_idx=b)
+            binding.write(self._cpu_com_staging[b], indices=cpu_env_ids)
 
     def set_inertias_index(
         self,
@@ -696,7 +883,46 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set body inertia tensors over selected env / body indices into the simulation.
+
+        This is a CPU-only write routed through pinned-host staging because
+        ``RIGID_BODY_INERTIA`` is a CPU-only OVPhysX binding.
+
+        .. note::
+            This method expects partial data.
+
+        Args:
+            inertias: Body inertia tensors [kg·m²]. Shape is
+                (len(env_ids), len(body_ids), 9) with dtype wp.float32.
+                The 9 components are the row-major flatten of the 3×3 inertia
+                matrix (Ixx, Ixy, Ixz, Iyx, Iyy, Iyz, Izx, Izy, Izz).
+            body_ids: Body indices. If None, then all indices are used.
+            env_ids: Environment indices. If None, then all indices are used.
+        """
+        env_ids = self._resolve_env_ids(env_ids)
+        body_ids = self._resolve_body_ids(body_ids)
+        self.assert_shape_and_dtype(inertias, (env_ids.shape[0], body_ids.shape[0], 9), wp.float32, "inertias")
+        wp.launch(
+            shared_kernels.write_body_inertia_to_buffer_index,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[inertias, env_ids, body_ids],
+            outputs=[self.data._body_inertia],
+            device=self._device,
+        )
+        # Push each body column to its CPU-only binding via pinned-host staging.
+        cpu_env_ids = self._get_cpu_env_ids(env_ids)
+        for b in self._iter_body_ids_cpu(body_ids):
+            # _inertia_flat_base is (B*N*9,) float32 body-major; body b occupies [b*N*9 : (b+1)*N*9].
+            gpu_col = wp.array(
+                ptr=self.data._inertia_flat_base.ptr + b * self._num_instances * 9 * 4,
+                shape=(self._num_instances, 9),
+                dtype=wp.float32,
+                device=self._device,
+                copy=False,
+            )
+            wp.copy(self._cpu_inertia_staging[b], gpu_col)
+            binding = self._get_binding(TT.RIGID_BODY_INERTIA, body_idx=b)
+            binding.write(self._cpu_inertia_staging[b], indices=cpu_env_ids)
 
     def set_inertias_mask(
         self,
@@ -705,7 +931,55 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set body inertia tensors over selected env / body masks into the simulation.
+
+        This is a CPU-only write routed through pinned-host staging because
+        ``RIGID_BODY_INERTIA`` is a CPU-only OVPhysX binding.
+
+        .. note::
+            This method expects full data.
+
+        Args:
+            inertias: Body inertia tensors [kg·m²]. Shape is
+                (num_instances, num_bodies, 9) with dtype wp.float32.
+                The 9 components are the row-major flatten of the 3×3 inertia
+                matrix (Ixx, Ixy, Ixz, Iyx, Iyy, Iyz, Izx, Izy, Izz).
+            body_mask: Body mask. If None, all bodies are updated.
+                Shape is (num_bodies,).
+            env_mask: Environment mask. If None, all instances are updated.
+                Shape is (num_instances,).
+        """
+        if env_mask is not None:
+            env_mask_t = wp.to_torch(env_mask) if isinstance(env_mask, wp.array) else env_mask
+            env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
+        else:
+            env_ids = self._ALL_INDICES_ENV
+        if body_mask is not None:
+            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
+            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
+        else:
+            body_ids = self._ALL_INDICES_BODY
+        self.assert_shape_and_dtype(inertias, (self._num_instances, self._num_bodies, 9), wp.float32, "inertias")
+        wp.launch(
+            shared_kernels.write_body_inertia_to_buffer_mask,
+            dim=(self._num_instances, self._num_bodies),
+            inputs=[inertias, self._resolve_env_mask(env_mask), self._resolve_body_mask(body_mask)],
+            outputs=[self.data._body_inertia],
+            device=self._device,
+        )
+        # Push each body column to its CPU-only binding via pinned-host staging.
+        cpu_env_ids = self._get_cpu_env_ids(env_ids)
+        for b in self._iter_body_ids_cpu(body_ids):
+            gpu_col = wp.array(
+                ptr=self.data._inertia_flat_base.ptr + b * self._num_instances * 9 * 4,
+                shape=(self._num_instances, 9),
+                dtype=wp.float32,
+                device=self._device,
+                copy=False,
+            )
+            wp.copy(self._cpu_inertia_staging[b], gpu_col)
+            binding = self._get_binding(TT.RIGID_BODY_INERTIA, body_idx=b)
+            binding.write(self._cpu_inertia_staging[b], indices=cpu_env_ids)
 
     # ------------------------------------------------------------------
     # Deprecated state writers
@@ -874,9 +1148,33 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.update(0.0)
 
     def _create_buffers(self) -> None:
-        """Pre-allocate asset-side index arrays."""
-        self._ALL_INDICES_ENV = wp.array(np.arange(self._num_instances), dtype=wp.int32, device=self._device)
-        self._ALL_INDICES_BODY = wp.array(np.arange(self._num_bodies), dtype=wp.int32, device=self._device)
+        """Pre-allocate asset-side index arrays and CPU staging buffers."""
+        N = self._num_instances
+        B = self._num_bodies
+
+        self._ALL_INDICES_ENV = wp.array(np.arange(N), dtype=wp.int32, device=self._device)
+        self._ALL_INDICES_BODY = wp.array(np.arange(B), dtype=wp.int32, device=self._device)
+
+        # CPU copy of all-env indices used when calling CPU-only binding.write().
+        self._cpu_all_env_ids = wp.zeros(N, dtype=wp.int32, device="cpu", pinned=True)
+        wp.copy(self._cpu_all_env_ids, self._ALL_INDICES_ENV)
+
+        # Per-body pinned CPU staging buffers for CPU-only write paths.
+        # Each entry holds one body-column worth of data for all N instances.
+        # Used by set_masses_*, set_coms_*, set_inertias_* to stage GPU data
+        # onto the CPU before calling binding.write() (RIGID_BODY_MASS /
+        # RIGID_BODY_COM_POSE / RIGID_BODY_INERTIA are CPU-only bindings).
+        # Shapes match the wheel's binding.write() expected layout:
+        #   mass      -> (N,)     float32  (one scalar per instance)
+        #   com_pose  -> (N, 7)   float32  (position + quaternion per instance)
+        #   inertia   -> (N, 9)   float32  (row-major 3×3 matrix per instance)
+        self._cpu_mass_staging = [wp.zeros(N, dtype=wp.float32, device="cpu", pinned=True) for _ in range(B)]
+        self._cpu_com_staging = [wp.zeros((N, 7), dtype=wp.float32, device="cpu", pinned=True) for _ in range(B)]
+        self._cpu_inertia_staging = [wp.zeros((N, 9), dtype=wp.float32, device="cpu", pinned=True) for _ in range(B)]
+
+        # All-true boolean masks used as defaults in mask-based kernel calls.
+        self._ALL_TRUE_ENV_MASK = wp.array(np.ones(N, dtype=bool), dtype=wp.bool, device=self._device)
+        self._ALL_TRUE_BODY_MASK = wp.array(np.ones(B, dtype=bool), dtype=wp.bool, device=self._device)
 
         # Set body names into the data container (mirrors PhysX collection).
         self._data.body_names = self._body_names
@@ -975,6 +1273,44 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             return wp.array(body_ids, dtype=wp.int32, device=self._device)
         return body_ids
 
+    def _resolve_env_mask(self, env_mask: wp.array | None) -> wp.array:
+        """Resolve an environment mask to a ``wp.bool`` array on ``self._device``.
+
+        ``None`` returns the pre-allocated all-true mask.
+
+        Args:
+            env_mask: Boolean environment mask or None. Shape is (num_instances,).
+
+        Returns:
+            A ``wp.bool`` array of shape (num_instances,) on ``self._device``.
+        """
+        if env_mask is None:
+            return self._ALL_TRUE_ENV_MASK
+        if isinstance(env_mask, torch.Tensor):
+            return wp.from_torch(env_mask.to(torch.bool), dtype=wp.bool)
+        if isinstance(env_mask, wp.array) and str(env_mask.device) != self._device:
+            env_mask = wp.clone(env_mask, device=self._device)
+        return env_mask
+
+    def _resolve_body_mask(self, body_mask: wp.array | None) -> wp.array:
+        """Resolve a body mask to a ``wp.bool`` array on ``self._device``.
+
+        ``None`` returns the pre-allocated all-true mask.
+
+        Args:
+            body_mask: Boolean body mask or None. Shape is (num_bodies,).
+
+        Returns:
+            A ``wp.bool`` array of shape (num_bodies,) on ``self._device``.
+        """
+        if body_mask is None:
+            return self._ALL_TRUE_BODY_MASK
+        if isinstance(body_mask, torch.Tensor):
+            return wp.from_torch(body_mask.to(torch.bool), dtype=wp.bool)
+        if isinstance(body_mask, wp.array) and str(body_mask.device) != self._device:
+            body_mask = wp.clone(body_mask, device=self._device)
+        return body_mask
+
     def _iter_body_ids_cpu(self, body_ids: wp.array) -> Iterable[int]:
         """Iterate over body IDs on CPU.
 
@@ -989,3 +1325,19 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         """
         cpu = wp.to_torch(body_ids).cpu().numpy().tolist()
         return iter(cpu)
+
+    def _get_cpu_env_ids(self, env_ids: wp.array) -> wp.array:
+        """Return CPU int32 env indices for CPU-only binding writes.
+
+        Uses the pre-allocated pinned ``_cpu_all_env_ids`` fast path when
+        *env_ids* covers all instances, otherwise clones to CPU.
+
+        Args:
+            env_ids: A warp int32 array of environment indices on any device.
+
+        Returns:
+            A warp int32 array guaranteed to live on ``"cpu"``.
+        """
+        if env_ids.ptr == self._ALL_INDICES_ENV.ptr:
+            return self._cpu_all_env_ids
+        return wp.clone(env_ids, device="cpu")
