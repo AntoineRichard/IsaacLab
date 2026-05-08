@@ -299,7 +299,11 @@ def reconcile_orphans(
             # was caused by a transiently-unreachable host triggering
             # this exact path. If recovery brings the host back, leave
             # the job in 'running' for the next dispatch loop — Heimdall
-            # will catch genuine staleness via the heartbeat path.
+            # will catch genuine staleness via the heartbeat path
+            # (default ~3 min on a watcher-enabled dispatch). On
+            # ``--no-heimdall`` runs the bound is the dispatcher restart
+            # cycle, not seconds — that's an acceptable downside for
+            # avoiding the false flip-to-pending.
             rec = recover_fn(host, ssh=ssh)
             if getattr(rec, "recovered", False):
                 outcomes.append(ReconcileOutcome(run_id=j.run_id, action="reattached_inflight"))

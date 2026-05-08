@@ -514,6 +514,7 @@ def _consume_heimdall_snapshot(
     ssh,
     last_consumed_at: str | None,
     set_last_consumed: Callable[[str], None],
+    prev_host_state: dict[str, HostHealth],
     recover_fn: Callable | None = None,
     kill_fn: Callable | None = None,
 ) -> None:
@@ -571,11 +572,10 @@ def _consume_heimdall_snapshot(
             except Exception as exc:
                 _log.warning("heimdall: kill_fn ssh exception: %r", exc)
 
-    prev_state: dict[str, HostHealth] = getattr(state, "_heimdall_host_state", {}) or {}
     host_lookup = {h.host: h for h in fleet.hosts}
 
     for host_name, h in snap.hosts.items():
-        prev = prev_state.get(host_name)
+        prev = prev_host_state.get(host_name)
         prev_was_healthy = prev.healthy if prev is not None else True
         if not (prev_was_healthy and not h.healthy):
             continue
@@ -633,7 +633,8 @@ def _consume_heimdall_snapshot(
         else:
             j.transition_to("pending", add_preferred_not=sj.host)
 
-    state._heimdall_host_state = dict(snap.hosts)
+    prev_host_state.clear()
+    prev_host_state.update(snap.hosts)
     set_last_consumed(snap.generated_at)
 
 
@@ -984,6 +985,7 @@ def run_dispatch(  # noqa: C901
 
     watcher: HeimdallWatcher | None = None
     last_heimdall_consumed_at: str | None = None
+    heimdall_prev_host_state: dict[str, HostHealth] = {}
     if not options.no_heimdall:
         watcher = HeimdallWatcher(
             fleet=fleet,
@@ -1014,6 +1016,7 @@ def run_dispatch(  # noqa: C901
             snap,
             state,
             fleet,
+            prev_host_state=heimdall_prev_host_state,
             ssh=ssh,
             last_consumed_at=last_heimdall_consumed_at,
             set_last_consumed=_set,

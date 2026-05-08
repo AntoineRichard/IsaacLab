@@ -104,6 +104,7 @@ def test_22h_wedge_is_detected_and_quarantined(tmp_path):
         duration_s=2.0,
         message="docker_restart_failed: x",
     )
+    prev_state: dict = {}
     last_consumed = [None]
 
     def setter(v):
@@ -112,11 +113,12 @@ def test_22h_wedge_is_detected_and_quarantined(tmp_path):
     def kill_fn(host, run_id, ssh, *, timeout_s):
         pass
 
-    state._heimdall_host_state = dict(snap2.hosts)  # snap2 was the prior tick (healthy)
+    prev_state = dict(snap2.hosts)  # snap2 was the prior tick (healthy)
     _consume_heimdall_snapshot(
         snap3,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=ssh,
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,

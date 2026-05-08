@@ -614,13 +614,28 @@ class ValkyrieWorker(threading.Thread):
 
     # -- public entry point -------------------------------------------------
 
+    def _safe_inflight_snapshot(self) -> list[str]:
+        """Return a snapshot of in-flight ``run_id`` keys, retrying on concurrent mutation.
+
+        ``_inflight`` is mutated only by the worker thread but read by the
+        heartbeat thread. CPython's ``list(dict)`` iterator can raise
+        ``RuntimeError`` if the dict is resized during iteration; one
+        retry is enough since the worker is a single-writer.
+        """
+        for _ in range(3):
+            try:
+                return list(self._inflight)
+            except RuntimeError:
+                continue
+        return []
+
     def run(self) -> None:
         self._heartbeat_thread = threading.Thread(
             target=_heartbeat_loop,
             kwargs={
                 "host_name": self.host.host,
                 "state_chan": self._state_chan,
-                "inflight_view": lambda: list(self._inflight.keys()),
+                "inflight_view": self._safe_inflight_snapshot,
                 "interval_s": self._heartbeat_interval_s,
                 "stop_event": self._heartbeat_stop,
             },

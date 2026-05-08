@@ -81,6 +81,7 @@ def test_no_flip_no_action_idempotent_marks_consumed():
         [FleetSnapshot(host="a", status="busy", current_run_id="r1")],
     )
     snap = _snap({"a": _hh("a", True)}, [])
+    prev_state: dict = {}
     last_consumed = [None]
 
     def setter(v):
@@ -90,6 +91,7 @@ def test_no_flip_no_action_idempotent_marks_consumed():
         snap,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=_OkSSH(),
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,
@@ -113,7 +115,7 @@ def test_flip_with_successful_recovery_clears_failure():
         [_running_job("r1", "a")],
         [FleetSnapshot(host="a", status="busy", current_run_id="r1")],
     )
-    state._heimdall_host_state = {"a": _hh("a", True)}
+    prev_state = {"a": _hh("a", True)}
     snap = _snap({"a": _hh("a", False)}, [])
     last_consumed = [None]
 
@@ -133,6 +135,7 @@ def test_flip_with_successful_recovery_clears_failure():
         snap,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=_OkSSH(),
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,
@@ -148,7 +151,7 @@ def test_flip_with_failed_recovery_quarantines_and_requeues_jobs():
         [_running_job("r1", "a"), _running_job("r2", "a")],
         [FleetSnapshot(host="a", status="busy", current_run_id="r1")],
     )
-    state._heimdall_host_state = {"a": _hh("a", True)}
+    prev_state = {"a": _hh("a", True)}
     snap = _snap({"a": _hh("a", False)}, [])
     failed = RecoveryResult(
         host="a",
@@ -167,6 +170,7 @@ def test_flip_with_failed_recovery_quarantines_and_requeues_jobs():
         snap,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=_OkSSH(),
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,
@@ -186,7 +190,7 @@ def test_idempotent_consumption_skips_duplicate_snapshot():
         [_running_job("r1", "a")],
         [FleetSnapshot(host="a", status="busy", current_run_id="r1")],
     )
-    state._heimdall_host_state = {"a": _hh("a", True)}
+    prev_state = {"a": _hh("a", True)}
     snap = _snap({"a": _hh("a", False)}, [])
     failed = RecoveryResult(
         host="a",
@@ -211,6 +215,7 @@ def test_idempotent_consumption_skips_duplicate_snapshot():
         snap,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=_OkSSH(),
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,
@@ -220,6 +225,7 @@ def test_idempotent_consumption_skips_duplicate_snapshot():
         snap,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=_OkSSH(),
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,
@@ -254,7 +260,7 @@ def test_stale_job_with_healthy_host_marks_failed_timeout():
         [_running_job("r1", "a")],
         [FleetSnapshot(host="a", status="busy", current_run_id="r1")],
     )
-    state._heimdall_host_state = {"a": _hh("a", True)}
+    prev_state = {"a": _hh("a", True)}
     snap = _stale_snap(
         {"a": _hh("a", True)},
         [
@@ -280,6 +286,7 @@ def test_stale_job_with_healthy_host_marks_failed_timeout():
         snap,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=_OkSSH(),
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,
@@ -298,7 +305,7 @@ def test_stale_job_with_unhealthy_host_requeues_as_infrastructure():
         [_running_job("r1", "a")],
         [FleetSnapshot(host="a", status="busy", current_run_id="r1")],
     )
-    state._heimdall_host_state = {"a": _hh("a", False)}  # already unhealthy — no fresh flip
+    prev_state = {"a": _hh("a", False)}  # already unhealthy — no fresh flip
     snap = _stale_snap(
         {"a": _hh("a", False)},
         [
@@ -323,6 +330,7 @@ def test_stale_job_with_unhealthy_host_requeues_as_infrastructure():
         snap,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=_OkSSH(),
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,
@@ -341,7 +349,7 @@ def test_stale_job_skipped_if_already_terminal():
         [j],
         [FleetSnapshot(host="a", status="idle", current_run_id=None)],
     )
-    state._heimdall_host_state = {"a": _hh("a", True)}
+    prev_state = {"a": _hh("a", True)}
     snap = _stale_snap(
         {"a": _hh("a", True)},
         [
@@ -367,6 +375,7 @@ def test_stale_job_skipped_if_already_terminal():
         snap,
         state,
         fleet,
+        prev_host_state=prev_state,
         ssh=_OkSSH(),
         last_consumed_at=last_consumed[0],
         set_last_consumed=setter,
