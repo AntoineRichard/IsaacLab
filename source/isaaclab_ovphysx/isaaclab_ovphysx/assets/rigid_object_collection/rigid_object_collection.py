@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -22,6 +23,7 @@ from isaaclab.assets.rigid_object_collection import (
     BaseRigidObjectCollection,
     RigidObjectCollectionCfg,
 )
+from isaaclab.utils.string import resolve_matching_names
 
 from isaaclab_ovphysx import tensor_types as TT
 from isaaclab_ovphysx.assets import kernels as shared_kernels
@@ -108,8 +110,23 @@ class RigidObjectCollection(BaseRigidObjectCollection):
     def update(self, dt: float) -> None:  # type: ignore[override]
         self._data.update(dt)
 
-    def find_bodies(self, name_keys: str | Sequence[str], preserve_order: bool = False):  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+    def find_bodies(
+        self, name_keys: str | Sequence[str], preserve_order: bool = False
+    ) -> tuple[torch.Tensor, list[str]]:  # type: ignore[override]
+        """Find bodies in the rigid body collection based on the name keys.
+
+        Please check the :func:`isaaclab.utils.string.resolve_matching_names` function for more
+        information on the name matching.
+
+        Args:
+            name_keys: A regular expression or a list of regular expressions to match the body names.
+            preserve_order: Whether to preserve the order of the name keys in the output. Defaults to False.
+
+        Returns:
+            A tuple of lists containing the body indices and names.
+        """
+        obj_ids, obj_names = resolve_matching_names(name_keys, self.body_names, preserve_order)
+        return torch.tensor(obj_ids, device=self._device, dtype=torch.int32), obj_names
 
     # ------------------------------------------------------------------
     # Pose writers (3 pairs)
@@ -987,27 +1004,69 @@ class RigidObjectCollection(BaseRigidObjectCollection):
 
     def write_body_state_to_sim(
         self,
-        body_states: wp.array,
-        env_ids: Sequence[int] | wp.array | None = None,
-        body_ids: slice | None = None,
+        body_states: torch.Tensor | wp.array,
+        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        body_ids: slice | torch.Tensor | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Deprecated, same as :meth:`write_body_link_pose_to_sim_index` and
+        :meth:`write_body_com_velocity_to_sim_index`."""
+        warnings.warn(
+            "The function 'write_body_state_to_sim' will be deprecated in a future release. Please"
+            " use 'write_body_link_pose_to_sim_index' and 'write_body_com_velocity_to_sim_index' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Convert wp.array to torch.Tensor for slicing.
+        if isinstance(body_states, wp.array):
+            body_states = wp.to_torch(body_states)
+        self.write_body_link_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
+        self.write_body_com_velocity_to_sim_index(
+            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
+        )
 
     def write_body_link_state_to_sim(
         self,
-        body_states: wp.array,
-        env_ids: Sequence[int] | wp.array | None = None,
-        body_ids: slice | None = None,
+        body_states: torch.Tensor | wp.array,
+        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        body_ids: slice | torch.Tensor | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Deprecated, same as :meth:`write_body_link_pose_to_sim_index` and
+        :meth:`write_body_link_velocity_to_sim_index`."""
+        warnings.warn(
+            "The function 'write_body_link_state_to_sim' will be deprecated in a future release. Please"
+            " use 'write_body_link_pose_to_sim_index' and 'write_body_link_velocity_to_sim_index' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Convert wp.array to torch.Tensor for slicing.
+        if isinstance(body_states, wp.array):
+            body_states = wp.to_torch(body_states)
+        self.write_body_link_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
+        self.write_body_link_velocity_to_sim_index(
+            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
+        )
 
     def write_body_com_state_to_sim(
         self,
-        body_states: wp.array,
-        env_ids: Sequence[int] | wp.array | None = None,
-        body_ids: slice | None = None,
+        body_states: torch.Tensor | wp.array,
+        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        body_ids: slice | torch.Tensor | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Deprecated, same as :meth:`write_body_com_pose_to_sim_index` and
+        :meth:`write_body_com_velocity_to_sim_index`."""
+        warnings.warn(
+            "The function 'write_body_com_state_to_sim' will be deprecated in a future release. Please"
+            " use 'write_body_com_pose_to_sim_index' and 'write_body_com_velocity_to_sim_index' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Convert wp.array to torch.Tensor for slicing.
+        if isinstance(body_states, wp.array):
+            body_states = wp.to_torch(body_states)
+        self.write_body_com_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
+        self.write_body_com_velocity_to_sim_index(
+            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
+        )
 
     # ------------------------------------------------------------------
     # Internal hooks
