@@ -24,6 +24,7 @@ from isaaclab.assets.rigid_object_collection import (
 )
 
 from isaaclab_ovphysx import tensor_types as TT
+from isaaclab_ovphysx.assets import kernels as shared_kernels
 from isaaclab_ovphysx.physics import OvPhysxManager
 
 from .rigid_object_collection_data import RigidObjectCollectionData
@@ -121,7 +122,22 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set the body pose over selected environment and body indices into the simulation.
+
+        The body pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
+        For rigid bodies the actor frame coincides with the link frame, so this delegates to
+        :meth:`write_body_link_pose_to_sim_index`.
+
+        .. note::
+            This method expects partial data.
+
+        Args:
+            body_poses: Body poses in simulation frame [m, rad]. Shape is (len(env_ids), len(body_ids), 7)
+                or (len(env_ids), len(body_ids)) with dtype wp.transformf.
+            body_ids: Body indices. If None, then all indices are used.
+            env_ids: Environment indices. If None, then all indices are used.
+        """
+        self.write_body_link_pose_to_sim_index(body_poses=body_poses, body_ids=body_ids, env_ids=env_ids)
 
     def write_body_pose_to_sim_mask(
         self,
@@ -130,7 +146,22 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set the body pose over selected environment and body masks into the simulation.
+
+        The body pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
+        For rigid bodies the actor frame coincides with the link frame, so this delegates to
+        :meth:`write_body_link_pose_to_sim_mask`.
+
+        .. note::
+            This method expects full data.
+
+        Args:
+            body_poses: Body poses in simulation frame [m, rad]. Shape is (num_instances, num_bodies, 7)
+                or (num_instances, num_bodies) with dtype wp.transformf.
+            body_mask: Body mask. If None, then all bodies are updated. Shape is (num_bodies,).
+            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+        """
+        self.write_body_link_pose_to_sim_mask(body_poses=body_poses, body_mask=body_mask, env_mask=env_mask)
 
     def write_body_link_pose_to_sim_index(
         self,
@@ -139,7 +170,42 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set the body link pose over selected environment and body indices into the simulation.
+
+        The body link pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
+
+        .. note::
+            This method expects partial data.
+
+        Args:
+            body_poses: Body link poses in simulation frame [m, rad]. Shape is (len(env_ids), len(body_ids), 7)
+                or (len(env_ids), len(body_ids)) with dtype wp.transformf.
+            body_ids: Body indices. If None, then all indices are used.
+            env_ids: Environment indices. If None, then all indices are used.
+        """
+        env_ids = self._resolve_env_ids(env_ids)
+        body_ids = self._resolve_body_ids(body_ids)
+        self.assert_shape_and_dtype(body_poses, (env_ids.shape[0], body_ids.shape[0]), wp.transformf, "body_poses")
+        wp.launch(
+            shared_kernels.set_body_link_pose_to_sim,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[body_poses, env_ids, body_ids, False],
+            outputs=[
+                self.data._body_link_pose_w.data,
+                self.data._body_link_state_w.data,
+                self.data._body_state_w.data,
+            ],
+            device=self._device,
+        )
+        # Invalidate dependent timestamps so the next read recomposes them.
+        self.data._body_com_pose_w.timestamp = -1.0
+        self.data._body_com_state_w.timestamp = -1.0
+        self.data._body_link_state_w.timestamp = -1.0
+        self.data._body_state_w.timestamp = -1.0
+        # Push updated per-body link poses to simulation via bindings.
+        for b in self._iter_body_ids_cpu(body_ids):
+            binding = self._get_binding(TT.RIGID_BODY_POSE, body_idx=b)
+            binding.write(self.data._body_link_pose_w_flat[b].view(wp.float32), indices=env_ids)
 
     def write_body_link_pose_to_sim_mask(
         self,
@@ -148,7 +214,50 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set the body link pose over selected environment and body masks into the simulation.
+
+        The body link pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
+
+        .. note::
+            This method expects full data.
+
+        Args:
+            body_poses: Body link poses in simulation frame [m, rad]. Shape is (num_instances, num_bodies, 7)
+                or (num_instances, num_bodies) with dtype wp.transformf.
+            body_mask: Body mask. If None, then all bodies are updated. Shape is (num_bodies,).
+            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+        """
+        if env_mask is not None:
+            env_mask_t = wp.to_torch(env_mask) if isinstance(env_mask, wp.array) else env_mask
+            env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
+        else:
+            env_ids = self._ALL_INDICES_ENV
+        if body_mask is not None:
+            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
+            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
+        else:
+            body_ids = self._ALL_INDICES_BODY
+        self.assert_shape_and_dtype(body_poses, (self._num_instances, self._num_bodies), wp.transformf, "body_poses")
+        wp.launch(
+            shared_kernels.set_body_link_pose_to_sim,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[body_poses, env_ids, body_ids, True],
+            outputs=[
+                self.data._body_link_pose_w.data,
+                self.data._body_link_state_w.data,
+                self.data._body_state_w.data,
+            ],
+            device=self._device,
+        )
+        # Invalidate dependent timestamps so the next read recomposes them.
+        self.data._body_com_pose_w.timestamp = -1.0
+        self.data._body_com_state_w.timestamp = -1.0
+        self.data._body_link_state_w.timestamp = -1.0
+        self.data._body_state_w.timestamp = -1.0
+        # Push updated per-body link poses to simulation via bindings.
+        for b in self._iter_body_ids_cpu(body_ids):
+            binding = self._get_binding(TT.RIGID_BODY_POSE, body_idx=b)
+            binding.write(self.data._body_link_pose_w_flat[b].view(wp.float32), indices=env_ids)
 
     def write_body_com_pose_to_sim_index(
         self,
@@ -157,7 +266,44 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set the body center of mass pose over selected environment and body indices into the simulation.
+
+        The body center of mass pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
+        The orientation is the orientation of the principal axes of inertia.
+
+        .. note::
+            This method expects partial data.
+
+        Args:
+            body_poses: Body center of mass poses in simulation frame [m, rad].
+                Shape is (len(env_ids), len(body_ids), 7) or (len(env_ids), len(body_ids)) with dtype wp.transformf.
+            body_ids: Body indices. If None, then all indices are used.
+            env_ids: Environment indices. If None, then all indices are used.
+        """
+        env_ids = self._resolve_env_ids(env_ids)
+        body_ids = self._resolve_body_ids(body_ids)
+        self.assert_shape_and_dtype(body_poses, (env_ids.shape[0], body_ids.shape[0]), wp.transformf, "body_poses")
+        wp.launch(
+            shared_kernels.set_body_com_pose_to_sim,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[body_poses, self.data.body_com_pose_b, env_ids, body_ids, False],
+            outputs=[
+                self.data._body_com_pose_w.data,
+                self.data._body_link_pose_w.data,
+                self.data._body_com_state_w.data,
+                self.data._body_link_state_w.data,
+                self.data._body_state_w.data,
+            ],
+            device=self._device,
+        )
+        # Invalidate dependent timestamps so the next read recomposes them.
+        self.data._body_link_state_w.timestamp = -1.0
+        self.data._body_state_w.timestamp = -1.0
+        self.data._body_com_state_w.timestamp = -1.0
+        # Push updated per-body link poses to simulation via bindings (OVPhysX only exposes link frame).
+        for b in self._iter_body_ids_cpu(body_ids):
+            binding = self._get_binding(TT.RIGID_BODY_POSE, body_idx=b)
+            binding.write(self.data._body_link_pose_w_flat[b].view(wp.float32), indices=env_ids)
 
     def write_body_com_pose_to_sim_mask(
         self,
@@ -166,7 +312,52 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:  # type: ignore[override]
-        raise NotImplementedError("phase 3")
+        """Set the body center of mass pose over selected environment and body masks into the simulation.
+
+        The body center of mass pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
+        The orientation is the orientation of the principal axes of inertia.
+
+        .. note::
+            This method expects full data.
+
+        Args:
+            body_poses: Body center of mass poses in simulation frame [m, rad].
+                Shape is (num_instances, num_bodies, 7) or (num_instances, num_bodies) with dtype wp.transformf.
+            body_mask: Body mask. If None, then all bodies are updated. Shape is (num_bodies,).
+            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+        """
+        if env_mask is not None:
+            env_mask_t = wp.to_torch(env_mask) if isinstance(env_mask, wp.array) else env_mask
+            env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
+        else:
+            env_ids = self._ALL_INDICES_ENV
+        if body_mask is not None:
+            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
+            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
+        else:
+            body_ids = self._ALL_INDICES_BODY
+        self.assert_shape_and_dtype(body_poses, (self._num_instances, self._num_bodies), wp.transformf, "body_poses")
+        wp.launch(
+            shared_kernels.set_body_com_pose_to_sim,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[body_poses, self.data.body_com_pose_b, env_ids, body_ids, True],
+            outputs=[
+                self.data._body_com_pose_w.data,
+                self.data._body_link_pose_w.data,
+                self.data._body_com_state_w.data,
+                self.data._body_link_state_w.data,
+                self.data._body_state_w.data,
+            ],
+            device=self._device,
+        )
+        # Invalidate dependent timestamps so the next read recomposes them.
+        self.data._body_link_state_w.timestamp = -1.0
+        self.data._body_state_w.timestamp = -1.0
+        self.data._body_com_state_w.timestamp = -1.0
+        # Push updated per-body link poses to simulation via bindings (OVPhysX only exposes link frame).
+        for b in self._iter_body_ids_cpu(body_ids):
+            binding = self._get_binding(TT.RIGID_BODY_POSE, body_idx=b)
+            binding.write(self.data._body_link_pose_w_flat[b].view(wp.float32), indices=env_ids)
 
     # ------------------------------------------------------------------
     # Velocity writers (3 pairs)
