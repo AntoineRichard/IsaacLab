@@ -205,9 +205,9 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         )
         binding = self._get_binding(TT.LINK_WRENCH)
         if binding is not None:
-            # Disambiguate via the binding's exposed shape (see ``_binding_write``):
-            #  * mock layout: ``(N, B, 9)`` instance-major -> direct write.
-            #  * native fused: ``(N*B, 9)`` body-major flat -> reshape and write.
+            # The articulation-mode mock used by iface tests exposes an instance-major
+            # ``(N, B, 9)`` view directly; the native fused binding lays elements body-
+            # major flat as ``(N * B, 9)``. Dispatch via the binding's exposed shape.
             if len(binding.shape) >= 2 and binding.shape[1] == self._num_bodies:
                 binding.write(self._wrench_buf)
             else:
@@ -215,15 +215,24 @@ class RigidObjectCollection(BaseRigidObjectCollection):
                 binding.write(view)
         inst.reset()
 
-    def update(self, dt: float) -> None:  # type: ignore[override]
+    def update(self, dt: float) -> None:
+        """Updates the simulation data.
+
+        Args:
+            dt: The time step size in seconds.
+        """
         self._data.update(dt)
+
+    """
+    Operations - Finders.
+    """
 
     def find_bodies(
         self, name_keys: str | Sequence[str], preserve_order: bool = False
-    ) -> tuple[torch.Tensor, list[str]]:  # type: ignore[override]
+    ) -> tuple[torch.Tensor, list[str]]:
         """Find bodies in the rigid body collection based on the name keys.
 
-        Please check the :func:`isaaclab.utils.string.resolve_matching_names` function for more
+        Please check the :meth:`isaaclab.utils.string_utils.resolve_matching_names` function for more
         information on the name matching.
 
         Args:
@@ -236,9 +245,9 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         obj_ids, obj_names = resolve_matching_names(name_keys, self.body_names, preserve_order)
         return torch.tensor(obj_ids, device=self._device, dtype=torch.int32), obj_names
 
-    # ------------------------------------------------------------------
-    # Pose writers (3 pairs)
-    # ------------------------------------------------------------------
+    """
+    Operations - Write to simulation.
+    """
 
     def write_body_pose_to_sim_index(
         self,
