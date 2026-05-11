@@ -355,7 +355,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_poses: wp.array,
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set the body link pose over selected environment and body indices into the simulation.
 
         The body link pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
@@ -383,18 +383,14 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             ],
             device=self._device,
         )
-        # Mark the pose buffer as fresh and invalidate dependent timestamps so
-        # the next read either uses the kernel-written value (within the same
-        # sim step) or re-fetches from OVPhysX (after the next update() call).
-        # Without the freshness mark, a stale timestamp causes the property to
-        # re-read the post-step pose from OVPhysX before update() is called,
-        # returning a physics-evolved position rather than the written one.
+        # Mark the link pose fresh so reads within the same step return the
+        # kernel-written value rather than re-fetching the pre-step OVPhysX state.
         self.data._body_link_pose_w.timestamp = self.data._sim_timestamp
         self.data._body_com_pose_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
-        # Push updated link poses to simulation via single fused binding.
+        # set into simulation
         self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
     def write_body_link_pose_to_sim_mask(
@@ -403,7 +399,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_poses: wp.array,
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set the body link pose over selected environment and body masks into the simulation.
 
         The body link pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
@@ -439,12 +435,12 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             ],
             device=self._device,
         )
-        # Invalidate dependent timestamps so the next read recomposes them.
+        # Invalidate dependent timestamps
         self.data._body_com_pose_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
-        # Push updated link poses to simulation via single fused binding.
+        # set into simulation
         self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
     def write_body_com_pose_to_sim_index(
@@ -453,7 +449,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_poses: wp.array,
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set the body center of mass pose over selected environment and body indices into the simulation.
 
         The body center of mass pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
@@ -484,12 +480,11 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             ],
             device=self._device,
         )
-        # Invalidate dependent timestamps so the next read recomposes them.
+        # Invalidate dependent timestamps
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
-        # Push updated link poses to simulation via single fused binding
-        # (OVPhysX only exposes link frame).
+        # set into simulation (OVPhysX only exposes the link frame)
         self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
     def write_body_com_pose_to_sim_mask(
@@ -498,7 +493,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_poses: wp.array,
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set the body center of mass pose over selected environment and body masks into the simulation.
 
         The body center of mass pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
@@ -537,12 +532,11 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             ],
             device=self._device,
         )
-        # Invalidate dependent timestamps so the next read recomposes them.
+        # Invalidate dependent timestamps
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
-        # Push updated link poses to simulation via single fused binding
-        # (OVPhysX only exposes link frame).
+        # set into simulation (OVPhysX only exposes the link frame)
         self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
     def write_body_com_velocity_to_sim_index(
