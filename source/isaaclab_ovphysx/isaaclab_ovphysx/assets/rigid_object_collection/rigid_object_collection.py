@@ -255,12 +255,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_poses: wp.array,
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set the body pose over selected environment and body indices into the simulation.
 
         The body pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
-        For rigid bodies the actor frame coincides with the link frame, so this delegates to
-        :meth:`write_body_link_pose_to_sim_index`.
 
         .. note::
             This method expects partial data.
@@ -279,12 +277,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_poses: wp.array,
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set the body pose over selected environment and body masks into the simulation.
 
         The body pose comprises of the cartesian position and quaternion orientation in (x, y, z, w).
-        For rigid bodies the actor frame coincides with the link frame, so this delegates to
-        :meth:`write_body_link_pose_to_sim_mask`.
 
         .. note::
             This method expects full data.
@@ -775,7 +771,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         masses: wp.array,
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set body masses over selected env / body indices into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
@@ -811,7 +807,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         masses: wp.array,
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set body masses over selected env / body masks into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
@@ -852,7 +848,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         coms: wp.array,
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set body center-of-mass poses over selected env / body indices into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
@@ -894,7 +890,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         coms: wp.array,
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set body center-of-mass poses over selected env / body masks into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
@@ -941,7 +937,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         inertias: wp.array,
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set body inertia tensors over selected env / body indices into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
@@ -983,7 +979,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         inertias: wp.array,
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set body inertia tensors over selected env / body masks into the simulation.
 
         This is a CPU-only write routed through pinned-host staging because
@@ -1033,7 +1029,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_states: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         body_ids: slice | torch.Tensor | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Deprecated, same as :meth:`write_body_link_pose_to_sim_index` and
         :meth:`write_body_com_velocity_to_sim_index`."""
         warnings.warn(
@@ -1055,7 +1051,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_states: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         body_ids: slice | torch.Tensor | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Deprecated, same as :meth:`write_body_link_pose_to_sim_index` and
         :meth:`write_body_link_velocity_to_sim_index`."""
         warnings.warn(
@@ -1077,7 +1073,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_states: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         body_ids: slice | torch.Tensor | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Deprecated, same as :meth:`write_body_com_pose_to_sim_index` and
         :meth:`write_body_com_velocity_to_sim_index`."""
         warnings.warn(
