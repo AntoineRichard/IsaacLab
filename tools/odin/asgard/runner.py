@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,7 @@ from pathlib import Path
 from tools.odin.asgard.budgets import load_budgets
 from tools.odin.asgard.cleanup import sweep_orphan_trainers
 from tools.odin.asgard.fleet import Fleet, ValkyrieConfig
+from tools.odin.asgard.heimdall import HeimdallSnapshot, HeimdallWatcher, HostHealth  # noqa: F401
 from tools.odin.asgard.jobs import FailureInfo, JobEntry, SkippedEntry, build_queue_from_env_lists
 from tools.odin.asgard.preflight import preflight_valkyrie
 from tools.odin.asgard.provisioner import provision_valkyrie
@@ -35,6 +38,8 @@ from tools.odin.valhalla.dashboard.cancel_db import CancelDB
 from tools.odin.valhalla.dashboard.retry_db import RetryDB
 
 __all__ = ["DispatchOptions", "resolve_dispatch_dir", "run_dispatch"]
+
+_log = logging.getLogger(__name__)
 
 # Minimum CUDA toolkit version required for Newton (warp) workloads.
 _NEWTON_CUDA_FLOOR: tuple[int, int] = (12, 4)
@@ -99,6 +104,12 @@ class DispatchOptions:
     # single-global-timeout behaviour. See
     # :func:`tools.odin.asgard.budgets.load_budgets`.
     budgets_yaml: Path | None = None
+    # Disable the Heimdall fleet watcher (periodic re-probe + stale-job
+    # detection). Default ``False`` (Heimdall on). See
+    # :class:`tools.odin.asgard.heimdall.HeimdallWatcher`.
+    no_heimdall: bool = False
+    heimdall_probe_interval_s: int = 300
+    heimdall_stale_threshold_s: int = 180
 
 
 def _utc_now_iso() -> str:
@@ -297,6 +308,15 @@ def _apply_state_event(
                 )
             )
         return 0
+    if ev.transition == "heartbeat":
+        # Liveness ping from the worker thread. Bump the JobEntry's
+        # ``last_heartbeat_at`` so Heimdall's staleness check has an
+        # up-to-date reference. Silently ignore for jobs that have already
+        # transitioned to a terminal state — late heartbeats can race past
+        # ``completed`` / ``failed`` events.
+        if j is not None and j.status == "running" and ev.at is not None:
+            j.last_heartbeat_at = ev.at
+        return 0
     return 0
 
 
@@ -484,6 +504,138 @@ def _mark_cancellation_consumed(
     if ev.failure.kind != "killed":
         return
     cancel_db.mark_consumed(dispatch_id, ev.run_id, outcome="killed")
+
+
+def _consume_heimdall_snapshot(
+    snap: HeimdallSnapshot | None,
+    state: DispatchState,
+    fleet: Fleet,
+    *,
+    ssh,
+    last_consumed_at: str | None,
+    set_last_consumed: Callable[[str], None],
+    prev_host_state: dict[str, HostHealth],
+    recover_fn: Callable | None = None,
+    kill_fn: Callable | None = None,
+) -> None:
+    """Apply one :class:`HeimdallSnapshot` to ``state`` exactly once.
+
+    Idempotent on ``snap.generated_at == last_consumed_at``: a duplicate
+    snapshot is a no-op so multi-tick loops never double-act.
+
+    Host flips from healthy → unhealthy trigger one
+    :func:`~tools.odin.asgard.recovery.recover_valkyrie_gpu` attempt; on
+    success the host stays in the active fleet, on failure the host is
+    quarantined and any in-flight jobs assigned to it are flipped to
+    pending with the host added to ``preferred_not``.
+
+    Stale jobs are killed best-effort and classified by host health:
+    healthy host → ``timeout`` (no retry); unhealthy host →
+    ``infrastructure`` (re-queued via the existing infra-retry path).
+
+    Args:
+        snap: Latest snapshot from
+            :meth:`~tools.odin.asgard.heimdall.HeimdallWatcher.latest`.
+            ``None`` is a no-op.
+        state: Mutable :class:`DispatchState`; the runner is the sole
+            writer.
+        fleet: Same fleet the watcher is probing; used to look up
+            :class:`~tools.odin.asgard.fleet.ValkyrieConfig` for recovery
+            and remote-process kills.
+        ssh: Same :class:`~tools.odin.asgard.transport.SSHRunner` the
+            runner uses elsewhere; passed into ``recover_fn`` and the
+            default ``kill_fn``.
+        last_consumed_at: Previous snapshot's ``generated_at`` (or ``None``
+            on first tick).
+        set_last_consumed: Callback the consumer invokes with
+            ``snap.generated_at`` after a successful pass.
+        recover_fn: Override for
+            :func:`~tools.odin.asgard.recovery.recover_valkyrie_gpu`;
+            tests inject a stub. Production passes ``None``.
+        kill_fn: Override for the remote ``pkill -f <run_id>`` step used
+            on stale-job detection; tests inject a stub. Production
+            passes ``None``.
+    """
+    if snap is None or snap.generated_at == last_consumed_at:
+        return
+
+    if recover_fn is None:
+        from tools.odin.asgard.recovery import recover_valkyrie_gpu
+
+        recover_fn = recover_valkyrie_gpu
+    if kill_fn is None:
+
+        def kill_fn(host, run_id, ssh, *, timeout_s):
+            cmd = f"docker exec {host.container_name} sh -c 'pkill -f {run_id} || true'"
+            try:
+                ssh.run(host, cmd, timeout_s=timeout_s, pty=False)
+            except Exception as exc:
+                _log.warning("heimdall: kill_fn ssh exception: %r", exc)
+
+    host_lookup = {h.host: h for h in fleet.hosts}
+
+    for host_name, h in snap.hosts.items():
+        prev = prev_host_state.get(host_name)
+        prev_was_healthy = prev.healthy if prev is not None else True
+        if not (prev_was_healthy and not h.healthy):
+            continue
+        host_cfg = host_lookup.get(host_name)
+        if host_cfg is None:
+            _log.warning("heimdall: flip on unknown host %r", host_name)
+            continue
+        rec = recover_fn(host_cfg, ssh=ssh)
+        if getattr(rec, "recovered", False):
+            for f in state.fleet:
+                if f.host == host_name:
+                    f.last_error = "gpu_lost: heimdall recovery succeeded"
+            continue
+        from tools.odin.asgard.state import QuarantinedHost
+
+        state.quarantined_hosts.append(
+            QuarantinedHost(
+                host=host_name,
+                reason="heimdall_recovery_failed",
+                last_run_id="",
+                at=_utc_now_iso(),
+            )
+        )
+        for f in state.fleet:
+            if f.host == host_name:
+                f.status = "down"
+                f.last_error = f"heimdall: {getattr(rec, 'message', 'recovery failed')}"
+                f.current_run_id = None
+        for j in state.jobs:
+            if j.assigned_to == host_name and j.status == "running":
+                j.transition_to("pending", add_preferred_not=host_name)
+
+    jobs_by_id = {j.run_id: j for j in state.jobs}
+    for sj in snap.stale_jobs:
+        j = jobs_by_id.get(sj.run_id)
+        if j is None or j.status != "running":
+            continue  # already terminal or unknown — race-tolerant
+        host_cfg = host_lookup.get(sj.host)
+        if host_cfg is not None:
+            try:
+                kill_fn(host_cfg, sj.run_id, ssh, timeout_s=10)
+            except Exception as exc:
+                _log.warning("heimdall: kill_fn raised: %r", exc)
+        if sj.host_was_healthy:
+            j.transition_to(
+                "failed",
+                failure=FailureInfo(
+                    kind="timeout",
+                    message=(
+                        f"heimdall: stale heartbeat (age={sj.age_seconds:.0f}s) with healthy host — trainer wedge"
+                    ),
+                ),
+                now=_utc_now_iso(),
+            )
+        else:
+            j.transition_to("pending", add_preferred_not=sj.host)
+
+    prev_host_state.clear()
+    prev_host_state.update(snap.hosts)
+    set_last_consumed(snap.generated_at)
 
 
 def _merge_jobs(existing: list[JobEntry], fresh: list[JobEntry]) -> list[JobEntry]:
@@ -830,6 +982,46 @@ def run_dispatch(  # noqa: C901
     live_retry_poll_s = max(0.05, options.live_retry_poll_s)
     last_retry_poll = time.monotonic()
     last_write = time.monotonic()
+
+    watcher: HeimdallWatcher | None = None
+    last_heimdall_consumed_at: str | None = None
+    heimdall_prev_host_state: dict[str, HostHealth] = {}
+    if not options.no_heimdall:
+        watcher = HeimdallWatcher(
+            fleet=fleet,
+            dispatch_dir=dispatch_dir,
+            ssh=ssh,
+            state_view=lambda: state,
+            probe_interval_s=options.heimdall_probe_interval_s,
+            stale_threshold_s=options.heimdall_stale_threshold_s,
+        )
+        watcher.start()
+
+    def _consume_heimdall_if_ready() -> None:
+        nonlocal last_heimdall_consumed_at
+        if watcher is None:
+            return
+        if not watcher.is_alive():
+            _log.warning("heimdall: watcher thread is not alive; continuing without it")
+            return
+        snap = watcher.latest()
+        if snap is None:
+            return
+
+        def _set(v: str) -> None:
+            nonlocal last_heimdall_consumed_at
+            last_heimdall_consumed_at = v
+
+        _consume_heimdall_snapshot(
+            snap,
+            state,
+            fleet,
+            prev_host_state=heimdall_prev_host_state,
+            ssh=ssh,
+            last_consumed_at=last_heimdall_consumed_at,
+            set_last_consumed=_set,
+        )
+
     while remaining > 0 and any(w.is_alive() for w in workers):
         try:
             ev: StateEvent = state_chan.get(timeout=min(1.0, live_retry_poll_s))
@@ -858,6 +1050,7 @@ def run_dispatch(  # noqa: C901
                     write_dispatch_state(dispatch_dir, state)
                     last_write = now
                 last_retry_poll = now
+            _consume_heimdall_if_ready()
             if time.monotonic() - last_write >= 5.0:
                 write_dispatch_state(dispatch_dir, state)
                 last_write = time.monotonic()
@@ -905,6 +1098,9 @@ def run_dispatch(  # noqa: C901
         job_q.put(None)
     for w in workers:
         w.join(timeout=30.0)
+
+    if watcher is not None:
+        watcher.stop(timeout_s=10.0)
 
     _sweep_pending_after_dispatch(state)
 

@@ -245,13 +245,13 @@ def test_read_skipped_without_native_backend_defaults_to_none(tmp_path: Path):
     assert s.skipped[0].native_backend is None
 
 
-def test_schema_version_writes_1_5(tmp_path: Path):
-    """New dispatches write schema_version='1.5'."""
+def test_schema_version_writes_1_6(tmp_path: Path):
+    """New dispatches write schema_version='1.6'."""
     write_dispatch_state(tmp_path, _state_with_skipped([_job("run-a")], []))
     import json
 
     payload = json.loads((tmp_path / "dispatch.json").read_text())
-    assert payload["schema_version"] == "1.5"
+    assert payload["schema_version"] == "1.6"
 
 
 def test_roundtrip_quarantined_hosts(tmp_path: Path):
@@ -435,8 +435,8 @@ def test_running_substate_absent_in_legacy_dispatch_json_reads_as_none(tmp_path:
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_1_5():
-    assert SCHEMA_VERSION == "1.5"
+def test_schema_version_is_1_6():
+    assert SCHEMA_VERSION == "1.6"
 
 
 def test_dispatch_state_round_trip_with_osmo_fields(tmp_path: Path):
@@ -529,3 +529,78 @@ def test_dispatch_state_round_trip_omits_osmo_task_name(tmp_path: Path):
     assert loaded is not None
     assert loaded.jobs[0].osmo_task_name is None
     assert loaded.dispatcher == "asgard"
+
+
+def test_job_entry_last_heartbeat_at_round_trip(tmp_path):
+    """JobEntry.last_heartbeat_at survives write_dispatch_state → read_dispatch_state."""
+    from tools.odin.asgard.jobs import JobEntry
+    from tools.odin.asgard.state import (
+        SCHEMA_VERSION,
+        DispatchState,
+        read_dispatch_state,
+        write_dispatch_state,
+    )
+
+    job = JobEntry(
+        run_id="run-1",
+        task_id="cartpole",
+        framework="rsl_rl",
+        backend="physx",
+        num_envs=1024,
+        max_iterations=200,
+        seed=42,
+        bundle_dir_name="run-1",
+    )
+    job.last_heartbeat_at = "2026-05-08T14:32:18Z"
+
+    state = DispatchState(
+        schema_version=SCHEMA_VERSION,
+        dispatch_id="20260508-143200",
+        started_at="2026-05-08T14:32:00Z",
+        ended_at=None,
+        seeds=[42],
+        commit_sha="deadbeef",
+        fleet=[],
+        jobs=[job],
+    )
+    write_dispatch_state(tmp_path, state)
+    loaded = read_dispatch_state(tmp_path)
+    assert loaded is not None
+    assert loaded.jobs[0].last_heartbeat_at == "2026-05-08T14:32:18Z"
+
+
+def test_job_entry_missing_last_heartbeat_at_is_none():
+    """Pre-Heimdall dispatch.json (no last_heartbeat_at field) loads as None."""
+    from tools.odin.asgard.state import _job_from_dict
+
+    payload = {
+        "run_id": "run-1",
+        "task_id": "cartpole",
+        "framework": "rsl_rl",
+        "backend": "physx",
+        "num_envs": 1024,
+        "max_iterations": 200,
+        "seed": 42,
+        "bundle_dir_name": "run-1",
+        "status": "pending",
+        "assigned_to": None,
+        "attempts": 0,
+        "preferred_not": [],
+        "started_at": None,
+        "ended_at": None,
+        "running_substate": None,
+        "per_job_timeout_s": None,
+        "osmo_task_name": None,
+        "failure": None,
+    }
+    job = _job_from_dict(payload)
+    assert job.last_heartbeat_at is None
+
+
+def test_dispatch_state_schema_version_is_minor_bump():
+    """Heimdall lands as a minor bump (1.5 → 1.6); same-major resume must work."""
+    from tools.odin.asgard.state import SCHEMA_VERSION, _schema_version_compatible
+
+    assert SCHEMA_VERSION.split(".", 1)[0] == "1"
+    assert _schema_version_compatible("1.5", SCHEMA_VERSION)
+    assert not _schema_version_compatible("2.0", SCHEMA_VERSION)

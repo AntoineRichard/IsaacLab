@@ -14,9 +14,11 @@ from pathlib import Path
 import dash
 from dash import ALL, Input, Output, State
 
+from tools.odin.asgard.heimdall import read_fleet_json
 from tools.odin.valhalla.dashboard.data import DataLayer
 from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.fleet_table import render_fleet_table
 from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.header import render_header
+from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.heimdall_card import render_empty_state, render_heimdall_card
 from tools.odin.valhalla.dashboard.tabs.dispatch_fleet.jobs_table import render_jobs_rows
 
 __all__ = ["register_callbacks"]
@@ -52,6 +54,20 @@ def register_callbacks(app: dash.Dash, data: DataLayer) -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"[WARNING] tab-a fleet callback: {type(exc).__name__}: {exc}", file=sys.stderr)
             return _error_banner("Failed to render fleet table", exc)
+
+    @app.callback(
+        Output("tab-a-heimdall-card", "children"),
+        Input("tab-a-tick", "n_intervals"),
+        Input("tab-a-dispatch-id", "data"),
+    )
+    def _update_heimdall(_n, dispatch_id):
+        if not dispatch_id:
+            return dash.no_update
+        try:
+            return _compute_heimdall_children(data, dispatch_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARNING] tab-a heimdall callback: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return render_empty_state()
 
     @app.callback(
         Output("tab-a-jobs-rows-content", "children"),
@@ -243,6 +259,15 @@ def _compute_fleet_children(data: DataLayer, dispatch_id: str):
     payload = data.load_dispatch(dispatch_id)
     hardware = data.load_hardware(dispatch_id)
     return render_fleet_table(payload, hardware, data.lookup_hardware)
+
+
+def _compute_heimdall_children(data: DataLayer, dispatch_id: str):
+    """Render the Heimdall card from ``<runs_root>/<dispatch_id>/fleet.json``."""
+    dispatch_dir = data._runs_root / dispatch_id
+    payload = read_fleet_json(dispatch_dir)
+    if payload is None:
+        return render_empty_state()
+    return render_heimdall_card(payload)
 
 
 def _compute_jobs_children(

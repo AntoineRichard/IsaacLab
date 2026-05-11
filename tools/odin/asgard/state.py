@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-SCHEMA_VERSION = "1.5"
+SCHEMA_VERSION = "1.6"
 _DISPATCH_FILENAME = "dispatch.json"
 
 
@@ -168,6 +168,7 @@ def _job_to_dict(j: JobEntry) -> dict[str, Any]:
         "preferred_not": sorted(j.preferred_not),
         "per_job_timeout_s": j.per_job_timeout_s,
         "osmo_task_name": j.osmo_task_name,
+        "last_heartbeat_at": j.last_heartbeat_at,
     }
     if j.failure is None:
         d["failure"] = None
@@ -207,6 +208,7 @@ def _job_from_dict(d: dict[str, Any]) -> JobEntry:
         ended_at=d.get("ended_at"),
         per_job_timeout_s=d.get("per_job_timeout_s"),
         osmo_task_name=d.get("osmo_task_name"),
+        last_heartbeat_at=d.get("last_heartbeat_at"),
     )
 
 
