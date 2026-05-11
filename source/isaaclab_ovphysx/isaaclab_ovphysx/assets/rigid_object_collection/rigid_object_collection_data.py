@@ -140,22 +140,21 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         Args:
             dt: The time step for the update [s]. This must be a positive value.
         """
+        # update the simulation timestamp
         self._sim_timestamp += dt
-        # Mirrors RigidObject's update() pattern.
-        # Priming an FD-dependent derived property ensures the first read
-        # returns sensible (zero) acceleration.
+        # Prime the FD-dependent COM acceleration so the first read returns a sensible (zero) value.
         _ = self.body_com_acc_w
 
-    # ------------------------------------------------------------------
-    # Names
-    # ------------------------------------------------------------------
+    """
+    Names.
+    """
 
     body_names: list[str] = None
     """Body names in the order parsed by the simulation view."""
 
-    # ------------------------------------------------------------------
-    # Default state properties
-    # ------------------------------------------------------------------
+    """
+    Defaults.
+    """
 
     @property
     def default_body_pose(self) -> ProxyArray:
@@ -223,9 +222,9 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         )
         return self._default_body_state_ta
 
-    # ------------------------------------------------------------------
-    # Body state properties — raw reads
-    # ------------------------------------------------------------------
+    """
+    Body state properties.
+    """
 
     @property
     def body_link_pose_w(self) -> ProxyArray:
@@ -392,9 +391,9 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
             self._body_inertia_ta = ProxyArray(self._body_inertia.data)
         return self._body_inertia_ta
 
-    # ------------------------------------------------------------------
-    # Deprecated state-concat properties
-    # ------------------------------------------------------------------
+    """
+    Deprecated state-concat properties.
+    """
 
     @property
     def body_state_w(self) -> ProxyArray:
@@ -462,9 +461,9 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
             self._body_com_state_w_ta = ProxyArray(self._body_com_state_w.data)
         return self._body_com_state_w_ta
 
-    # ------------------------------------------------------------------
-    # Sliced body properties (position, orientation, velocity)
-    # ------------------------------------------------------------------
+    """
+    Sliced properties.
+    """
 
     @property
     def body_link_pos_w(self) -> ProxyArray:
@@ -699,9 +698,9 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
             self._body_com_quat_b_ta = ProxyArray(self._get_quat_from_transform(parent.warp))
         return self._body_com_quat_b_ta
 
-    # ------------------------------------------------------------------
-    # Derived properties
-    # ------------------------------------------------------------------
+    """
+    Derived Properties.
+    """
 
     @property
     def projected_gravity_b(self) -> ProxyArray:
@@ -747,10 +746,6 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
             self._heading_w_ta = ProxyArray(self._heading_w.data)
         return self._heading_w_ta
 
-    # ------------------------------------------------------------------
-    # Buffer allocation
-    # ------------------------------------------------------------------
-
     def _create_buffers(self) -> None:
         """Eagerly allocate every per-body TimestampedBuffer and the slots for
         cached :class:`ProxyArray` wrappers.
@@ -794,7 +789,7 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         self._body_mass = TimestampedBuffer((N, B), self.device, wp.float32)
         self._body_inertia = TimestampedBuffer((N, B, 9), self.device, wp.float32)
 
-        # Pinned CPU staging buffers used by mass/com/inertia setters (mirrors Articulation).
+        # Pinned CPU staging buffers used by mass/com/inertia setters.
         pinned = self.device != "cpu"
         self._cpu_body_mass = wp.zeros((N, B), dtype=wp.float32, device="cpu", pinned=pinned)
         self._cpu_body_coms = wp.zeros((N, B, 7), dtype=wp.float32, device="cpu", pinned=pinned)
@@ -842,9 +837,9 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
     def _pin_proxy_arrays(self) -> None:
         """Create pinned :class:`ProxyArray` wrappers for all data buffers.
 
-        Called once from :meth:`_create_buffers`. OVPhysX tensor API buffers have
-        stable GPU pointers across simulation steps, so no rebinding is needed
-        (unlike Newton).
+        This is called once from :meth:`_create_buffers` during initialization.
+        OVPhysX tensor API buffers have stable GPU pointers across simulation steps,
+        so no rebinding is needed (unlike Newton).
         """
         # Defaults
         self._default_body_pose_ta: ProxyArray | None = None
@@ -890,15 +885,12 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         self._body_link_state_w_ta: ProxyArray | None = None
         self._body_com_state_w_ta: ProxyArray | None = None
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    """
+    Helpers.
+    """
 
     def _get_binding(self, tensor_type: int):
         """Return the binding for the given tensor type, or None.
-
-        Mirrors :meth:`~isaaclab_ovphysx.assets.Articulation._get_binding` exactly:
-        a single binding per tensor type, no body index.
 
         Args:
             tensor_type: The TensorType constant identifying which simulation buffer.
@@ -1045,10 +1037,6 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
             buf: Timestamped :class:`wp.spatial_vectorf` buffer to refresh.
         """
         self._read_binding_into_instance_major(tensor_type, buf, floats_per_elem=6)
-
-    # ------------------------------------------------------------------
-    # Strided-view reshape helpers (mirror PhysX RigidObjectCollectionData)
-    # ------------------------------------------------------------------
 
     def _reshape_view_to_data_2d(self, data: wp.array) -> wp.array:
         """Reshape body-major flat data into instance-major ``(num_instances, num_bodies)``.
