@@ -297,6 +297,58 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         """
         self.write_body_link_pose_to_sim_mask(body_poses=body_poses, body_mask=body_mask, env_mask=env_mask)
 
+    def write_body_velocity_to_sim_index(
+        self,
+        *,
+        body_velocities: wp.array,
+        body_ids: Sequence[int] | wp.array | None = None,
+        env_ids: Sequence[int] | wp.array | None = None,
+    ) -> None:
+        """Set the body velocity over selected environment and body indices into the simulation.
+
+        The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
+
+        .. note::
+            This sets the velocity of the body's center of mass rather than the body's frame.
+
+        .. note::
+            This method expects partial data.
+
+        Args:
+            body_velocities: Body velocities in simulation world frame [m/s, rad/s].
+                Shape is (len(env_ids), len(body_ids)) with dtype wp.spatial_vectorf.
+            body_ids: Body indices. If None, then all indices are used.
+            env_ids: Environment indices. If None, then all indices are used.
+        """
+        self.write_body_com_velocity_to_sim_index(body_velocities=body_velocities, body_ids=body_ids, env_ids=env_ids)
+
+    def write_body_velocity_to_sim_mask(
+        self,
+        *,
+        body_velocities: wp.array,
+        body_mask: wp.array | None = None,
+        env_mask: wp.array | None = None,
+    ) -> None:
+        """Set the body velocity over selected environment and body masks into the simulation.
+
+        The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
+
+        .. note::
+            This sets the velocity of the body's center of mass rather than the body's frame.
+
+        .. note::
+            This method expects full data.
+
+        Args:
+            body_velocities: Body velocities in simulation world frame [m/s, rad/s].
+                Shape is (num_instances, num_bodies) with dtype wp.spatial_vectorf.
+            body_mask: Body mask. If None, then all bodies are updated. Shape is (num_bodies,).
+            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+        """
+        self.write_body_com_velocity_to_sim_mask(
+            body_velocities=body_velocities, body_mask=body_mask, env_mask=env_mask
+        )
+
     def write_body_link_pose_to_sim_index(
         self,
         *,
@@ -492,64 +544,6 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         # Push updated link poses to simulation via single fused binding
         # (OVPhysX only exposes link frame).
         self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
-
-    # ------------------------------------------------------------------
-    # Velocity writers (3 pairs)
-    # ------------------------------------------------------------------
-
-    def write_body_velocity_to_sim_index(
-        self,
-        *,
-        body_velocities: wp.array,
-        body_ids: Sequence[int] | wp.array | None = None,
-        env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
-        """Set the body velocity over selected environment and body indices into the simulation.
-
-        The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
-
-        .. note::
-            For rigid bodies the actor frame coincides with the center of mass frame, so this
-            delegates to :meth:`write_body_com_velocity_to_sim_index`.
-
-        .. note::
-            This method expects partial data.
-
-        Args:
-            body_velocities: Body velocities in simulation world frame [m/s, rad/s].
-                Shape is (len(env_ids), len(body_ids)) with dtype wp.spatial_vectorf.
-            body_ids: Body indices. If None, then all indices are used.
-            env_ids: Environment indices. If None, then all indices are used.
-        """
-        self.write_body_com_velocity_to_sim_index(body_velocities=body_velocities, body_ids=body_ids, env_ids=env_ids)
-
-    def write_body_velocity_to_sim_mask(
-        self,
-        *,
-        body_velocities: wp.array,
-        body_mask: wp.array | None = None,
-        env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
-        """Set the body velocity over selected environment and body masks into the simulation.
-
-        The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
-
-        .. note::
-            For rigid bodies the actor frame coincides with the center of mass frame, so this
-            delegates to :meth:`write_body_com_velocity_to_sim_mask`.
-
-        .. note::
-            This method expects full data.
-
-        Args:
-            body_velocities: Body velocities in simulation world frame [m/s, rad/s].
-                Shape is (num_instances, num_bodies) with dtype wp.spatial_vectorf.
-            body_mask: Body mask. If None, then all bodies are updated. Shape is (num_bodies,).
-            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
-        """
-        self.write_body_com_velocity_to_sim_mask(
-            body_velocities=body_velocities, body_mask=body_mask, env_mask=env_mask
-        )
 
     def write_body_link_velocity_to_sim_index(
         self,
