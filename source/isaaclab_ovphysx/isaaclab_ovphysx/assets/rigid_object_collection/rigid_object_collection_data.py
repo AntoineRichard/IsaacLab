@@ -89,13 +89,24 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         # Set initial time stamp.
         self._sim_timestamp = 0.0
         self._is_primed = False
-        # Pinned-host staging buffers for CPU-only bindings (keyed by tensor_type).
+        # Body-major read scratch buffers (keyed by tensor_type).  Allocated on
+        # the binding's own device — pinned host for CPU-only bindings, GPU for
+        # the rest — so ``binding.read(scratch)`` never crosses devices.
         self._cpu_staging_buffers: dict[int, wp.array] = {}
-        # Cache for float32 read views (keyed by (tensor_type, ptr)).
-        self._read_view_cache: dict = {}
 
         # Read num_instances from the LINK_POSE binding.
-        self.num_instances = self._bindings[TT.LINK_POSE].count
+        #
+        # The native fused multi-prim binding lays elements out body-major-flat
+        # with ``shape == (N * B, 7)`` and ``count == N * B``.  The
+        # articulation-mode mock used by iface tests exposes a directly
+        # instance-major view with ``shape == (N, B, 7)`` and ``count == N``.
+        # Disambiguate via the binding's exposed shape: when the second axis is
+        # ``num_bodies``, the binding is in mock instance-major layout.
+        pose_binding = self._bindings[TT.LINK_POSE]
+        if len(pose_binding.shape) >= 2 and pose_binding.shape[1] == num_bodies:
+            self.num_instances = pose_binding.count
+        else:
+            self.num_instances = pose_binding.count // num_bodies
         self._num_instances = self.num_instances
 
         if SimulationManager._sim is not None and hasattr(SimulationManager._sim, "cfg"):
@@ -808,21 +819,29 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         self._cpu_body_inertia = wp.zeros((N, B, 9), dtype=wp.float32, device="cpu", pinned=pinned)
 
         # Eagerly read mass and inertia (CPU-only bindings) at construction time.
-        # Use numpy round-trip (same pattern as ArticulationData._create_buffers).
-        def _read_cpu(tensor_type):
+        # The native fused binding returns body-major flat data ``(N*B[, D])``;
+        # the articulation-mode mock returns instance-major ``(N, B[, D])``.
+        # In either case we reshape on the CPU into instance-major numpy arrays.
+        def _read_cpu(tensor_type, trailing_dim=None):
             binding = self._get_binding(tensor_type)
             if binding is None:
                 return None
             np_buf = np.zeros(binding.shape, dtype=np.float32)
             binding.read(np_buf)
-            return np_buf
+            if binding.count == N:
+                # Mock fast-path: already (N, B[, D]).
+                return np_buf
+            # Native fused path: body-major flat -> instance-major via reshape+transpose.
+            if trailing_dim is None:
+                return np_buf.reshape(B, N).T.copy()
+            return np_buf.reshape(B, N, trailing_dim).transpose(1, 0, 2).copy()
 
         np_mass = _read_cpu(TT.BODY_MASS)
         if np_mass is not None:
             wp.copy(self._body_mass.data, wp.from_numpy(np_mass, dtype=wp.float32, device=self.device))
             self._body_mass.timestamp = self._sim_timestamp
 
-        np_inertia = _read_cpu(TT.BODY_INERTIA)
+        np_inertia = _read_cpu(TT.BODY_INERTIA, trailing_dim=9)
         if np_inertia is not None:
             wp.copy(
                 self._body_inertia.data,
@@ -915,119 +934,192 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
             return b
         return None
 
-    def _binding_read(self, tensor_type: int, binding, dst: wp.array) -> None:
-        """Read *binding* into *dst*, staging through pinned-host for CPU-only bindings.
+    def _read_view_scratch(self, tensor_type: int, binding) -> wp.array:
+        """Return a cached body-major scratch float32 buffer matching ``binding.shape``.
 
-        Mirrors :meth:`~isaaclab_ovphysx.assets.articulation.ArticulationData._binding_read`.
+        Allocated on the binding's own device (GPU bindings → GPU, CPU-only
+        bindings → pinned host) so that ``binding.read(scratch)`` never crosses
+        devices.  The scratch buffer is body-major flat
+        ``(num_bodies * num_instances[, D])`` and is reshaped into instance-major
+        ``(N, B[, D])`` by :meth:`_reshape_view_to_data_2d` /
+        :meth:`_reshape_view_to_data_3d` before being copied into the user-facing
+        timestamped buffer.
+
+        Args:
+            tensor_type: TensorType key (used as cache key).
+            binding: The fused :class:`TensorBinding` whose shape the scratch
+                must match.
+
+        Returns:
+            Cached body-major scratch buffer for reads.
+        """
+        scratch = self._cpu_staging_buffers.get(tensor_type)
+        if scratch is not None:
+            return scratch
+        binding_device = "cpu" if tensor_type in TT._CPU_ONLY_TYPES else self.device
+        pinned = binding_device == "cpu" and self.device != "cpu"
+        if pinned:
+            scratch = wp.zeros(binding.shape, dtype=wp.float32, device="cpu", pinned=True)
+        else:
+            scratch = wp.zeros(binding.shape, dtype=wp.float32, device=binding_device)
+        self._cpu_staging_buffers[tensor_type] = scratch
+        return scratch
+
+    def _read_binding_into_instance_major(self, tensor_type: int, buf: TimestampedBuffer, floats_per_elem: int) -> None:
+        """Read a fused binding into the instance-major ``buf.data``.
+
+        The native fused multi-prim binding returns data in body-major flat order
+        ``(body0_env0, body0_env1, ..., body1_env0, ...)`` with
+        ``binding.count == num_instances * num_bodies``.  The articulation-mode
+        mock used by iface tests instead exposes a directly instance-major view
+        with ``binding.count == num_instances`` and shape ``(N, B[, D])``.
+
+        This method dispatches to the right path:
+
+        * **Mock fast-path** (``binding.count == num_instances``): a float32 view
+          of the destination buffer is filled directly via ``binding.read()``.
+        * **Native fused path** (``binding.count == num_instances * num_bodies``):
+          ``binding.read()`` fills a body-major scratch, which is then reshaped
+          into instance-major order via :meth:`_reshape_view_to_data_2d` (for
+          single-element-per-body fields like mass) or
+          :meth:`_reshape_view_to_data_3d` (for fields with a trailing
+          ``floats_per_elem`` dimension), and the result is copied into the
+          destination buffer.
 
         Args:
             tensor_type: TensorType key identifying the binding.
-            binding: OVPhysX TensorBinding whose ``read`` method is called.
-            dst: Destination :class:`wp.array` on the simulation device.
+            buf: Timestamped buffer to refresh.  ``buf.data`` is
+                ``(num_instances, num_bodies)`` for single-element-per-body
+                fields (e.g. mass), or ``(num_instances, num_bodies, ...)`` for
+                multi-component fields.
+            floats_per_elem: Number of trailing ``float32`` elements per body
+                (e.g. 7 for transformf, 6 for spatial_vectorf, 9 for inertia).
+                Pass 1 for plain scalar fields like mass.
         """
-        if tensor_type not in TT._CPU_ONLY_TYPES or self.device == "cpu":
-            binding.read(dst)
+        if buf.timestamp >= self._sim_timestamp:
             return
-        # Route through a lazily-allocated pinned-host staging buffer.
-        staging = self._cpu_staging_buffers.get(tensor_type)
-        if staging is None:
-            staging = wp.zeros(binding.shape, dtype=wp.float32, device="cpu", pinned=True)
-            self._cpu_staging_buffers[tensor_type] = staging
-        binding.read(staging)
-        # Build a flat float32 view of dst matching the binding's flat shape.
-        if dst.dtype == wp.float32:
-            view = dst
-        else:
-            view = wp.array(
-                ptr=dst.ptr,
-                shape=binding.shape,
-                dtype=wp.float32,
-                device=str(dst.device),
-                copy=False,
-            )
-        wp.copy(view, staging)
-
-    def _get_read_view(self, tensor_type: int, wp_array: wp.array, floats_per_elem: int = 0) -> wp.array | None:
-        """Return a stable float32 view of a warp buffer for reading from a binding.
-
-        For structured-dtype buffers (transformf, spatial_vectorf), the view
-        reinterprets the same GPU memory as a flat float32 array matching the
-        binding's shape.  For plain float32 buffers, returns the array as-is.
-
-        The returned view is cached so that ``binding.read(view)`` sees the
-        same object on every call.
-
-        Mirrors :meth:`~isaaclab_ovphysx.assets.articulation.ArticulationData._get_read_view`.
-
-        Args:
-            tensor_type: TensorType key.
-            wp_array: Destination warp array.
-            floats_per_elem: Number of float32 elements per logical element
-                (e.g. 7 for transformf, 6 for spatial_vectorf).  Pass 0 to
-                return the array as-is.
-
-        Returns:
-            Float32 view suitable for ``binding.read()``, or ``None``.
-        """
-        cache_key = (tensor_type, wp_array.ptr)
-        cached = self._read_view_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
         binding = self._get_binding(tensor_type)
         if binding is None:
-            self._read_view_cache[cache_key] = None
-            return None
+            return
 
-        if floats_per_elem > 0:
-            view = wp.array(
-                ptr=wp_array.ptr,
-                shape=binding.shape,
+        B = self.num_bodies
+
+        # Disambiguate via the binding's exposed shape: the articulation-mode
+        # mock returns a directly instance-major view ``(N, B[, D])`` while the
+        # native fused multi-prim binding lays elements body-major-flat with
+        # ``shape == (N * B[, D])``.
+        is_mock_layout = len(binding.shape) >= 2 and binding.shape[1] == B
+
+        if is_mock_layout:
+            if buf.data.dtype == wp.float32:
+                view = buf.data
+            else:
+                view = wp.array(
+                    ptr=buf.data.ptr,
+                    shape=binding.shape,
+                    dtype=wp.float32,
+                    device=str(buf.data.device),
+                    copy=False,
+                )
+            binding.read(view)
+            buf.timestamp = self._sim_timestamp
+            return
+
+        # Native fused path: read body-major scratch then strided-view reshape.
+        scratch = self._read_view_scratch(tensor_type, binding)
+        binding.read(scratch)
+        if floats_per_elem <= 1:
+            reshaped = self._reshape_view_to_data_2d(scratch)
+        else:
+            reshaped = self._reshape_view_to_data_3d(scratch, floats_per_elem)
+        # Copy into buf.data, reinterpreting structured-dtype buffers as float32.
+        if buf.data.dtype == wp.float32:
+            dst_view = buf.data
+        else:
+            dst_view = wp.array(
+                ptr=buf.data.ptr,
+                shape=reshaped.shape,
                 dtype=wp.float32,
-                device=str(wp_array.device),
+                device=str(buf.data.device),
                 copy=False,
             )
-        else:
-            view = wp_array
-
-        self._read_view_cache[cache_key] = view
-        return view
+        wp.copy(dst_view, reshaped)
+        buf.timestamp = self._sim_timestamp
 
     def _read_transform_binding(self, tensor_type: int, buf: TimestampedBuffer) -> None:
-        """Read a pose binding (float32 view of transformf buffer), skipping if fresh.
-
-        CPU-only bindings (e.g. ``BODY_COM_POSE``) are routed through a
-        pinned-host staging buffer via :meth:`_binding_read`.
+        """Read a pose binding (``wp.transformf`` buffer), skipping if fresh.
 
         Args:
             tensor_type: TensorType key.
             buf: Timestamped :class:`wp.transformf` buffer to refresh.
         """
-        if buf.timestamp >= self._sim_timestamp:
-            return
-        binding = self._get_binding(tensor_type)
-        if binding is None:
-            return
-        view = self._get_read_view(tensor_type, buf.data, 7)
-        if view is None:
-            return
-        self._binding_read(tensor_type, binding, view)
-        buf.timestamp = self._sim_timestamp
+        self._read_binding_into_instance_major(tensor_type, buf, floats_per_elem=7)
 
     def _read_spatial_vector_binding(self, tensor_type: int, buf: TimestampedBuffer) -> None:
-        """Read a velocity binding (float32 view of spatial_vectorf buffer), skipping if fresh.
+        """Read a velocity binding (``wp.spatial_vectorf`` buffer), skipping if fresh.
 
         Args:
             tensor_type: TensorType key.
             buf: Timestamped :class:`wp.spatial_vectorf` buffer to refresh.
         """
-        if buf.timestamp >= self._sim_timestamp:
-            return
-        view = self._get_read_view(tensor_type, buf.data, 6)
-        if view is None:
-            return
-        self._get_binding(tensor_type).read(view)
-        buf.timestamp = self._sim_timestamp
+        self._read_binding_into_instance_major(tensor_type, buf, floats_per_elem=6)
+
+    # ------------------------------------------------------------------
+    # Strided-view reshape helpers (mirror PhysX RigidObjectCollectionData)
+    # ------------------------------------------------------------------
+
+    def _reshape_view_to_data_2d(self, data: wp.array) -> wp.array:
+        """Reshape body-major flat data into instance-major ``(num_instances, num_bodies)``.
+
+        The native fused binding lays elements out body-major:
+        ``(body0_env0, body0_env1, ..., body1_env0, body1_env1, ...)``.  This helper
+        constructs a strided view that traverses the data in instance-major order
+        ``(env0_body0, env0_body1, ..., env1_body0, ...)``, then clones it onto
+        :attr:`device` for contiguity and (when needed) cross-device transfer.
+
+        Args:
+            data: Body-major flat buffer.  Shape is ``(num_bodies * num_instances,)``
+                with any single-element dtype.
+
+        Returns:
+            Contiguous instance-major buffer with shape ``(num_instances, num_bodies)``
+            on :attr:`device`.
+        """
+        element_size = wp.types.type_size_in_bytes(data.dtype)
+        strided_view = wp.array(
+            ptr=data.ptr,
+            shape=(self.num_instances, self.num_bodies),
+            dtype=data.dtype,
+            strides=(element_size, self.num_instances * element_size),
+            device=str(data.device),
+        )
+        return wp.clone(strided_view, self.device)
+
+    def _reshape_view_to_data_3d(self, data: wp.array, data_dim: int) -> wp.array:
+        """Reshape body-major flat data into instance-major ``(num_instances, num_bodies, data_dim)``.
+
+        Companion of :meth:`_reshape_view_to_data_2d` for fields with a trailing
+        per-body dimension (e.g. pose has 7, spatial velocity has 6, inertia has 9).
+
+        Args:
+            data: Body-major flat buffer with shape ``(num_bodies * num_instances, data_dim)``
+                or ``(num_bodies * num_instances,)`` reinterpreted as ``data_dim``-wide rows.
+            data_dim: Trailing per-body dimension size.
+
+        Returns:
+            Contiguous instance-major buffer with shape
+            ``(num_instances, num_bodies, data_dim)`` on :attr:`device`.
+        """
+        element_size = wp.types.type_size_in_bytes(wp.float32)
+        row_size = element_size * data_dim
+        strided_view = wp.array(
+            ptr=data.ptr,
+            shape=(self.num_instances, self.num_bodies, data_dim),
+            dtype=wp.float32,
+            strides=(row_size, self.num_instances * row_size, element_size),
+            device=str(data.device),
+        )
+        return wp.clone(strided_view, self.device)
 
     def _get_pos_from_transform(self, transform: wp.array) -> wp.array:
         """Generates a position array from a transform array."""

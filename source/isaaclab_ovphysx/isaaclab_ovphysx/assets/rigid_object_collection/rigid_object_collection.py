@@ -33,168 +33,19 @@ from isaaclab_ovphysx.physics import OvPhysxManager
 
 from .rigid_object_collection_data import RigidObjectCollectionData
 
-# ---------------------------------------------------------------------------
-# Internal adapter — presents B per-body RIGID_BODY bindings as a single
-# (N, B, D) binding, preserving the dict-keyed interface the data class relies on.
-# ---------------------------------------------------------------------------
-
-
-class _FusedRigidBodyBinding:
-    """Adapter wrapping B per-body ``RIGID_BODY_*`` bindings as one ``(N, B, D)`` view.
-
-    The OVPhysX ``RIGID_BODY_*`` tensor types return flat ``(N, D)`` arrays for a
-    single-body pattern.  A rigid-object collection contains *B* distinct body types,
-    each backed by its own ``(N, D)`` binding.  This adapter presents the union as a
-    single binding with ``shape = (N, B, D)`` and ``count = N``, satisfying the
-    interface expected by :class:`RigidObjectCollectionData`.
-
-    **Reads** assemble the B ``(N, D)`` staging reads into the caller-supplied
-    ``(N, B, D)`` destination (warp array or NumPy array).
-
-    **Writes** deassemble a ``(N, B, D)`` source into per-body ``(N, D)`` tensors and
-    dispatch each to its corresponding per-body binding.
-
-    The adapter is device-agnostic: staging buffers are allocated on the same device
-    as the destination array at first use (GPU for GPU bindings, CPU for CPU-only
-    bindings).  This avoids cross-device copies for CPU-resident quantities such as
-    mass, COM pose, and inertia.
-
-    Args:
-        per_body_bindings: List of B ``TensorBinding`` objects, one per body type.
-            Each must expose ``.count``, ``.shape``, ``.read()``, and ``.write()``.
-        N: Number of environment instances.
-        B: Number of body types.
-        device: Simulation device string (e.g. ``"cuda:0"``).  Used as the default
-            device for write staging; read staging is adapted to the destination device.
-    """
-
-    def __init__(self, per_body_bindings: list, N: int, B: int, device: str) -> None:
-        if not per_body_bindings:
-            raise ValueError("per_body_bindings must contain at least one binding.")
-        self._per_body = per_body_bindings
-        self._N = N
-        self._B = B
-        self._device = device
-        # Infer D from the first per-body binding's shape.
-        # RIGID_BODY_MASS has shape (N,); others have (N, D).
-        first_shape = per_body_bindings[0].shape
-        self._D: int = first_shape[1] if len(first_shape) > 1 else 1
-        self._scalar = len(first_shape) == 1  # True for RIGID_BODY_MASS (shape (N,))
-        # Public attributes mirroring TensorBinding.
-        self.count: int = N
-        self.shape: tuple = (N, B) if self._scalar else (N, B, self._D)
-        # Per-device staging buffers for reads: keyed by device string.
-        self._read_staging: dict[str, list[wp.array]] = {}
-        # Per-device staging buffers for writes: keyed by device string.
-        self._write_staging: dict[str, list[wp.array]] = {}
-
-    # ------------------------------------------------------------------
-    # Staging buffer helpers
-    # ------------------------------------------------------------------
-
-    def _get_staging(self, cache: dict, staging_device: str) -> list[wp.array]:
-        """Return (creating if needed) a list of B staging arrays on *staging_device*."""
-        if staging_device in cache:
-            return cache[staging_device]
-        if self._scalar:
-            bufs = [wp.zeros((self._N,), dtype=wp.float32, device=staging_device) for _ in range(self._B)]
-        else:
-            bufs = [wp.zeros((self._N, self._D), dtype=wp.float32, device=staging_device) for _ in range(self._B)]
-        cache[staging_device] = bufs
-        return bufs
-
-    # ------------------------------------------------------------------
-    # Read
-    # ------------------------------------------------------------------
-
-    def read(self, dst) -> None:
-        """Read all per-body bindings and assemble into *dst*.
-
-        Args:
-            dst: Destination array.  May be a :class:`warp.array` (GPU or CPU) or a
-                :class:`numpy.ndarray`.  Must have shape matching :attr:`shape`
-                (``(N, B)`` for scalar quantities, ``(N, B, D)`` otherwise) and
-                dtype ``float32``.
-        """
-        if isinstance(dst, np.ndarray):
-            self._read_numpy(dst)
-        else:
-            self._read_warp(dst)
-
-    def _read_numpy(self, dst: np.ndarray) -> None:
-        """Read into a NumPy array (CPU path, used by ``_read_cpu`` in :class:`RigidObjectCollectionData`)."""
-        for b, binding in enumerate(self._per_body):
-            per_body_np = np.zeros(binding.shape, dtype=np.float32)
-            binding.read(per_body_np)
-            if self._scalar:
-                dst[:, b] = per_body_np  # (N,) → column b of (N, B)
-            else:
-                dst[:, b, :] = per_body_np  # (N, D) → column b of (N, B, D)
-
-    def _read_warp(self, dst: wp.array) -> None:
-        """Read into a warp float32 array.
-
-        Per-body staging buffers are allocated on the same device as *dst* so that
-        GPU bindings write to GPU staging and CPU-only bindings write to CPU staging,
-        avoiding illegal cross-device reads.
-        """
-        staging_device = str(dst.device)
-        staging = self._get_staging(self._read_staging, staging_device)
-        for b, binding in enumerate(self._per_body):
-            binding.read(staging[b])
-        # Assemble staging[b] into dst via torch zero-copy views.
-        dst_t = wp.to_torch(dst)
-        if self._scalar:
-            dst_2d = dst_t.view(self._N, self._B)
-            for b in range(self._B):
-                dst_2d[:, b].copy_(wp.to_torch(staging[b]))
-        else:
-            dst_3d = dst_t.view(self._N, self._B, self._D)
-            for b in range(self._B):
-                dst_3d[:, b, :].copy_(wp.to_torch(staging[b]))
-
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
-
-    def write(self, tensor, indices=None, mask=None) -> None:
-        """Deassemble *tensor* ``(N, B, D)`` and write to each per-body binding.
-
-        Each per-body binding receives the full ``(N, D)`` column for its body index
-        along with the optional *indices* or *mask* filter, matching the OVPhysX
-        ``TensorBinding.write`` contract (full-shape tensor, selective row application).
-
-        Args:
-            tensor: Source warp float32 array with shape matching :attr:`shape`.
-            indices: Optional int32 warp/torch array of environment row indices.
-            mask: Optional bool warp array mask (takes precedence over *indices*).
-        """
-        write_device = str(tensor.device) if isinstance(tensor, wp.array) else self._device
-        staging = self._get_staging(self._write_staging, write_device)
-        src_t = wp.to_torch(tensor)
-        if self._scalar:
-            src_2d = src_t.view(self._N, self._B)
-            for b, binding in enumerate(self._per_body):
-                col = src_2d[:, b].contiguous()
-                staging[b].assign(wp.from_torch(col, dtype=wp.float32))
-                binding.write(staging[b], indices=indices, mask=mask)
-        else:
-            src_3d = src_t.view(self._N, self._B, self._D)
-            for b, binding in enumerate(self._per_body):
-                col = src_3d[:, b, :].contiguous()
-                staging[b].assign(wp.from_torch(col, dtype=wp.float32))
-                binding.write(staging[b], indices=indices, mask=mask)
-
 
 class RigidObjectCollection(BaseRigidObjectCollection):
     """OVPhysX-backed rigid object collection asset.
 
-    Uses one ``RIGID_BODY_*`` :class:`TensorBinding` per body type per tensor type.
-    Each per-body binding covers all environment instances for that body type
-    (shape ``(num_instances, D)``).  A :class:`_FusedRigidBodyBinding` adapter
-    wraps the *B* per-body bindings so that the data class and write helpers see a
-    single binding with shape ``(num_instances, num_bodies, D)`` — the same interface
-    produced by the articulation-mode mock used in iface tests.
+    Uses one native fused multi-prim :class:`TensorBinding` per tensor type, created
+    via ``ovphysx.create_tensor_binding(prim_paths=[...], tensor_type=...)``.
+    Each binding spans all *N* environment instances across all *B* body types and
+    returns data with ``count == N * B`` in body-major flat order
+    ``(body0_env0, body0_env1, ..., body1_env0, ...)``.
+
+    The data class converts between this body-major view layout and the
+    instance-major ``(N, B, D)`` layout exposed to users via strided-view reshape
+    helpers (the same pattern used by the PhysX collection).
     """
 
     cfg: RigidObjectCollectionCfg
@@ -334,7 +185,14 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         )
         binding = self._get_binding(TT.LINK_WRENCH)
         if binding is not None:
-            binding.write(self._wrench_buf)
+            # Disambiguate via the binding's exposed shape (see ``_binding_write``):
+            #  * mock layout: ``(N, B, 9)`` instance-major -> direct write.
+            #  * native fused: ``(N*B, 9)`` body-major flat -> reshape and write.
+            if len(binding.shape) >= 2 and binding.shape[1] == self._num_bodies:
+                binding.write(self._wrench_buf)
+            else:
+                view = self.reshape_data_to_view_3d(self._wrench_buf, 9, device=self._device)
+                binding.write(view)
         inst.reset()
 
     def update(self, dt: float) -> None:  # type: ignore[override]
@@ -456,9 +314,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         # Push updated link poses to simulation via single fused binding.
-        binding = self._get_binding(TT.LINK_POSE)
-        view = self._make_float32_view(self.data._body_link_pose_w.data, binding)
-        binding.write(view, indices=env_ids)
+        self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
     def write_body_link_pose_to_sim_mask(
         self,
@@ -508,9 +364,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         # Push updated link poses to simulation via single fused binding.
-        binding = self._get_binding(TT.LINK_POSE)
-        view = self._make_float32_view(self.data._body_link_pose_w.data, binding)
-        binding.write(view, indices=env_ids)
+        self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
     def write_body_com_pose_to_sim_index(
         self,
@@ -555,9 +409,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_com_state_w.timestamp = -1.0
         # Push updated link poses to simulation via single fused binding
         # (OVPhysX only exposes link frame).
-        binding = self._get_binding(TT.LINK_POSE)
-        view = self._make_float32_view(self.data._body_link_pose_w.data, binding)
-        binding.write(view, indices=env_ids)
+        self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
     def write_body_com_pose_to_sim_mask(
         self,
@@ -610,9 +462,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_com_state_w.timestamp = -1.0
         # Push updated link poses to simulation via single fused binding
         # (OVPhysX only exposes link frame).
-        binding = self._get_binding(TT.LINK_POSE)
-        view = self._make_float32_view(self.data._body_link_pose_w.data, binding)
-        binding.write(view, indices=env_ids)
+        self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
     # ------------------------------------------------------------------
     # Velocity writers (3 pairs)
@@ -726,9 +576,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
         # Push updated COM velocities to simulation via single fused binding.
-        binding = self._get_binding(TT.LINK_VELOCITY)
-        view = self._make_float32_view(self.data._body_com_vel_w.data, binding)
-        binding.write(view, indices=env_ids)
+        self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
 
     def write_body_link_velocity_to_sim_mask(
         self,
@@ -792,9 +640,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
         # Push updated COM velocities to simulation via single fused binding.
-        binding = self._get_binding(TT.LINK_VELOCITY)
-        view = self._make_float32_view(self.data._body_com_vel_w.data, binding)
-        binding.write(view, indices=env_ids)
+        self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
 
     def write_body_com_velocity_to_sim_index(
         self,
@@ -845,9 +691,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_com_state_w.timestamp = -1.0
         self.data._body_link_state_w.timestamp = -1.0
         # Push updated COM velocities to simulation via single fused binding.
-        binding = self._get_binding(TT.LINK_VELOCITY)
-        view = self._make_float32_view(self.data._body_com_vel_w.data, binding)
-        binding.write(view, indices=env_ids)
+        self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
 
     def write_body_com_velocity_to_sim_mask(
         self,
@@ -903,9 +747,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.data._body_com_state_w.timestamp = -1.0
         self.data._body_link_state_w.timestamp = -1.0
         # Push updated COM velocities to simulation via single fused binding.
-        binding = self._get_binding(TT.LINK_VELOCITY)
-        view = self._make_float32_view(self.data._body_com_vel_w.data, binding)
-        binding.write(view, indices=env_ids)
+        self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
 
     # ------------------------------------------------------------------
     # Property setters (3 pairs)
@@ -942,10 +784,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             outputs=[self.data._body_mass.data],
             device=self._device,
         )
-        cpu_env_ids = self._get_cpu_env_ids(env_ids)
         wp.copy(self.data._cpu_body_mass, self.data._body_mass.data)
-        binding = self._get_binding(TT.BODY_MASS)
-        binding.write(self.data._cpu_body_mass, indices=cpu_env_ids)
+        self._binding_write(
+            TT.BODY_MASS, self.data._cpu_body_mass, env_ids=self._get_cpu_env_ids(env_ids), device="cpu"
+        )
 
     def set_masses_mask(
         self,
@@ -983,10 +825,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             outputs=[self.data._body_mass.data],
             device=self._device,
         )
-        cpu_env_ids = self._get_cpu_env_ids(env_ids)
         wp.copy(self.data._cpu_body_mass, self.data._body_mass.data)
-        binding = self._get_binding(TT.BODY_MASS)
-        binding.write(self.data._cpu_body_mass, indices=cpu_env_ids)
+        self._binding_write(
+            TT.BODY_MASS, self.data._cpu_body_mass, env_ids=self._get_cpu_env_ids(env_ids), device="cpu"
+        )
 
     def set_coms_index(
         self,
@@ -1021,10 +863,14 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         )
         # Invalidate derived buffers that depend on body_com_pose_b.
         self.data._body_com_pose_w.timestamp = -1.0
-        cpu_env_ids = self._get_cpu_env_ids(env_ids)
         wp.copy(self.data._cpu_body_coms, self.data._body_com_pose_b.data)
-        binding = self._get_binding(TT.BODY_COM_POSE)
-        binding.write(self.data._cpu_body_coms, indices=cpu_env_ids)
+        self._binding_write(
+            TT.BODY_COM_POSE,
+            self.data._cpu_body_coms,
+            env_ids=self._get_cpu_env_ids(env_ids),
+            device="cpu",
+            data_dim=7,
+        )
 
     def set_coms_mask(
         self,
@@ -1064,10 +910,14 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         )
         # Invalidate derived buffers that depend on body_com_pose_b.
         self.data._body_com_pose_w.timestamp = -1.0
-        cpu_env_ids = self._get_cpu_env_ids(env_ids)
         wp.copy(self.data._cpu_body_coms, self.data._body_com_pose_b.data)
-        binding = self._get_binding(TT.BODY_COM_POSE)
-        binding.write(self.data._cpu_body_coms, indices=cpu_env_ids)
+        self._binding_write(
+            TT.BODY_COM_POSE,
+            self.data._cpu_body_coms,
+            env_ids=self._get_cpu_env_ids(env_ids),
+            device="cpu",
+            data_dim=7,
+        )
 
     def set_inertias_index(
         self,
@@ -1102,10 +952,14 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             outputs=[self.data._body_inertia.data],
             device=self._device,
         )
-        cpu_env_ids = self._get_cpu_env_ids(env_ids)
         wp.copy(self.data._cpu_body_inertia, self.data._body_inertia.data)
-        binding = self._get_binding(TT.BODY_INERTIA)
-        binding.write(self.data._cpu_body_inertia, indices=cpu_env_ids)
+        self._binding_write(
+            TT.BODY_INERTIA,
+            self.data._cpu_body_inertia,
+            env_ids=self._get_cpu_env_ids(env_ids),
+            device="cpu",
+            data_dim=9,
+        )
 
     def set_inertias_mask(
         self,
@@ -1145,10 +999,14 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             outputs=[self.data._body_inertia.data],
             device=self._device,
         )
-        cpu_env_ids = self._get_cpu_env_ids(env_ids)
         wp.copy(self.data._cpu_body_inertia, self.data._body_inertia.data)
-        binding = self._get_binding(TT.BODY_INERTIA)
-        binding.write(self.data._cpu_body_inertia, indices=cpu_env_ids)
+        self._binding_write(
+            TT.BODY_INERTIA,
+            self.data._cpu_body_inertia,
+            env_ids=self._get_cpu_env_ids(env_ids),
+            device="cpu",
+            data_dim=9,
+        )
 
     # ------------------------------------------------------------------
     # Deprecated state writers
@@ -1308,13 +1166,12 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         # Step 3: Total number of distinct body types.
         self._num_bodies = len(self._prim_paths)
 
-        # Step 4: For each supported tensor type, create one RIGID_BODY_* binding per
-        # body type (pattern), then wrap the B per-body bindings in a
-        # _FusedRigidBodyBinding adapter stored under the ARTICULATION_LINK_* key that
-        # RigidObjectCollectionData uses.  This preserves the data-class interface while
-        # querying the correct OVPhysX tensor type for non-articulated rigid bodies.
-        #
-        # Mapping: data-class key → (per-body RIGID_BODY tensor type, data class key)
+        # Step 4: Eagerly create one native fused multi-prim binding per tensor type.
+        # ovphysx 0.4.3+ accepts ``prim_paths=[g0, ..., g_{B-1}]`` and returns a
+        # single binding spanning N*B prims with shape ``(N*B, D)`` in body-major
+        # order (body0_env0, body0_env1, ..., body1_env0, ...).
+        # Bindings are stored under the ``LINK_*``/``BODY_*`` data-class keys so the
+        # same key works with the articulation-mode mock used by iface tests.
         _TT_MAP = (
             (TT.LINK_POSE, TT.RIGID_BODY_POSE),
             (TT.LINK_VELOCITY, TT.RIGID_BODY_VELOCITY),
@@ -1323,27 +1180,28 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             (TT.BODY_COM_POSE, TT.RIGID_BODY_COM_POSE),
             (TT.BODY_INERTIA, TT.RIGID_BODY_INERTIA),
         )
-        for fused_key, rb_tt in _TT_MAP:
-            per_body = []
-            for pattern in self._prim_paths:
-                try:
-                    b = self._ovphysx.create_tensor_binding(pattern=pattern, tensor_type=rb_tt)
-                    per_body.append(b)
-                except Exception as e:
-                    raise RuntimeError(
-                        f"OVPhysX could not create RIGID_BODY binding {rb_tt!r} for"
-                        f" pattern {pattern!r}."
-                        f" Check that the prim path matches at least one"
-                        f" UsdPhysics.RigidBodyAPI prim."
-                    ) from e
-            # Determine N from the first binding's count.
-            N = per_body[0].count
-            B = len(per_body)
-            self._bindings[fused_key] = _FusedRigidBodyBinding(per_body, N, B, self._device)
+        for store_key, rb_tt in _TT_MAP:
+            try:
+                self._bindings[store_key] = self._ovphysx.create_tensor_binding(
+                    prim_paths=self._prim_paths, tensor_type=rb_tt
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"OVPhysX could not create fused RIGID_BODY binding {rb_tt!r} for"
+                    f" prim_paths={self._prim_paths!r}."
+                    f" Check that each prim path matches at least one"
+                    f" UsdPhysics.RigidBodyAPI prim."
+                ) from e
 
-        # Step 5: Read num_instances from the LINK_POSE fused binding.
-        # All fused bindings share the same N (verified implicitly by construction).
-        self._num_instances = self._bindings[TT.LINK_POSE].count
+        # Step 5: Read num_instances from the LINK_POSE binding count.
+        # The native fused binding has count == N * num_bodies (body-major flat).
+        pose_count = self._bindings[TT.LINK_POSE].count
+        if pose_count % self._num_bodies != 0:
+            raise RuntimeError(
+                f"Fused LINK_POSE binding count {pose_count} is not divisible by"
+                f" num_bodies {self._num_bodies}. prim_paths={self._prim_paths!r}."
+            )
+        self._num_instances = pose_count // self._num_bodies
 
         # Step 6: Create the data container.
         self._data = RigidObjectCollectionData(
@@ -1421,45 +1279,136 @@ class RigidObjectCollection(BaseRigidObjectCollection):
     # ------------------------------------------------------------------
 
     def _get_binding(self, tensor_type: int):
-        """Return the cached :class:`_FusedRigidBodyBinding` for *tensor_type*.
+        """Return the cached fused :class:`TensorBinding` for *tensor_type*.
 
         All bindings are eagerly created in :meth:`_initialize_impl` and stored
         under the ``TT.LINK_*`` / ``TT.BODY_*`` keys that
-        :class:`RigidObjectCollectionData` uses.  This method simply returns the
-        cached entry.
+        :class:`RigidObjectCollectionData` uses.
 
         Args:
             tensor_type: The TensorType constant identifying which simulation
                 buffer to bind (e.g. :attr:`~isaaclab_ovphysx.tensor_types.LINK_POSE`).
 
         Returns:
-            The cached :class:`_FusedRigidBodyBinding`, or ``None`` if not found.
+            The cached :class:`TensorBinding`, or ``None`` if not found.
         """
         return self._bindings.get(tensor_type)
 
-    def _make_float32_view(self, wp_array: wp.array, binding) -> wp.array:
-        """Return a float32 view of *wp_array* matching the binding's flat shape.
+    # ------------------------------------------------------------------
+    # Strided-view reshape helpers (mirror PhysX RigidObjectCollection)
+    # ------------------------------------------------------------------
 
-        For structured-dtype buffers (e.g. ``wp.transformf``, ``wp.spatial_vectorf``),
-        reinterprets the GPU memory as ``wp.float32`` with shape ``binding.shape``.
-        For plain ``wp.float32`` buffers, returns the array as-is.
+    def reshape_data_to_view_2d(self, data: wp.array, device: str | None = None) -> wp.array:
+        """Reshape instance-major ``(num_instances, num_bodies)`` data to body-major view order.
+
+        The native fused multi-prim binding lays data out as
+        ``(body0_env0, body0_env1, ..., body1_env0, body1_env1, ...)`` with shape
+        ``(num_bodies * num_instances,)``.  This helper builds a strided view of the
+        instance-major buffer with the transposed layout and clones it into a
+        contiguous body-major flat array.
 
         Args:
-            wp_array: Source warp array (may be structured dtype).
-            binding: TensorBinding whose ``.shape`` gives the target float32 shape.
+            data: Source buffer with shape ``(num_instances, num_bodies)`` (any single-element dtype).
+            device: Optional target device for the cloned output.  Defaults to ``data.device``.
 
         Returns:
-            A ``wp.float32`` view of the same memory.
+            Contiguous body-major flat buffer with shape ``(num_bodies * num_instances,)``.
         """
-        if wp_array.dtype == wp.float32:
-            return wp_array
-        return wp.array(
-            ptr=wp_array.ptr,
-            shape=binding.shape,
-            dtype=wp.float32,
-            device=str(wp_array.device),
-            copy=False,
+        if device is None:
+            device = str(data.device)
+        element_size = wp.types.type_size_in_bytes(data.dtype)
+        strided_view = wp.array(
+            ptr=data.ptr,
+            shape=(self.num_bodies, self.num_instances),
+            dtype=data.dtype,
+            strides=(element_size, self.num_bodies * element_size),
+            device=str(data.device),
         )
+        return wp.clone(strided_view, device=device).reshape((self.num_bodies * self.num_instances,))
+
+    def reshape_data_to_view_3d(self, data: wp.array, data_dim: int, device: str | None = None) -> wp.array:
+        """Reshape instance-major ``(num_instances, num_bodies, data_dim)`` data to body-major view order.
+
+        Companion of :meth:`reshape_data_to_view_2d` for 3D buffers (e.g. inertia
+        tensors).  Output shape is ``(num_bodies * num_instances, data_dim)``.
+
+        Args:
+            data: Source buffer with shape ``(num_instances, num_bodies, data_dim)``.
+            data_dim: Trailing per-element dimension size.
+            device: Optional target device for the cloned output.  Defaults to ``data.device``.
+
+        Returns:
+            Contiguous body-major buffer with shape ``(num_bodies * num_instances, data_dim)``.
+        """
+        if device is None:
+            device = str(data.device)
+        element_size = wp.types.type_size_in_bytes(data.dtype)
+        row_size = element_size * data_dim
+        strided_view = wp.array(
+            ptr=data.ptr,
+            shape=(self.num_bodies, self.num_instances, data_dim),
+            dtype=data.dtype,
+            strides=(row_size, self.num_bodies * row_size, element_size),
+            device=str(data.device),
+        )
+        return wp.clone(strided_view, device=device).reshape((self.num_bodies * self.num_instances, data_dim))
+
+    def _binding_write(
+        self,
+        tensor_type: int,
+        instance_major_data: wp.array,
+        env_ids: wp.array,
+        device: str | None = None,
+        data_dim: int | None = None,
+    ) -> None:
+        """Write an instance-major buffer through a fused binding.
+
+        Dispatches to one of two paths depending on the binding's layout:
+
+        * **Native fused binding** (``count == num_instances * num_bodies``,
+          body-major flat layout): the instance-major buffer is reshaped via
+          :meth:`reshape_data_to_view_2d` / :meth:`reshape_data_to_view_3d` to a
+          contiguous body-major view, then written with body-major view indices
+          ``view_id = body_id * num_instances + env_id``.
+        * **Articulation-mode mock** (``count == num_instances``, instance-major
+          ``(N, B[, D])`` shape): the buffer is written directly with the
+          environment indices, matching the existing mock contract.
+
+        Args:
+            tensor_type: TensorType key identifying the cached binding.
+            instance_major_data: Instance-major buffer of shape ``(N, B)`` or
+                ``(N, B, data_dim)``.  May use ``wp.float32`` or a structured dtype.
+            env_ids: Environment indices (1D ``wp.int32`` on ``self._device`` or
+                ``"cpu"`` for CPU-only bindings).
+            device: Destination device for the body-major clone (only used on the
+                fused-binding path).  Defaults to ``self._device``.
+            data_dim: When provided, treat the buffer as 3D and use
+                :meth:`reshape_data_to_view_3d`.  When ``None`` (default), use
+                :meth:`reshape_data_to_view_2d`.
+        """
+        binding = self._get_binding(tensor_type)
+        if binding is None:
+            return
+        if device is None:
+            device = self._device
+        # Disambiguate via the binding's exposed shape: the articulation-mode
+        # mock returns a directly instance-major view ``(N, B[, D])`` while the
+        # native fused multi-prim binding lays elements body-major-flat with
+        # ``shape == (N * B[, D])``.
+        is_mock_layout = len(binding.shape) >= 2 and binding.shape[1] == self._num_bodies
+        if is_mock_layout:
+            float32_data = (
+                instance_major_data if instance_major_data.dtype == wp.float32 else instance_major_data.view(wp.float32)
+            )
+            binding.write(float32_data, indices=env_ids)
+            return
+        # Native fused path: body-major flat (N*B[, D]); reshape and use view_ids.
+        if data_dim is None:
+            view = self.reshape_data_to_view_2d(instance_major_data, device=device).view(wp.float32)
+        else:
+            view = self.reshape_data_to_view_3d(instance_major_data, data_dim, device=device)
+        view_ids = self._env_body_ids_to_view_ids(env_ids, self._ALL_BODY_INDICES, device=device)
+        binding.write(view, indices=view_ids)
 
     # ------------------------------------------------------------------
     # Internal helpers -- ID resolution
