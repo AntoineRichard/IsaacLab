@@ -152,8 +152,10 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             object_ids: Unused — included for interface compatibility with the base class.
             env_mask: Boolean environment mask. If provided, takes precedence over ``env_ids``.
         """
-        self._instantaneous_wrench_composer.reset(env_ids=env_ids, env_mask=env_mask)
-        self._permanent_wrench_composer.reset(env_ids=env_ids, env_mask=env_mask)
+        if (env_ids is None) or (env_ids == slice(None)):
+            env_ids = slice(None)
+        self._instantaneous_wrench_composer.reset(env_ids, env_mask)
+        self._permanent_wrench_composer.reset(env_ids, env_mask)
 
     def write_data_to_sim(self) -> None:  # type: ignore[override]
         """Write external wrench to the simulation.
@@ -1093,15 +1095,12 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         Then creates the :class:`RigidObjectCollectionData` container and primes
         the asset-side buffers.
         """
-        # Step 1: Acquire OVPhysX instance and device.
         physx_instance = OvPhysxManager.get_physx_instance()
         if physx_instance is None:
             raise RuntimeError("OvPhysxManager has not been initialized yet.")
         self._ovphysx = physx_instance
         self._device = OvPhysxManager.get_device()
 
-        # Step 2: Iterate over each body in the collection config.
-        # Build per-body glob patterns and body names; validate the prim tree.
         self._prim_paths: list[str] = []
         self._body_names_list: list[str] = []
 
@@ -1163,15 +1162,13 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             self._prim_paths.append(pattern)
             self._body_names_list.append(name)
 
-        # Step 3: Total number of distinct body types.
         self._num_bodies = len(self._prim_paths)
 
-        # Step 4: Eagerly create one native fused multi-prim binding per tensor type.
-        # ovphysx 0.4.3+ accepts ``prim_paths=[g0, ..., g_{B-1}]`` and returns a
-        # single binding spanning N*B prims with shape ``(N*B, D)`` in body-major
-        # order (body0_env0, body0_env1, ..., body1_env0, ...).
-        # Bindings are stored under the ``LINK_*``/``BODY_*`` data-class keys so the
-        # same key works with the articulation-mode mock used by iface tests.
+        # ovphysx 0.4.3+ accepts ``prim_paths=[g0, ..., g_{B-1}]`` and returns a single
+        # binding spanning N*B prims with shape ``(N*B, D)`` in body-major order
+        # ``(body0_env0, body0_env1, ..., body1_env0, ...)``. Bindings are stored under
+        # the ``LINK_*``/``BODY_*`` data-class keys so the same key works with the
+        # articulation-mode mock used by iface tests.
         _TT_MAP = (
             (TT.LINK_POSE, TT.RIGID_BODY_POSE),
             (TT.LINK_VELOCITY, TT.RIGID_BODY_VELOCITY),
@@ -1193,8 +1190,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
                     f" UsdPhysics.RigidBodyAPI prim."
                 ) from e
 
-        # Step 5: Read num_instances from the LINK_POSE binding count.
-        # The native fused binding has count == N * num_bodies (body-major flat).
+        # Native fused binding has ``count == N * num_bodies`` (body-major flat).
         pose_count = self._bindings[TT.LINK_POSE].count
         if pose_count % self._num_bodies != 0:
             raise RuntimeError(
@@ -1203,23 +1199,15 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             )
         self._num_instances = pose_count // self._num_bodies
 
-        # Step 6: Create the data container.
         self._data = RigidObjectCollectionData(
             root_view=self._bindings,
             num_bodies=self._num_bodies,
             device=self._device,
         )
 
-        # Step 7: Pre-allocate asset-side buffers.
         self._create_buffers()
-
-        # Step 8: Apply initial state from configuration.
         self._process_cfg()
-
-        # Step 9: Prime buffers with zero acceleration history.
         self.update(0.0)
-
-        # Step 10: Mark data as ready (mirrors RigidObject and Articulation).
         self._data.is_primed = True
 
     def _create_buffers(self) -> None:
