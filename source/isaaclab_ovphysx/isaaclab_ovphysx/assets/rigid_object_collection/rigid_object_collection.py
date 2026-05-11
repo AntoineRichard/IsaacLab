@@ -1219,6 +1219,9 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         # Step 9: Prime buffers with zero acceleration history.
         self.update(0.0)
 
+        # Step 10: Mark data as ready (mirrors RigidObject and Articulation).
+        self._data.is_primed = True
+
     def _create_buffers(self) -> None:
         """Pre-allocate asset-side index arrays and CPU staging buffers."""
         N = self._num_instances
