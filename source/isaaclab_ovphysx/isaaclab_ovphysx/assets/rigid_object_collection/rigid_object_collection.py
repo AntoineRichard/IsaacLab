@@ -3,14 +3,12 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""OVPhysX-backed rigid object collection asset."""
-
 from __future__ import annotations
 
 import re
 import warnings
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -19,10 +17,7 @@ import warp as wp
 from pxr import UsdPhysics
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets.rigid_object_collection import (
-    BaseRigidObjectCollection,
-    RigidObjectCollectionCfg,
-)
+from isaaclab.assets.rigid_object_collection.base_rigid_object_collection import BaseRigidObjectCollection
 from isaaclab.utils.string import resolve_matching_names
 from isaaclab.utils.wrench_composer import WrenchComposer
 
@@ -33,40 +28,54 @@ from isaaclab_ovphysx.physics import OvPhysxManager
 
 from .rigid_object_collection_data import RigidObjectCollectionData
 
+if TYPE_CHECKING:
+    from isaaclab.assets.rigid_object_collection.rigid_object_collection_cfg import RigidObjectCollectionCfg
+
 
 class RigidObjectCollection(BaseRigidObjectCollection):
-    """OVPhysX-backed rigid object collection asset.
+    """A rigid object collection class.
 
-    Uses one native fused multi-prim :class:`TensorBinding` per tensor type, created
-    via ``ovphysx.create_tensor_binding(prim_paths=[...], tensor_type=...)``.
-    Each binding spans all *N* environment instances across all *B* body types and
-    returns data with ``count == N * B`` in body-major flat order
-    ``(body0_env0, body0_env1, ..., body1_env0, ...)``.
+    This class represents a collection of rigid objects in the simulation, where the state of the
+    rigid objects can be accessed and modified using a batched ``(env_ids, object_ids)`` API.
 
-    The data class converts between this body-major view layout and the
-    instance-major ``(N, B, D)`` layout exposed to users via strided-view reshape
-    helpers (the same pattern used by the PhysX collection).
+    For each rigid body in the collection, the root prim of the asset must have the `USD RigidBodyAPI`_
+    applied to it. This API is used to define the simulation properties of the rigid bodies. On playing the
+    simulation, the physics engine will automatically register the rigid bodies and create a corresponding
+    rigid body handle. This handle can be accessed using the :attr:`root_view` attribute.
+
+    Rigid objects in the collection are uniquely identified via the key of the dictionary
+    :attr:`~isaaclab.assets.RigidObjectCollectionCfg.rigid_objects` in the
+    :class:`~isaaclab.assets.RigidObjectCollectionCfg` configuration class.
+    This differs from the :class:`~isaaclab.assets.RigidObject` class, where a rigid object is identified by
+    the name of the Xform where the `USD RigidBodyAPI`_ is applied. This would not be possible for the rigid
+    object collection since the :attr:`~isaaclab.assets.RigidObjectCollectionCfg.rigid_objects` dictionary
+    could contain the same rigid object multiple times, leading to ambiguity.
+
+    .. _`USD RigidBodyAPI`: https://openusd.org/dev/api/class_usd_physics_rigid_body_a_p_i.html
     """
 
     cfg: RigidObjectCollectionCfg
-    """Configuration instance for the rigid object collection."""
+    """Configuration instance for the rigid object."""
 
     __backend_name__: str = "ovphysx"
-    """The name of the backend for the rigid object collection."""
+    """The name of the backend for the rigid object."""
 
     def __init__(self, cfg: RigidObjectCollectionCfg):
-        """Initialize the rigid object collection.
+        """Initialize the rigid object.
 
         Args:
             cfg: A configuration instance.
         """
         # Note: We never call the parent constructor as it tries to call its own spawning which we don't want.
-        # Mirrors :class:`isaaclab_physx.assets.RigidObjectCollection`.
+        # check that the config is valid
         cfg.validate()
+        # store inputs
         self.cfg = cfg.copy()
+        # flag for whether the asset is initialized
         self._is_initialized = False
-        # Spawn the rigid objects -- one prim per object_cfg.
+        # spawn the rigid objects
         for rigid_body_cfg in self.cfg.rigid_objects.values():
+            # spawn the asset
             if rigid_body_cfg.spawn is not None:
                 rigid_body_cfg.spawn.func(
                     rigid_body_cfg.prim_path,
@@ -74,21 +83,22 @@ class RigidObjectCollection(BaseRigidObjectCollection):
                     translation=rigid_body_cfg.init_state.pos,
                     orientation=rigid_body_cfg.init_state.rot,
                 )
+            # check that spawn was successful
             matching_prims = sim_utils.find_matching_prims(rigid_body_cfg.prim_path)
             if len(matching_prims) == 0:
                 raise RuntimeError(f"Could not find prim with path {rigid_body_cfg.prim_path}.")
-        # Body name storage populated by ``_initialize_impl``.
+        # stores object names
         self._body_names_list: list[str] = []
-        # Single binding per tensor type (mirrors Articulation).
-        # Populated lazily via _get_binding() or eagerly in _initialize_impl().
+        # one fused TensorBinding per tensor type, populated in _initialize_impl
         self._bindings: dict[int, Any] = {}
-        # Register callbacks (initialize / invalidate / prim deletion).
+
+        # register various callback functions
         self._register_callbacks()
         self._debug_vis_handle = None
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
+    """
+    Properties
+    """
 
     @property
     def data(self) -> RigidObjectCollectionData:
@@ -100,64 +110,72 @@ class RigidObjectCollection(BaseRigidObjectCollection):
 
     @property
     def num_bodies(self) -> int:
+        """Number of bodies in the rigid object collection."""
         return self._num_bodies
 
     @property
     def body_names(self) -> list[str]:
+        """Ordered names of bodies in the rigid object collection."""
         return list(self._body_names_list)
 
     @property
     def root_view(self):
-        """Fused TensorBinding dictionary.
+        """Root view for the rigid object collection.
 
-        Returns the internal bindings dict keyed by TensorType constant.
-        Each value is a single :class:`~isaaclab_ovphysx.TensorBinding` spanning
-        all bodies in the collection, with shape
-        ``(num_instances, num_bodies, D)``.
+        Dictionary keyed by TensorType constant, each value a single fused
+        :class:`~isaaclab_ovphysx.TensorBinding` spanning all bodies in the collection.
+
+        .. note::
+            Use this view with caution. It requires handling of tensors in a specific way.
         """
         return self._bindings
 
     @property
-    def instantaneous_wrench_composer(self) -> WrenchComposer:  # type: ignore[override]
-        """Returns the instantaneous wrench composer for the rigid object collection.
+    def instantaneous_wrench_composer(self) -> WrenchComposer:
+        """Instantaneous wrench composer.
 
         Returns a :class:`~isaaclab.utils.wrench_composer.WrenchComposer` instance. Wrenches added or set to this wrench
-        composer will be applied for a single simulation step and then cleared.
+        composer are only valid for the current simulation step. At the end of the simulation step, the wrenches set
+        to this object are discarded. This is useful to apply forces that change all the time, things like drag forces
+        for instance.
         """
         return self._instantaneous_wrench_composer
 
     @property
-    def permanent_wrench_composer(self) -> WrenchComposer:  # type: ignore[override]
-        """Returns the permanent wrench composer for the rigid object collection.
+    def permanent_wrench_composer(self) -> WrenchComposer:
+        """Permanent wrench composer.
 
         Returns a :class:`~isaaclab.utils.wrench_composer.WrenchComposer` instance. Wrenches added or set to this wrench
-        composer will be applied every simulation step until explicitly reset.
+        composer are persistent and are applied to the simulation at every step. This is useful to apply forces that
+        are constant over a period of time, things like the thrust of a motor for instance.
         """
         return self._permanent_wrench_composer
 
-    # ------------------------------------------------------------------
-    # Core operations
-    # ------------------------------------------------------------------
+    """
+    Operations.
+    """
 
     def reset(
         self,
         env_ids: Sequence[int] | wp.array | None = None,
         object_ids: slice | None = None,
         env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
-        """Reset the wrench composers for the specified environments.
+    ) -> None:
+        """Resets all internal buffers of selected environments and objects.
 
         Args:
-            env_ids: Environment indices to reset. If None, all environments are reset.
-            object_ids: Unused — included for interface compatibility with the base class.
-            env_mask: Boolean environment mask. If provided, takes precedence over ``env_ids``.
+            env_ids: Environment indices. If None, then all indices are used.
+            object_ids: Object indices. If None, then all indices are used.
+            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
         """
+        # resolve all indices
         if (env_ids is None) or (env_ids == slice(None)):
             env_ids = slice(None)
+        # reset external wrench
         self._instantaneous_wrench_composer.reset(env_ids, env_mask)
         self._permanent_wrench_composer.reset(env_ids, env_mask)
 
-    def write_data_to_sim(self) -> None:  # type: ignore[override]
+    def write_data_to_sim(self) -> None:
         """Write external wrench to the simulation.
 
         .. note::
