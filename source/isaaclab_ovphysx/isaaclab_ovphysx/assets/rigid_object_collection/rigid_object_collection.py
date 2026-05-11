@@ -1088,8 +1088,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
                         " spawn configuration."
                     )
 
-            # Extend the glob to the RigidBodyAPI prim when it sits below the
-            # template root (mirrors PhysX collection's root_prim_path_expr logic).
+            # resolve root prim back into the regex expression
             root_prim_path = root_prims[0].GetPath().pathString
             suffix = root_prim_path[len(template_prim_path) :]
             if suffix:
@@ -1169,7 +1168,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self._instantaneous_wrench_composer = WrenchComposer(self)
         self._permanent_wrench_composer = WrenchComposer(self)
 
-        # Set body names into the data container (mirrors PhysX collection).
+        # set information about rigid body into data
         self._data.body_names = self._body_names_list
 
     def _process_cfg(self) -> None:
@@ -1197,13 +1196,18 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self._data.default_body_pose = wp.array(default_body_poses, dtype=wp.transformf, device=self._device)
         self._data.default_body_vel = wp.array(default_body_vels, dtype=wp.spatial_vectorf, device=self._device)
 
+    """
+    Internal simulation callbacks.
+    """
+
     def _invalidate_initialize_callback(self, event) -> None:
         """Invalidates the scene elements."""
+        # call parent
         super()._invalidate_initialize_callback(event)
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+    """
+    Helper functions.
+    """
 
     def _get_binding(self, tensor_type: int):
         """Return the cached fused :class:`TensorBinding` for *tensor_type*.
@@ -1220,10 +1224,6 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             The cached :class:`TensorBinding`, or ``None`` if not found.
         """
         return self._bindings.get(tensor_type)
-
-    # ------------------------------------------------------------------
-    # Strided-view reshape helpers (mirror PhysX RigidObjectCollection)
-    # ------------------------------------------------------------------
 
     def reshape_data_to_view_2d(self, data: wp.array, device: str | None = None) -> wp.array:
         """Reshape instance-major ``(num_instances, num_bodies)`` data to body-major view order.
@@ -1337,12 +1337,12 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         view_ids = self._env_body_ids_to_view_ids(env_ids, self._ALL_BODY_INDICES, device=device)
         binding.write(view, indices=view_ids)
 
-    # ------------------------------------------------------------------
-    # Internal helpers -- ID resolution
-    # ------------------------------------------------------------------
+    """
+    Internal helper.
+    """
 
     def _resolve_env_ids(self, env_ids) -> wp.array:
-        """Resolve environment indices to a warp int32 array on ``self._device`` (mirrors PhysX).
+        """Resolve environment indices to a warp int32 array on ``self._device``.
 
         Tests sometimes hand us indices on CPU even when the sim runs on GPU; we move the
         resolved array onto ``self._device`` so kernel launches don't fail on a device
@@ -1359,7 +1359,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         return env_ids
 
     def _resolve_body_ids(self, body_ids) -> wp.array:
-        """Resolve body indices to a warp int32 array on ``self._device`` (mirrors PhysX)."""
+        """Resolve body indices to a warp int32 array on ``self._device``."""
         if body_ids is None or body_ids == slice(None):
             return self._ALL_BODY_INDICES
         if isinstance(body_ids, list):
