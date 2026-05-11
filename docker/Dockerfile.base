@@ -34,6 +34,17 @@ ENV DOCKER_USER_HOME=${DOCKER_USER_HOME_ARG}
 ENV LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Workaround for an openblas+fork() crash in kit's startup path.
+# carb.launcher forks to spawn child processes; glibc runs registered
+# pthread_atfork handlers; scipy_openblas's handler calls pthread_join
+# on its worker threads, which crashes when carb.tasking fibers are
+# in the thread bookkeeping. Forcing single-threaded BLAS avoids the
+# atfork shutdown entirely. RL training is GPU-bound, so the CPU-side
+# slowdown for downstream numpy/scipy is negligible.
+ENV OPENBLAS_NUM_THREADS=1
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+
 USER root
 
 # Install dependencies
