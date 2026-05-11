@@ -545,13 +545,119 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         # (OVPhysX only exposes link frame).
         self._binding_write(TT.LINK_POSE, self.data._body_link_pose_w.data, env_ids=env_ids)
 
+    def write_body_com_velocity_to_sim_index(
+        self,
+        *,
+        body_velocities: wp.array,
+        body_ids: Sequence[int] | wp.array | None = None,
+        env_ids: Sequence[int] | wp.array | None = None,
+    ) -> None:
+        """Set the body center of mass velocity over selected environment and body indices into the simulation.
+
+        The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
+
+        .. note::
+            This sets the velocity of the body's center of mass rather than the body's frame.
+
+        .. note::
+            This method expects partial data.
+
+        Args:
+            body_velocities: Body center of mass velocities in simulation world frame [m/s, rad/s].
+                Shape is (len(env_ids), len(body_ids)) with dtype wp.spatial_vectorf.
+            body_ids: Body indices. If None, then all indices are used.
+            env_ids: Environment indices. If None, then all indices are used.
+        """
+        env_ids = self._resolve_env_ids(env_ids)
+        body_ids = self._resolve_body_ids(body_ids)
+        self.assert_shape_and_dtype(
+            body_velocities, (env_ids.shape[0], body_ids.shape[0]), wp.spatial_vectorf, "body_velocities"
+        )
+        wp.launch(
+            shared_kernels.set_body_com_velocity_to_sim,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[body_velocities, env_ids, body_ids, False],
+            outputs=[
+                self.data._body_com_vel_w.data,
+                self.data._body_com_acc_w.data,
+                self.data._body_state_w.data,
+                self.data._body_com_state_w.data,
+            ],
+            device=self._device,
+        )
+        # Mark the COM velocity fresh so reads within the same step return the
+        # kernel-written value rather than re-fetching the pre-step OVPhysX state.
+        self.data._body_com_vel_w.timestamp = self.data._sim_timestamp
+        self.data._body_link_vel_w.timestamp = -1.0
+        self.data._body_state_w.timestamp = -1.0
+        self.data._body_com_state_w.timestamp = -1.0
+        self.data._body_link_state_w.timestamp = -1.0
+        # set into simulation
+        self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
+
+    def write_body_com_velocity_to_sim_mask(
+        self,
+        *,
+        body_velocities: wp.array,
+        body_mask: wp.array | None = None,
+        env_mask: wp.array | None = None,
+    ) -> None:
+        """Set the body center of mass velocity over selected environment and body masks into the simulation.
+
+        The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
+
+        .. note::
+            This sets the velocity of the body's center of mass rather than the body's frame.
+
+        .. note::
+            This method expects full data.
+
+        Args:
+            body_velocities: Body center of mass velocities in simulation world frame [m/s, rad/s].
+                Shape is (num_instances, num_bodies) with dtype wp.spatial_vectorf.
+            body_mask: Body mask. If None, then all bodies are updated. Shape is (num_bodies,).
+            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+        """
+        if env_mask is not None:
+            env_mask_t = wp.to_torch(env_mask) if isinstance(env_mask, wp.array) else env_mask
+            env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
+        else:
+            env_ids = self._ALL_ENV_INDICES
+        if body_mask is not None:
+            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
+            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
+        else:
+            body_ids = self._ALL_BODY_INDICES
+        self.assert_shape_and_dtype(
+            body_velocities, (self._num_instances, self._num_bodies), wp.spatial_vectorf, "body_velocities"
+        )
+        wp.launch(
+            shared_kernels.set_body_com_velocity_to_sim,
+            dim=(env_ids.shape[0], body_ids.shape[0]),
+            inputs=[body_velocities, env_ids, body_ids, True],
+            outputs=[
+                self.data._body_com_vel_w.data,
+                self.data._body_com_acc_w.data,
+                self.data._body_state_w.data,
+                self.data._body_com_state_w.data,
+            ],
+            device=self._device,
+        )
+        # Invalidate dependent timestamps
+        self.data._body_link_vel_w.timestamp = -1.0
+        self.data._body_state_w.timestamp = -1.0
+        self.data._body_com_state_w.timestamp = -1.0
+        self.data._body_link_state_w.timestamp = -1.0
+        # set into simulation
+        self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
+
     def write_body_link_velocity_to_sim_index(
         self,
         *,
         body_velocities: wp.array,
         body_ids: Sequence[int] | wp.array | None = None,
         env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set the body link velocity over selected environment and body indices into the simulation.
 
         The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
@@ -594,11 +700,11 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             ],
             device=self._device,
         )
-        # Invalidate dependent timestamps so the next read recomposes them.
+        # Invalidate dependent timestamps
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
-        # Push updated COM velocities to simulation via single fused binding.
+        # set into simulation
         self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
 
     def write_body_link_velocity_to_sim_mask(
@@ -607,7 +713,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         body_velocities: wp.array,
         body_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         """Set the body link velocity over selected environment and body masks into the simulation.
 
         The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
@@ -658,123 +764,16 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             ],
             device=self._device,
         )
-        # Invalidate dependent timestamps so the next read recomposes them.
+        # Invalidate dependent timestamps
         self.data._body_link_state_w.timestamp = -1.0
         self.data._body_state_w.timestamp = -1.0
         self.data._body_com_state_w.timestamp = -1.0
-        # Push updated COM velocities to simulation via single fused binding.
+        # set into simulation
         self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
 
-    def write_body_com_velocity_to_sim_index(
-        self,
-        *,
-        body_velocities: wp.array,
-        body_ids: Sequence[int] | wp.array | None = None,
-        env_ids: Sequence[int] | wp.array | None = None,
-    ) -> None:  # type: ignore[override]
-        """Set the body center of mass velocity over selected environment and body indices into the simulation.
-
-        The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
-
-        .. note::
-            This sets the velocity of the body's center of mass rather than the body's frame.
-
-        .. note::
-            This method expects partial data.
-
-        Args:
-            body_velocities: Body center of mass velocities in simulation world frame [m/s, rad/s].
-                Shape is (len(env_ids), len(body_ids)) with dtype wp.spatial_vectorf.
-            body_ids: Body indices. If None, then all indices are used.
-            env_ids: Environment indices. If None, then all indices are used.
-        """
-        env_ids = self._resolve_env_ids(env_ids)
-        body_ids = self._resolve_body_ids(body_ids)
-        self.assert_shape_and_dtype(
-            body_velocities, (env_ids.shape[0], body_ids.shape[0]), wp.spatial_vectorf, "body_velocities"
-        )
-        wp.launch(
-            shared_kernels.set_body_com_velocity_to_sim,
-            dim=(env_ids.shape[0], body_ids.shape[0]),
-            inputs=[body_velocities, env_ids, body_ids, False],
-            outputs=[
-                self.data._body_com_vel_w.data,
-                self.data._body_com_acc_w.data,
-                self.data._body_state_w.data,
-                self.data._body_com_state_w.data,
-            ],
-            device=self._device,
-        )
-        # Mark the velocity buffer as fresh so the next read returns the
-        # kernel-written value rather than the post-step OVPhysX state.
-        # See write_body_link_pose_to_sim_index for the full rationale.
-        self.data._body_com_vel_w.timestamp = self.data._sim_timestamp
-        self.data._body_link_vel_w.timestamp = -1.0
-        self.data._body_state_w.timestamp = -1.0
-        self.data._body_com_state_w.timestamp = -1.0
-        self.data._body_link_state_w.timestamp = -1.0
-        # Push updated COM velocities to simulation via single fused binding.
-        self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
-
-    def write_body_com_velocity_to_sim_mask(
-        self,
-        *,
-        body_velocities: wp.array,
-        body_mask: wp.array | None = None,
-        env_mask: wp.array | None = None,
-    ) -> None:  # type: ignore[override]
-        """Set the body center of mass velocity over selected environment and body masks into the simulation.
-
-        The velocity comprises linear velocity (x, y, z) and angular velocity (x, y, z) in that order.
-
-        .. note::
-            This sets the velocity of the body's center of mass rather than the body's frame.
-
-        .. note::
-            This method expects full data.
-
-        Args:
-            body_velocities: Body center of mass velocities in simulation world frame [m/s, rad/s].
-                Shape is (num_instances, num_bodies) with dtype wp.spatial_vectorf.
-            body_mask: Body mask. If None, then all bodies are updated. Shape is (num_bodies,).
-            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
-        """
-        if env_mask is not None:
-            env_mask_t = wp.to_torch(env_mask) if isinstance(env_mask, wp.array) else env_mask
-            env_ids = self._resolve_env_ids(torch.nonzero(env_mask_t)[:, 0].to(torch.int32))
-        else:
-            env_ids = self._ALL_ENV_INDICES
-        if body_mask is not None:
-            body_mask_t = wp.to_torch(body_mask) if isinstance(body_mask, wp.array) else body_mask
-            body_ids = self._resolve_body_ids(torch.nonzero(body_mask_t)[:, 0].to(torch.int32))
-        else:
-            body_ids = self._ALL_BODY_INDICES
-        self.assert_shape_and_dtype(
-            body_velocities, (self._num_instances, self._num_bodies), wp.spatial_vectorf, "body_velocities"
-        )
-        wp.launch(
-            shared_kernels.set_body_com_velocity_to_sim,
-            dim=(env_ids.shape[0], body_ids.shape[0]),
-            inputs=[body_velocities, env_ids, body_ids, True],
-            outputs=[
-                self.data._body_com_vel_w.data,
-                self.data._body_com_acc_w.data,
-                self.data._body_state_w.data,
-                self.data._body_com_state_w.data,
-            ],
-            device=self._device,
-        )
-        # Invalidate dependent timestamps so the next read recomposes them.
-        self.data._body_link_vel_w.timestamp = -1.0
-        self.data._body_state_w.timestamp = -1.0
-        self.data._body_com_state_w.timestamp = -1.0
-        self.data._body_link_state_w.timestamp = -1.0
-        # Push updated COM velocities to simulation via single fused binding.
-        self._binding_write(TT.LINK_VELOCITY, self.data._body_com_vel_w.data, env_ids=env_ids)
-
-    # ------------------------------------------------------------------
-    # Property setters (3 pairs)
-    # ------------------------------------------------------------------
+    """
+    Operations - Setters.
+    """
 
     def set_masses_index(
         self,
