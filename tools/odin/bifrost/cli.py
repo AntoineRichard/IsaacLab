@@ -98,7 +98,8 @@ def _load_envs_yaml(path: Path) -> list[dict[str, Any]]:
 def _matches_include(task_id: str, include_glob: str | None) -> bool:
     if not include_glob:
         return True
-    return fnmatch.fnmatch(task_id, include_glob)
+    # Comma-separated list of globs; match if any matches (logical OR).
+    return any(fnmatch.fnmatch(task_id, g.strip()) for g in include_glob.split(",") if g.strip())
 
 
 def _build_rows(

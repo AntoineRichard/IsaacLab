@@ -14,6 +14,8 @@ docs/
 **/videos/*
 **/wandb/*
 *.tmp
+# ignore Odin dispatch output (bundles can be 10s of GB)
+odin_runs/
 # ignore docker
 docker/cluster/exports/
 docker/.container.cfg
