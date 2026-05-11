@@ -31,10 +31,6 @@ workflow:
 {% endif %}
         cd /workspace/isaaclab
         set +e
-        # Override site-packages with live source/* so the image's stale wheels
-        # don't shadow newer code on this branch.
-        SRC_PATHS=$(ls -d /workspace/isaaclab/source/isaaclab* 2>/dev/null | tr '\n' ':')
-        export PYTHONPATH="${SRC_PATHS}:.:${PYTHONPATH:-}"
         ./isaaclab.sh -p tools/odin/{{ row.framework_runner }}/run.py \
           --task {{ row.task_id }} \
           --backend {{ row.backend }} \
