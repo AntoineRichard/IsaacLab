@@ -1020,80 +1020,6 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             data_dim=9,
         )
 
-    # ------------------------------------------------------------------
-    # Deprecated state writers
-    # ------------------------------------------------------------------
-
-    def write_body_state_to_sim(
-        self,
-        body_states: torch.Tensor | wp.array,
-        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
-        body_ids: slice | torch.Tensor | None = None,
-    ) -> None:
-        """Deprecated, same as :meth:`write_body_link_pose_to_sim_index` and
-        :meth:`write_body_com_velocity_to_sim_index`."""
-        warnings.warn(
-            "The function 'write_body_state_to_sim' will be deprecated in a future release. Please"
-            " use 'write_body_link_pose_to_sim_index' and 'write_body_com_velocity_to_sim_index' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # Convert wp.array to torch.Tensor for slicing.
-        if isinstance(body_states, wp.array):
-            body_states = wp.to_torch(body_states)
-        self.write_body_link_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
-        self.write_body_com_velocity_to_sim_index(
-            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
-        )
-
-    def write_body_link_state_to_sim(
-        self,
-        body_states: torch.Tensor | wp.array,
-        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
-        body_ids: slice | torch.Tensor | None = None,
-    ) -> None:
-        """Deprecated, same as :meth:`write_body_link_pose_to_sim_index` and
-        :meth:`write_body_link_velocity_to_sim_index`."""
-        warnings.warn(
-            "The function 'write_body_link_state_to_sim' will be deprecated in a future release. Please"
-            " use 'write_body_link_pose_to_sim_index' and 'write_body_link_velocity_to_sim_index' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # Convert wp.array to torch.Tensor for slicing.
-        if isinstance(body_states, wp.array):
-            body_states = wp.to_torch(body_states)
-        self.write_body_link_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
-        self.write_body_link_velocity_to_sim_index(
-            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
-        )
-
-    def write_body_com_state_to_sim(
-        self,
-        body_states: torch.Tensor | wp.array,
-        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
-        body_ids: slice | torch.Tensor | None = None,
-    ) -> None:
-        """Deprecated, same as :meth:`write_body_com_pose_to_sim_index` and
-        :meth:`write_body_com_velocity_to_sim_index`."""
-        warnings.warn(
-            "The function 'write_body_com_state_to_sim' will be deprecated in a future release. Please"
-            " use 'write_body_com_pose_to_sim_index' and 'write_body_com_velocity_to_sim_index' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # Convert wp.array to torch.Tensor for slicing.
-        if isinstance(body_states, wp.array):
-            body_states = wp.to_torch(body_states)
-        self.write_body_com_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
-        self.write_body_com_velocity_to_sim_index(
-            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
-        )
-
-    # ------------------------------------------------------------------
-    # Internal hooks
-    # ------------------------------------------------------------------
-
     def _initialize_impl(self) -> None:
         """Initialize the rigid object collection from the OVPhysX simulation backend.
 
@@ -1530,3 +1456,70 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         if env_ids.ptr == self._ALL_ENV_INDICES.ptr:
             return self._cpu_all_env_ids
         return wp.clone(env_ids, device="cpu")
+
+    """
+    Deprecated properties and methods.
+    """
+
+    def write_body_state_to_sim(
+        self,
+        body_states: torch.Tensor | wp.array,
+        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        body_ids: slice | torch.Tensor | None = None,
+    ) -> None:
+        """Deprecated, same as :meth:`write_body_link_pose_to_sim_index` and
+        :meth:`write_body_com_velocity_to_sim_index`."""
+        warnings.warn(
+            "The function 'write_body_state_to_sim' will be deprecated in a future release. Please"
+            " use 'write_body_link_pose_to_sim_index' and 'write_body_com_velocity_to_sim_index' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if isinstance(body_states, wp.array):
+            body_states = wp.to_torch(body_states)
+        self.write_body_link_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
+        self.write_body_com_velocity_to_sim_index(
+            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
+        )
+
+    def write_body_com_state_to_sim(
+        self,
+        body_states: torch.Tensor | wp.array,
+        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        body_ids: slice | torch.Tensor | None = None,
+    ) -> None:
+        """Deprecated, same as :meth:`write_body_com_pose_to_sim_index` and
+        :meth:`write_body_com_velocity_to_sim_index`."""
+        warnings.warn(
+            "The function 'write_body_com_state_to_sim' will be deprecated in a future release. Please"
+            " use 'write_body_com_pose_to_sim_index' and 'write_body_com_velocity_to_sim_index' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if isinstance(body_states, wp.array):
+            body_states = wp.to_torch(body_states)
+        self.write_body_com_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
+        self.write_body_com_velocity_to_sim_index(
+            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
+        )
+
+    def write_body_link_state_to_sim(
+        self,
+        body_states: torch.Tensor | wp.array,
+        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        body_ids: slice | torch.Tensor | None = None,
+    ) -> None:
+        """Deprecated, same as :meth:`write_body_link_pose_to_sim_index` and
+        :meth:`write_body_link_velocity_to_sim_index`."""
+        warnings.warn(
+            "The function 'write_body_link_state_to_sim' will be deprecated in a future release. Please"
+            " use 'write_body_link_pose_to_sim_index' and 'write_body_link_velocity_to_sim_index' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if isinstance(body_states, wp.array):
+            body_states = wp.to_torch(body_states)
+        self.write_body_link_pose_to_sim_index(body_poses=body_states[:, :, :7], env_ids=env_ids, body_ids=body_ids)
+        self.write_body_link_velocity_to_sim_index(
+            body_velocities=body_states[:, :, 7:], env_ids=env_ids, body_ids=body_ids
+        )
