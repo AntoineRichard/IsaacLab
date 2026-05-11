@@ -3,8 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""OVPhysX-backed rigid object collection data container."""
-
 from __future__ import annotations
 
 import warnings
@@ -14,7 +12,7 @@ import numpy as np
 import torch
 import warp as wp
 
-from isaaclab.assets.rigid_object_collection import BaseRigidObjectCollectionData
+from isaaclab.assets.rigid_object_collection.base_rigid_object_collection_data import BaseRigidObjectCollectionData
 from isaaclab.utils.buffers import TimestampedBufferWarp as TimestampedBuffer
 from isaaclab.utils.math import normalize
 from isaaclab.utils.warp import ProxyArray
@@ -25,41 +23,34 @@ from isaaclab_ovphysx.physics import OvPhysxManager as SimulationManager
 
 
 class RigidObjectCollectionData(BaseRigidObjectCollectionData):
-    """Data container for a rigid object collection backed by OVPhysX.
+    """Data container for a rigid object collection.
 
-    This class contains the data for a rigid object collection in the simulation.
-    The data includes the state of all the bodies in the collection. The data is
-    stored in the simulation world frame unless otherwise specified.
-
-    The data is in the order ``(num_instances, num_bodies, data_size)``, where
-    ``data_size`` is the size of the data for each body.
+    This class contains the data for a rigid object collection in the simulation. The data includes the state of
+    all the bodies in the collection. The data is stored in the simulation world frame unless otherwise specified.
+    The data is in the order ``(num_instances, num_objects, data_size)``, where data_size is the size of the data.
 
     For a rigid body, there are two frames of reference that are used:
 
-    - Actor frame: The frame of reference of the rigid body prim. This typically
-      corresponds to the Xform prim with the rigid body schema.
-    - Center of mass frame: The frame of reference of the center of mass of the
-      rigid body.
+    - Actor frame: The frame of reference of the rigid body prim. This typically corresponds to the Xform prim
+      with the rigid body schema.
+    - Center of mass frame: The frame of reference of the center of mass of the rigid body.
 
-    Depending on the settings of the simulation, the actor frame and the center of
-    mass frame may be the same. This needs to be taken into account when interpreting
-    the data.
+    Depending on the settings of the simulation, the actor frame and the center of mass frame may be the same.
+    This needs to be taken into account when interpreting the data.
 
-    The data is lazily updated, meaning that the data is only updated when it is
-    accessed. The data is updated when the timestamp of the buffer is older than the
-    current simulation timestamp.
+    The data is lazily updated, meaning that the data is only updated when it is accessed. This is useful
+    when the data is expensive to compute or retrieve. The data is updated when the timestamp of the buffer
+    is older than the current simulation timestamp. The timestamp is updated whenever the data is updated.
 
     .. note::
-        **Pull-to-refresh model.** Properties pull fresh data from the OVPhysX
-        tensor API on first access per timestamp and cache the result.
+        **Pull-to-refresh model.** Properties pull fresh data from the OVPhysX tensor API on first access
+        per timestamp and cache the result. This differs from Newton, where buffers are refreshed
+        automatically by the simulation.
 
     .. note::
-        **Single fused binding.** OVPhysX 0.4.3+ exposes a fused multi-prim
-        binding created with ``prim_paths=[...]``.  Each binding returns data of
-        shape ``(num_instances, num_bodies, D)``, matching the Articulation body
-        binding convention.  One binding read fills the entire
-        ``(num_instances, num_bodies, D)`` buffer; no per-body Python loops are
-        needed.
+        **ProxyArray pointer stability.** Each :class:`ProxyArray` wrapper is created once and reused
+        because the OVPhysX tensor API returns views into stable, pre-allocated GPU buffers whose device
+        pointer does not change across simulation steps.
     """
 
     __backend_name__: str = "ovphysx"
@@ -71,37 +62,32 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         num_bodies: int,
         device: str,
     ):
-        """Initialize the rigid object collection data.
+        """Initializes the rigid object data.
 
         Args:
-            root_view: Fused TensorBinding dict, keyed by TensorType constant.
-                Each value is a single :class:`TensorBinding` spanning all bodies
-                in the collection (shape ``(num_instances, num_bodies, D)``).
-            num_bodies: The number of object types managed by the collection.
-            device: The device used for processing (e.g. ``"cuda:0"`` or ``"cpu"``).
+            root_view: Fused TensorBinding dict, keyed by TensorType constant. Each value is a single
+                :class:`TensorBinding` spanning all bodies in the collection.
+            num_bodies: The number of bodies in the collection.
+            device: The device used for processing.
         """
         super().__init__(root_view, num_bodies, device)
-        # Store the bindings dict (equivalent to the view in PhysX).
+        # Store the bindings dict (the equivalent of the root view in PhysX).
         self._bindings = root_view
         self._binding_getter = None  # may be set externally after construction
         self.num_bodies = num_bodies
         self._num_bodies = num_bodies
-        # Set initial time stamp.
+        # Set initial time stamp
         self._sim_timestamp = 0.0
         self._is_primed = False
-        # Body-major read scratch buffers (keyed by tensor_type).  Allocated on
-        # the binding's own device — pinned host for CPU-only bindings, GPU for
-        # the rest — so ``binding.read(scratch)`` never crosses devices.
+        # Body-major read scratch buffers (keyed by tensor_type). Allocated on the binding's own
+        # device — pinned host for CPU-only bindings, GPU for the rest — so ``binding.read(scratch)``
+        # never crosses devices.
         self._cpu_staging_buffers: dict[int, wp.array] = {}
 
-        # Read num_instances from the LINK_POSE binding.
-        #
-        # The native fused multi-prim binding lays elements out body-major-flat
-        # with ``shape == (N * B, 7)`` and ``count == N * B``.  The
-        # articulation-mode mock used by iface tests exposes a directly
-        # instance-major view with ``shape == (N, B, 7)`` and ``count == N``.
-        # Disambiguate via the binding's exposed shape: when the second axis is
-        # ``num_bodies``, the binding is in mock instance-major layout.
+        # Read num_instances from the LINK_POSE binding. The native fused multi-prim binding lays
+        # elements out body-major-flat with ``shape == (N * B, 7)`` and ``count == N * B``. The
+        # articulation-mode mock used by iface tests exposes an instance-major view directly with
+        # ``shape == (N, B, 7)`` and ``count == N``. Dispatch via the binding's exposed shape.
         pose_binding = self._bindings[TT.LINK_POSE]
         if len(pose_binding.shape) >= 2 and pose_binding.shape[1] == num_bodies:
             self.num_instances = pose_binding.count
@@ -120,15 +106,11 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         gravity_dir = gravity_dir.repeat(self.num_instances, self.num_bodies, 1)
         forward_vec = torch.tensor((1.0, 0.0, 0.0), device=self.device).repeat(self.num_instances, self.num_bodies, 1)
 
-        # Initialize constants.
+        # Initialize constants
         self.GRAVITY_VEC_W = ProxyArray(wp.from_torch(gravity_dir, dtype=wp.vec3f))
         self.FORWARD_VEC_B = ProxyArray(wp.from_torch(forward_vec, dtype=wp.vec3f))
 
         self._create_buffers()
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     @property
     def is_primed(self) -> bool:
