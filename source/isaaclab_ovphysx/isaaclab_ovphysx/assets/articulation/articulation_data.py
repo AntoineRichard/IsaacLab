@@ -1370,6 +1370,7 @@ class ArticulationData(BaseArticulationData):
         self._body_com_pose_w = TimestampedBuffer((N, L), dev, wp.transformf)
         self._body_com_vel_w = TimestampedBuffer((N, L), dev, wp.spatial_vectorf)
         self._body_com_acc_w = TimestampedBuffer((N, L), dev, wp.spatial_vectorf)
+        self._body_incoming_joint_wrench_buf = TimestampedBuffer((N, L), dev, wp.spatial_vectorf)
         # -- Joint state buffers
         self._joint_pos_buf = TimestampedBuffer((N, D), dev, wp.float32)
         self._joint_vel_buf = TimestampedBuffer((N, D), dev, wp.float32)
@@ -1753,6 +1754,7 @@ class ArticulationData(BaseArticulationData):
         self._body_com_vel_w_ta: ProxyArray | None = None
         self._body_com_acc_w_ta: ProxyArray | None = None
         self._body_com_pose_b_ta: ProxyArray | None = None
+        self._body_incoming_joint_wrench_b_ta: ProxyArray | None = None
         # Body properties
         self._body_mass_ta: ProxyArray | None = None
         self._body_inertia_ta: ProxyArray | None = None
@@ -1931,7 +1933,7 @@ class ArticulationData(BaseArticulationData):
         view = self._get_read_view(tensor_type, buf.data)
         if view is None:
             return
-        self._read_binding_into_view(tensor_type, view)
+        self._get_binding(tensor_type).read(view)
         buf.timestamp = self._sim_timestamp
 
     def _read_transform_binding(self, tensor_type: int, buf: TimestampedBuffer) -> None:
@@ -1968,7 +1970,7 @@ class ArticulationData(BaseArticulationData):
         view = self._get_read_view(tensor_type, buf.data, 6)
         if view is None:
             return
-        self._read_binding_into_view(tensor_type, view)
+        self._get_binding(tensor_type).read(view)
         buf.timestamp = self._sim_timestamp
 
     def _read_scalar_binding(self, tensor_type: int, buf: TimestampedBuffer) -> None:
