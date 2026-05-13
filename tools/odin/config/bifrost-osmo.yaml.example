@@ -19,8 +19,20 @@ defaults:
     memory: 64Gi
     storage: 64Gi
     platform: rtx-pro-6000
+  # Ignored when timeout_classes is set below.
   exec_timeout: 14400
   queue_timeout: 7200
+
+# Per-task timeout classes (spec §4.2). Each kept env in the curated
+# YAMLs picks one of these class names; Bifrost splits the dispatch into
+# one OSMO workflow per class, each with its own exec_timeout.
+timeout_classes:
+  short: "30m"
+  medium: "2h"
+  long: "8h"
+  very_long: "24h"
+default_timeout_class: medium
+chunk_size: 25            # max tasks per OSMO workflow
 
 retry:
   reschedule_codes: "3001-3006"
