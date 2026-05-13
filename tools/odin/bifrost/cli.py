@@ -175,6 +175,39 @@ def _build_rows(
     return rows
 
 
+def _bucket_and_chunk(rows: list[_PlannedRow], chunk_size: int) -> list[tuple[str, int, list[_PlannedRow]]]:
+    """Group rows by ``timeout_class`` and chunk each group into batches.
+
+    Pure function: no I/O, no logging, no exceptions on empty input.
+    Each output tuple is ``(timeout_class, chunk_index, rows)`` where
+    ``rows`` has at most ``chunk_size`` entries. Output is deterministic:
+    classes sorted alphabetically; chunks within a class in index order;
+    rows within a chunk sorted by ``(task_id, backend, seed)``.
+
+    Args:
+        rows: Planned rows from :func:`_build_rows`. ``timeout_class``
+            must be set on each row (the planner does so before calling
+            this helper).
+        chunk_size: Maximum rows per OSMO workflow. The planner uses
+            ``cfg.chunk_size``.
+
+    Returns:
+        A list of ``(timeout_class, chunk_index, chunk_rows)`` tuples,
+        one per OSMO workflow that will be submitted.
+    """
+    if not rows:
+        return []
+    groups: dict[str, list[_PlannedRow]] = {}
+    for row in rows:
+        groups.setdefault(row.timeout_class, []).append(row)
+    out: list[tuple[str, int, list[_PlannedRow]]] = []
+    for cls in sorted(groups.keys()):
+        sorted_rows = sorted(groups[cls], key=lambda r: (r.task_id, r.backend, r.seed))
+        for idx, start in enumerate(range(0, len(sorted_rows), chunk_size)):
+            out.append((cls, idx, sorted_rows[start : start + chunk_size]))
+    return out
+
+
 def _planned_to_render(row: _PlannedRow) -> RenderRow:
     return RenderRow(
         run_id=row.run_id,
