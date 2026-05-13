@@ -19,10 +19,10 @@ budgets:
   Isaac-Cart-Double-Pendulum-Direct-v0:
     skrl: 3000   # n=3, max=31.0m
   Isaac-Cartpole-Depth-Camera-Direct-v0:
-    skrl: 5400   # 1h30 safety budget. max_iterations sized to match
-                 # (1600 × 64 rollouts = ~102k trainer ticks ≈ 1h30 on
-                 # Blackwell at 19 ticks/s). Trainer normally exits
-                 # clean before this fires; the budget catches a stall.
+    skrl: 7500   # 2h05 safety budget. 20260506-095016 n=3 ran at 91%
+                 # utilization (max=81.5m) on the original 5400s
+                 # budget; bumped to give the renderer a comfortable
+                 # cushion for the occasional Vulkan/CUDA-VK hitch.
                  # TB on prior runs showed convergence at ~100k ticks
                  # (~285 reward plateau).
   Isaac-Cartpole-Direct-v0:
@@ -55,6 +55,10 @@ budgets:
     rsl_rl: 3000   # n=3, max=30.4m
   Isaac-Lift-Cube-OpenArm-v0:
     rsl_rl: 3600   # n=3, max=38.6m
+  Isaac-Navigation-Flat-Anymal-C-v0:
+    rsl_rl: 6300   # 20260506-095016 n=3, max=69.4m. 1.5x margin.
+  Isaac-Open-Drawer-Franka-v0:
+    rsl_rl: 2200   # 20260506-095016 n=3, max=23.8m. 1.5x margin.
   Isaac-Open-Drawer-OpenArm-v0:
     rsl_rl: 3300   # n=3, max=34.0m
   Isaac-Quadcopter-Direct-v0:
@@ -80,7 +84,10 @@ budgets:
   Isaac-TrackPositionNoObstacles-ARL-Robot-1-v0:
     rsl_rl: 3300   # n=3, max=33.8m
   Isaac-Tracking-LocoManip-Digit-v0:
-    rsl_rl: 10800   # n=3, max=118.2m
+    rsl_rl: 18000   # 5h. 20260506-095016 n=3 all timed out at 3h
+                    # (Blackwell 5000-Pro); either bump budget or
+                    # reduce max_iterations. 5h gives headroom for a
+                    # legitimate 4096-env × 2000-iter run on Blackwell.
   Isaac-Velocity-Flat-Anymal-B-v0:
     rsl_rl: 900   # n=3, max=7.1m
   Isaac-Velocity-Flat-Anymal-C-Direct-v0:
@@ -90,29 +97,40 @@ budgets:
   Isaac-Velocity-Flat-Anymal-D-v0:
     rsl_rl: 900   # n=3, max=8.7m
   Isaac-Velocity-Flat-Cassie-v0:
-    rsl_rl: 1800   # n=3, max=18.9m
+    rsl_rl: 2500   # 20260506-095016 max=27.6m (92% util on old
+                   # 1800s budget). Bumped for 1.5x margin.
   Isaac-Velocity-Flat-Digit-v0:
-    rsl_rl: 10200   # n=2, max=112.5m
+    rsl_rl: 18000   # 5h. 20260506-095016 n=3 all timed out at
+                    # 2h50m (Blackwell 5000-Pro). Same shape as
+                    # Tracking-LocoManip-Digit -- 4096 envs × 2000
+                    # iters needs more headroom than the original 3h.
   Isaac-Velocity-Flat-H1-v0:
-    rsl_rl: 2100   # n=3, max=20.9m
+    rsl_rl: 3300   # 55m. 20260506-095016 n=3 hit 100% of 2100s on
+                   # seed44 (timed out at exactly 2109s); other two
+                   # completed at 35-40m. 3300s = 1.5x margin.
   Isaac-Velocity-Flat-Unitree-A1-v0:
     rsl_rl: 900   # n=3, max=7.1m
   Isaac-Velocity-Flat-Unitree-Go2-v0:
     rsl_rl: 900   # n=3, max=8.1m
   Isaac-Velocity-Rough-Anymal-B-v0:
-    rsl_rl: 6300   # n=3, max=67.6m
+    rsl_rl: 8400   # 20260506-095016 max=92.3m (88% util on old
+                   # 6300s budget). Bumped for 1.5x margin.
   Isaac-Velocity-Rough-Anymal-C-Direct-v0:
     rsl_rl: 17100   # n=3, max=188.5m
   Isaac-Velocity-Rough-Anymal-C-v0:
-    rsl_rl: 6000   # n=3, max=66.5m
+    rsl_rl: 7800   # 20260506-095016 max=85.5m (86% util on old
+                   # 6000s budget). Bumped for 1.5x margin.
   Isaac-Velocity-Rough-Anymal-D-v0:
     rsl_rl: 6600   # n=3, max=71.9m
   Isaac-Velocity-Rough-Cassie-v0:
     rsl_rl: 4500   # n=3, max=49.5m
   Isaac-Velocity-Rough-Digit-v0:
-    rsl_rl: 24900   # n=3, max=276.1m
+    rsl_rl: 34000   # 9h25. 20260506-095016 max=373.3m (90% util on
+                    # old 24900s budget, 2/3 seeds timed out).
+                    # Bumped for 1.5x margin.
   Isaac-Velocity-Rough-G1-v0:
-    rsl_rl: 16200   # n=3, max=179.7m
+    rsl_rl: 20000   # 5h35. 20260506-095016 max=221.9m (82% util on
+                    # old 16200s budget). Bumped for 1.5x margin.
   Isaac-Velocity-Rough-H1-v0:
     rsl_rl: 13800   # n=3, max=152.1m
   Isaac-Velocity-Rough-Unitree-A1-v0:
@@ -127,6 +145,15 @@ gpu_multipliers:
                 # than to silently kill a job that needed a couple more
                 # hours. Tighten once a calibration run lands.
   blackwell-pro-5000: 1.0  # baseline (this run)
+  l40s: 1.0   # calibrated from 20260513-092728 OSMO L40s run vs
+              # the same tasks on Blackwell. Mixed picture: short
+              # tasks (Cartpole) are ~2x slower on L40s, long tasks
+              # (Ant/Humanoid/Anymal-C) are 0.4-0.8x. The per-task
+              # budget already carries a 1.5x safety margin baked
+              # into max-observed-Blackwell, so keeping the L40s
+              # multiplier at 1.0 covers Cartpole's worst case
+              # (~2x slower) within the safety margin while not
+              # over-budgeting long tasks.
   # add more once we have calibration data on other GPUs:
   # l40: 1.4
   # a100: 0.9

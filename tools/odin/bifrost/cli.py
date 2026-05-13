@@ -124,14 +124,42 @@ def _matches_include(task_id: str, include_glob: str | None) -> bool:
     return any(fnmatch.fnmatch(task_id, g.strip()) for g in include_glob.split(",") if g.strip())
 
 
-def _resolve_per_task_timeout_s(task_id: str, framework: str, budgets: Budgets) -> int:
+def _gpu_class_from_platform(platform: str) -> str:
+    """Map an OSMO ``resources.platform`` string to a ``gpu_multipliers`` key.
+
+    OSMO platform names follow ``<chassis>-<gpu>`` (``ovx-l40s``,
+    ``dgx-h100``, ``ovx-l40``). The ``gpu_multipliers`` table in
+    ``job_budgets.yaml`` keys on the bare GPU portion (``l40s``,
+    ``h100``, ``l40``), so we strip a known chassis prefix.
+
+    Args:
+        platform: ``cfg.defaults.resources.platform`` from
+            ``bifrost-osmo.yaml`` (e.g. ``"ovx-l40s"``).
+
+    Returns:
+        The GPU class key to look up in ``budgets.gpu_multipliers``.
+        Returns ``platform`` unchanged when no known prefix matches —
+        the caller falls back to ``gpu_multipliers.default``.
+    """
+    for prefix in ("ovx-", "dgx-"):
+        if platform.startswith(prefix):
+            return platform[len(prefix) :]
+    return platform
+
+
+def _resolve_per_task_timeout_s(
+    task_id: str,
+    framework: str,
+    budgets: Budgets,
+    gpu_class: str | None = None,
+) -> int:
     """Look up the per-task wall-clock budget in seconds.
 
     Reuses :class:`tools.odin.asgard.budgets.Budgets` so Bifrost and
     Asgard share one source of truth (``tools/odin/config/job_budgets.yaml``).
-    GPU multipliers are intentionally skipped: OSMO pools own hardware
-    selection, and the planner runs before any host has been picked, so
-    a multiplier would be guesswork.
+    When ``gpu_class`` is provided, the matching multiplier from
+    ``budgets.gpu_multipliers`` is applied (falling back to
+    ``gpu_multipliers.default`` when the class is unknown).
 
     Framework keys are normalised to the underscored spelling
     (``"rsl_rl"``, ``"skrl"``) before lookup so curated YAMLs that say
@@ -141,9 +169,12 @@ def _resolve_per_task_timeout_s(task_id: str, framework: str, budgets: Budgets) 
         task_id: Gym task id (e.g. ``Isaac-Ant-Direct-v0``).
         framework: ``"rsl_rl"`` / ``"rsl-rl"`` or ``"skrl"``.
         budgets: Loaded :class:`Budgets` table.
+        gpu_class: GPU class for the OSMO pool (e.g. ``"l40s"``,
+            ``"h100"``); pass ``None`` to skip multipliers entirely.
 
     Returns:
-        Whole seconds of wall-clock budget.
+        Whole seconds of wall-clock budget, with the GPU multiplier
+        applied when provided.
 
     Raises:
         BifrostConfigError: When the task is missing AND
@@ -162,7 +193,11 @@ def _resolve_per_task_timeout_s(task_id: str, framework: str, budgets: Budgets) 
             f"{fw_key!r} and no defaults.{fw_key} fallback; add either an entry in "
             f"budgets: or a defaults.{fw_key}: value"
         )
-    return int(base)
+    multiplier = 1.0
+    if gpu_class is not None:
+        mults = budgets.gpu_multipliers or {}
+        multiplier = float(mults.get(gpu_class, mults.get("default", 1.0)))
+    return int(base * multiplier)
 
 
 def _build_rows(
@@ -175,6 +210,12 @@ def _build_rows(
     cfg: BifrostConfig | None = None,
     budgets: Budgets,
 ) -> list[_PlannedRow]:
+    # Derive the GPU class from the pool's platform string so per-task
+    # budgets get scaled by the right gpu_multiplier entry (e.g.
+    # ``ovx-l40s`` -> ``l40s`` -> ``budgets.gpu_multipliers["l40s"]``).
+    gpu_class = None
+    if cfg is not None and cfg.defaults.resources.platform:
+        gpu_class = _gpu_class_from_platform(cfg.defaults.resources.platform)
     rows: list[_PlannedRow] = []
     for path, backend in [(physx_yaml, "physx"), (newton_yaml, "newton")]:
         if path is None:
@@ -186,7 +227,7 @@ def _build_rows(
             framework = str(env["framework"])
             num_envs = int(env["num_envs"])
             max_iter = int(env["max_iterations"])
-            per_task_timeout_s = _resolve_per_task_timeout_s(task_id, framework, budgets)
+            per_task_timeout_s = _resolve_per_task_timeout_s(task_id, framework, budgets, gpu_class)
             framework_slug = framework.replace("_", "-")
             for seed in seeds:
                 run_id = f"{framework_slug}_{backend}_{task_id}_{dispatch_id}_seed{seed}"
@@ -273,7 +314,11 @@ def _planned_to_job(row: _PlannedRow) -> JobEntry:
     )
 
 
-def _planned_row_from_job(job: JobEntry, budgets: Budgets) -> _PlannedRow:
+def _planned_row_from_job(
+    job: JobEntry,
+    budgets: Budgets,
+    gpu_class: str | None = None,
+) -> _PlannedRow:
     """Reconstruct a :class:`_PlannedRow` from a previously recorded :class:`JobEntry`.
 
     Used by the ``--retry-failed`` path so that retried jobs preserve the
@@ -285,6 +330,10 @@ def _planned_row_from_job(job: JobEntry, budgets: Budgets) -> _PlannedRow:
     Args:
         job: A job entry from the parent dispatch state.
         budgets: Current :class:`Budgets` table.
+        gpu_class: GPU class for the pool the retry will target;
+            forwarded to :func:`_resolve_per_task_timeout_s` so the
+            same gpu_multiplier the forward path applied at planning
+            is re-applied here. ``None`` skips multiplier scaling.
 
     Returns:
         A planned row carrying the parent's identifiers.
@@ -297,7 +346,7 @@ def _planned_row_from_job(job: JobEntry, budgets: Budgets) -> _PlannedRow:
         seed=job.seed,
         num_envs=job.num_envs,
         max_iterations=job.max_iterations,
-        per_task_timeout_s=_resolve_per_task_timeout_s(job.task_id, job.framework, budgets),
+        per_task_timeout_s=_resolve_per_task_timeout_s(job.task_id, job.framework, budgets, gpu_class),
     )
 
 
@@ -513,7 +562,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 2
         parent_dispatch_id = parent.dispatch_id
-        rows = [_planned_row_from_job(j, budgets) for j in parent.jobs if j.run_id in retry_run_ids]
+        retry_gpu_class = (
+            _gpu_class_from_platform(cfg.defaults.resources.platform) if cfg.defaults.resources.platform else None
+        )
+        rows = [_planned_row_from_job(j, budgets, retry_gpu_class) for j in parent.jobs if j.run_id in retry_run_ids]
         if not rows:
             print(
                 "retry-failed run_ids did not match any rows in parent dispatch",
