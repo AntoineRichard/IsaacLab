@@ -394,9 +394,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if state is None:
             print(f"resume target {dispatch_dir} has no dispatch.json", file=sys.stderr)
             return 2
-        if state.osmo_workflow_id is None:
+        if not state.osmo_workflow_ids and state.osmo_workflow_id is None:
             print(
-                f"resume target {dispatch_dir} has no osmo_workflow_id (was --dry-run only?)",
+                f"resume target {dispatch_dir} has no OSMO workflow ids (was --dry-run only?)",
                 file=sys.stderr,
             )
             return 2
@@ -484,18 +484,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage_source_tarball(repo_root / cfg.code_delivery.source_root, tarball_path_p, repo_root=repo_root)
         tarball_path = str(tarball_path_p)
 
-    # Legacy single-workflow path: timeout-class-based bucketing lands
-    # in Batch 5 (multi-workflow submit). For now the whole dispatch
-    # reuses ``cfg.defaults.exec_timeout`` as an integer-seconds string.
-    workflow_yaml = render_workflow_yaml(
-        dispatch_id=dispatch_id,
-        rows=[_planned_to_render(r) for r in rows],
-        cfg=cfg,
-        tarball_path=tarball_path,
-        exec_timeout=f"{cfg.defaults.exec_timeout}s",
-    )
-    workflow_yaml_path = dispatch_dir / "workflow.yaml"
-    workflow_yaml_path.write_text(workflow_yaml)
+    # Decide which submit path to take. The multi-workflow path is gated
+    # on ``cfg.timeout_classes`` being populated — legacy configs without
+    # the new field keep the single-workflow behavior so they don't
+    # silently change shape.
+    buckets = _bucket_and_chunk(rows, cfg.chunk_size) if cfg.timeout_classes else []
+
+    # For visibility/dry-run we always write *a* workflow.yaml. In the
+    # multi-workflow path we instead emit one file per chunk.
+    if buckets:
+        chunk_render = []
+        for cls, idx, chunk_rows in buckets:
+            yaml_path = dispatch_dir / f"workflow.{cls}.{idx}.yaml"
+            yaml_body = render_workflow_yaml(
+                dispatch_id=dispatch_id,
+                rows=[_planned_to_render(r) for r in chunk_rows],
+                cfg=cfg,
+                tarball_path=tarball_path,
+                exec_timeout=cfg.timeout_classes[cls],
+            )
+            yaml_path.write_text(yaml_body)
+            chunk_render.append((cls, idx, chunk_rows, yaml_path))
+    else:
+        # Legacy single-workflow path.
+        workflow_yaml = render_workflow_yaml(
+            dispatch_id=dispatch_id,
+            rows=[_planned_to_render(r) for r in rows],
+            cfg=cfg,
+            tarball_path=tarball_path,
+            exec_timeout=f"{cfg.defaults.exec_timeout}s",
+        )
+        workflow_yaml_path = dispatch_dir / "workflow.yaml"
+        workflow_yaml_path.write_text(workflow_yaml)
 
     state = DispatchState(
         schema_version=SCHEMA_VERSION,
@@ -513,16 +533,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_dispatch_state(dispatch_dir, state)
 
     if args.dry_run:
-        print(f"[dry-run] wrote {workflow_yaml_path}")
+        if buckets:
+            print(f"[dry-run] wrote {len(buckets)} workflow YAML file(s) under {dispatch_dir}")
+        else:
+            print(f"[dry-run] wrote {dispatch_dir / 'workflow.yaml'}")
         return 0
 
     client = OsmoClient(profile=cfg.osmo_profile)
     rsync_pairs: list[tuple[str, str]] = []
     if args.rsync:
         rsync_pairs.append((cfg.code_delivery.source_root, "/workspace/IsaacLab/" + cfg.code_delivery.source_root))
-    workflow_id = client.submit(workflow_yaml_path, rsync_pairs=rsync_pairs, pool=cfg.pool)
-    state.osmo_workflow_id = workflow_id
-    write_dispatch_state(dispatch_dir, state)
+    if buckets:
+        # Submit one workflow per chunk. Persist the dispatch.json after
+        # each submit so a failure mid-way leaves the prior workflows'
+        # ids on disk and the resume path can re-attach.
+        for _cls, _idx, _chunk_rows, yaml_path in chunk_render:
+            wf_id = client.submit(yaml_path, rsync_pairs=rsync_pairs, pool=cfg.pool)
+            state.osmo_workflow_ids.append(wf_id)
+            write_dispatch_state(dispatch_dir, state)
+    else:
+        workflow_id = client.submit(workflow_yaml_path, rsync_pairs=rsync_pairs, pool=cfg.pool)
+        state.osmo_workflow_id = workflow_id
+        state.osmo_workflow_ids = [workflow_id]
+        write_dispatch_state(dispatch_dir, state)
 
     validator = _manifest_validator()
 

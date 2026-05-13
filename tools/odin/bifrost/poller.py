@@ -121,46 +121,54 @@ def poll_until_terminal(
 
     Returns when every job is in a terminal state.
     """
-    if state.osmo_workflow_id is None:
-        raise ValueError("state.osmo_workflow_id is required for OSMO polling")
+    # Per spec §6 the poller walks every workflow id each tick so a
+    # dispatch split across N OSMO workflows aggregates correctly. The
+    # legacy single-id field is honored for back-compat when the new
+    # list field is empty.
+    workflow_ids: list[str] = list(state.osmo_workflow_ids)
+    if not workflow_ids:
+        if state.osmo_workflow_id is None:
+            raise ValueError("state.osmo_workflow_ids / osmo_workflow_id is required for OSMO polling")
+        workflow_ids = [state.osmo_workflow_id]
     by_osmo_name = {j.osmo_task_name: j for j in state.jobs if j.osmo_task_name}
     completed_seen: set[str] = set()
     while not _all_terminal(state):
-        snap = client.status(state.osmo_workflow_id)
-        for task in snap.tasks:
-            job = by_osmo_name.get(task.name)
-            if job is None:
-                continue  # Unknown task — log via state's general mechanism in caller.
-            new_status = _osmo_status_to_job_status(task.status)
-            if new_status == job.status:
-                continue
-            # Route through transition_to so the per-target field
-            # invariants (started_at on running, ended_at on terminal,
-            # FailureInfo on failed) are enforced atomically — same
-            # contract every other dispatcher path uses, and required
-            # for write_dispatch_state's invariant tripwire to pass.
-            if new_status == "running":
-                # OSMO doesn't expose an assigned host; identify the
-                # workflow itself as the abstract assignee.
-                job.transition_to(
-                    "running",
-                    assigned_to=f"osmo:{state.osmo_workflow_id}",
-                )
-            elif new_status == "completed":
-                job.transition_to("completed")
-                if job.run_id not in completed_seen:
-                    completed_seen.add(job.run_id)
-                    on_task_completed(job)
-            elif new_status == "failed":
-                kind = classify_terminal_state(task.status) or "infrastructure"
-                failure = FailureInfo(
-                    kind=kind,
-                    message=f"OSMO task {task.name} terminal state {task.status} (exit={task.exit_code})",
-                    details={"osmo_state": task.status, "exit_code": task.exit_code},
-                )
-                job.transition_to("failed", failure=failure)
-            else:  # back to pending (rare — OSMO requeue)
-                job.transition_to("pending")
+        for wf_id in workflow_ids:
+            snap = client.status(wf_id)
+            for task in snap.tasks:
+                job = by_osmo_name.get(task.name)
+                if job is None:
+                    continue  # Unknown task — log via state's general mechanism in caller.
+                new_status = _osmo_status_to_job_status(task.status)
+                if new_status == job.status:
+                    continue
+                # Route through transition_to so the per-target field
+                # invariants (started_at on running, ended_at on terminal,
+                # FailureInfo on failed) are enforced atomically — same
+                # contract every other dispatcher path uses, and required
+                # for write_dispatch_state's invariant tripwire to pass.
+                if new_status == "running":
+                    # OSMO doesn't expose an assigned host; identify the
+                    # specific chunk-workflow as the abstract assignee.
+                    job.transition_to(
+                        "running",
+                        assigned_to=f"osmo:{wf_id}",
+                    )
+                elif new_status == "completed":
+                    job.transition_to("completed")
+                    if job.run_id not in completed_seen:
+                        completed_seen.add(job.run_id)
+                        on_task_completed(job)
+                elif new_status == "failed":
+                    kind = classify_terminal_state(task.status) or "infrastructure"
+                    failure = FailureInfo(
+                        kind=kind,
+                        message=f"OSMO task {task.name} terminal state {task.status} (exit={task.exit_code})",
+                        details={"osmo_state": task.status, "exit_code": task.exit_code},
+                    )
+                    job.transition_to("failed", failure=failure)
+                else:  # back to pending (rare — OSMO requeue)
+                    job.transition_to("pending")
         write_dispatch_state(dispatch_dir, state)
         if _all_terminal(state):
             break

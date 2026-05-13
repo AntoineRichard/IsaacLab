@@ -37,12 +37,13 @@ def example_config(tmp_path: Path) -> Path:
 def example_physx_yaml(tmp_path: Path) -> Path:
     p = tmp_path / "physx.yaml"
     p.write_text(
-        "envs:\n"
-        "- task_id: Isaac-Ant-Direct-v0\n"
-        "  framework: rsl-rl\n"
-        "  num_envs: 4096\n"
-        "  max_iterations: 500\n"
-        "  keep: true\n"
+        "groups:\n"
+        "  direct/ant:\n"
+        "  - task_id: Isaac-Ant-Direct-v0\n"
+        "    framework: rsl-rl\n"
+        "    num_envs: 4096\n"
+        "    max_iterations: 500\n"
+        "    keep: true\n"
     )
     return p
 
@@ -110,7 +111,7 @@ def test_main_submits_and_polls(tmp_path: Path, example_config: Path, example_ph
             self.submit_calls: list[Path] = []
             self.status_calls = 0
 
-        def submit(self, yaml_path, *, rsync_pairs=()):
+        def submit(self, yaml_path, *, rsync_pairs=(), pool=None):
             self.submit_calls.append(yaml_path)
             return "wf-test-1"
 
