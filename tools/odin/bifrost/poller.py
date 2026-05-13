@@ -136,13 +136,15 @@ def poll_until_terminal(
         for wf_id in workflow_ids:
             try:
                 snap = client.status(wf_id)
-            except OsmoTransientError as exc:
-                # OSMO 5xx (server-side flake) or connection issue: skip
-                # this workflow's tick and try again next poll instead of
-                # crashing the entire poller (which would force a manual
-                # --resume for a transient blip).
+            except Exception as exc:
+                # OSMO occasionally returns 4xx/5xx mid-poll (transient
+                # backend hiccup, race against a workflow finishing,
+                # CLI parse glitch). None of these should kill the
+                # whole poller: skip this workflow's tick, retry next
+                # poll. Auth errors will keep failing each tick but
+                # that's the operator's signal to fix credentials.
                 print(
-                    f"[bifrost] osmo workflow query {wf_id} transient failure; will retry next tick: {exc}",
+                    f"[bifrost] osmo workflow query {wf_id} failed; will retry next tick: {exc}",
                     flush=True,
                 )
                 continue
