@@ -3,7 +3,17 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Curated-YAML env loader: ``timeout_class`` field handling (spec §4.1, §5.1)."""
+"""Planner per-task timeout resolution via :mod:`tools.odin.asgard.budgets`.
+
+The bucketing system reads per-task timeouts straight from
+``tools/odin/config/job_budgets.yaml`` (the same source of truth Asgard
+uses), removing the redundant ``timeout_class`` indirection that lived
+here before. These tests cover:
+
+- A task explicitly listed in the budgets file gets that value.
+- A task missing from ``budgets`` falls back to ``defaults.<framework>``.
+- A framework that has neither an entry nor a ``defaults`` value raises.
+"""
 
 from __future__ import annotations
 
@@ -11,10 +21,11 @@ from pathlib import Path
 
 import pytest
 
+from tools.odin.asgard.budgets import load_budgets
 from tools.odin.bifrost.cli import _build_rows
 from tools.odin.bifrost.config import BifrostConfigError, load_bifrost_config
 
-_CFG_WITH_CLASSES = """\
+_CFG = """\
 osmo_profile: prod
 pool: rtx-pro-6000-eval
 priority: NORMAL
@@ -32,43 +43,52 @@ defaults:
 retry: {reschedule_codes: "3001-3006", restart_codes: ""}
 bundle_dataset_prefix: odin
 code_delivery: {mode: files_upload, source_root: tools/odin}
-timeout_classes:
-  short: "30m"
-  medium: "2h"
-  long: "8h"
-default_timeout_class: medium
 chunk_size: 25
 """
 
+_BUDGETS_FULL = """\
+defaults:
+  rsl_rl: 43200
+  skrl: 43200
+budgets:
+  Isaac-Ant-Direct-v0:
+    rsl_rl: 2100
+  Isaac-Cartpole-Direct-v0:
+    rsl_rl: 300
+"""
 
-def _envs_yaml(timeout_class_line: str) -> str:
+_BUDGETS_NO_DEFAULT_FOR_SKRL = """\
+defaults:
+  rsl_rl: 43200
+budgets:
+  Isaac-Ant-Direct-v0:
+    rsl_rl: 2100
+"""
+
+
+def _envs_yaml(task_id: str, framework: str) -> str:
     return (
         "groups:\n"
-        "  direct/ant:\n"
-        "  - task_id: Isaac-Ant-Direct-v0\n"
-        "    framework: rsl_rl\n"
+        "  g:\n"
+        "  - task_id: " + task_id + "\n"
+        "    framework: " + framework + "\n"
         "    num_envs: 4096\n"
         "    max_iterations: 500\n"
-        "    keep: true\n" + timeout_class_line
+        "    keep: true\n"
     )
 
 
-def _write_cfg(tmp_path: Path, body: str = _CFG_WITH_CLASSES) -> Path:
-    p = tmp_path / "bifrost-osmo.yaml"
+def _write(tmp_path: Path, name: str, body: str) -> Path:
+    p = tmp_path / name
     p.write_text(body)
     return p
 
 
-def _write_envs(tmp_path: Path, body: str) -> Path:
-    p = tmp_path / "physx.yaml"
-    p.write_text(body)
-    return p
-
-
-def test_timeout_class_from_env_yaml(tmp_path: Path):
-    """An env with ``timeout_class: short`` produces a row with that class."""
-    cfg = load_bifrost_config(_write_cfg(tmp_path))
-    envs = _write_envs(tmp_path, _envs_yaml("    timeout_class: short\n"))
+def test_per_task_timeout_from_budgets_table(tmp_path: Path):
+    """Explicit ``budgets[task][framework]`` entry wins."""
+    cfg = load_bifrost_config(_write(tmp_path, "bifrost-osmo.yaml", _CFG))
+    budgets = load_budgets(_write(tmp_path, "job_budgets.yaml", _BUDGETS_FULL))
+    envs = _write(tmp_path, "physx.yaml", _envs_yaml("Isaac-Ant-Direct-v0", "rsl_rl"))
     rows = _build_rows(
         physx_yaml=envs,
         newton_yaml=None,
@@ -76,15 +96,17 @@ def test_timeout_class_from_env_yaml(tmp_path: Path):
         include_glob=None,
         dispatch_id="20260513-000000",
         cfg=cfg,
+        budgets=budgets,
     )
     assert len(rows) == 1
-    assert rows[0].timeout_class == "short"
+    assert rows[0].per_task_timeout_s == 2100
 
 
-def test_timeout_class_falls_back_to_default(tmp_path: Path):
-    """An env that omits ``timeout_class`` falls back to the config's default."""
-    cfg = load_bifrost_config(_write_cfg(tmp_path))
-    envs = _write_envs(tmp_path, _envs_yaml(""))
+def test_unknown_task_falls_back_to_framework_default(tmp_path: Path):
+    """A task not in the budgets table picks up ``defaults.<framework>``."""
+    cfg = load_bifrost_config(_write(tmp_path, "bifrost-osmo.yaml", _CFG))
+    budgets = load_budgets(_write(tmp_path, "job_budgets.yaml", _BUDGETS_FULL))
+    envs = _write(tmp_path, "physx.yaml", _envs_yaml("Isaac-Mystery-Task-v0", "skrl"))
     rows = _build_rows(
         physx_yaml=envs,
         newton_yaml=None,
@@ -92,20 +114,18 @@ def test_timeout_class_falls_back_to_default(tmp_path: Path):
         include_glob=None,
         dispatch_id="20260513-000000",
         cfg=cfg,
+        budgets=budgets,
     )
     assert len(rows) == 1
-    assert rows[0].timeout_class == "medium"
+    assert rows[0].per_task_timeout_s == 43200
 
 
-def test_unknown_timeout_class_raises(tmp_path: Path):
-    """A ``timeout_class`` not listed in ``cfg.timeout_classes`` is a config error.
-
-    Catching the typo at planner time avoids submitting an OSMO workflow
-    whose ``exec_timeout`` resolves to ``None``.
-    """
-    cfg = load_bifrost_config(_write_cfg(tmp_path))
-    envs = _write_envs(tmp_path, _envs_yaml("    timeout_class: bananas\n"))
-    with pytest.raises(BifrostConfigError, match="bananas"):
+def test_missing_framework_default_raises(tmp_path: Path):
+    """No per-task entry AND no ``defaults.<framework>`` → planner error."""
+    cfg = load_bifrost_config(_write(tmp_path, "bifrost-osmo.yaml", _CFG))
+    budgets = load_budgets(_write(tmp_path, "job_budgets.yaml", _BUDGETS_NO_DEFAULT_FOR_SKRL))
+    envs = _write(tmp_path, "physx.yaml", _envs_yaml("Isaac-Mystery-Task-v0", "skrl"))
+    with pytest.raises(BifrostConfigError, match="skrl"):
         _build_rows(
             physx_yaml=envs,
             newton_yaml=None,
@@ -113,20 +133,23 @@ def test_unknown_timeout_class_raises(tmp_path: Path):
             include_glob=None,
             dispatch_id="20260513-000000",
             cfg=cfg,
+            budgets=budgets,
         )
 
 
-def test_default_unknown_when_classes_set_raises(tmp_path: Path):
-    """``default_timeout_class`` itself must be a known class when classes are set."""
-    bad_cfg = _CFG_WITH_CLASSES.replace("default_timeout_class: medium", "default_timeout_class: oops")
-    cfg = load_bifrost_config(_write_cfg(tmp_path, bad_cfg))
-    envs = _write_envs(tmp_path, _envs_yaml(""))
-    with pytest.raises(BifrostConfigError, match="oops"):
-        _build_rows(
-            physx_yaml=envs,
-            newton_yaml=None,
-            seeds=[42],
-            include_glob=None,
-            dispatch_id="20260513-000000",
-            cfg=cfg,
-        )
+def test_task_listed_under_other_framework_falls_back_to_default(tmp_path: Path):
+    """Task in budgets[X][rsl_rl] but dispatched under skrl uses skrl default."""
+    cfg = load_bifrost_config(_write(tmp_path, "bifrost-osmo.yaml", _CFG))
+    budgets = load_budgets(_write(tmp_path, "job_budgets.yaml", _BUDGETS_FULL))
+    envs = _write(tmp_path, "physx.yaml", _envs_yaml("Isaac-Ant-Direct-v0", "skrl"))
+    rows = _build_rows(
+        physx_yaml=envs,
+        newton_yaml=None,
+        seeds=[42],
+        include_glob=None,
+        dispatch_id="20260513-000000",
+        cfg=cfg,
+        budgets=budgets,
+    )
+    # Ant is listed only under rsl_rl; skrl falls through to the default.
+    assert rows[0].per_task_timeout_s == 43200

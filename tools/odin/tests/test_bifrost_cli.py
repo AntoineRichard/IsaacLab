@@ -68,7 +68,8 @@ def test_dry_run_writes_workflow_yaml_and_exits_zero(tmp_path: Path, example_con
     assert rc == 0
     dispatch_dirs = list(runs_root.iterdir())
     assert len(dispatch_dirs) == 1
-    assert (dispatch_dirs[0] / "workflow.yaml").exists()
+    # One chunk per dispatch (chunk_size default 25 with one row → one workflow file).
+    assert (dispatch_dirs[0] / "workflow.0.yaml").exists()
 
 
 def test_seed_expansion_creates_one_task_per_seed(tmp_path: Path, example_config: Path, example_physx_yaml: Path):
@@ -92,7 +93,7 @@ def test_seed_expansion_creates_one_task_per_seed(tmp_path: Path, example_config
         ]
     )
     assert rc == 0
-    workflow_yaml = list(runs_root.iterdir())[0] / "workflow.yaml"
+    workflow_yaml = list(runs_root.iterdir())[0] / "workflow.0.yaml"
     parsed = y.safe_load(workflow_yaml.read_text())
     assert len(parsed["workflow"]["tasks"]) == 2
 

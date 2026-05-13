@@ -12,7 +12,7 @@ with a key path so the operator knows which field to fix.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -84,13 +84,11 @@ class BifrostConfig:
     retry: RetrySpec
     bundle_dataset_prefix: str
     code_delivery: CodeDeliverySpec
-    # Per-task timeout classes (spec §4.2). Maps a class name
-    # (``short``, ``medium``, ...) to its OSMO ``exec_timeout`` string
-    # (``"30m"``, ``"2h"``, ...). An empty dict means the legacy
-    # single-workflow path is in use; ``defaults.exec_timeout`` then
-    # applies to every task in the dispatch.
-    timeout_classes: dict[str, str] = field(default_factory=dict)
-    default_timeout_class: str = "medium"
+    # Maximum tasks per OSMO workflow. Per-task wall-clock budgets come
+    # from ``tools/odin/config/job_budgets.yaml`` (see
+    # :mod:`tools.odin.asgard.budgets`); the bifrost planner sorts rows
+    # by budget ascending, chunks at this size, and uses the chunk's max
+    # budget as the workflow ``exec_timeout``.
     chunk_size: int = 25
 
 
@@ -190,39 +188,35 @@ def load_bifrost_config(path: Path) -> BifrostConfig:
         source_root=_require_str(cd_d, "source_root", "code_delivery"),
     )
 
-    timeout_classes_raw = raw.get("timeout_classes") or {}
-    if not isinstance(timeout_classes_raw, dict):
-        raise BifrostConfigError("timeout_classes must be a mapping")
-    timeout_classes: dict[str, str] = {}
-    for cls_name, value in timeout_classes_raw.items():
-        if not isinstance(cls_name, str) or not cls_name:
-            raise BifrostConfigError(f"timeout_classes key must be a non-empty string; got {cls_name!r}")
-        if not isinstance(value, str) or not value:
-            raise BifrostConfigError(f"timeout_classes.{cls_name} must be a non-empty string; got {value!r}")
-        timeout_classes[cls_name] = value
-
-    default_timeout_class_raw = raw.get("default_timeout_class", "medium")
-    if not isinstance(default_timeout_class_raw, str) or not default_timeout_class_raw:
-        raise BifrostConfigError("default_timeout_class must be a non-empty string")
-    default_timeout_class = default_timeout_class_raw
-
     chunk_size_raw = raw.get("chunk_size", 25)
     if not isinstance(chunk_size_raw, int) or isinstance(chunk_size_raw, bool) or chunk_size_raw <= 0:
         raise BifrostConfigError(f"chunk_size must be a positive integer; got {chunk_size_raw!r}")
     chunk_size = chunk_size_raw
 
-    # Spec §4.2 deprecation: ``defaults.exec_timeout`` is silently ignored
-    # once ``timeout_classes`` is present. Surface a warning so operators
-    # discover the dead field before they tune it expecting an effect.
-    if (
-        timeout_classes
-        and "defaults" in raw
-        and isinstance(raw["defaults"], dict)
-        and "exec_timeout" in raw["defaults"]
-    ):
+    # Deprecation: timeout_classes / default_timeout_class were the
+    # first stab at per-task timeouts but duplicated job_budgets.yaml.
+    # Per-task timeouts now come from there exclusively (see
+    # :mod:`tools.odin.asgard.budgets`); the bifrost planner sorts rows
+    # by budget and emits chunk-max as exec_timeout. Old configs still
+    # parse so operators don't get a hard crash mid-rollout.
+    if "timeout_classes" in raw:
         _log.warning(
-            "bifrost config: defaults.exec_timeout is ignored when timeout_classes is set "
-            "(use per-class values under timeout_classes instead)"
+            "bifrost config: 'timeout_classes' is no longer used; per-task "
+            "budgets come from tools/odin/config/job_budgets.yaml. The "
+            "field is ignored; remove it from bifrost-osmo.yaml."
+        )
+    if "default_timeout_class" in raw:
+        _log.warning(
+            "bifrost config: 'default_timeout_class' is no longer used; "
+            "per-task budgets come from tools/odin/config/job_budgets.yaml. "
+            "The field is ignored; remove it from bifrost-osmo.yaml."
+        )
+    if isinstance(raw.get("defaults"), dict) and "exec_timeout" in raw["defaults"]:
+        _log.warning(
+            "bifrost config: 'defaults.exec_timeout' is no longer used; "
+            "per-task budgets come from tools/odin/config/job_budgets.yaml "
+            "and the workflow exec_timeout is computed as the max of each "
+            "chunk's per-task budgets. Remove defaults.exec_timeout."
         )
 
     return BifrostConfig(
@@ -234,7 +228,5 @@ def load_bifrost_config(path: Path) -> BifrostConfig:
         retry=retry,
         bundle_dataset_prefix=bundle_dataset_prefix,
         code_delivery=code_delivery,
-        timeout_classes=timeout_classes,
-        default_timeout_class=default_timeout_class,
         chunk_size=chunk_size,
     )

@@ -5,13 +5,13 @@
 
 """End-to-end timeout-bucket smoke against a mock OSMO client.
 
-Walks the full Bifrost CLI flow — config load, planner, render, submit,
-poll, bundle download, aggregate — for a 6-task dispatch split into
-``short`` (3 tasks) and ``medium`` (3 tasks) buckets. The mock client
-records every submit/query call so we can assert:
+Walks the full Bifrost CLI flow — config load, planner (budgets lookup),
+render, submit, poll, bundle download, aggregate — for a 6-task
+dispatch split into two chunks. The mock client records every call so
+we can assert:
 
 - Two OSMO workflows submitted with the right ``exec_timeout`` values
-  (spec §10).
+  (chunk-max from ``job_budgets.yaml``).
 - All six jobs land in ``completed`` state.
 - ``aggregate.json`` is written with the expected totals.
 """
@@ -47,11 +47,7 @@ defaults:
 retry: {reschedule_codes: "3001-3006", restart_codes: ""}
 bundle_dataset_prefix: odin
 code_delivery: {mode: files_upload, source_root: tools/odin}
-timeout_classes:
-  short: "30m"
-  medium: "2h"
-default_timeout_class: medium
-chunk_size: 25
+chunk_size: 3
 """
 
 _ENVS = """\
@@ -62,14 +58,22 @@ groups:
     num_envs: 4096
     max_iterations: 150
     keep: true
-    timeout_class: short
   ant:
   - task_id: Isaac-Ant-Direct-v0
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: medium
+"""
+
+_BUDGETS = """\
+defaults:
+  rsl_rl: 43200
+budgets:
+  Isaac-Cartpole-Direct-v0:
+    rsl_rl: 1800   # 30m
+  Isaac-Ant-Direct-v0:
+    rsl_rl: 7200   # 2h
 """
 
 
@@ -84,6 +88,13 @@ def cfg_path(tmp_path: Path) -> Path:
 def envs_path(tmp_path: Path) -> Path:
     p = tmp_path / "physx.yaml"
     p.write_text(_ENVS)
+    return p
+
+
+@pytest.fixture
+def budgets_path(tmp_path: Path) -> Path:
+    p = tmp_path / "job_budgets.yaml"
+    p.write_text(_BUDGETS)
     return p
 
 
@@ -126,11 +137,8 @@ class _FakeOsmoClient:
         state = read_dispatch_state(Path(dest_dir))
         if state is None:
             return
-        # Find the run_id this dataset name corresponds to.
-        prefix = "odin-"  # bundle_dataset_prefix-
+        prefix = "odin-"
         suffix = name[len(prefix) :]
-        # suffix is f"{dispatch_id}-{run_id}"; the dispatch_id is fixed
-        # for the dispatch.
         for job in state.jobs:
             cand = f"{state.dispatch_id}-{job.run_id}"
             if suffix == cand:
@@ -140,7 +148,13 @@ class _FakeOsmoClient:
                 return
 
 
-def test_two_class_dispatch_end_to_end(tmp_path: Path, cfg_path: Path, envs_path: Path):
+def test_two_bucket_dispatch_end_to_end(
+    tmp_path: Path,
+    cfg_path: Path,
+    envs_path: Path,
+    budgets_path: Path,
+):
+    """3 seeds × 2 envs → 6 rows; chunk_size=3 → 2 chunks → 2 workflows."""
     runs_root = tmp_path / "odin_runs"
     fakes: list[_FakeOsmoClient] = []
 
@@ -156,7 +170,8 @@ def test_two_class_dispatch_end_to_end(tmp_path: Path, cfg_path: Path, envs_path
                 str(cfg_path),
                 "--physx-yaml",
                 str(envs_path),
-                # 3 seeds × 2 envs → 6 tasks total, split 3 (short) + 3 (medium).
+                "--budgets-yaml",
+                str(budgets_path),
                 "--seeds",
                 "42,43,44",
                 "--runs-root",
@@ -177,10 +192,11 @@ def test_two_class_dispatch_end_to_end(tmp_path: Path, cfg_path: Path, envs_path
         parsed = _yaml.safe_load(Path(yaml_path).read_text())
         timeouts_by_wf[wf_id] = parsed["workflow"]["timeout"]["exec_timeout"]
         tasks_by_wf[wf_id] = [t["name"] for t in parsed["workflow"]["tasks"]]
-    # _bucket_and_chunk sorts alphabetically: medium first, then short.
+    # Ascending sort: first chunk = all 3 Cartpole rows (1800s each),
+    # second = all 3 Ant rows (7200s each).
     [(_, first_wf), (_, second_wf)] = client.submits
-    assert timeouts_by_wf[first_wf] == "2h"
-    assert timeouts_by_wf[second_wf] == "30m"
+    assert timeouts_by_wf[first_wf] == "1800s"
+    assert timeouts_by_wf[second_wf] == "7200s"
     assert len(tasks_by_wf[first_wf]) == 3
     assert len(tasks_by_wf[second_wf]) == 3
 
@@ -191,11 +207,6 @@ def test_two_class_dispatch_end_to_end(tmp_path: Path, cfg_path: Path, envs_path
     assert {j.status for j in state.jobs} == {"completed"}
     assert state.osmo_workflow_ids == [first_wf, second_wf]
 
-    # aggregate.json was written by the end-of-dispatch hook. The
-    # ``completed`` count comes from the aggregator's manifest-parsing
-    # path, which our stub manifest (``{}``) doesn't satisfy. The total
-    # ``runs`` count, which only depends on dispatch.json, is the right
-    # thing to assert end-to-end.
     agg_path = dispatch_dir / "aggregate.json"
     assert agg_path.exists()
     agg = json.loads(agg_path.read_text())

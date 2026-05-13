@@ -28,6 +28,7 @@ from typing import Any
 
 import yaml
 
+from tools.odin.asgard.budgets import Budgets, load_budgets
 from tools.odin.asgard.jobs import JobEntry
 from tools.odin.asgard.state import (
     SCHEMA_VERSION,
@@ -69,8 +70,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--retry-failed", type=str, default=None, help="Comma-separated run_ids.")
     p.add_argument("--poll-interval", type=int, default=15, help="Seconds between OSMO status polls.")
     p.add_argument("--runs-root", type=Path, default=Path("./odin_runs"))
+    p.add_argument(
+        "--budgets-yaml",
+        type=Path,
+        default=_DEFAULT_BUDGETS_YAML,
+        help=(
+            "Per-task wall-clock budget table. Defaults to "
+            "tools/odin/config/job_budgets.yaml. Bifrost looks up "
+            "(task_id, framework) here to size each OSMO workflow's "
+            "exec_timeout (max across the chunk)."
+        ),
+    )
     p.add_argument("--verbose", action="store_true")
     return p
+
+
+_DEFAULT_BUDGETS_YAML = Path("tools/odin/config/job_budgets.yaml")
 
 
 @dataclass(frozen=True)
@@ -82,10 +97,13 @@ class _PlannedRow:
     seed: int
     num_envs: int
     max_iterations: int
-    # Curated-YAML ``timeout_class``; resolved (with fallback to
-    # ``cfg.default_timeout_class``) in :func:`_build_rows`. Used by
-    # :func:`_bucket_and_chunk` to group rows by OSMO ``exec_timeout``.
-    timeout_class: str = ""
+    # Per-task wall-clock budget in seconds, resolved from
+    # ``tools/odin/config/job_budgets.yaml`` via
+    # :func:`tools.odin.asgard.budgets.load_budgets`. Falls back to
+    # ``budgets.defaults[framework]`` when the task isn't listed.
+    # :func:`_bucket_and_chunk` sorts on this field and emits one OSMO
+    # workflow per chunk with ``exec_timeout`` = max-of-chunk.
+    per_task_timeout_s: int = 0
 
 
 def _load_envs_yaml(path: Path) -> list[dict[str, Any]]:
@@ -106,34 +124,45 @@ def _matches_include(task_id: str, include_glob: str | None) -> bool:
     return any(fnmatch.fnmatch(task_id, g.strip()) for g in include_glob.split(",") if g.strip())
 
 
-def _resolve_timeout_class(env: dict[str, Any], cfg: BifrostConfig | None) -> str:
-    """Pick a ``timeout_class`` for one curated env row.
+def _resolve_per_task_timeout_s(task_id: str, framework: str, budgets: Budgets) -> int:
+    """Look up the per-task wall-clock budget in seconds.
+
+    Reuses :class:`tools.odin.asgard.budgets.Budgets` so Bifrost and
+    Asgard share one source of truth (``tools/odin/config/job_budgets.yaml``).
+    GPU multipliers are intentionally skipped: OSMO pools own hardware
+    selection, and the planner runs before any host has been picked, so
+    a multiplier would be guesswork.
+
+    Framework keys are normalised to the underscored spelling
+    (``"rsl_rl"``, ``"skrl"``) before lookup so curated YAMLs that say
+    ``framework: rsl-rl`` resolve against the same table.
 
     Args:
-        env: The raw env dict from the curated YAML (``physx_envs.yaml``).
-        cfg: The loaded bifrost config; supplies ``default_timeout_class``
-            and validates the chosen class against ``timeout_classes``.
-            ``None`` means the planner is running in a legacy path that
-            doesn't use timeout classes; fallback returns ``""``.
+        task_id: Gym task id (e.g. ``Isaac-Ant-Direct-v0``).
+        framework: ``"rsl_rl"`` / ``"rsl-rl"`` or ``"skrl"``.
+        budgets: Loaded :class:`Budgets` table.
 
     Returns:
-        The class name as listed in ``cfg.timeout_classes``.
+        Whole seconds of wall-clock budget.
 
     Raises:
-        BifrostConfigError: When the env's ``timeout_class`` (or the
-            fallback default) is not present in ``cfg.timeout_classes``.
+        BifrostConfigError: When the task is missing AND
+            ``budgets.defaults[framework]`` is absent — bail out at plan
+            time instead of emitting a workflow with a placeholder
+            timeout.
     """
-    raw = env.get("timeout_class")
-    if cfg is None or not cfg.timeout_classes:
-        return str(raw) if raw is not None else ""
-    chosen = str(raw) if raw else cfg.default_timeout_class
-    if chosen not in cfg.timeout_classes:
-        known = sorted(cfg.timeout_classes.keys())
+    fw_key = framework.replace("-", "_")
+    per_task = budgets.budgets.get(task_id, {})
+    base = per_task.get(fw_key)
+    if base is None:
+        base = budgets.defaults.get(fw_key)
+    if base is None:
         raise BifrostConfigError(
-            f"timeout_class {chosen!r} for env {env.get('task_id')!r} is not declared in "
-            f"bifrost-osmo.yaml's timeout_classes (known: {known})"
+            f"job_budgets.yaml has no entry for task {task_id!r} under framework "
+            f"{fw_key!r} and no defaults.{fw_key} fallback; add either an entry in "
+            f"budgets: or a defaults.{fw_key}: value"
         )
-    return chosen
+    return int(base)
 
 
 def _build_rows(
@@ -144,6 +173,7 @@ def _build_rows(
     include_glob: str | None,
     dispatch_id: str,
     cfg: BifrostConfig | None = None,
+    budgets: Budgets,
 ) -> list[_PlannedRow]:
     rows: list[_PlannedRow] = []
     for path, backend in [(physx_yaml, "physx"), (newton_yaml, "newton")]:
@@ -156,7 +186,7 @@ def _build_rows(
             framework = str(env["framework"])
             num_envs = int(env["num_envs"])
             max_iter = int(env["max_iterations"])
-            timeout_class = _resolve_timeout_class(env, cfg)
+            per_task_timeout_s = _resolve_per_task_timeout_s(task_id, framework, budgets)
             framework_slug = framework.replace("_", "-")
             for seed in seeds:
                 run_id = f"{framework_slug}_{backend}_{task_id}_{dispatch_id}_seed{seed}"
@@ -169,42 +199,48 @@ def _build_rows(
                         seed=seed,
                         num_envs=num_envs,
                         max_iterations=max_iter,
-                        timeout_class=timeout_class,
+                        per_task_timeout_s=per_task_timeout_s,
                     )
                 )
     return rows
 
 
-def _bucket_and_chunk(rows: list[_PlannedRow], chunk_size: int) -> list[tuple[str, int, list[_PlannedRow]]]:
-    """Group rows by ``timeout_class`` and chunk each group into batches.
+def _bucket_and_chunk(rows: list[_PlannedRow], chunk_size: int) -> list[tuple[int, int, list[_PlannedRow]]]:
+    """Sort by ``per_task_timeout_s`` ascending, chunk, and emit max-of-chunk.
 
     Pure function: no I/O, no logging, no exceptions on empty input.
-    Each output tuple is ``(timeout_class, chunk_index, rows)`` where
-    ``rows`` has at most ``chunk_size`` entries. Output is deterministic:
-    classes sorted alphabetically; chunks within a class in index order;
-    rows within a chunk sorted by ``(task_id, backend, seed)``.
+    Each output tuple is ``(chunk_index, max_timeout_s, rows)``:
+
+    - ``chunk_index`` is the 0-based position of the chunk.
+    - ``max_timeout_s`` = ``max(rows.per_task_timeout_s)`` for that chunk
+      — used as the OSMO ``exec_timeout`` so every task in the chunk has
+      enough wall-clock to finish.
+    - ``rows`` has at most ``chunk_size`` entries.
+
+    Sort key is ``(per_task_timeout_s, task_id, backend, seed)`` — ties
+    resolve deterministically so reruns and ``--resume`` see the same
+    layout. Because rows are sorted ascending, the largest per-task
+    timeout in each chunk is the last entry; we use that as
+    ``max_timeout_s``.
 
     Args:
-        rows: Planned rows from :func:`_build_rows`. ``timeout_class``
-            must be set on each row (the planner does so before calling
-            this helper).
+        rows: Planned rows from :func:`_build_rows`. ``per_task_timeout_s``
+            must be populated.
         chunk_size: Maximum rows per OSMO workflow. The planner uses
             ``cfg.chunk_size``.
 
     Returns:
-        A list of ``(timeout_class, chunk_index, chunk_rows)`` tuples,
+        A list of ``(chunk_index, max_timeout_s, chunk_rows)`` tuples,
         one per OSMO workflow that will be submitted.
     """
     if not rows:
         return []
-    groups: dict[str, list[_PlannedRow]] = {}
-    for row in rows:
-        groups.setdefault(row.timeout_class, []).append(row)
-    out: list[tuple[str, int, list[_PlannedRow]]] = []
-    for cls in sorted(groups.keys()):
-        sorted_rows = sorted(groups[cls], key=lambda r: (r.task_id, r.backend, r.seed))
-        for idx, start in enumerate(range(0, len(sorted_rows), chunk_size)):
-            out.append((cls, idx, sorted_rows[start : start + chunk_size]))
+    sorted_rows = sorted(rows, key=lambda r: (r.per_task_timeout_s, r.task_id, r.backend, r.seed))
+    out: list[tuple[int, int, list[_PlannedRow]]] = []
+    for idx, start in enumerate(range(0, len(sorted_rows), chunk_size)):
+        chunk = sorted_rows[start : start + chunk_size]
+        max_timeout_s = max(r.per_task_timeout_s for r in chunk)
+        out.append((idx, max_timeout_s, chunk))
     return out
 
 
@@ -237,14 +273,18 @@ def _planned_to_job(row: _PlannedRow) -> JobEntry:
     )
 
 
-def _planned_row_from_job(job: JobEntry) -> _PlannedRow:
+def _planned_row_from_job(job: JobEntry, budgets: Budgets) -> _PlannedRow:
     """Reconstruct a :class:`_PlannedRow` from a previously recorded :class:`JobEntry`.
 
     Used by the ``--retry-failed`` path so that retried jobs preserve the
-    exact ``run_id`` from the parent dispatch instead of getting a fresh one.
+    exact ``run_id`` from the parent dispatch instead of getting a fresh
+    one. Re-resolves the per-task timeout against the current budgets
+    table so a refreshed ``job_budgets.yaml`` (e.g. operator bumped a
+    task that consistently times out) is picked up on retry.
 
     Args:
         job: A job entry from the parent dispatch state.
+        budgets: Current :class:`Budgets` table.
 
     Returns:
         A planned row carrying the parent's identifiers.
@@ -257,6 +297,7 @@ def _planned_row_from_job(job: JobEntry) -> _PlannedRow:
         seed=job.seed,
         num_envs=job.num_envs,
         max_iterations=job.max_iterations,
+        per_task_timeout_s=_resolve_per_task_timeout_s(job.task_id, job.framework, budgets),
     )
 
 
@@ -446,6 +487,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     dispatch_dir = args.runs_root / dispatch_id
     dispatch_dir.mkdir(parents=True, exist_ok=True)
 
+    budgets = load_budgets(args.budgets_yaml)
+
     rows = _build_rows(
         physx_yaml=args.physx_yaml,
         newton_yaml=args.newton_yaml,
@@ -453,6 +496,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         include_glob=args.include,
         dispatch_id=dispatch_id,
         cfg=cfg,
+        budgets=budgets,
     )
     if not rows:
         print("No keep:true rows matched the include filter.", file=sys.stderr)
@@ -469,7 +513,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 2
         parent_dispatch_id = parent.dispatch_id
-        rows = [_planned_row_from_job(j) for j in parent.jobs if j.run_id in retry_run_ids]
+        rows = [_planned_row_from_job(j, budgets) for j in parent.jobs if j.run_id in retry_run_ids]
         if not rows:
             print(
                 "retry-failed run_ids did not match any rows in parent dispatch",
@@ -484,38 +528,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage_source_tarball(repo_root / cfg.code_delivery.source_root, tarball_path_p, repo_root=repo_root)
         tarball_path = str(tarball_path_p)
 
-    # Decide which submit path to take. The multi-workflow path is gated
-    # on ``cfg.timeout_classes`` being populated — legacy configs without
-    # the new field keep the single-workflow behavior so they don't
-    # silently change shape.
-    buckets = _bucket_and_chunk(rows, cfg.chunk_size) if cfg.timeout_classes else []
-
-    # For visibility/dry-run we always write *a* workflow.yaml. In the
-    # multi-workflow path we instead emit one file per chunk.
-    if buckets:
-        chunk_render = []
-        for cls, idx, chunk_rows in buckets:
-            yaml_path = dispatch_dir / f"workflow.{cls}.{idx}.yaml"
-            yaml_body = render_workflow_yaml(
-                dispatch_id=dispatch_id,
-                rows=[_planned_to_render(r) for r in chunk_rows],
-                cfg=cfg,
-                tarball_path=tarball_path,
-                exec_timeout=cfg.timeout_classes[cls],
-            )
-            yaml_path.write_text(yaml_body)
-            chunk_render.append((cls, idx, chunk_rows, yaml_path))
-    else:
-        # Legacy single-workflow path.
-        workflow_yaml = render_workflow_yaml(
+    # One OSMO workflow per chunk; each chunk's exec_timeout is the max
+    # of its rows' per_task_timeout_s. The planner always emits at least
+    # one bucket when ``rows`` is non-empty (we returned early above
+    # otherwise).
+    buckets = _bucket_and_chunk(rows, cfg.chunk_size)
+    chunk_render: list[tuple[int, int, list[_PlannedRow], Path]] = []
+    for idx, max_timeout_s, chunk_rows in buckets:
+        yaml_path = dispatch_dir / f"workflow.{idx}.yaml"
+        yaml_body = render_workflow_yaml(
             dispatch_id=dispatch_id,
-            rows=[_planned_to_render(r) for r in rows],
+            rows=[_planned_to_render(r) for r in chunk_rows],
             cfg=cfg,
             tarball_path=tarball_path,
-            exec_timeout=f"{cfg.defaults.exec_timeout}s",
+            exec_timeout=f"{max_timeout_s}s",
         )
-        workflow_yaml_path = dispatch_dir / "workflow.yaml"
-        workflow_yaml_path.write_text(workflow_yaml)
+        yaml_path.write_text(yaml_body)
+        chunk_render.append((idx, max_timeout_s, chunk_rows, yaml_path))
 
     state = DispatchState(
         schema_version=SCHEMA_VERSION,
@@ -533,28 +562,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_dispatch_state(dispatch_dir, state)
 
     if args.dry_run:
-        if buckets:
-            print(f"[dry-run] wrote {len(buckets)} workflow YAML file(s) under {dispatch_dir}")
-        else:
-            print(f"[dry-run] wrote {dispatch_dir / 'workflow.yaml'}")
+        print(f"[dry-run] wrote {len(buckets)} workflow YAML file(s) under {dispatch_dir}")
         return 0
 
     client = OsmoClient(profile=cfg.osmo_profile)
     rsync_pairs: list[tuple[str, str]] = []
     if args.rsync:
         rsync_pairs.append((cfg.code_delivery.source_root, "/workspace/IsaacLab/" + cfg.code_delivery.source_root))
-    if buckets:
-        # Submit one workflow per chunk. Persist the dispatch.json after
-        # each submit so a failure mid-way leaves the prior workflows'
-        # ids on disk and the resume path can re-attach.
-        for _cls, _idx, _chunk_rows, yaml_path in chunk_render:
-            wf_id = client.submit(yaml_path, rsync_pairs=rsync_pairs, pool=cfg.pool)
-            state.osmo_workflow_ids.append(wf_id)
-            write_dispatch_state(dispatch_dir, state)
-    else:
-        workflow_id = client.submit(workflow_yaml_path, rsync_pairs=rsync_pairs, pool=cfg.pool)
-        state.osmo_workflow_id = workflow_id
-        state.osmo_workflow_ids = [workflow_id]
+    # Submit one workflow per chunk. Persist the dispatch.json after each
+    # submit so a failure mid-way leaves the prior workflows' ids on
+    # disk and the resume path can re-attach.
+    for _idx, _max_s, _chunk_rows, yaml_path in chunk_render:
+        wf_id = client.submit(yaml_path, rsync_pairs=rsync_pairs, pool=cfg.pool)
+        state.osmo_workflow_ids.append(wf_id)
         write_dispatch_state(dispatch_dir, state)
 
     validator = _manifest_validator()

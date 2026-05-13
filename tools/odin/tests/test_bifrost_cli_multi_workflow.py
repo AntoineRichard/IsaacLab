@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""CLI orchestration: one OSMO workflow per ``timeout_class`` bucket (spec §5.4)."""
+"""CLI orchestration: one OSMO workflow per chunk; exec_timeout = chunk max."""
 
 from __future__ import annotations
 
@@ -34,11 +34,17 @@ defaults:
 retry: {reschedule_codes: "3001-3006", restart_codes: ""}
 bundle_dataset_prefix: odin
 code_delivery: {mode: files_upload, source_root: tools/odin}
-timeout_classes:
-  short: "30m"
-  medium: "2h"
-default_timeout_class: medium
-chunk_size: 25
+chunk_size: 1
+"""
+
+_BUDGETS = """\
+defaults:
+  rsl_rl: 43200
+budgets:
+  Isaac-Cartpole-Direct-v0:
+    rsl_rl: 1800   # 30m → smaller bucket
+  Isaac-Ant-Direct-v0:
+    rsl_rl: 7200   # 2h → larger bucket
 """
 
 
@@ -50,8 +56,15 @@ def cfg_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def budgets_path(tmp_path: Path) -> Path:
+    p = tmp_path / "job_budgets.yaml"
+    p.write_text(_BUDGETS)
+    return p
+
+
+@pytest.fixture
 def physx_yaml(tmp_path: Path) -> Path:
-    # Two kept envs with different timeout_classes → 2 buckets → 2 workflows.
+    """Two kept envs → chunk_size=1 → two chunks → two workflows."""
     p = tmp_path / "physx.yaml"
     p.write_text(
         "groups:\n"
@@ -61,14 +74,12 @@ def physx_yaml(tmp_path: Path) -> Path:
         "    num_envs: 4096\n"
         "    max_iterations: 150\n"
         "    keep: true\n"
-        "    timeout_class: short\n"
         "  ant:\n"
         "  - task_id: Isaac-Ant-Direct-v0\n"
         "    framework: rsl_rl\n"
         "    num_envs: 4096\n"
         "    max_iterations: 1000\n"
         "    keep: true\n"
-        "    timeout_class: medium\n"
     )
     return p
 
@@ -94,21 +105,12 @@ class _RecordingClient:
 
     def status(self, workflow_id):
         self.status_calls.append(workflow_id)
-        # For terminal-by-2nd-poll: return COMPLETED for all tasks each time.
-        # The CLI persists workflow ids in `state.osmo_workflow_ids`, and our
-        # job rows are addressable by osmo_task_name. We don't actually need
-        # to read state here — the poller looks tasks up by name and the
-        # CLI assigns each submitted task to one workflow. Return a generous
-        # list of fake task snapshots that cover all rows. The poller
-        # ignores unknown task names.
         return WorkflowSnapshot(workflow_id, "COMPLETED", _all_tasks_completed(workflow_id))
 
     def dataset_download(self, name, dest_dir):
         # Find the run_id from the dataset name suffix and stamp a manifest.
         # Dataset name is f"{prefix}-{dispatch_id}-{run_id}".
-        # We need to know the dispatch dir — pass it via dest_dir.
         run_id = name.split("-", 2)[-1].split("-", 1)[-1]
-        # Defensive: try multiple parsings.
         for guess in (name.split("-")[-1], run_id):
             d = Path(dest_dir) / guess
             try:
@@ -122,23 +124,11 @@ _TASK_NAMES_BY_WF: dict[str, list[str]] = {}
 
 
 def _all_tasks_completed(workflow_id: str) -> list[TaskSnapshot]:
-    """Return COMPLETED snapshots for whichever tasks the CLI assigned to this workflow.
-
-    The CLI publishes per-workflow task names in ``_TASK_NAMES_BY_WF``
-    immediately after each submit so the fake client can echo them
-    back. If a workflow id isn't recorded yet, return an empty task
-    list — the poller will just wait until something appears.
-    """
     return [TaskSnapshot(name=n, status="COMPLETED", exit_code=0) for n in _TASK_NAMES_BY_WF.get(workflow_id, [])]
 
 
 def _wire_fake_client(monkeypatch_holder: list[_RecordingClient]):
-    """Patch ``OsmoClient`` and capture every submitted YAML's task names.
-
-    Each ``client.submit()`` call returns a unique ``wf-mock-N`` id; we
-    snoop the rendered YAML for the task names assigned to that workflow
-    and store them so ``status()`` can echo them back.
-    """
+    """Patch ``OsmoClient`` and capture every submitted YAML's task names."""
     import yaml as _yaml
 
     _TASK_NAMES_BY_WF.clear()
@@ -160,10 +150,17 @@ def _wire_fake_client(monkeypatch_holder: list[_RecordingClient]):
     return factory
 
 
-def test_two_classes_submit_two_workflows(tmp_path: Path, cfg_path: Path, physx_yaml: Path):
-    """3 rows × 2 classes (1 short + 2 medium with seeds 42,43) → 2 submits.
+def test_two_buckets_submit_two_workflows_with_distinct_exec_timeouts(
+    tmp_path: Path,
+    cfg_path: Path,
+    physx_yaml: Path,
+    budgets_path: Path,
+):
+    """chunk_size=1 + two envs with different budgets → two workflows.
 
-    Each rendered YAML carries the matching exec_timeout.
+    Each rendered YAML carries its chunk's max-of-chunk exec_timeout.
+    Since chunk_size=1, the chunk max equals that single row's per-task
+    budget. With ascending sort, the first chunk holds the smaller one.
     """
     import yaml as _yaml
 
@@ -176,8 +173,10 @@ def test_two_classes_submit_two_workflows(tmp_path: Path, cfg_path: Path, physx_
                 str(cfg_path),
                 "--physx-yaml",
                 str(physx_yaml),
+                "--budgets-yaml",
+                str(budgets_path),
                 "--seeds",
-                "42,43",
+                "42",
                 "--runs-root",
                 str(runs_root),
                 "--poll-interval",
@@ -186,16 +185,21 @@ def test_two_classes_submit_two_workflows(tmp_path: Path, cfg_path: Path, physx_
         )
     assert rc == 0
     [client] = clients
-    assert len(client.submit_calls) == 2, "expected one submit per timeout_class"
+    assert len(client.submit_calls) == 2, "expected one submit per chunk"
     timeouts = []
     for body in client.submitted_yaml:
         parsed = _yaml.safe_load(body)
         timeouts.append(parsed["workflow"]["timeout"]["exec_timeout"])
-    # _bucket_and_chunk sorts buckets alphabetically: ``medium`` before ``short``.
-    assert timeouts == ["2h", "30m"]
+    # Ascending sort → first chunk = Cartpole (1800s = 30m), second = Ant (7200s = 2h).
+    assert timeouts == ["1800s", "7200s"]
 
 
-def test_state_osmo_workflow_ids_populated(tmp_path: Path, cfg_path: Path, physx_yaml: Path):
+def test_state_osmo_workflow_ids_populated(
+    tmp_path: Path,
+    cfg_path: Path,
+    physx_yaml: Path,
+    budgets_path: Path,
+):
     runs_root = tmp_path / "odin_runs"
     clients: list[_RecordingClient] = []
     with patch("tools.odin.bifrost.cli.OsmoClient", side_effect=_wire_fake_client(clients)):
@@ -205,8 +209,10 @@ def test_state_osmo_workflow_ids_populated(tmp_path: Path, cfg_path: Path, physx
                 str(cfg_path),
                 "--physx-yaml",
                 str(physx_yaml),
+                "--budgets-yaml",
+                str(budgets_path),
                 "--seeds",
-                "42,43",
+                "42",
                 "--runs-root",
                 str(runs_root),
                 "--poll-interval",
@@ -219,24 +225,24 @@ def test_state_osmo_workflow_ids_populated(tmp_path: Path, cfg_path: Path, physx
     assert state.osmo_workflow_ids == ["wf-mock-1", "wf-mock-2"]
 
 
-def test_resume_walks_multiple_workflow_ids(tmp_path: Path, cfg_path: Path, physx_yaml: Path):
-    """--resume LATEST re-attaches the poller to every wf id on disk.
-
-    Sets up a pre-existing dispatch with two ``osmo_workflow_ids`` and
-    runs the CLI in resume mode. The fake client must see status() calls
-    for both ids and not call submit().
-    """
+def test_resume_walks_multiple_workflow_ids(
+    tmp_path: Path,
+    cfg_path: Path,
+    physx_yaml: Path,
+    budgets_path: Path,
+):
+    """``--resume LATEST`` re-attaches the poller to every wf id on disk."""
     from tools.odin.asgard.state import write_dispatch_state
 
     runs_root = tmp_path / "odin_runs"
-    # Build the parent dispatch via dry-run so the rows + osmo_task_names
-    # are realistic.
     rc = bifrost_cli.main(
         [
             "--osmo-config",
             str(cfg_path),
             "--physx-yaml",
             str(physx_yaml),
+            "--budgets-yaml",
+            str(budgets_path),
             "--seeds",
             "42",
             "--runs-root",
@@ -251,16 +257,12 @@ def test_resume_walks_multiple_workflow_ids(tmp_path: Path, cfg_path: Path, phys
     state.osmo_workflow_ids = ["wf-resume-a", "wf-resume-b"]
     write_dispatch_state(dispatch_dir, state)
 
-    # The two rows are short (Cartpole) and medium (Ant) — we have to
-    # split them across workflows so each wf's status() reports its
-    # own task as COMPLETED.
-    by_class = {}
-    for job in state.jobs:
-        by_class.setdefault("medium" if "Ant" in job.task_id else "short", []).append(job.osmo_task_name)
-    # _bucket_and_chunk sorts buckets alphabetically: medium, then short.
+    # The two rows: Cartpole (chunk 0) and Ant (chunk 1) — split across
+    # workflows so each wf's status() reports its own task as COMPLETED.
+    by_task: dict[str, str] = {j.task_id: j.osmo_task_name for j in state.jobs}
     _TASK_NAMES_BY_WF.clear()
-    _TASK_NAMES_BY_WF["wf-resume-a"] = by_class.get("medium", [])
-    _TASK_NAMES_BY_WF["wf-resume-b"] = by_class.get("short", [])
+    _TASK_NAMES_BY_WF["wf-resume-a"] = [by_task["Isaac-Cartpole-Direct-v0"]]
+    _TASK_NAMES_BY_WF["wf-resume-b"] = [by_task["Isaac-Ant-Direct-v0"]]
 
     class _ResumeFake:
         def __init__(self, *_a, **_k):
@@ -294,6 +296,8 @@ def test_resume_walks_multiple_workflow_ids(tmp_path: Path, cfg_path: Path, phys
                 str(cfg_path),
                 "--physx-yaml",
                 str(physx_yaml),
+                "--budgets-yaml",
+                str(budgets_path),
                 "--seeds",
                 "42",
                 "--runs-root",
@@ -309,12 +313,13 @@ def test_resume_walks_multiple_workflow_ids(tmp_path: Path, cfg_path: Path, phys
     assert set(holder[0].status_calls) == {"wf-resume-a", "wf-resume-b"}
 
 
-def test_submit_failure_mid_dispatch_persists_earlier_workflow_id(tmp_path: Path, cfg_path: Path, physx_yaml: Path):
-    """If the second ``client.submit()`` raises, the first workflow id is on disk.
-
-    Resume / cleanup paths rely on this — losing wf-1 because wf-2's
-    submit blew up would leak a running OSMO workflow.
-    """
+def test_submit_failure_mid_dispatch_persists_earlier_workflow_id(
+    tmp_path: Path,
+    cfg_path: Path,
+    physx_yaml: Path,
+    budgets_path: Path,
+):
+    """If the second ``client.submit()`` raises, the first workflow id is on disk."""
     runs_root = tmp_path / "odin_runs"
 
     class _BlowUpOnSecond(_RecordingClient):
@@ -334,6 +339,8 @@ def test_submit_failure_mid_dispatch_persists_earlier_workflow_id(tmp_path: Path
                     str(cfg_path),
                     "--physx-yaml",
                     str(physx_yaml),
+                    "--budgets-yaml",
+                    str(budgets_path),
                     "--seeds",
                     "42",
                     "--runs-root",

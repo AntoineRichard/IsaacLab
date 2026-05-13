@@ -3,14 +3,23 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Config loader coverage for the new ``timeout_classes`` fields (spec §4.2)."""
+"""Config-loader coverage for the per-task timeout refactor.
+
+The ``timeout_classes`` table and ``default_timeout_class`` field are
+gone — per-task timeouts now come from ``job_budgets.yaml`` via
+:mod:`tools.odin.asgard.budgets`. ``chunk_size`` stays. Old-style
+configs that still carry the removed fields emit deprecation warnings
+but continue to parse.
+"""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
-from tools.odin.bifrost.config import load_bifrost_config
+import pytest
+
+from tools.odin.bifrost.config import BifrostConfigError, load_bifrost_config
 
 _BASE_YAML = """\
 osmo_profile: prod
@@ -37,14 +46,13 @@ code_delivery:
   source_root: tools/odin
 """
 
-_TIMEOUT_CLASSES_BLOCK = """\
+_CHUNK_SIZE_BLOCK = "chunk_size: 25\n"
+
+_LEGACY_CLASSES_BLOCK = """\
 timeout_classes:
   short: "30m"
   medium: "2h"
-  long: "8h"
-  very_long: "24h"
 default_timeout_class: medium
-chunk_size: 25
 """
 
 
@@ -54,51 +62,57 @@ def _write(tmp_path: Path, body: str) -> Path:
     return p
 
 
-def test_timeout_classes_loaded_into_dict(tmp_path: Path):
-    """``timeout_classes`` parses into ``dict[str, str]`` keyed by class name."""
-    cfg = load_bifrost_config(_write(tmp_path, _BASE_YAML + _TIMEOUT_CLASSES_BLOCK))
-    assert cfg.timeout_classes == {
-        "short": "30m",
-        "medium": "2h",
-        "long": "8h",
-        "very_long": "24h",
-    }
-    assert cfg.default_timeout_class == "medium"
+def test_chunk_size_loads(tmp_path: Path):
+    """``chunk_size`` parses into an int."""
+    cfg = load_bifrost_config(_write(tmp_path, _BASE_YAML + _CHUNK_SIZE_BLOCK))
     assert cfg.chunk_size == 25
 
 
-def test_timeout_classes_missing_defaults_to_empty(tmp_path: Path):
-    """Old configs without ``timeout_classes`` still load.
-
-    They get an empty dict + the documented default class + chunk size, so
-    callers can detect the legacy mode by ``not cfg.timeout_classes``.
-    """
+def test_chunk_size_defaults_when_missing(tmp_path: Path):
+    """Configs without ``chunk_size`` get the documented default 25."""
     cfg = load_bifrost_config(_write(tmp_path, _BASE_YAML))
-    assert cfg.timeout_classes == {}
-    assert cfg.default_timeout_class == "medium"
     assert cfg.chunk_size == 25
 
 
 def test_chunk_size_override(tmp_path: Path):
-    """Operator-supplied ``chunk_size`` overrides the default 25."""
-    body = _BASE_YAML + _TIMEOUT_CLASSES_BLOCK.replace("chunk_size: 25", "chunk_size: 10")
-    cfg = load_bifrost_config(_write(tmp_path, body))
+    """Operator-supplied ``chunk_size`` overrides the default."""
+    cfg = load_bifrost_config(_write(tmp_path, _BASE_YAML + "chunk_size: 10\n"))
     assert cfg.chunk_size == 10
 
 
-def test_default_timeout_class_override(tmp_path: Path):
-    body = _BASE_YAML + _TIMEOUT_CLASSES_BLOCK.replace("default_timeout_class: medium", "default_timeout_class: short")
-    cfg = load_bifrost_config(_write(tmp_path, body))
-    assert cfg.default_timeout_class == "short"
+def test_chunk_size_invalid_raises(tmp_path: Path):
+    """Negative / zero / non-int ``chunk_size`` is a config error."""
+    with pytest.raises(BifrostConfigError, match="chunk_size"):
+        load_bifrost_config(_write(tmp_path, _BASE_YAML + "chunk_size: 0\n"))
 
 
-def test_deprecation_warning_when_legacy_exec_timeout_with_classes(tmp_path: Path, caplog):
-    """Both legacy ``defaults.exec_timeout`` and new ``timeout_classes`` set → warn.
-
-    The legacy field is still parsed (so old configs don't crash), but it
-    will be ignored once the planner switches to per-chunk timeouts.
-    """
+def test_legacy_timeout_classes_field_warns(tmp_path: Path, caplog):
+    """``timeout_classes:`` is no longer consulted; surface a warning."""
     with caplog.at_level(logging.WARNING, logger="tools.odin.bifrost.config"):
-        load_bifrost_config(_write(tmp_path, _BASE_YAML + _TIMEOUT_CLASSES_BLOCK))
+        load_bifrost_config(_write(tmp_path, _BASE_YAML + _LEGACY_CLASSES_BLOCK + _CHUNK_SIZE_BLOCK))
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("defaults.exec_timeout" in m and "timeout_classes" in m for m in warnings), warnings
+    assert any("timeout_classes" in m and "no longer used" in m for m in warnings), warnings
+
+
+def test_legacy_default_timeout_class_field_warns(tmp_path: Path, caplog):
+    """``default_timeout_class:`` alone (without classes) also warns."""
+    body = _BASE_YAML + "default_timeout_class: medium\n" + _CHUNK_SIZE_BLOCK
+    with caplog.at_level(logging.WARNING, logger="tools.odin.bifrost.config"):
+        load_bifrost_config(_write(tmp_path, body))
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("default_timeout_class" in m and "no longer used" in m for m in warnings), warnings
+
+
+def test_legacy_exec_timeout_warns(tmp_path: Path, caplog):
+    """``defaults.exec_timeout`` is also no longer used (budgets file owns it)."""
+    with caplog.at_level(logging.WARNING, logger="tools.odin.bifrost.config"):
+        load_bifrost_config(_write(tmp_path, _BASE_YAML + _CHUNK_SIZE_BLOCK))
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("defaults.exec_timeout" in m and "no longer used" in m for m in warnings), warnings
+
+
+def test_config_has_no_timeout_classes_attribute(tmp_path: Path):
+    """``BifrostConfig`` no longer carries the class table."""
+    cfg = load_bifrost_config(_write(tmp_path, _BASE_YAML + _CHUNK_SIZE_BLOCK))
+    assert not hasattr(cfg, "timeout_classes")
+    assert not hasattr(cfg, "default_timeout_class")
