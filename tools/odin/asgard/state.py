@@ -142,6 +142,13 @@ class DispatchState:
     skipped: list[SkippedEntry] = field(default_factory=list)
     quarantined_hosts: list[QuarantinedHost] = field(default_factory=list)
     dispatcher: str = "asgard"  # "asgard" | "osmo"
+    # Per-chunk OSMO workflow ids for the dispatch (spec §4.4). Empty
+    # for non-OSMO dispatches and for OSMO dispatches before the first
+    # ``client.submit()`` returns. Bifrost's poller walks this list each
+    # tick. The legacy single-value ``osmo_workflow_id`` field is kept
+    # for backward compat on read (synthesized from the first entry on
+    # write) and is documented out of new code.
+    osmo_workflow_ids: list[str] = field(default_factory=list)
     osmo_workflow_id: str | None = None
     parent_dispatch_id: str | None = None
 
@@ -259,7 +266,10 @@ def _state_to_dict(s: DispatchState) -> dict[str, Any]:
             {"host": q.host, "reason": q.reason, "last_run_id": q.last_run_id, "at": q.at} for q in s.quarantined_hosts
         ],
         "dispatcher": s.dispatcher,
-        "osmo_workflow_id": s.osmo_workflow_id,
+        # Authoritative list (spec §4.4). Single-value key kept in sync
+        # for old-reader compat: first entry, or None when empty.
+        "osmo_workflow_ids": list(s.osmo_workflow_ids),
+        "osmo_workflow_id": (s.osmo_workflow_ids[0] if s.osmo_workflow_ids else s.osmo_workflow_id),
         "parent_dispatch_id": s.parent_dispatch_id,
     }
 
@@ -314,9 +324,24 @@ def _state_from_dict(d: dict[str, Any]) -> DispatchState:
             for q in (d.get("quarantined_hosts") or [])
         ],
         dispatcher=str(d.get("dispatcher") or "asgard"),
+        # Migration (spec §4.4): a legacy dispatch.json only has
+        # ``osmo_workflow_id``. Promote that single id into a 1-element
+        # list so the multi-workflow poller treats it uniformly. When
+        # both keys are present the list wins (post-migration write).
+        osmo_workflow_ids=_load_osmo_workflow_ids(d),
         osmo_workflow_id=d.get("osmo_workflow_id"),
         parent_dispatch_id=d.get("parent_dispatch_id"),
     )
+
+
+def _load_osmo_workflow_ids(d: dict[str, Any]) -> list[str]:
+    raw = d.get("osmo_workflow_ids")
+    if isinstance(raw, list) and raw:
+        return [str(x) for x in raw]
+    legacy = d.get("osmo_workflow_id")
+    if legacy:
+        return [str(legacy)]
+    return []
 
 
 # --- I/O ---------------------------------------------------------------------
