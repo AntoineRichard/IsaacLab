@@ -82,6 +82,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--verbose", action="store_true")
+    p.add_argument(
+        "--keep-osmo-datasets",
+        action="store_true",
+        help=(
+            "Skip deleting each OSMO dataset after its bundle is "
+            "downloaded + validated locally. By default Bifrost "
+            "deletes the OSMO copy to reclaim bucket storage; pass "
+            "this flag if you want to keep the datasets (e.g. for "
+            "side-by-side comparison or re-download)."
+        ),
+    )
     return p
 
 
@@ -496,7 +507,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         def on_completed(job: JobEntry) -> None:
             dataset_name = f"{cfg.bundle_dataset_prefix}-{state.dispatch_id}-{job.run_id}"
             try:
-                download_and_validate_bundle(
+                result = download_and_validate_bundle(
                     client=client,
                     dataset_name=dataset_name,
                     dispatch_dir=dispatch_dir,
@@ -505,6 +516,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             except Exception as exc:
                 print(f"[bifrost] bundle download for {job.run_id} skipped: {exc}", file=sys.stderr)
+                return
+            if result.is_valid and not args.keep_osmo_datasets:
+                try:
+                    client.dataset_delete(dataset_name)
+                except Exception as exc:
+                    print(
+                        f"[bifrost] dataset cleanup for {dataset_name} skipped: {exc}",
+                        file=sys.stderr,
+                    )
 
         tail_stop = threading.Event()
         tail_thread: threading.Thread | None = None
@@ -634,7 +654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     def on_completed(job: JobEntry) -> None:
         dataset_name = f"{cfg.bundle_dataset_prefix}-{dispatch_id}-{job.run_id}"
         try:
-            download_and_validate_bundle(
+            result = download_and_validate_bundle(
                 client=client,
                 dataset_name=dataset_name,
                 dispatch_dir=dispatch_dir,
@@ -649,6 +669,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             # remaining tasks. The operator can re-download once the
             # credential lands.
             print(f"[bifrost] bundle download for {job.run_id} skipped: {exc}", file=sys.stderr)
+            return
+        # Default: reclaim OSMO bucket storage by deleting the dataset
+        # now that we have the bundle on local disk. --keep-osmo-datasets
+        # disables this for operators who want to keep the OSMO copy.
+        if result.is_valid and not args.keep_osmo_datasets:
+            try:
+                client.dataset_delete(dataset_name)
+            except Exception as exc:
+                print(
+                    f"[bifrost] dataset cleanup for {dataset_name} skipped: {exc}",
+                    file=sys.stderr,
+                )
 
     tail_stop = threading.Event()
     tail_thread: threading.Thread | None = None

@@ -247,6 +247,24 @@ class OsmoClient:
         if cp.returncode != 0:
             raise _classify(cp.stderr)(f"`osmo dataset download` failed: {cp.stderr.strip()}")
 
+    def dataset_delete(self, name: str) -> None:
+        """Delete an OSMO dataset (all versions) without prompting.
+
+        Used by Bifrost to reclaim OSMO bucket storage after a bundle
+        has been downloaded + validated locally — the OSMO copy is
+        redundant once the bundle is on disk.
+
+        Args:
+            name: OSMO dataset name to delete.
+
+        Raises:
+            OsmoAuthError, OsmoTransientError, OsmoCliError: per :func:`_classify`.
+        """
+        cmd = [self._exe, "dataset", "delete", name, "--all", "--force"]
+        cp = self._run(cmd)
+        if cp.returncode != 0:
+            raise _classify(cp.stderr)(f"`osmo dataset delete` failed: {cp.stderr.strip()}")
+
     def cancel(self, workflow_id: str) -> None:
         """Cancel an in-flight workflow.
 
