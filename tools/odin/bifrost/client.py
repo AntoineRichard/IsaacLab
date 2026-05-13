@@ -63,8 +63,11 @@ class WorkflowSnapshot:
     tasks: list[TaskSnapshot]
 
 
-_AUTH_PATTERN = re.compile(r"HTTP 40[13]|unauthori[sz]ed", re.IGNORECASE)
-_TRANSIENT_PATTERN = re.compile(r"HTTP 5\d\d|connection (reset|refused|timed?\s+out|timeout)", re.IGNORECASE)
+_AUTH_PATTERN = re.compile(r"(HTTP|status code) 40[13]|unauthori[sz]ed", re.IGNORECASE)
+_TRANSIENT_PATTERN = re.compile(
+    r"(HTTP|status code) 5\d\d|connection (reset|refused|timed?\s+out|timeout)",
+    re.IGNORECASE,
+)
 _WORKFLOW_ID_PATTERN = re.compile(r"^Workflow ID\s+-\s+(\S+)", re.MULTILINE)
 
 _UNKNOWN_FLAG_PATTERNS = (
