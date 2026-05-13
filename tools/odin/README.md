@@ -362,8 +362,16 @@ image:
   pull_credential: ngc-readonly
 defaults:
   resources: {cpu: 16, gpu: 1, memory: 64Gi, storage: 64Gi, platform: rtx-pro-6000}
+  # Ignored when timeout_classes is set below.
   exec_timeout: 14400
   queue_timeout: 7200
+timeout_classes:
+  short: "30m"
+  medium: "2h"
+  long: "8h"
+  very_long: "24h"
+default_timeout_class: medium
+chunk_size: 25            # max tasks per OSMO workflow
 retry:
   reschedule_codes: "3001-3006"
   restart_codes: ""
@@ -372,6 +380,33 @@ code_delivery:
   mode: files_upload    # files_upload | rsync | image_baked
   source_root: tools/odin
 ```
+
+### Bifrost: timeout classes
+
+OSMO's `workflow.timeout.exec_timeout` is workflow-level — every task in
+a workflow shares the same wall-clock budget. To give Cartpole a 30 min
+budget while Shadow-Vision keeps its 8 h budget, Bifrost splits a
+dispatch into N OSMO workflows keyed on each env's `timeout_class`:
+
+1. Each kept env in `tools/odin/config/{physx,newton}_envs.yaml` declares a
+   `timeout_class: <name>` (e.g. `short`, `medium`, `long`, `very_long`).
+2. `bifrost-osmo.yaml`'s `timeout_classes` table maps each class name to
+   an OSMO `exec_timeout` value (`30m`, `2h`, ...). Class names are
+   free-form strings; you can add `shadow_vision: "12h"` for one-off
+   classes.
+3. `default_timeout_class` is the fallback for envs that omit the field.
+4. `chunk_size` (default 25) caps how many tasks land in any one OSMO
+   workflow even within a class. A 200-job dispatch at the default
+   chunk size, split across four classes, results in roughly 8–10
+   OSMO workflows.
+
+When `timeout_classes` is omitted (legacy configs) Bifrost reverts to
+the single-workflow behavior using `defaults.exec_timeout` for every
+task. The planner raises a clear `BifrostConfigError` if an env's
+`timeout_class` doesn't appear in `timeout_classes`.
+
+See `docs/superpowers/specs/2026-05-13-odin-bifrost-timeout-buckets-design.md`
+for the full design.
 
 ### Running a bifrost dispatch
 
@@ -424,8 +459,12 @@ workflow with only the named rows and links the new dispatch back via
 ```
 odin_runs/
 └── 20260505-150000/
-    ├── dispatch.json           # schema 1.5; dispatcher: "osmo"; osmo_workflow_id: ...
-    ├── workflow.yaml           # the rendered OSMO workflow
+    ├── dispatch.json           # schema 1.6; dispatcher: "osmo";
+    │                           # osmo_workflow_ids: ["wf-1", "wf-2", ...]
+    │                           # (legacy osmo_workflow_id mirrors the
+    │                           # first entry for back-compat)
+    ├── workflow.yaml           # legacy single-workflow rendering
+    ├── workflow.<class>.<idx>.yaml  # one per chunk when timeout_classes is set
     ├── odin-source.tar.gz      # uploaded with files_upload mode
     └── <run_id>/
         ├── manifest.json
