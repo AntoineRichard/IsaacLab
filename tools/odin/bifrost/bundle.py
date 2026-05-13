@@ -14,6 +14,7 @@ canonical layout.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,5 +65,23 @@ def download_and_validate_bundle(
     if manifest.exists() and validator(bundle_dir):
         return BundleResult(bundle_dir=bundle_dir, is_valid=True)
     client.dataset_download(dataset_name, dispatch_dir)
+    # ``osmo dataset download <name> <dest>`` lays out at
+    # ``<dest>/<dataset_name>/<inner>/...``. The inner dir is what hugin
+    # wrote (== run_id when --run_id is passed). Flatten that to the
+    # canonical ``<dispatch_dir>/<run_id>/`` layout that aggregate.py and
+    # the dashboard expect.
+    wrapper = dispatch_dir / dataset_name
+    if wrapper.is_dir() and not manifest.exists():
+        inners = [d for d in wrapper.iterdir() if d.is_dir()]
+        if len(inners) == 1:
+            inner = inners[0]
+            if bundle_dir.exists():
+                shutil.rmtree(bundle_dir)
+            shutil.move(str(inner), str(bundle_dir))
+            try:
+                wrapper.rmdir()
+            except OSError:
+                # leftover loose files in wrapper -- leave alone, operator can inspect
+                pass
     is_valid = manifest.exists() and validator(bundle_dir)
     return BundleResult(bundle_dir=bundle_dir, is_valid=is_valid)

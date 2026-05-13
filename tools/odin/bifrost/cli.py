@@ -335,13 +335,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         def on_completed(job: JobEntry) -> None:
             dataset_name = f"{cfg.bundle_dataset_prefix}-{state.dispatch_id}-{job.run_id}"
-            download_and_validate_bundle(
-                client=client,
-                dataset_name=dataset_name,
-                dispatch_dir=dispatch_dir,
-                run_id=job.run_id,
-                validator=validator,
-            )
+            try:
+                download_and_validate_bundle(
+                    client=client,
+                    dataset_name=dataset_name,
+                    dispatch_dir=dispatch_dir,
+                    run_id=job.run_id,
+                    validator=validator,
+                )
+            except Exception as exc:
+                print(f"[bifrost] bundle download for {job.run_id} skipped: {exc}", file=sys.stderr)
 
         tail_stop = threading.Event()
         tail_thread: threading.Thread | None = None
@@ -366,6 +369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         state.ended_at = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         write_dispatch_state(dispatch_dir, state)
+        _aggregate_at_end(dispatch_dir)
         return 0
 
     dispatch_id = _allocate_dispatch_id(runs_root=args.runs_root)
@@ -449,13 +453,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def on_completed(job: JobEntry) -> None:
         dataset_name = f"{cfg.bundle_dataset_prefix}-{dispatch_id}-{job.run_id}"
-        download_and_validate_bundle(
-            client=client,
-            dataset_name=dataset_name,
-            dispatch_dir=dispatch_dir,
-            run_id=job.run_id,
-            validator=validator,
-        )
+        try:
+            download_and_validate_bundle(
+                client=client,
+                dataset_name=dataset_name,
+                dispatch_dir=dispatch_dir,
+                run_id=job.run_id,
+                validator=validator,
+            )
+        except Exception as exc:
+            # Bundle download failure (missing DATA credential, dataset
+            # absent because outputs: was stripped from the workflow, etc.)
+            # should not abort the poller -- the dispatch state machine
+            # still wants to mark the job completed and keep tracking the
+            # remaining tasks. The operator can re-download once the
+            # credential lands.
+            print(f"[bifrost] bundle download for {job.run_id} skipped: {exc}", file=sys.stderr)
 
     tail_stop = threading.Event()
     tail_thread: threading.Thread | None = None
@@ -480,7 +493,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     state.ended_at = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     write_dispatch_state(dispatch_dir, state)
+    _aggregate_at_end(dispatch_dir)
     return 0
+
+
+def _aggregate_at_end(dispatch_dir: Path) -> None:
+    """Run valhalla aggregate + write aggregate.json. Best-effort.
+
+    Mirrors asgard's end-of-dispatch hook so Bifrost dispatches land with
+    the same aggregate artifact (used by the dashboard's compare-runs
+    feature and by downstream tooling). Failures are non-fatal: bundle
+    data on disk is independently useful even if the aggregator can't
+    compose it.
+    """
+    try:
+        from tools.odin.valhalla import aggregate_dispatch, write_aggregate
+
+        agg = aggregate_dispatch(dispatch_dir)
+        write_aggregate(dispatch_dir, agg)
+        print(f"[bifrost] aggregate.json written ({agg.get('totals', {})})")
+    except Exception as exc:
+        print(f"[bifrost] aggregate skipped: {exc}", file=sys.stderr)
 
 
 def _manifest_validator():

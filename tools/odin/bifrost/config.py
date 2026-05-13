@@ -159,7 +159,14 @@ def load_bifrost_config(path: Path) -> BifrostConfig:
         restart_codes=str(retry_d.get("restart_codes") or ""),
     )
 
-    bundle_dataset_prefix = _require_str(raw, "bundle_dataset_prefix", "")
+    # Empty prefix disables the workflow's outputs:dataset: block in the
+    # template -- useful when the deployment hasn't provisioned a DATA
+    # credential for the target bucket yet. Bundles aren't uploaded as
+    # datasets in that mode; the operator can still tail logs/track state.
+    bundle_dataset_prefix_v = _require(raw, "bundle_dataset_prefix", "")
+    if not isinstance(bundle_dataset_prefix_v, str):
+        raise BifrostConfigError("bundle_dataset_prefix must be a string")
+    bundle_dataset_prefix = bundle_dataset_prefix_v
 
     cd_d = _require(raw, "code_delivery", "")
     if not isinstance(cd_d, dict):

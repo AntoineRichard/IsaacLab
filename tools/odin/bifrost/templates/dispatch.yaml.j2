@@ -43,6 +43,7 @@ workflow:
           --seed {{ row.seed }} \
           --num_envs {{ row.num_envs }} \
           --max_iterations {{ row.max_iterations }} \
+          --run_id "$ODIN_RUN_ID" \
           --runs_root '{{ '{{output}}' }}'
         rc=$?
         echo "=== entry.sh: exit_code=$rc ==="

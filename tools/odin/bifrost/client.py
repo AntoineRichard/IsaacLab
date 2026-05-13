@@ -56,7 +56,7 @@ class TaskSnapshot:
 
 @dataclass(frozen=True)
 class WorkflowSnapshot:
-    """Snapshot of a workflow + per-task states from one ``osmo workflow status`` call."""
+    """Snapshot of a workflow + per-task states from one ``osmo workflow query`` call."""
 
     workflow_id: str
     status: str
@@ -156,16 +156,16 @@ class OsmoClient:
         Raises:
             OsmoAuthError, OsmoTransientError, OsmoCliError: per :func:`_classify`.
         """
-        cmd_json = [self._exe, "workflow", "status", workflow_id, "--output", "json"]
+        cmd_json = [self._exe, "workflow", "query", workflow_id, "--output", "json"]
         cp = self._run(cmd_json)
         if cp.returncode == 0:
             return self._parse_status_json(cp.stdout, workflow_id)
         if _looks_like_unknown_flag(cp.stderr):
-            cp2 = self._run([self._exe, "workflow", "status", workflow_id])
+            cp2 = self._run([self._exe, "workflow", "query", workflow_id])
             if cp2.returncode != 0:
-                raise _classify(cp2.stderr)(f"`osmo workflow status` failed: {cp2.stderr.strip()}")
+                raise _classify(cp2.stderr)(f"`osmo workflow query` failed: {cp2.stderr.strip()}")
             return self._parse_status_table(cp2.stdout, workflow_id)
-        raise _classify(cp.stderr)(f"`osmo workflow status` failed: {cp.stderr.strip()}")
+        raise _classify(cp.stderr)(f"`osmo workflow query` failed: {cp.stderr.strip()}")
 
     @staticmethod
     def _parse_status_json(stdout: str, workflow_id: str) -> WorkflowSnapshot:
@@ -189,24 +189,44 @@ class OsmoClient:
 
     @staticmethod
     def _parse_status_table(stdout: str, workflow_id: str) -> WorkflowSnapshot:
+        """Parse the table form of ``osmo workflow query``.
+
+        OSMO's table looks like::
+
+            Workflow ID : odin-disp-...
+            Status      : COMPLETED
+            ...
+            Task Name                              Start Time              Status
+            =====================================================================
+            rsl-rl-physx-isaac-cartpole-...        May 11, 2026 16:46 CEST COMPLETED
+
+        The ``Status :`` line ("workflow status") uses ``: `` (colon-space)
+        separator; ``Task Name`` is the data-table header. Data rows have
+        the task name as the first whitespace-delimited token and the
+        status as the last; the middle (Start Time) contains spaces and
+        is ignored.
+        """
         wf_status = "UNKNOWN"
         tasks: list[TaskSnapshot] = []
         in_tasks = False
         for raw in stdout.splitlines():
             line = raw.strip()
-            if line.startswith("Status:"):
+            if not line or line.startswith("===") or line.startswith("---"):
+                continue
+            if line.startswith("Status") and ":" in line:
                 wf_status = line.split(":", 1)[1].strip()
-            elif line.startswith("NAME"):
+                continue
+            if line.startswith("Task Name"):
                 in_tasks = True
                 continue
-            elif in_tasks and line:
-                parts = line.split()
-                if len(parts) < 2:
-                    continue
-                name, status = parts[0], parts[1]
-                exit_str = parts[2] if len(parts) >= 3 else "-"
-                exit_code = None if exit_str in ("-", "") else int(exit_str)
-                tasks.append(TaskSnapshot(name=name, status=status, exit_code=exit_code))
+            if not in_tasks:
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            name = parts[0]
+            status = parts[-1]
+            tasks.append(TaskSnapshot(name=name, status=status, exit_code=None))
         return WorkflowSnapshot(workflow_id=workflow_id, status=wf_status, tasks=tasks)
 
     def dataset_download(self, name: str, dest_dir: Path) -> None:
