@@ -37,7 +37,7 @@ from tools.odin.asgard.state import (
 )
 from tools.odin.bifrost.bundle import download_and_validate_bundle
 from tools.odin.bifrost.client import OsmoClient
-from tools.odin.bifrost.config import load_bifrost_config
+from tools.odin.bifrost.config import BifrostConfig, BifrostConfigError, load_bifrost_config
 from tools.odin.bifrost.poller import poll_until_terminal
 from tools.odin.bifrost.workflow import (
     RenderRow,
@@ -82,6 +82,10 @@ class _PlannedRow:
     seed: int
     num_envs: int
     max_iterations: int
+    # Curated-YAML ``timeout_class``; resolved (with fallback to
+    # ``cfg.default_timeout_class``) in :func:`_build_rows`. Used by
+    # :func:`_bucket_and_chunk` to group rows by OSMO ``exec_timeout``.
+    timeout_class: str = ""
 
 
 def _load_envs_yaml(path: Path) -> list[dict[str, Any]]:
@@ -102,6 +106,36 @@ def _matches_include(task_id: str, include_glob: str | None) -> bool:
     return any(fnmatch.fnmatch(task_id, g.strip()) for g in include_glob.split(",") if g.strip())
 
 
+def _resolve_timeout_class(env: dict[str, Any], cfg: BifrostConfig | None) -> str:
+    """Pick a ``timeout_class`` for one curated env row.
+
+    Args:
+        env: The raw env dict from the curated YAML (``physx_envs.yaml``).
+        cfg: The loaded bifrost config; supplies ``default_timeout_class``
+            and validates the chosen class against ``timeout_classes``.
+            ``None`` means the planner is running in a legacy path that
+            doesn't use timeout classes; fallback returns ``""``.
+
+    Returns:
+        The class name as listed in ``cfg.timeout_classes``.
+
+    Raises:
+        BifrostConfigError: When the env's ``timeout_class`` (or the
+            fallback default) is not present in ``cfg.timeout_classes``.
+    """
+    raw = env.get("timeout_class")
+    if cfg is None or not cfg.timeout_classes:
+        return str(raw) if raw is not None else ""
+    chosen = str(raw) if raw else cfg.default_timeout_class
+    if chosen not in cfg.timeout_classes:
+        known = sorted(cfg.timeout_classes.keys())
+        raise BifrostConfigError(
+            f"timeout_class {chosen!r} for env {env.get('task_id')!r} is not declared in "
+            f"bifrost-osmo.yaml's timeout_classes (known: {known})"
+        )
+    return chosen
+
+
 def _build_rows(
     *,
     physx_yaml: Path,
@@ -109,6 +143,7 @@ def _build_rows(
     seeds: list[int],
     include_glob: str | None,
     dispatch_id: str,
+    cfg: BifrostConfig | None = None,
 ) -> list[_PlannedRow]:
     rows: list[_PlannedRow] = []
     for path, backend in [(physx_yaml, "physx"), (newton_yaml, "newton")]:
@@ -121,6 +156,7 @@ def _build_rows(
             framework = str(env["framework"])
             num_envs = int(env["num_envs"])
             max_iter = int(env["max_iterations"])
+            timeout_class = _resolve_timeout_class(env, cfg)
             framework_slug = framework.replace("_", "-")
             for seed in seeds:
                 run_id = f"{framework_slug}_{backend}_{task_id}_{dispatch_id}_seed{seed}"
@@ -133,6 +169,7 @@ def _build_rows(
                         seed=seed,
                         num_envs=num_envs,
                         max_iterations=max_iter,
+                        timeout_class=timeout_class,
                     )
                 )
     return rows
@@ -382,6 +419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seeds=args.seeds,
         include_glob=args.include,
         dispatch_id=dispatch_id,
+        cfg=cfg,
     )
     if not rows:
         print("No keep:true rows matched the include filter.", file=sys.stderr)
