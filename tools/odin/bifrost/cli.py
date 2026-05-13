@@ -484,11 +484,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage_source_tarball(repo_root / cfg.code_delivery.source_root, tarball_path_p, repo_root=repo_root)
         tarball_path = str(tarball_path_p)
 
+    # Legacy single-workflow path: timeout-class-based bucketing lands
+    # in Batch 5 (multi-workflow submit). For now the whole dispatch
+    # reuses ``cfg.defaults.exec_timeout`` as an integer-seconds string.
     workflow_yaml = render_workflow_yaml(
         dispatch_id=dispatch_id,
         rows=[_planned_to_render(r) for r in rows],
         cfg=cfg,
         tarball_path=tarball_path,
+        exec_timeout=f"{cfg.defaults.exec_timeout}s",
     )
     workflow_yaml_path = dispatch_dir / "workflow.yaml"
     workflow_yaml_path.write_text(workflow_yaml)

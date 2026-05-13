@@ -100,6 +100,7 @@ def test_render_workflow_yaml_is_valid_yaml_with_one_task():
         rows=[_row()],
         cfg=cfg,
         tarball_path="/tmp/odin-source.tar.gz",
+        exec_timeout="2h",
     )
     parsed = yaml.safe_load(out)
     wf = parsed["workflow"]
@@ -120,7 +121,7 @@ def test_render_workflow_yaml_n_parallel_tasks():
     cfg = _cfg()
     rows = [_row(seed=42), _row(seed=43, framework="skrl")]
     out = render_workflow_yaml(
-        dispatch_id="20260505-150000", rows=rows, cfg=cfg, tarball_path="/tmp/odin-source.tar.gz"
+        dispatch_id="20260505-150000", rows=rows, cfg=cfg, tarball_path="/tmp/odin-source.tar.gz", exec_timeout="2h"
     )
     parsed = yaml.safe_load(out)
     assert len(parsed["workflow"]["tasks"]) == 2
@@ -130,7 +131,7 @@ def test_render_workflow_special_token_output_survives_render():
     """OSMO's `{{output}}` must appear literally in the rendered YAML."""
     cfg = _cfg()
     out = render_workflow_yaml(
-        dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path="/tmp/odin-source.tar.gz"
+        dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path="/tmp/odin-source.tar.gz", exec_timeout="2h"
     )
     assert "{{output}}" in out
 
@@ -138,7 +139,7 @@ def test_render_workflow_special_token_output_survives_render():
 def test_render_workflow_files_upload_mode_includes_tarball():
     cfg = _cfg(mode="files_upload")
     out = render_workflow_yaml(
-        dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path="/abs/odin-source.tar.gz"
+        dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path="/abs/odin-source.tar.gz", exec_timeout="2h"
     )
     parsed = yaml.safe_load(out)
     files = parsed["workflow"]["tasks"][0]["files"]
@@ -150,10 +151,31 @@ def test_render_workflow_files_upload_mode_includes_tarball():
 
 def test_render_workflow_rsync_mode_omits_tarball():
     cfg = _cfg(mode="rsync")
-    out = render_workflow_yaml(dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path=None)
+    out = render_workflow_yaml(
+        dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path=None, exec_timeout="2h"
+    )
     parsed = yaml.safe_load(out)
     paths = [f.get("path") for f in parsed["workflow"]["tasks"][0]["files"]]
     assert "/workspace/odin-source.tar.gz" not in paths
+
+
+def test_render_workflow_exec_timeout_threaded_into_yaml():
+    """Different ``exec_timeout`` values land in the rendered workflow.timeout.
+
+    The timeout is per-chunk now (spec §5.3): the same rows can be
+    rendered into two workflows with different exec_timeouts so each
+    timeout_class's chunk gets the right value.
+    """
+    cfg = _cfg()
+    rows = [_row()]
+    out_short = render_workflow_yaml(
+        dispatch_id="20260505-150000", rows=rows, cfg=cfg, tarball_path="/tmp/x.tar.gz", exec_timeout="30m"
+    )
+    out_long = render_workflow_yaml(
+        dispatch_id="20260505-150000", rows=rows, cfg=cfg, tarball_path="/tmp/x.tar.gz", exec_timeout="8h"
+    )
+    assert yaml.safe_load(out_short)["workflow"]["timeout"]["exec_timeout"] == "30m"
+    assert yaml.safe_load(out_long)["workflow"]["timeout"]["exec_timeout"] == "8h"
 
 
 def test_stage_source_tarball_produces_readable_archive(tmp_path: Path):

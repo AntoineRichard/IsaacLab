@@ -1,7 +1,7 @@
 workflow:
   name: odin-disp-{{ dispatch_id }}
   timeout:
-    exec_timeout: {{ cfg.defaults.exec_timeout }}s
+    exec_timeout: {{ exec_timeout }}
     queue_timeout: {{ cfg.defaults.queue_timeout }}s
   resources:
     default:

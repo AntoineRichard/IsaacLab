@@ -97,16 +97,20 @@ def render_workflow_yaml(
     rows: list[RenderRow],
     cfg: BifrostConfig,
     tarball_path: str | None,
+    exec_timeout: str,
 ) -> str:
-    """Render the OSMO workflow YAML for one dispatch.
+    """Render the OSMO workflow YAML for one dispatch chunk.
 
     Args:
         dispatch_id: Odin dispatch id (``YYYYMMDD-HHMMSS``).
-        rows: One per ``(task, seed)`` to dispatch.
+        rows: One per ``(task, seed)`` to dispatch in this chunk.
         cfg: Validated config from :func:`load_bifrost_config`.
         tarball_path: Controller-local path to the source tarball; required
             when ``cfg.code_delivery.mode == "files_upload"``, ignored
             otherwise.
+        exec_timeout: OSMO ``workflow.timeout.exec_timeout`` value for this
+            chunk (e.g. ``"30m"``, ``"8h"``). Resolved from
+            ``cfg.timeout_classes[timeout_class]`` by the planner.
 
     Returns:
         The rendered workflow YAML as a string. Caller writes it to disk
@@ -127,6 +131,7 @@ def render_workflow_yaml(
         rows=rows,
         cfg=cfg,
         tarball_path=tarball_path,
+        exec_timeout=exec_timeout,
     )
 
 
