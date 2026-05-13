@@ -19,7 +19,6 @@ groups:
     num_envs: 8192
     max_iterations: 10000
     keep: true
-    timeout_class: very_long
     status: current
     suspected_gap: null
     presets_available:
@@ -39,7 +38,6 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: medium
     status: current
     suspected_gap: null
     presets_available:
@@ -59,7 +57,6 @@ groups:
     num_envs: 4096
     max_iterations: 150
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -322,7 +319,6 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: medium
     status: current
     suspected_gap: null
     presets_available:
@@ -342,7 +338,6 @@ groups:
     num_envs: 8192
     max_iterations: 10000
     keep: true
-    timeout_class: long
     status: current
     suspected_gap: null
     presets_available:
@@ -362,7 +357,6 @@ groups:
     num_envs: 1225
     max_iterations: 50000
     keep: true
-    timeout_class: very_long
     status: stale
     suspected_gap: null
     presets_available: []
@@ -395,7 +389,6 @@ groups:
     num_envs: 1225
     max_iterations: 50000
     keep: true
-    timeout_class: very_long
     status: current
     suspected_gap: null
     presets_available:
@@ -415,7 +408,6 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -435,7 +427,6 @@ groups:
     num_envs: 4096
     max_iterations: 150
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -455,7 +446,6 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: medium
     status: current
     suspected_gap: null
     presets_available:
@@ -491,7 +481,6 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -526,7 +515,6 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -561,7 +549,6 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -596,7 +583,6 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -631,7 +617,6 @@ groups:
     num_envs: 4096
     max_iterations: 1500
     keep: true
-    timeout_class: medium
     status: current
     suspected_gap: null
     presets_available:
@@ -665,7 +650,6 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: medium
     status: current
     suspected_gap: null
     presets_available:
@@ -700,7 +684,6 @@ groups:
     num_envs: 4096
     max_iterations: 20000
     keep: true
-    timeout_class: very_long
     status: current
     suspected_gap: null
     presets_available:
@@ -734,7 +717,6 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -769,7 +751,6 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    timeout_class: medium
     status: current
     suspected_gap: null
     presets_available:
@@ -803,7 +784,6 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -823,7 +803,6 @@ groups:
     num_envs: 4096
     max_iterations: 15000
     keep: true
-    timeout_class: very_long
     status: current
     suspected_gap: null
     presets_available:
@@ -860,7 +839,6 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
@@ -895,7 +873,6 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    timeout_class: short
     status: current
     suspected_gap: null
     presets_available:
