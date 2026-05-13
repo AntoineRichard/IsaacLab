@@ -362,15 +362,9 @@ image:
   pull_credential: ngc-readonly
 defaults:
   resources: {cpu: 16, gpu: 1, memory: 64Gi, storage: 64Gi, platform: rtx-pro-6000}
-  # Ignored when timeout_classes is set below.
+  # No longer consulted; per-task budgets come from job_budgets.yaml.
   exec_timeout: 14400
   queue_timeout: 7200
-timeout_classes:
-  short: "30m"
-  medium: "2h"
-  long: "8h"
-  very_long: "24h"
-default_timeout_class: medium
 chunk_size: 25            # max tasks per OSMO workflow
 retry:
   reschedule_codes: "3001-3006"
@@ -381,32 +375,38 @@ code_delivery:
   source_root: tools/odin
 ```
 
-### Bifrost: timeout classes
+### Bifrost: per-task timeouts
 
 OSMO's `workflow.timeout.exec_timeout` is workflow-level — every task in
-a workflow shares the same wall-clock budget. To give Cartpole a 30 min
-budget while Shadow-Vision keeps its 8 h budget, Bifrost splits a
-dispatch into N OSMO workflows keyed on each env's `timeout_class`:
+a workflow shares the same wall-clock budget. To give Cartpole a 5 min
+budget while Shadow-Vision keeps its 24 h budget, Bifrost chunks a
+dispatch into multiple OSMO workflows sized on each task's budget:
 
-1. Each kept env in `tools/odin/config/{physx,newton}_envs.yaml` declares a
-   `timeout_class: <name>` (e.g. `short`, `medium`, `long`, `very_long`).
-2. `bifrost-osmo.yaml`'s `timeout_classes` table maps each class name to
-   an OSMO `exec_timeout` value (`30m`, `2h`, ...). Class names are
-   free-form strings; you can add `shadow_vision: "12h"` for one-off
-   classes.
-3. `default_timeout_class` is the fallback for envs that omit the field.
-4. `chunk_size` (default 25) caps how many tasks land in any one OSMO
-   workflow even within a class. A 200-job dispatch at the default
-   chunk size, split across four classes, results in roughly 8–10
-   OSMO workflows.
+1. **Source of truth** — per-task budgets live in
+   `tools/odin/config/job_budgets.yaml`, keyed
+   `task_id → framework → seconds`. This is the same table Asgard uses
+   (see `tools/odin/asgard/budgets.py`), so adjusting a budget once
+   updates both dispatchers. Override the file with `--budgets-yaml`.
+2. **Fallback** — when a task is not listed, the planner falls back to
+   `defaults.<framework>` from the same file. Missing both raises
+   `BifrostConfigError` at plan time.
+3. **Chunking** — rows are sorted by per-task budget ascending, then
+   chunked at `chunk_size` (default 25). Each chunk becomes one OSMO
+   workflow whose `exec_timeout` is the **max** budget within that
+   chunk, so every task in the workflow has enough wall-clock to
+   finish.
+4. **Determinism** — ties on per-task timeout break by
+   `(task_id, backend, seed)`, so reruns and `--resume` see the same
+   layout.
 
-When `timeout_classes` is omitted (legacy configs) Bifrost reverts to
-the single-workflow behavior using `defaults.exec_timeout` for every
-task. The planner raises a clear `BifrostConfigError` if an env's
-`timeout_class` doesn't appear in `timeout_classes`.
+The `defaults.exec_timeout`, `timeout_classes`, and
+`default_timeout_class` fields in `bifrost-osmo.yaml` are deprecated
+and emit a warning when present (a previous design routed timeouts
+through them); remove them from your config.
 
 See `docs/superpowers/specs/2026-05-13-odin-bifrost-timeout-buckets-design.md`
-for the full design.
+for the full design (including the 2026-05-13 revision that replaced
+the class table with the direct `job_budgets.yaml` lookup).
 
 ### Running a bifrost dispatch
 
@@ -424,6 +424,7 @@ PYTHONPATH=. ./isaaclab.sh -p tools/odin/bifrost/cli.py \
     [--resume <dispatch_id|LATEST>] \
     [--retry-failed <run_ids>] \
     [--poll-interval 15] \
+    [--budgets-yaml tools/odin/config/job_budgets.yaml] \
     [--verbose]
 ```
 
@@ -463,8 +464,7 @@ odin_runs/
     │                           # osmo_workflow_ids: ["wf-1", "wf-2", ...]
     │                           # (legacy osmo_workflow_id mirrors the
     │                           # first entry for back-compat)
-    ├── workflow.yaml           # legacy single-workflow rendering
-    ├── workflow.<class>.<idx>.yaml  # one per chunk when timeout_classes is set
+    ├── workflow.<idx>.yaml     # one per chunk; idx ascends with chunk's max timeout
     ├── odin-source.tar.gz      # uploaded with files_upload mode
     └── <run_id>/
         ├── manifest.json

@@ -281,3 +281,77 @@ E2E (against real OSMO, slow-marked):
   warning and fall back to single-workflow mode (one workflow,
   `defaults.exec_timeout` for all tasks).
 - Asgard-only users see no change.
+
+---
+
+## Revision (2026-05-13): drop `timeout_class`, reuse `job_budgets.yaml`
+
+The original design above introduced a `timeout_class` indirection on
+each curated env (`short`, `medium`, ...), mapped via a
+`timeout_classes:` table in `bifrost-osmo.yaml` to OSMO `exec_timeout`
+strings. After landing 10 commits implementing that, the user observed
+that Asgard already maintains a per-task numeric source of truth at
+`tools/odin/config/job_budgets.yaml`, loaded by
+`tools.odin.asgard.budgets.load_budgets`. The class system duplicated
+this in a coarser, less discoverable form: every new env needed both a
+budget entry (for Asgard) and a class label (for Bifrost), and the
+class names had to be kept in sync with the YAML's
+`timeout_classes` keys.
+
+### What changed
+
+- `_PlannedRow.timeout_class: str` → `_PlannedRow.per_task_timeout_s: int`.
+- New `_resolve_per_task_timeout_s(task_id, framework, budgets)` helper
+  pulls the seconds value straight from
+  `budgets.budgets[task_id][framework]`, with fallback to
+  `budgets.defaults[framework]`. Missing both → `BifrostConfigError` at
+  plan time.
+- `_build_rows` takes a `budgets: Budgets` kwarg (the loaded table).
+- `_bucket_and_chunk` no longer groups by class. It now:
+  1. Sorts rows ascending by `(per_task_timeout_s, task_id, backend, seed)`.
+  2. Chunks at `chunk_size`.
+  3. Emits `(chunk_index, max_timeout_s, rows)` where
+     `max_timeout_s = max(r.per_task_timeout_s for r in chunk)`.
+- The CLI renders one workflow YAML per chunk
+  (`workflow.<idx>.yaml`) with `exec_timeout = f"{max_timeout_s}s"`.
+- `BifrostConfig.timeout_classes` and `default_timeout_class` are
+  removed from the dataclass. The loader still parses
+  `bifrost-osmo.yaml` files that carry these fields (and
+  `defaults.exec_timeout`) but warns "no longer used" so operators
+  spot the dead field.
+- A new `--budgets-yaml` CLI flag points at the budgets table
+  (default `tools/odin/config/job_budgets.yaml`).
+- Curated YAMLs (`physx_envs.yaml`, `newton_envs.yaml`) revert to the
+  pre-class shape; the `timeout_class:` lines added on each kept env
+  are dropped (54 + 23 lines).
+
+### Why
+
+One source of truth. Asgard and Bifrost now look up the same numeric
+budget for the same `(task, framework)` pair. A budget bump is one
+file edit, no class table to keep in sync. The chunked-by-budget
+ordering is also strictly more flexible — the workflow `exec_timeout`
+is sized to its tightest-fitting chunk rather than to a coarse class.
+
+### Behavior change worth noting
+
+- Bifrost no longer warns / errors on "unknown class" because there
+  are no classes. Instead it errors at plan time if a task is missing
+  from `job_budgets.yaml` **and** `defaults.<framework>` is absent in
+  that file. With `defaults.rsl_rl` and `defaults.skrl` populated (the
+  HEAD state), this only fires on a brand-new framework key.
+- Chunk filenames change from `workflow.<class>.<idx>.yaml` to
+  `workflow.<idx>.yaml`. The single-workflow path
+  (`workflow.yaml`) is also gone; even a 1-row dispatch produces
+  `workflow.0.yaml`.
+- Curated YAMLs no longer carry the `timeout_class` field. The
+  enumerator scripts that generated those files (if any) should not
+  re-emit it.
+
+### Migration
+
+- Local `bifrost-osmo.yaml`: remove `timeout_classes:` and
+  `default_timeout_class:` lines. Keep `chunk_size`. `defaults.exec_timeout`
+  can stay (warning) until a follow-up makes it optional in the schema.
+- No-op for `job_budgets.yaml`; it already has the right shape.
+- Asgard: untouched.

@@ -19,19 +19,17 @@ defaults:
     memory: 64Gi
     storage: 64Gi
     platform: rtx-pro-6000
-  # Ignored when timeout_classes is set below.
+  # Workflow exec_timeout is computed per chunk from job_budgets.yaml;
+  # this field is no longer consulted but stays required for now to
+  # keep the schema stable. queue_timeout is still used.
   exec_timeout: 14400
   queue_timeout: 7200
 
-# Per-task timeout classes (spec §4.2). Each kept env in the curated
-# YAMLs picks one of these class names; Bifrost splits the dispatch into
-# one OSMO workflow per class, each with its own exec_timeout.
-timeout_classes:
-  short: "30m"
-  medium: "2h"
-  long: "8h"
-  very_long: "24h"
-default_timeout_class: medium
+# Per-task wall-clock budgets come from tools/odin/config/job_budgets.yaml
+# (shared with Asgard). Bifrost sorts rows by per-task budget, chunks at
+# chunk_size, and uses each chunk's max budget as the OSMO workflow's
+# exec_timeout. Pass --budgets-yaml on the CLI to point at a different
+# file.
 chunk_size: 25            # max tasks per OSMO workflow
 
 retry:

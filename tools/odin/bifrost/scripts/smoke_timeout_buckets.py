@@ -6,10 +6,11 @@
 
 """Live OSMO smoke for the per-task timeout-bucket dispatcher.
 
-Submits a small mixed-class dispatch (3 short Cartpole + 3 medium Ant)
+Submits a small mixed-budget dispatch (3 Cartpole seeds + 3 Ant seeds)
 against the configured pool, verifying that the planner produces two
-OSMO workflows with different ``exec_timeout`` values and that all
-bundles aggregate correctly.
+OSMO workflows with different ``exec_timeout`` values (drawn from
+``job_budgets.yaml`` — Cartpole at 300s, Ant at 2100s in the HEAD
+budgets file) and that all bundles aggregate correctly.
 
 Manual runbook — not invoked by CI. Requires:
 
@@ -25,8 +26,9 @@ Verification checklist (post-run):
 
 1. ``odin_runs/<dispatch_id>/dispatch.json`` shows ``osmo_workflow_ids``
    with two entries.
-2. ``osmo workflow query <wf-id>`` for each shows the right
-   ``timeout.exec_timeout`` (``30m`` for short, ``2h`` for medium).
+2. ``odin_runs/<dispatch_id>/workflow.0.yaml`` and ``workflow.1.yaml``
+   declare different ``exec_timeout`` values, each the max of its
+   chunk's per-task budgets from ``job_budgets.yaml``.
 3. ``aggregate.json`` reports ``runs == 6`` and ``completed == 6``.
 4. Per-run bundles exist under ``odin_runs/<dispatch_id>/<run_id>/``.
 """
@@ -51,8 +53,9 @@ def main() -> int:
             str(osmo_config),
             "--physx-yaml",
             str(physx_yaml),
-            # Cartpole has timeout_class=short, Ant has timeout_class=medium
-            # so the dispatcher emits two workflows with 30m / 2h budgets.
+            # Cartpole sits in a smaller per-task bucket than Ant in
+            # job_budgets.yaml, so the dispatcher emits two workflows
+            # whose exec_timeout values differ.
             "--include",
             "Isaac-Cartpole-Direct-v0,Isaac-Ant-Direct-v0",
             "--seeds",
