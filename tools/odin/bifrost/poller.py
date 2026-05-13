@@ -18,7 +18,7 @@ from typing import Protocol
 
 from tools.odin.asgard.jobs import FailureInfo, JobEntry
 from tools.odin.asgard.state import DispatchState, write_dispatch_state
-from tools.odin.bifrost.client import WorkflowSnapshot
+from tools.odin.bifrost.client import OsmoTransientError, WorkflowSnapshot
 
 __all__ = [
     "OSMO_STATE_TO_FAILURE_KIND",
@@ -134,7 +134,18 @@ def poll_until_terminal(
     completed_seen: set[str] = set()
     while not _all_terminal(state):
         for wf_id in workflow_ids:
-            snap = client.status(wf_id)
+            try:
+                snap = client.status(wf_id)
+            except OsmoTransientError as exc:
+                # OSMO 5xx (server-side flake) or connection issue: skip
+                # this workflow's tick and try again next poll instead of
+                # crashing the entire poller (which would force a manual
+                # --resume for a transient blip).
+                print(
+                    f"[bifrost] osmo workflow query {wf_id} transient failure; will retry next tick: {exc}",
+                    flush=True,
+                )
+                continue
             for task in snap.tasks:
                 job = by_osmo_name.get(task.name)
                 if job is None:
