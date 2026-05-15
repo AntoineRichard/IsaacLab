@@ -34,17 +34,6 @@ ENV DOCKER_USER_HOME=${DOCKER_USER_HOME_ARG}
 ENV LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Workaround for an openblas+fork() crash in kit's startup path.
-# carb.launcher forks to spawn child processes; glibc runs registered
-# pthread_atfork handlers; scipy_openblas's handler calls pthread_join
-# on its worker threads, which crashes when carb.tasking fibers are
-# in the thread bookkeeping. Forcing single-threaded BLAS avoids the
-# atfork shutdown entirely. RL training is GPU-bound, so the CPU-side
-# slowdown for downstream numpy/scipy is negligible.
-ENV OPENBLAS_NUM_THREADS=1
-ENV OMP_NUM_THREADS=1
-ENV MKL_NUM_THREADS=1
-
 USER root
 
 # Install dependencies
@@ -130,6 +119,18 @@ RUN --mount=type=cache,target=${DOCKER_USER_HOME}/.cache/pip \
 
 # HACK: Remove install of quadprog dependency
 RUN ${ISAACLAB_PATH}/isaaclab.sh -p -m pip uninstall -y quadprog
+
+# Pin numpy >= 2.4.1 to dodge the kit fork() crash:
+# numpy 2.3.x vendored a scipy_openblas with a buggy
+# pthread_atfork handler -- when carb.launcher forks (kit telemetry,
+# subprocess spawn) glibc invoked blas_thread_shutdown_ which then
+# crashed inside pthread_join because carb.tasking fibers had
+# already manipulated the thread bookkeeping. numpy 2.4.1 ships a
+# fixed openblas. Bumping here is cheaper than the old workaround
+# (OPENBLAS_NUM_THREADS=1 etc.), which serialised CPU-side numpy
+# for the whole image just to avoid the fork race.
+RUN --mount=type=cache,target=${DOCKER_USER_HOME}/.cache/pip \
+    ${ISAACLAB_PATH}/isaaclab.sh -p -m pip install --upgrade "numpy>=2.4.1"
 
 # aliasing isaaclab.sh and python for convenience
 RUN echo "export ISAACLAB_PATH=${ISAACLAB_PATH}" >> ${HOME}/.bashrc && \

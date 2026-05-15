@@ -20,12 +20,6 @@ workflow:
       OMNI_KIT_ALLOW_ROOT: "1"
       ODIN_DISPATCH_ID: "{{ dispatch_id }}"
       ODIN_RUN_ID: "{{ row.run_id }}"
-      # Defense in depth: image already sets these, but re-apply here in case
-      # the OSMO node runs a stripped image where the Dockerfile ENVs are lost.
-      # Avoids openblas pthread_atfork crash in kit's fork path.
-      OPENBLAS_NUM_THREADS: "1"
-      OMP_NUM_THREADS: "1"
-      MKL_NUM_THREADS: "1"
     command: ["bash"]
     args: ["/tmp/entry.sh"]
     files:
