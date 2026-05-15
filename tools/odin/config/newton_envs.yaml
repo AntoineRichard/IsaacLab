@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 schema_version: '1.0'
-generated_at: '2026-04-27T13:23:46Z'
+generated_at: '2026-05-15T07:46:19Z'
 generator: enumerate_newton_envs.py
 groups:
   direct/allegro_hand:
@@ -19,7 +19,7 @@ groups:
     num_envs: 8192
     max_iterations: 10000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -38,7 +38,7 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -57,7 +57,7 @@ groups:
     num_envs: 4096
     max_iterations: 150
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -65,38 +65,6 @@ groups:
     native_backend: null
     notes: ''
   direct/cartpole_showcase:
-  - task_id: Isaac-Cartpole-Showcase-Box-Box-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:BoxBoxEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Box-Discrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:BoxDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
   - task_id: Isaac-Cartpole-Showcase-Box-MultiDiscrete-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:BoxMultiDiscreteEnvCfg
@@ -107,204 +75,12 @@ groups:
     framework: skrl
     num_envs: 4096
     max_iterations: 4800
-    keep: false
-    status: current
+    keep: true
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Dict-Box-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DictBoxEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Dict-Discrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DictDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Dict-MultiDiscrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DictMultiDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Discrete-Box-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DiscreteBoxEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Discrete-Discrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DiscreteDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Discrete-MultiDiscrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:DiscreteMultiDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-Box-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:MultiDiscreteBoxEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-Discrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:MultiDiscreteDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-MultiDiscrete-MultiDiscrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:MultiDiscreteMultiDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Tuple-Box-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:TupleBoxEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Tuple-Discrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:TupleDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Cartpole-Showcase-Tuple-MultiDiscrete-Direct-v0
-    entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env:CartpoleShowcaseEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.cartpole_showcase.cartpole.cartpole_env_cfg:TupleMultiDiscreteEnvCfg
-    group: direct/cartpole_showcase
-    has_rsl_rl: false
-    has_skrl: true
-    has_rl_games: false
-    framework: skrl
-    num_envs: 4096
-    max_iterations: 4800
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   direct/humanoid:
@@ -319,7 +95,7 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -338,7 +114,7 @@ groups:
     num_envs: 8192
     max_iterations: 10000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -346,38 +122,6 @@ groups:
     native_backend: null
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
-  - task_id: Isaac-Repose-Cube-Shadow-Vision-Benchmark-Direct-v0
-    entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env_cfg:ShadowHandVisionBenchmarkEnvCfg
-    group: direct/shadow_hand
-    has_rsl_rl: true
-    has_skrl: false
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 1225
-    max_iterations: 50000
-    keep: true
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Repose-Cube-Shadow-Vision-Direct-Play-v0
-    entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
-    env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env_cfg:ShadowHandVisionEnvPlayCfg
-    group: direct/shadow_hand
-    has_rsl_rl: true
-    has_skrl: false
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 64
-    max_iterations: 50000
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
-    native_backend: null
-    notes: ''
   - task_id: Isaac-Repose-Cube-Shadow-Vision-Direct-v0
     entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env:ShadowHandVisionEnv
     env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_vision_env_cfg:ShadowHandVisionEnvCfg
@@ -387,9 +131,9 @@ groups:
     has_rl_games: true
     framework: rsl_rl
     num_envs: 1225
-    max_iterations: 50000
+    max_iterations: 5000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -408,7 +152,7 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -427,7 +171,7 @@ groups:
     num_envs: 4096
     max_iterations: 150
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -446,30 +190,31 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
     native_backend: null
     notes: ''
-  manager_based/locomotion/velocity:
-  - task_id: Isaac-Velocity-Flat-Anymal-B-Play-v0
+  manager_based/locomanipulation/tracking:
+  - task_id: Isaac-Tracking-LocoManip-Digit-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_b.flat_env_cfg:AnymalBFlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomanipulation.tracking.config.digit.loco_manip_env_cfg:DigitLocoManipEnvCfg
+    group: manager_based/locomanipulation/tracking
     has_rsl_rl: true
-    has_skrl: true
+    has_skrl: false
     has_rl_games: false
     framework: rsl_rl
-    num_envs: 50
-    max_iterations: 300
-    keep: false
-    status: stale
+    num_envs: 4096
+    max_iterations: 2000
+    keep: true
+    status: new
     suspected_gap: null
     presets_available: []
-    native_backend: null
+    native_backend: physx
     notes: ''
+  manager_based/locomotion/velocity:
   - task_id: Isaac-Velocity-Flat-Anymal-B-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
     env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_b.flat_env_cfg:AnymalBFlatEnvCfg
@@ -481,27 +226,11 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Velocity-Flat-Anymal-C-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.flat_env_cfg:AnymalCFlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 300
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Anymal-C-v0
@@ -515,27 +244,11 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Velocity-Flat-Anymal-D-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_d.flat_env_cfg:AnymalDFlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 300
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Anymal-D-v0
@@ -549,27 +262,11 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Velocity-Flat-Cassie-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.cassie.flat_env_cfg:CassieFlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 1000
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Cassie-v0
@@ -583,28 +280,28 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
     native_backend: null
     notes: ''
-  - task_id: Isaac-Velocity-Flat-G1-Play-v0
+  - task_id: Isaac-Velocity-Flat-Digit-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg:G1FlatEnvCfg_PLAY
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.digit.flat_env_cfg:DigitFlatEnvCfg
     group: manager_based/locomotion/velocity
     has_rsl_rl: true
-    has_skrl: true
+    has_skrl: false
     has_rl_games: false
     framework: rsl_rl
-    num_envs: 50
-    max_iterations: 1500
-    keep: false
-    status: stale
+    num_envs: 4096
+    max_iterations: 2000
+    keep: true
+    status: new
     suspected_gap: null
     presets_available: []
-    native_backend: null
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Velocity-Flat-G1-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -617,26 +314,10 @@ groups:
     num_envs: 4096
     max_iterations: 1500
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Velocity-Flat-H1-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.h1.flat_env_cfg:H1FlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 1000
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-H1-v0
@@ -650,27 +331,11 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Velocity-Flat-Spot-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.spot.flat_env_cfg:SpotFlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 20000
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Spot-v0
@@ -684,26 +349,10 @@ groups:
     num_envs: 4096
     max_iterations: 20000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Velocity-Flat-Unitree-A1-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.a1.flat_env_cfg:UnitreeA1FlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 300
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-A1-v0
@@ -717,27 +366,11 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Velocity-Flat-Unitree-Go1-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go1.flat_env_cfg:UnitreeGo1FlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 300
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-Go1-v0
@@ -751,26 +384,10 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Velocity-Flat-Unitree-Go2-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go2.flat_env_cfg:UnitreeGo2FlatEnvCfg_PLAY
-    group: manager_based/locomotion/velocity
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 300
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Velocity-Flat-Unitree-Go2-v0
@@ -784,11 +401,189 @@ groups:
     num_envs: 4096
     max_iterations: 300
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
+    native_backend: null
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-B-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_b.rough_env_cfg:AnymalBRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-C-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_c.rough_env_cfg:AnymalCRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Anymal-D-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_d.rough_env_cfg:AnymalDRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Cassie-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.cassie.rough_env_cfg:CassieRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Digit-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.digit.rough_env_cfg:DigitRoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: false
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-G1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.g1.rough_env_cfg:G1RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-H1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.h1.rough_env_cfg:H1RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 3000
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-A1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.a1.rough_env_cfg:UnitreeA1RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-Go1-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go1.rough_env_cfg:UnitreeGo1RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
+    native_backend: physx
+    notes: ''
+  - task_id: Isaac-Velocity-Rough-Unitree-Go2-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.locomotion.velocity.config.go2.rough_env_cfg:UnitreeGo2RoughEnvCfg
+    group: manager_based/locomotion/velocity
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: false
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 1500
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available:
+    - physx
+    native_backend: null
+    notes: ''
+  manager_based/manipulation/cabinet:
+  - task_id: Isaac-Open-Drawer-Franka-v0
+    entry_point: isaaclab.envs:ManagerBasedRLEnv
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.cabinet.config.franka.joint_pos_env_cfg:FrankaCabinetEnvCfg
+    group: manager_based/manipulation/cabinet
+    has_rsl_rl: true
+    has_skrl: true
+    has_rl_games: true
+    framework: rsl_rl
+    num_envs: 4096
+    max_iterations: 400
+    keep: true
+    status: new
+    suspected_gap: null
+    presets_available: []
     native_backend: null
     notes: ''
   manager_based/manipulation/dexsuite:
@@ -803,7 +598,7 @@ groups:
     num_envs: 4096
     max_iterations: 15000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
@@ -812,21 +607,21 @@ groups:
     notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
       manually.
   manager_based/manipulation/reach:
-  - task_id: Isaac-Reach-Franka-Play-v0
+  - task_id: Isaac-Reach-Franka-OSC-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.franka.joint_pos_env_cfg:FrankaReachEnvCfg_PLAY
+    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.franka.osc_env_cfg:FrankaReachEnvCfg
     group: manager_based/manipulation/reach
     has_rsl_rl: true
-    has_skrl: true
+    has_skrl: false
     has_rl_games: false
     framework: rsl_rl
-    num_envs: 50
+    num_envs: 4096
     max_iterations: 1000
-    keep: false
-    status: stale
+    keep: true
+    status: new
     suspected_gap: null
     presets_available: []
-    native_backend: null
+    native_backend: physx
     notes: ''
   - task_id: Isaac-Reach-Franka-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -839,27 +634,11 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
     - newton
-    native_backend: null
-    notes: ''
-  - task_id: Isaac-Reach-UR10-Play-v0
-    entry_point: isaaclab.envs:ManagerBasedRLEnv
-    env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.reach.config.ur_10.joint_pos_env_cfg:UR10ReachEnvCfg_PLAY
-    group: manager_based/manipulation/reach
-    has_rsl_rl: true
-    has_skrl: true
-    has_rl_games: false
-    framework: rsl_rl
-    num_envs: 50
-    max_iterations: 1000
-    keep: false
-    status: stale
-    suspected_gap: null
-    presets_available: []
     native_backend: null
     notes: ''
   - task_id: Isaac-Reach-UR10-v0
@@ -873,7 +652,7 @@ groups:
     num_envs: 4096
     max_iterations: 1000
     keep: true
-    status: current
+    status: new
     suspected_gap: null
     presets_available:
     - physx
