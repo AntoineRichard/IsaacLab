@@ -108,13 +108,13 @@ def _sync_particle_points(
 def _or_reset_masks_from_mask(
     env_mask: wp.array(dtype=wp.bool),
     articulation_ids: wp.array2d(dtype=int),
-    world_mask: wp.array(dtype=wp.int32),
+    world_mask: wp.array(dtype=wp.bool),
     fk_mask: wp.array(dtype=wp.bool),
 ):
     """OR env_mask into world_mask and set corresponding articulation bits in fk_mask."""
     world, arti = wp.tid()
     if env_mask[world]:
-        world_mask[world] = wp.int32(1)
+        world_mask[world] = True
         fk_mask[articulation_ids[world, arti]] = True
 
 
@@ -122,13 +122,13 @@ def _or_reset_masks_from_mask(
 def _scatter_reset_masks_from_ids(
     env_ids: wp.array(dtype=int),
     articulation_ids: wp.array2d(dtype=int),
-    world_mask: wp.array(dtype=wp.int32),
+    world_mask: wp.array(dtype=wp.bool),
     fk_mask: wp.array(dtype=wp.bool),
 ):
     """Scatter-set world_mask and fk_mask from sparse env_ids."""
     i, arti = wp.tid()
     world = env_ids[i]
-    world_mask[world] = wp.int32(1)
+    world_mask[world] = True
     fk_mask[articulation_ids[world, arti]] = True
 
 
@@ -228,7 +228,10 @@ class NewtonManager(PhysicsManager):
     _pending_extended_contact_attributes: set[str] = set()
     _report_contacts: bool = False
     # Per-world reset masks (allocated in start_simulation, consumed in step)
-    _world_reset_mask: wp.array | None = None  # (num_envs,) wp.int32 — for SolverKamino.reset(world_mask=...)
+    _world_reset_mask: wp.array | None = None  # (num_envs,) wp.bool — per-world reset bitmask. Consumed
+    # directly by MJWarp's mujoco_warp.reset_data(reset=...). NewtonKaminoManager mirrors it into its own
+    # int32 buffer each step (see :attr:`NewtonKaminoManager._world_reset_mask_int32`) because Kamino's
+    # internal mask-consumer kernels are declared ``wp.array[int32]``.
     _fk_reset_mask: wp.array | None = None  # (articulation_count,) wp.bool — for eval_fk(mask=...)
 
     # Newton actuator adapter (owns actuators and double-buffered states)
@@ -544,6 +547,13 @@ class NewtonManager(PhysicsManager):
         sim = PhysicsManager._sim
         if sim is None or not sim.is_playing():
             return
+
+        # Solver-specific reset of internal scratch (warm-start buffers, accumulated forces, ...)
+        # for the worlds flagged in _world_reset_mask. No-op default; MJWarp overrides this to
+        # call mujoco_warp.reset_data so NaNs cannot leak through env reset (see newton#1266).
+        # Fires at the top of step() to match NewtonKaminoManager.step()'s ordering — keeping
+        # the contract uniform "solver-specific reset is the first thing every step does."
+        cls._reset_solver_internals(cls._world_reset_mask)
 
         # Notify solver of model changes
         if cls._model_changes:
@@ -951,7 +961,7 @@ class NewtonManager(PhysicsManager):
             )
         else:
             # Fallback: no topology info — mark everything dirty
-            NewtonManager._world_reset_mask.fill_(1)
+            NewtonManager._world_reset_mask.fill_(True)
             NewtonManager._fk_reset_mask.fill_(True)
 
     @classmethod
@@ -1006,8 +1016,9 @@ class NewtonManager(PhysicsManager):
         NewtonManager._adapter = None
         NewtonManager._use_newton_actuators_active = False
 
-        # Allocate per-world reset masks (used by all solvers for masked FK, and by Kamino for masked reset)
-        NewtonManager._world_reset_mask = wp.zeros(cls._model.world_count, dtype=wp.int32, device=device)
+        # Allocate per-world reset masks (used by all solvers for masked FK, by Kamino for masked solver.reset,
+        # and by MJWarp for mujoco_warp.reset_data — see :meth:`_reset_solver_internals`).
+        NewtonManager._world_reset_mask = wp.zeros(cls._model.world_count, dtype=wp.bool, device=device)
         NewtonManager._fk_reset_mask = wp.zeros(cls._model.articulation_count, dtype=wp.bool, device=device)
 
         logger.info("Dispatching PHYSICS_READY callbacks")
@@ -1218,6 +1229,33 @@ class NewtonManager(PhysicsManager):
 
         Default no-op.  Subclasses override to log solver-specific debug info
         (e.g. constraint violations, contact forces, etc.) after stepping.
+        """
+
+    @classmethod
+    def _reset_solver_internals(cls, world_mask: wp.array) -> None:
+        """Clear solver-internal scratch for the flagged worlds before stepping.
+
+        Hook invoked at the **top** of :meth:`step` — before model-change
+        notification, lazy graph capture, and the masked FK pass.  Default
+        no-op.  Subclasses override when the solver maintains state outside
+        Newton's :class:`State` (warm-start buffers, accumulated forces,
+        solver counters, etc.) that must be cleared after an env reset to
+        prevent NaN values produced in a previous step from being recycled
+        into the next solve — see
+        ``NewtonMJWarpManager._reset_solver_internals`` and the discussion
+        at https://github.com/newton-physics/newton/issues/1266.
+
+        The "reset-first" ordering matches what
+        :class:`NewtonKaminoManager.step` already does today via its inline
+        ``solver.reset(world_mask=...)`` call, so all solvers obey a uniform
+        contract: solver-specific reset is the first thing every step does.
+        A follow-up may migrate Kamino to express its reset through this
+        hook directly.
+
+        Args:
+            world_mask: Per-world reset bitmask of shape ``(world_count,)``,
+                dtype :class:`wp.bool`. ``True`` for worlds that were flagged
+                by :meth:`invalidate_fk` since the previous step.
         """
 
     # ----- Lifecycle orchestration ----------------------------------------

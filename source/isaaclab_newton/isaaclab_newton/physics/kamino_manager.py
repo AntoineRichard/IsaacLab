@@ -22,6 +22,28 @@ from .newton_manager import NewtonManager
 logger = logging.getLogger(__name__)
 
 
+@wp.kernel(enable_backward=False)
+def _convert_bool_mask_to_int32(
+    src: wp.array(dtype=wp.bool),
+    dst: wp.array(dtype=wp.int32),
+):
+    """Mirror a per-world ``wp.bool`` reset mask into a ``wp.int32`` buffer.
+
+    Kamino's mask-consumer kernels are declared ``wp.array[int32]`` while
+    :attr:`NewtonManager._world_reset_mask` is allocated as ``wp.bool`` so
+    :func:`mujoco_warp.reset_data` consumes it directly.  A zero-copy
+    ``.view(dtype=wp.uint8)`` would suffice in principle (1-byte dtypes
+    share layout) but Warp's launch-time dtype check rejects ``uint8``
+    against an ``int32``-typed kernel parameter, so an explicit element-wise
+    copy is needed until Kamino widens its mask dtype upstream.
+    """
+    i = wp.tid()
+    if src[i]:
+        dst[i] = wp.int32(1)
+    else:
+        dst[i] = wp.int32(0)
+
+
 class NewtonKaminoManager(NewtonManager):
     """:class:`NewtonManager` specialization for the Kamino solver.
 
@@ -30,6 +52,12 @@ class NewtonKaminoManager(NewtonManager):
     Kamino's internal collision detector handles contact generation.
     """
 
+    # Kamino-specific mirror of :attr:`NewtonManager._world_reset_mask`.  The base mask is allocated as
+    # ``wp.bool`` (so :func:`mujoco_warp.reset_data` consumes it directly); Kamino's internal kernels are
+    # declared ``wp.array[int32]`` so we keep this int32 mirror and refresh it from the bool source each
+    # step via :func:`_convert_bool_mask_to_int32`.  See newton-physics/newton#2932.
+    _world_reset_mask_int32: wp.array | None = None
+
     @classmethod
     def _forward_kamino(cls, world_mask: wp.array | None = None) -> None:
         """Kamino-specific forward kinematics via ``solver.reset()``.
@@ -37,15 +65,31 @@ class NewtonKaminoManager(NewtonManager):
         Kamino's ``joint_q`` / ``joint_u`` include coordinates for **all** joints
         (including free joints), so we pass Newton's full state arrays directly.
 
+        The accumulated bool mask is mirrored into :attr:`_world_reset_mask_int32`
+        via :func:`_convert_bool_mask_to_int32` before being passed to
+        :meth:`newton.solvers.SolverKamino.reset`, whose kernels are typed
+        ``wp.array[int32]``.
+
         Args:
-            world_mask: Per-world mask indicating which worlds to reset.
-                Shape ``(num_worlds,)``, dtype ``wp.int32``. If None, resets all worlds.
+            world_mask: Per-world reset mask of shape ``(num_worlds,)``,
+                dtype :class:`wp.bool`. ``None`` resets all worlds.
         """
+        if world_mask is None:
+            solver_mask = None
+        else:
+            wp.launch(
+                _convert_bool_mask_to_int32,
+                dim=world_mask.shape[0],
+                inputs=[world_mask],
+                outputs=[cls._world_reset_mask_int32],
+                device=PhysicsManager._device,
+            )
+            solver_mask = cls._world_reset_mask_int32
         cls._solver.reset(
             state_out=cls._state_0,
             joint_q=cls._state_0.joint_q,
             joint_u=cls._state_0.joint_qd,
-            world_mask=world_mask,
+            world_mask=solver_mask,
         )
 
     @classmethod
@@ -118,11 +162,19 @@ class NewtonKaminoManager(NewtonManager):
 
         Sets :attr:`NewtonManager._needs_collision_pipeline` to ``True`` only
         when ``use_collision_detector=False`` (Kamino's internal detector
-        handles contacts otherwise).
+        handles contacts otherwise).  Also allocates the int32 mirror of the
+        base bool reset mask so :meth:`_forward_kamino` can feed Kamino's
+        strict ``wp.array[int32]`` mask-consumer kernels.
         """
         NewtonManager._solver = SolverKamino(model, solver_cfg.to_solver_config())
         NewtonManager._use_single_state = False
         NewtonManager._needs_collision_pipeline = not solver_cfg.use_collision_detector
+        cls._world_reset_mask_int32 = wp.zeros(model.world_count, dtype=wp.int32, device=PhysicsManager._device)
+
+    @classmethod
+    def _solver_specific_clear(cls) -> None:
+        """Release the Kamino-side int32 reset-mask mirror."""
+        cls._world_reset_mask_int32 = None
 
     @classmethod
     def _capture_or_defer_cuda_graph(cls) -> None:
