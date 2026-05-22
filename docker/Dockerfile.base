@@ -169,6 +169,12 @@ RUN chmod 755 \
 # copy the rest of the files
 COPY --chown=isaaclab:isaaclab ../ ${ISAACLAB_PATH}/
 
+# Re-create the _isaac_sim symlink after the COPY: the host repo may
+# contain a dev-only symlink (pointing to e.g. ../IsaacSim6/...) which
+# overrides the in-image link created earlier and breaks
+# ``./isaaclab.sh`` at runtime with ``python3: not found``.
+RUN ln -sfn ${ISAACSIM_ROOT_PATH} ${ISAACLAB_PATH}/_isaac_sim
+
 USER isaaclab
 
 # make working directory as the Isaac Lab directory
