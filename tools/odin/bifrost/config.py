@@ -211,14 +211,6 @@ def load_bifrost_config(path: Path) -> BifrostConfig:
             "per-task budgets come from tools/odin/config/job_budgets.yaml. "
             "The field is ignored; remove it from bifrost-osmo.yaml."
         )
-    if isinstance(raw.get("defaults"), dict) and "exec_timeout" in raw["defaults"]:
-        _log.warning(
-            "bifrost config: 'defaults.exec_timeout' is no longer used; "
-            "per-task budgets come from tools/odin/config/job_budgets.yaml "
-            "and the workflow exec_timeout is computed as the max of each "
-            "chunk's per-task budgets. Remove defaults.exec_timeout."
-        )
-
     return BifrostConfig(
         osmo_profile=osmo_profile,
         pool=pool,

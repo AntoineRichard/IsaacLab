@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Unit tests for :func:`_bucket_and_chunk` (sort + chunk + max-of-bucket)."""
+"""Unit tests for :func:`_bucket_and_chunk` (sort + chunk + fixed exec_timeout)."""
 
 from __future__ import annotations
 
@@ -31,63 +31,50 @@ def _row(
 
 
 def test_empty_rows_returns_empty_list():
-    assert _bucket_and_chunk([], chunk_size=25) == []
+    assert _bucket_and_chunk([], chunk_size=25, exec_timeout_s=43200) == []
 
 
-def test_single_row_one_bucket_uses_row_timeout_as_max():
+def test_single_row_one_bucket_uses_fixed_exec_timeout():
     rows = [_row(per_task_timeout_s=600)]
-    [(idx, max_s, chunk)] = _bucket_and_chunk(rows, chunk_size=25)
+    [(idx, exec_timeout_s, chunk)] = _bucket_and_chunk(rows, chunk_size=25, exec_timeout_s=43200)
     assert idx == 0
-    assert max_s == 600
+    assert exec_timeout_s == 43200
     assert chunk == rows
 
 
 def test_rows_sorted_ascending_by_per_task_timeout():
-    """Mixed timeouts → ascending sort so the first chunk's max is small."""
+    """Sort is preserved for determinism even though it no longer affects timeout."""
     rows = [
         _row(per_task_timeout_s=7200, seed=1),
         _row(per_task_timeout_s=300, seed=2),
         _row(per_task_timeout_s=1800, seed=3),
     ]
-    [(idx, max_s, chunk)] = _bucket_and_chunk(rows, chunk_size=25)
+    [(idx, exec_timeout_s, chunk)] = _bucket_and_chunk(rows, chunk_size=25, exec_timeout_s=43200)
     assert idx == 0
-    assert max_s == 7200  # max of the chunk
+    assert exec_timeout_s == 43200
     assert [r.per_task_timeout_s for r in chunk] == [300, 1800, 7200]
 
 
-def test_chunk_size_splits_rows_and_each_bucket_max_is_its_own():
-    """50 rows, chunk_size 25 → two chunks; each chunk's max is its own.
-
-    With ascending sort, the first chunk holds the 25 smallest timeouts;
-    the second holds the 25 largest. Asserting that the second chunk's
-    max > the first chunk's max validates the sort.
-    """
+def test_chunk_size_splits_rows_and_all_use_fixed_exec_timeout():
+    """50 rows, chunk_size 25 → two chunks; both share the same fixed exec_timeout."""
     rows = [_row(per_task_timeout_s=i * 60, seed=i) for i in range(50)]
-    buckets = _bucket_and_chunk(rows, chunk_size=25)
+    buckets = _bucket_and_chunk(rows, chunk_size=25, exec_timeout_s=43200)
     assert len(buckets) == 2
-    (idx0, max0, chunk0), (idx1, max1, chunk1) = buckets
+    (idx0, t0, chunk0), (idx1, t1, chunk1) = buckets
     assert idx0 == 0 and idx1 == 1
     assert len(chunk0) == 25 and len(chunk1) == 25
-    # First chunk has 0..24, second has 25..49.
-    assert max0 == 24 * 60
-    assert max1 == 49 * 60
+    assert t0 == 43200
+    assert t1 == 43200
 
 
 def test_fifty_one_rows_overflows_into_three_chunks():
     rows = [_row(per_task_timeout_s=i + 1, seed=i) for i in range(51)]
-    buckets = _bucket_and_chunk(rows, chunk_size=25)
-    assert [(idx, len(chunk)) for idx, _max, chunk in buckets] == [(0, 25), (1, 25), (2, 1)]
-    # The trailing chunk's only row is the largest timeout (51).
-    assert buckets[-1][1] == 51
+    buckets = _bucket_and_chunk(rows, chunk_size=25, exec_timeout_s=43200)
+    assert [(idx, len(chunk)) for idx, _t, chunk in buckets] == [(0, 25), (1, 25), (2, 1)]
 
 
 def test_ties_break_by_task_id_then_backend_then_seed():
-    """Rows with equal timeout are sorted deterministically.
-
-    Submitted in scrambled order; expect ``(per_task_timeout_s, task_id,
-    backend, seed)`` ordering so reruns and resume both see the same
-    layout.
-    """
+    """Deterministic sort so reruns and resume both see the same layout."""
     rows = [
         _row(per_task_timeout_s=1000, task_id="Isaac-B", backend="newton", seed=43),
         _row(per_task_timeout_s=1000, task_id="Isaac-A", backend="physx", seed=42),
@@ -95,9 +82,9 @@ def test_ties_break_by_task_id_then_backend_then_seed():
         _row(per_task_timeout_s=1000, task_id="Isaac-A", backend="newton", seed=42),
         _row(per_task_timeout_s=1000, task_id="Isaac-B", backend="newton", seed=42),
     ]
-    [(idx, max_s, chunk)] = _bucket_and_chunk(rows, chunk_size=25)
+    [(idx, exec_timeout_s, chunk)] = _bucket_and_chunk(rows, chunk_size=25, exec_timeout_s=43200)
     assert idx == 0
-    assert max_s == 1000
+    assert exec_timeout_s == 43200
     keys = [(r.task_id, r.backend, r.seed) for r in chunk]
     assert keys == [
         ("Isaac-A", "newton", 42),
@@ -108,20 +95,14 @@ def test_ties_break_by_task_id_then_backend_then_seed():
     ]
 
 
-def test_chunk_max_is_row_max_not_global_max():
-    """Two chunks: first chunk's max < second chunk's max (sort guarantees it).
-
-    Exercises the "max-of-chunk" rule with realistic mixed timeouts.
-    """
+def test_exec_timeout_passes_through_unchanged_across_chunks():
+    """Every chunk reports the exact exec_timeout_s the caller supplied."""
     rows = [
         _row(per_task_timeout_s=300, seed=1),
         _row(per_task_timeout_s=600, seed=2),
         _row(per_task_timeout_s=2100, seed=3),
         _row(per_task_timeout_s=86400, seed=4),
     ]
-    buckets = _bucket_and_chunk(rows, chunk_size=2)
+    buckets = _bucket_and_chunk(rows, chunk_size=2, exec_timeout_s=12345)
     assert len(buckets) == 2
-    (_, max0, _), (_, max1, _) = buckets
-    # First chunk: 300, 600 → max 600. Second chunk: 2100, 86400 → max 86400.
-    assert max0 == 600
-    assert max1 == 86400
+    assert all(t == 12345 for _, t, _ in buckets)

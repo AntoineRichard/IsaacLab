@@ -95,7 +95,9 @@ def test_seed_expansion_creates_one_task_per_seed(tmp_path: Path, example_config
     assert rc == 0
     workflow_yaml = list(runs_root.iterdir())[0] / "workflow.0.yaml"
     parsed = y.safe_load(workflow_yaml.read_text())
-    assert len(parsed["workflow"]["tasks"]) == 2
+    # Each task becomes its own one-task group for per-task exec_timeout clocks.
+    assert len(parsed["workflow"]["groups"]) == 2
+    assert all(len(g["tasks"]) == 1 for g in parsed["workflow"]["groups"])
 
 
 def test_main_submits_and_polls(tmp_path: Path, example_config: Path, example_physx_yaml: Path):

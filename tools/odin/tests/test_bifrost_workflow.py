@@ -93,6 +93,11 @@ def _row(seed: int = 42, framework: str = "rsl-rl") -> RenderRow:
     )
 
 
+def _first_task(parsed: dict) -> dict:
+    """Extract the first task from the first group of a rendered workflow."""
+    return parsed["workflow"]["groups"][0]["tasks"][0]
+
+
 def test_render_workflow_yaml_is_valid_yaml_with_one_task():
     cfg = _cfg()
     out = render_workflow_yaml(
@@ -105,11 +110,10 @@ def test_render_workflow_yaml_is_valid_yaml_with_one_task():
     parsed = yaml.safe_load(out)
     wf = parsed["workflow"]
     assert wf["name"] == "odin-disp-20260505-150000"
-    assert wf["pool"] == "rtx-pro-6000-eval"
-    assert len(wf["tasks"]) == 1
-    task = wf["tasks"][0]
+    assert len(wf["groups"]) == 1
+    assert len(wf["groups"][0]["tasks"]) == 1
+    task = _first_task(parsed)
     assert task["image"] == "nvcr.io/nvidia/isaac-lab:2.2.0"
-    assert task["credentials"]["registry"] == "ngc-readonly"
     assert (
         task["outputs"][0]["dataset"]["name"]
         == "odin-20260505-150000-rsl-rl_physx_Isaac-Ant-Direct-v0_20260505-150000_seed42"
@@ -124,7 +128,20 @@ def test_render_workflow_yaml_n_parallel_tasks():
         dispatch_id="20260505-150000", rows=rows, cfg=cfg, tarball_path="/tmp/odin-source.tar.gz", exec_timeout="2h"
     )
     parsed = yaml.safe_load(out)
-    assert len(parsed["workflow"]["tasks"]) == 2
+    # Each task becomes its own one-task group.
+    assert len(parsed["workflow"]["groups"]) == 2
+    assert all(len(g["tasks"]) == 1 for g in parsed["workflow"]["groups"])
+
+
+def test_render_workflow_group_name_differs_from_task_name():
+    """Per OSMO schema, group and task names must be unique within a workflow."""
+    cfg = _cfg()
+    out = render_workflow_yaml(
+        dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path="/tmp/x.tar.gz", exec_timeout="2h"
+    )
+    parsed = yaml.safe_load(out)
+    grp = parsed["workflow"]["groups"][0]
+    assert grp["name"] != grp["tasks"][0]["name"]
 
 
 def test_render_workflow_special_token_output_survives_render():
@@ -142,11 +159,11 @@ def test_render_workflow_files_upload_mode_includes_tarball():
         dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path="/abs/odin-source.tar.gz", exec_timeout="2h"
     )
     parsed = yaml.safe_load(out)
-    files = parsed["workflow"]["tasks"][0]["files"]
+    files = _first_task(parsed)["files"]
     paths = [f.get("path") for f in files]
     assert "/workspace/odin-source.tar.gz" in paths
     tarball_entry = [f for f in files if f.get("path") == "/workspace/odin-source.tar.gz"][0]
-    assert tarball_entry["localpath"] == "/abs/odin-source.tar.gz"
+    assert tarball_entry["localpath"] == "odin-source.tar.gz"
 
 
 def test_render_workflow_rsync_mode_omits_tarball():
@@ -155,7 +172,7 @@ def test_render_workflow_rsync_mode_omits_tarball():
         dispatch_id="20260505-150000", rows=[_row()], cfg=cfg, tarball_path=None, exec_timeout="2h"
     )
     parsed = yaml.safe_load(out)
-    paths = [f.get("path") for f in parsed["workflow"]["tasks"][0]["files"]]
+    paths = [f.get("path") for f in _first_task(parsed)["files"]]
     assert "/workspace/odin-source.tar.gz" not in paths
 
 

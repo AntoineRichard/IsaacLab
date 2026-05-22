@@ -10,62 +10,70 @@ workflow:
       memory: {{ cfg.defaults.resources.memory }}
       storage: {{ cfg.defaults.resources.storage }}
       platform: {{ cfg.defaults.resources.platform }}
-  tasks:
+  # Each task is wrapped in its own one-task group so that OSMO's
+  # workflow-level ``exec_timeout`` is enforced *per task* (the clock
+  # starts at each group's RUNNING transition). With ``tasks:`` at the
+  # workflow root the timeout is shared across the implicit single
+  # group, so a late-scheduled task gets killed even when its own
+  # runtime is well within budget.
+  groups:
 {% for row in rows %}
-  - name: {{ row.osmo_task_name }}
-    image: {{ cfg.image.reference }}
-    environment:
-      ACCEPT_EULA: "Y"
-      NO_NUCLEUS: "Y"
-      OMNI_KIT_ALLOW_ROOT: "1"
-      ODIN_DISPATCH_ID: "{{ dispatch_id }}"
-      ODIN_RUN_ID: "{{ row.run_id }}"
-    command: ["bash"]
-    args: ["/tmp/entry.sh"]
-    files:
-    - path: /tmp/entry.sh
-      contents: |
-        set -euxo pipefail
+  - name: g-{{ row.osmo_task_name }}
+    tasks:
+    - name: {{ row.osmo_task_name }}
+      image: {{ cfg.image.reference }}
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+        OMNI_KIT_ALLOW_ROOT: "1"
+        ODIN_DISPATCH_ID: "{{ dispatch_id }}"
+        ODIN_RUN_ID: "{{ row.run_id }}"
+      command: ["bash"]
+      args: ["/tmp/entry.sh"]
+      files:
+      - path: /tmp/entry.sh
+        contents: |
+          set -euxo pipefail
 {% if cfg.code_delivery.mode == "files_upload" %}
-        tar -xzf /workspace/odin-source.tar.gz -C /workspace/isaaclab
+          tar -xzf /workspace/odin-source.tar.gz -C /workspace/isaaclab
 {% endif %}
-        cd /workspace/isaaclab
-        set +e
-        ./isaaclab.sh -p tools/odin/{{ row.framework_runner }}/run.py \
-          --task {{ row.task_id }} \
-          --backend {{ row.backend }} \
-          --seed {{ row.seed }} \
-          --num_envs {{ row.num_envs }} \
-          --max_iterations {{ row.max_iterations }} \
-          --run_id "$ODIN_RUN_ID" \
-          --runs_root '{{ '{{output}}' }}'
-        rc=$?
-        echo "=== entry.sh: exit_code=$rc ==="
-        echo "=== bundle contents ==="
-        find {{ '{{output}}' }} -type f | head -30
-        echo "=== training.stderr.log ==="
-        find {{ '{{output}}' }} -name 'training.stderr.log' -exec cat {} \;
-        echo "=== training.stdout.log (last 50 lines) ==="
-        find {{ '{{output}}' }} -name 'training.stdout.log' -exec tail -50 {} \;
-        echo "=== startup.stderr.log ==="
-        find {{ '{{output}}' }} -name 'startup.stderr.log' -exec cat {} \;
-        exit $rc
+          cd /workspace/isaaclab
+          set +e
+          ./isaaclab.sh -p tools/odin/{{ row.framework_runner }}/run.py \
+            --task {{ row.task_id }} \
+            --backend {{ row.backend }} \
+            --seed {{ row.seed }} \
+            --num_envs {{ row.num_envs }} \
+            --max_iterations {{ row.max_iterations }} \
+            --run_id "$ODIN_RUN_ID" \
+            --runs_root '{{ '{{output}}' }}'
+          rc=$?
+          echo "=== entry.sh: exit_code=$rc ==="
+          echo "=== bundle contents ==="
+          find {{ '{{output}}' }} -type f | head -30
+          echo "=== training.stderr.log ==="
+          find {{ '{{output}}' }} -name 'training.stderr.log' -exec cat {} \;
+          echo "=== training.stdout.log (last 50 lines) ==="
+          find {{ '{{output}}' }} -name 'training.stdout.log' -exec tail -50 {} \;
+          echo "=== startup.stderr.log ==="
+          find {{ '{{output}}' }} -name 'startup.stderr.log' -exec cat {} \;
+          exit $rc
 {% if cfg.code_delivery.mode == "files_upload" %}
-    - localpath: odin-source.tar.gz
-      path: /workspace/odin-source.tar.gz
+      - localpath: odin-source.tar.gz
+        path: /workspace/odin-source.tar.gz
 {% endif %}
 {% if cfg.bundle_dataset_prefix %}
-    outputs:
-    - dataset:
-        name: {{ cfg.bundle_dataset_prefix }}-{{ dispatch_id }}-{{ row.run_id }}
+      outputs:
+      - dataset:
+          name: {{ cfg.bundle_dataset_prefix }}-{{ dispatch_id }}-{{ row.run_id }}
 {% endif %}
 {% if cfg.retry.reschedule_codes or cfg.retry.restart_codes %}
-    exitActions:
+      exitActions:
 {% if cfg.retry.reschedule_codes %}
-      RESCHEDULE: {{ cfg.retry.reschedule_codes }}
+        RESCHEDULE: {{ cfg.retry.reschedule_codes }}
 {% endif %}
 {% if cfg.retry.restart_codes %}
-      RESTART: {{ cfg.retry.restart_codes }}
+        RESTART: {{ cfg.retry.restart_codes }}
 {% endif %}
 {% endif %}
 {% endfor %}

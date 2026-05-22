@@ -257,32 +257,34 @@ def _build_rows(
     return rows
 
 
-def _bucket_and_chunk(rows: list[_PlannedRow], chunk_size: int) -> list[tuple[int, int, list[_PlannedRow]]]:
-    """Sort by ``per_task_timeout_s`` ascending, chunk, and emit max-of-chunk.
+def _bucket_and_chunk(
+    rows: list[_PlannedRow], chunk_size: int, *, exec_timeout_s: int
+) -> list[tuple[int, int, list[_PlannedRow]]]:
+    """Chunk rows by ``chunk_size`` and apply a fixed ``exec_timeout_s`` per chunk.
 
     Pure function: no I/O, no logging, no exceptions on empty input.
-    Each output tuple is ``(chunk_index, max_timeout_s, rows)``:
+    Each output tuple is ``(chunk_index, exec_timeout_s, rows)``:
 
     - ``chunk_index`` is the 0-based position of the chunk.
-    - ``max_timeout_s`` = ``max(rows.per_task_timeout_s)`` for that chunk
-      — used as the OSMO ``exec_timeout`` so every task in the chunk has
-      enough wall-clock to finish.
+    - ``exec_timeout_s`` is the OSMO workflow ``exec_timeout`` in seconds.
+      Since each task is wrapped in its own group and the OSMO clock is
+      per-group, a generous fixed value works for all task sizes: short
+      tasks finish and exit early, long tasks have headroom.
     - ``rows`` has at most ``chunk_size`` entries.
 
     Sort key is ``(per_task_timeout_s, task_id, backend, seed)`` — ties
     resolve deterministically so reruns and ``--resume`` see the same
-    layout. Because rows are sorted ascending, the largest per-task
-    timeout in each chunk is the last entry; we use that as
-    ``max_timeout_s``.
+    layout.
 
     Args:
-        rows: Planned rows from :func:`_build_rows`. ``per_task_timeout_s``
-            must be populated.
+        rows: Planned rows from :func:`_build_rows`.
         chunk_size: Maximum rows per OSMO workflow. The planner uses
             ``cfg.chunk_size``.
+        exec_timeout_s: Fixed workflow ``exec_timeout`` in seconds,
+            sourced from ``cfg.defaults.exec_timeout``.
 
     Returns:
-        A list of ``(chunk_index, max_timeout_s, chunk_rows)`` tuples,
+        A list of ``(chunk_index, exec_timeout_s, chunk_rows)`` tuples,
         one per OSMO workflow that will be submitted.
     """
     if not rows:
@@ -291,8 +293,7 @@ def _bucket_and_chunk(rows: list[_PlannedRow], chunk_size: int) -> list[tuple[in
     out: list[tuple[int, int, list[_PlannedRow]]] = []
     for idx, start in enumerate(range(0, len(sorted_rows), chunk_size)):
         chunk = sorted_rows[start : start + chunk_size]
-        max_timeout_s = max(r.per_task_timeout_s for r in chunk)
-        out.append((idx, max_timeout_s, chunk))
+        out.append((idx, exec_timeout_s, chunk))
     return out
 
 
@@ -600,23 +601,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage_source_tarball(repo_root / cfg.code_delivery.source_root, tarball_path_p, repo_root=repo_root)
         tarball_path = str(tarball_path_p)
 
-    # One OSMO workflow per chunk; each chunk's exec_timeout is the max
-    # of its rows' per_task_timeout_s. The planner always emits at least
-    # one bucket when ``rows`` is non-empty (we returned early above
-    # otherwise).
-    buckets = _bucket_and_chunk(rows, cfg.chunk_size)
+    # One OSMO workflow per chunk. exec_timeout is a fixed global
+    # ceiling (``cfg.defaults.exec_timeout``) rather than a per-chunk
+    # max because each task is wrapped in its own group — the OSMO
+    # clock is per-group, so short tasks finish and exit on their own
+    # while a generous ceiling catches genuine wedges.
+    buckets = _bucket_and_chunk(rows, cfg.chunk_size, exec_timeout_s=cfg.defaults.exec_timeout)
     chunk_render: list[tuple[int, int, list[_PlannedRow], Path]] = []
-    for idx, max_timeout_s, chunk_rows in buckets:
+    for idx, exec_timeout_s, chunk_rows in buckets:
         yaml_path = dispatch_dir / f"workflow.{idx}.yaml"
         yaml_body = render_workflow_yaml(
             dispatch_id=dispatch_id,
             rows=[_planned_to_render(r) for r in chunk_rows],
             cfg=cfg,
             tarball_path=tarball_path,
-            exec_timeout=f"{max_timeout_s}s",
+            exec_timeout=f"{exec_timeout_s}s",
         )
         yaml_path.write_text(yaml_body)
-        chunk_render.append((idx, max_timeout_s, chunk_rows, yaml_path))
+        chunk_render.append((idx, exec_timeout_s, chunk_rows, yaml_path))
 
     state = DispatchState(
         schema_version=SCHEMA_VERSION,

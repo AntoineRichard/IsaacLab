@@ -141,7 +141,10 @@ def _wire_fake_client(monkeypatch_holder: list[_RecordingClient]):
         def _submit(yaml_path, *, rsync_pairs=(), pool=None):
             wf_id = orig_submit(yaml_path, rsync_pairs=rsync_pairs, pool=pool)
             parsed = _yaml.safe_load(Path(yaml_path).read_text())
-            _TASK_NAMES_BY_WF[wf_id] = [t["name"] for t in parsed["workflow"]["tasks"]]
+            # Each task is wrapped in its own one-task group; flatten the names.
+            _TASK_NAMES_BY_WF[wf_id] = [
+                t["name"] for g in parsed["workflow"]["groups"] for t in g["tasks"]
+            ]
             return wf_id
 
         c.submit = _submit
@@ -150,17 +153,18 @@ def _wire_fake_client(monkeypatch_holder: list[_RecordingClient]):
     return factory
 
 
-def test_two_buckets_submit_two_workflows_with_distinct_exec_timeouts(
+def test_two_buckets_submit_two_workflows_with_shared_exec_timeout(
     tmp_path: Path,
     cfg_path: Path,
     physx_yaml: Path,
     budgets_path: Path,
 ):
-    """chunk_size=1 + two envs with different budgets → two workflows.
+    """chunk_size=1 + two envs → two workflows that share the global exec_timeout.
 
-    Each rendered YAML carries its chunk's max-of-chunk exec_timeout.
-    Since chunk_size=1, the chunk max equals that single row's per-task
-    budget. With ascending sort, the first chunk holds the smaller one.
+    Each task is wrapped in its own one-task group, so the OSMO
+    ``exec_timeout`` clock is per-group; the workflow value is a fixed
+    global ceiling sourced from ``cfg.defaults.exec_timeout`` and short
+    tasks finish well within it.
     """
     import yaml as _yaml
 
@@ -190,8 +194,9 @@ def test_two_buckets_submit_two_workflows_with_distinct_exec_timeouts(
     for body in client.submitted_yaml:
         parsed = _yaml.safe_load(body)
         timeouts.append(parsed["workflow"]["timeout"]["exec_timeout"])
-    # Ascending sort → first chunk = Cartpole (1800s = 30m), second = Ant (7200s = 2h).
-    assert timeouts == ["1800s", "7200s"]
+    # Fixture cfg sets defaults.exec_timeout = 14400s. Both chunks
+    # use that fixed ceiling regardless of per-row budget differences.
+    assert timeouts == ["14400s", "14400s"]
 
 
 def test_state_osmo_workflow_ids_populated(
