@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 
 from isaaclab.app import AppLauncher
 
+from isaaclab_tasks.utils import fold_preset_tokens, setup_preset_cli
+
 # Wall-clock start of the entire script, captured as early as possible so the
 # Odin startup bundle can report a total duration that covers all phases.
 _SCRIPT_START_DT = datetime.now(timezone.utc)
@@ -80,10 +82,8 @@ parser.add_argument(
 
 # append AppLauncher cli args (provides --device, --headless, etc.)
 AppLauncher.add_app_launcher_args(parser)
-# parse the arguments
-args_cli, hydra_args = parser.parse_known_args()
-
-# clear out sys.argv for Hydra
+args_cli, hydra_args = setup_preset_cli(parser)
+hydra_args = fold_preset_tokens(hydra_args)
 sys.argv = [sys.argv[0]] + hydra_args
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))

@@ -14,6 +14,8 @@ import time
 
 from isaaclab.app import AppLauncher
 
+from isaaclab_tasks.utils import fold_preset_tokens, setup_preset_cli
+
 from scripts.benchmarks.early_stop import (
     RslRlEarlyStopWrapper,
     add_success_cli_args,
@@ -149,10 +151,8 @@ add_success_cli_args(parser)
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
-# to ensure kit args don't break the benchmark arg parsing
-args_cli, hydra_args = parser.parse_known_args()
-
-# always enable cameras to record video
+args_cli, hydra_args = setup_preset_cli(parser)
+hydra_args = fold_preset_tokens(hydra_args)
 if args_cli.video:
     args_cli.enable_cameras = True
 
@@ -198,7 +198,7 @@ if args_cli.backend is not None:
                 )
                 sys.exit(2)
 
-# clear out sys.argv for Hydra
+# Re-set sys.argv so the --backend coercion above propagates to Hydra.
 sys.argv = [sys.argv[0]] + hydra_args
 
 imports_time_begin = time.perf_counter_ns()
