@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 schema_version: '1.0'
 generated_at: '2026-04-27T13:23:32Z'
 generator: enumerate_physx_envs.py
@@ -89,7 +84,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -162,8 +157,7 @@ groups:
     - physx
     - newton
     native_backend: null
-    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
-      manually.
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations manually.
   - task_id: Isaac-Cartpole-Depth-Camera-Direct-v0
     entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env:CartpoleCameraEnv
     env_cfg_entry_point: isaaclab_tasks.direct.cartpole.cartpole_camera_env_cfg:CartpoleDepthCameraEnvCfg
@@ -688,7 +682,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -704,7 +698,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -720,7 +714,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -737,7 +731,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -753,7 +747,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -769,7 +763,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -822,7 +816,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -838,7 +832,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -854,7 +848,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -895,8 +889,7 @@ groups:
     - physx
     - newton
     native_backend: null
-    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
-      manually.
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations manually.
   - task_id: Isaac-Repose-Cube-Shadow-OpenAI-FF-Direct-v0
     entry_point: isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env:InHandManipulationEnv
     env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg:ShadowHandOpenAIEnvCfg
@@ -907,15 +900,14 @@ groups:
     framework: rsl_rl
     num_envs: 8192
     max_iterations: 10000
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available:
     - physx
     - newton
     native_backend: null
-    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
-      manually.
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations manually.
   - task_id: Isaac-Repose-Cube-Shadow-OpenAI-LSTM-Direct-v0
     entry_point: isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env:InHandManipulationEnv
     env_cfg_entry_point: isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg:ShadowHandOpenAIEnvCfg
@@ -926,7 +918,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available:
@@ -997,7 +989,7 @@ groups:
     framework: skrl
     num_envs: 2048
     max_iterations: 36000
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -1051,7 +1043,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available:
@@ -1069,7 +1061,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available:
@@ -2062,7 +2054,7 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -2110,7 +2102,7 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 1500
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
@@ -2228,8 +2220,7 @@ groups:
     suspected_gap: null
     presets_available: []
     native_backend: null
-    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
-      manually.
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations manually.
   - task_id: Isaac-Dexsuite-Kuka-Allegro-Lift-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
     env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.dexsuite.config.kuka_allegro.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroLiftEnvCfg
@@ -2247,8 +2238,7 @@ groups:
     - physx
     - newton
     native_backend: null
-    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
-      manually.
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations manually.
   - task_id: Isaac-Dexsuite-Kuka-Allegro-Reorient-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
     env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.dexsuite.config.kuka_allegro.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroReorientEnvCfg_PLAY
@@ -2264,8 +2254,7 @@ groups:
     suspected_gap: null
     presets_available: []
     native_backend: null
-    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
-      manually.
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations manually.
   - task_id: Isaac-Dexsuite-Kuka-Allegro-Reorient-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
     env_cfg_entry_point: isaaclab_tasks.manager_based.manipulation.dexsuite.config.kuka_allegro.dexsuite_kuka_allegro_env_cfg:DexsuiteKukaAllegroReorientEnvCfg
@@ -2276,15 +2265,14 @@ groups:
     framework: rsl_rl
     num_envs: 4096
     max_iterations: 15000
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available:
     - physx
     - newton
     native_backend: null
-    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations
-      manually.
+    notes: Could not resolve training defaults from shipped framework cfg; review the cfg and fill num_envs / max_iterations manually.
   manager_based/manipulation/inhand:
   - task_id: Isaac-Repose-Cube-Allegro-NoVelObs-Play-v0
     entry_point: isaaclab.envs:ManagerBasedRLEnv
@@ -2312,7 +2300,7 @@ groups:
     framework: rsl_rl
     num_envs: 8192
     max_iterations: 5000
-    keep: false
+    keep: true
     status: current
     suspected_gap: null
     presets_available: []
