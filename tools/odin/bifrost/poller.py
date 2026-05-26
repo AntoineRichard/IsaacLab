@@ -26,6 +26,7 @@ __all__ = [
     "classify_terminal_state",
     "is_terminal",
     "poll_until_terminal",
+    "sync_once",
 ]
 
 
@@ -101,6 +102,91 @@ def _osmo_status_to_job_status(osmo_state: str) -> str:
     return "pending"
 
 
+def sync_once(
+    *,
+    client: _StatusClient,
+    state: DispatchState,
+    dispatch_dir: Path,
+    on_task_completed: Callable[[JobEntry], None],
+    completed_seen: set[str] | None = None,
+) -> None:
+    """One reconciliation pass: walk every workflow id, apply diffs, write state.
+
+    Idempotent — calling this repeatedly with no remote changes is a no-op.
+    Shared between :func:`poll_until_terminal` (drives the live loop) and
+    the standalone ``osmo_sync`` CLI (one-shot recovery after a stale
+    poller).
+
+    Args:
+        client: Has ``status(workflow_id) -> WorkflowSnapshot``.
+        state: Mutated in place. Must have ``osmo_workflow_ids`` populated.
+        dispatch_dir: Where dispatch.json lives.
+        on_task_completed: Called once per task that transitions to COMPLETED.
+        completed_seen: Tracks which run_ids already fired the completion
+            hook this dispatch. Pass the same set across ticks so a task
+            doesn't get its download re-enqueued every poll. If ``None``,
+            seeded from jobs already marked ``completed``.
+
+    Raises:
+        ValueError: If ``state.osmo_workflow_ids`` (and the legacy single-id
+            field) are both empty.
+    """
+    workflow_ids: list[str] = list(state.osmo_workflow_ids)
+    if not workflow_ids:
+        if state.osmo_workflow_id is None:
+            raise ValueError("state.osmo_workflow_ids / osmo_workflow_id is required for OSMO polling")
+        workflow_ids = [state.osmo_workflow_id]
+    by_osmo_name = {j.osmo_task_name: j for j in state.jobs if j.osmo_task_name}
+    if completed_seen is None:
+        completed_seen = {j.run_id for j in state.jobs if j.status == "completed"}
+    for wf_id in workflow_ids:
+        try:
+            snap = client.status(wf_id)
+        except Exception as exc:
+            # OSMO occasionally returns 4xx/5xx (transient backend hiccup,
+            # race against a workflow finishing, CLI parse glitch). Skip
+            # this workflow this tick — the loop or the next sync run
+            # picks it up. Auth errors will keep failing but that's the
+            # operator's signal to fix credentials.
+            print(
+                f"[bifrost] osmo workflow query {wf_id} failed; skipping: {exc}",
+                flush=True,
+            )
+            continue
+        for task in snap.tasks:
+            job = by_osmo_name.get(task.name)
+            if job is None:
+                continue
+            new_status = _osmo_status_to_job_status(task.status)
+            if new_status == job.status:
+                continue
+            # Route through transition_to so per-target field invariants
+            # (started_at on running, ended_at on terminal, FailureInfo on
+            # failed) are enforced atomically — same contract every other
+            # dispatcher path uses, and required for write_dispatch_state's
+            # invariant tripwire to pass.
+            if new_status == "running":
+                # OSMO doesn't expose an assigned host; identify the
+                # specific chunk-workflow as the abstract assignee.
+                job.transition_to("running", assigned_to=f"osmo:{wf_id}")
+            elif new_status == "completed":
+                job.transition_to("completed")
+                if job.run_id not in completed_seen:
+                    completed_seen.add(job.run_id)
+                    on_task_completed(job)
+            elif new_status == "failed":
+                kind = classify_terminal_state(task.status) or "infrastructure"
+                failure = FailureInfo(
+                    kind=kind,
+                    message=f"OSMO task {task.name} terminal state {task.status} (exit={task.exit_code})",
+                    details={"osmo_state": task.status, "exit_code": task.exit_code},
+                )
+                job.transition_to("failed", failure=failure)
+            else:  # back to pending (rare — OSMO requeue)
+                job.transition_to("pending")
+    write_dispatch_state(dispatch_dir, state)
+
+
 def poll_until_terminal(
     *,
     client: _StatusClient,
@@ -110,6 +196,8 @@ def poll_until_terminal(
     poll_interval_s: float,
 ) -> None:
     """Drive an OSMO workflow to completion, writing dispatch.json atomically.
+
+    Thin loop over :func:`sync_once` until every job is terminal.
 
     Args:
         client: Has ``status(workflow_id) -> WorkflowSnapshot``.
@@ -121,68 +209,15 @@ def poll_until_terminal(
 
     Returns when every job is in a terminal state.
     """
-    # Per spec §6 the poller walks every workflow id each tick so a
-    # dispatch split across N OSMO workflows aggregates correctly. The
-    # legacy single-id field is honored for back-compat when the new
-    # list field is empty.
-    workflow_ids: list[str] = list(state.osmo_workflow_ids)
-    if not workflow_ids:
-        if state.osmo_workflow_id is None:
-            raise ValueError("state.osmo_workflow_ids / osmo_workflow_id is required for OSMO polling")
-        workflow_ids = [state.osmo_workflow_id]
-    by_osmo_name = {j.osmo_task_name: j for j in state.jobs if j.osmo_task_name}
-    completed_seen: set[str] = set()
+    completed_seen: set[str] = {j.run_id for j in state.jobs if j.status == "completed"}
     while not _all_terminal(state):
-        for wf_id in workflow_ids:
-            try:
-                snap = client.status(wf_id)
-            except Exception as exc:
-                # OSMO occasionally returns 4xx/5xx mid-poll (transient
-                # backend hiccup, race against a workflow finishing,
-                # CLI parse glitch). None of these should kill the
-                # whole poller: skip this workflow's tick, retry next
-                # poll. Auth errors will keep failing each tick but
-                # that's the operator's signal to fix credentials.
-                print(
-                    f"[bifrost] osmo workflow query {wf_id} failed; will retry next tick: {exc}",
-                    flush=True,
-                )
-                continue
-            for task in snap.tasks:
-                job = by_osmo_name.get(task.name)
-                if job is None:
-                    continue  # Unknown task — log via state's general mechanism in caller.
-                new_status = _osmo_status_to_job_status(task.status)
-                if new_status == job.status:
-                    continue
-                # Route through transition_to so the per-target field
-                # invariants (started_at on running, ended_at on terminal,
-                # FailureInfo on failed) are enforced atomically — same
-                # contract every other dispatcher path uses, and required
-                # for write_dispatch_state's invariant tripwire to pass.
-                if new_status == "running":
-                    # OSMO doesn't expose an assigned host; identify the
-                    # specific chunk-workflow as the abstract assignee.
-                    job.transition_to(
-                        "running",
-                        assigned_to=f"osmo:{wf_id}",
-                    )
-                elif new_status == "completed":
-                    job.transition_to("completed")
-                    if job.run_id not in completed_seen:
-                        completed_seen.add(job.run_id)
-                        on_task_completed(job)
-                elif new_status == "failed":
-                    kind = classify_terminal_state(task.status) or "infrastructure"
-                    failure = FailureInfo(
-                        kind=kind,
-                        message=f"OSMO task {task.name} terminal state {task.status} (exit={task.exit_code})",
-                        details={"osmo_state": task.status, "exit_code": task.exit_code},
-                    )
-                    job.transition_to("failed", failure=failure)
-                else:  # back to pending (rare — OSMO requeue)
-                    job.transition_to("pending")
-        write_dispatch_state(dispatch_dir, state)
+        sync_once(
+            client=client,
+            state=state,
+            dispatch_dir=dispatch_dir,
+            on_task_completed=on_task_completed,
+            completed_seen=completed_seen,
+        )
         if _all_terminal(state):
             break
         if poll_interval_s > 0:

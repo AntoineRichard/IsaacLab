@@ -1,0 +1,48 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# Bifrost OSMO config — isaac-dev-h100-01 pool.
+osmo_profile: default
+pool: isaac-dev-l40s-04
+priority: NORMAL
+
+image:
+  reference: nvcr.io/nvidian/antoiner-isaac-lab:develop-odin
+  pull_credential: ngc_read_only
+
+defaults:
+  resources:
+    cpu: 8
+    gpu: 1
+    memory: 64Gi
+    storage: 64Gi
+    platform: ovx-l40s
+  # Workflow exec_timeout is a fixed global ceiling — each task is
+  # wrapped in its own group so the OSMO clock is per-group. Short
+  # tasks finish and exit on their own; the ceiling catches wedges.
+  # 12h covers every task in our matrix with ample headroom.
+  exec_timeout: 43200
+  # 2-day queue timeout: at our oversubscription rates on dev pools,
+  # tasks can wait many hours before k8s schedules them. The pool admin
+  # may still clamp at submit time (max_queue_timeout); the actual
+  # enforced value shows up in workflow.timeout.queue_timeout after
+  # submit. If FAILED_QUEUE_TIMEOUT still appears, the cap is below
+  # what we asked for — bump the pool's max_queue_timeout via OSMO admin.
+  queue_timeout: 172800
+
+# Per-task wall-clock budgets come from tools/odin/config/job_budgets.yaml
+# (shared with Asgard). Bifrost chunks rows at chunk_size and uses each
+# chunk's max per-task budget as the OSMO workflow's exec_timeout.
+chunk_size: 25            # max tasks per OSMO workflow
+
+retry:
+  reschedule_codes: "3001-3006"
+  restart_codes: ""
+
+bundle_dataset_prefix: odin
+
+code_delivery:
+  mode: image_baked
+  source_root: tools/odin
