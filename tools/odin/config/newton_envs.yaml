@@ -162,7 +162,7 @@ groups:
     framework: null
     num_envs: null
     max_iterations: null
-    keep: true
+    keep: false
     status: new
     suspected_gap: null
     presets_available:
