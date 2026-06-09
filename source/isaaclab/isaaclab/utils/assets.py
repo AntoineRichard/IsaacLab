@@ -76,8 +76,9 @@ def retrieve_git_asset_path(
 ) -> str:
     """Return a local path for an asset stored in a git repository.
 
-    Remote repositories are cached under :data:`GIT_ASSET_CACHE_DIR`. If the requested
-    asset is already cached, it is returned without running git.
+    Remote repositories are cached under :data:`GIT_ASSET_CACHE_DIR` using a sparse,
+    blobless checkout of the requested asset path. If the requested asset is already
+    cached, it is returned without running git.
 
     Args:
         git_path: Git repository URL, SSH path, or existing local checkout directory.
@@ -101,20 +102,23 @@ def retrieve_git_asset_path(
         if not force_update and os.path.exists(source_path):
             return source_path
 
-    git_asset_dir = _get_git_asset_dir(git_path, cache_dir, force_update)
+    git_asset_dir = _get_git_asset_dir(git_path, cache_dir, force_update, local_path)
     source_path = _resolve_git_asset_source_path(local_path, git_asset_dir)
     if not os.path.exists(source_path):
         raise FileNotFoundError(f"Unable to find git asset: {source_path}")
     return source_path
 
 
-def _get_git_asset_dir(git_path: str, cache_dir: str | None = None, force_update: bool = False) -> str:
+def _get_git_asset_dir(
+    git_path: str, cache_dir: str | None = None, force_update: bool = False, local_path: str | None = None
+) -> str:
     """Return a local checkout for a git asset repository.
 
     Args:
         git_path: Git repository URL, SSH path, or existing local checkout directory.
         cache_dir: Directory where remote repositories are cached.
         force_update: Whether to update an existing checkout.
+        local_path: Asset path to sparse-checkout for remote repositories.
 
     Returns:
         Path to a local repository checkout.
@@ -122,6 +126,7 @@ def _get_git_asset_dir(git_path: str, cache_dir: str | None = None, force_update
     Raises:
         FileNotFoundError: When a local :paramref:`git_path` does not exist.
         RuntimeError: When a remote checkout cannot be prepared.
+        ValueError: When :paramref:`local_path` is missing for a remote repository.
     """
     if not _is_git_remote_path(git_path):
         git_asset_dir = os.path.abspath(os.path.expanduser(git_path))
@@ -131,18 +136,71 @@ def _get_git_asset_dir(git_path: str, cache_dir: str | None = None, force_update
             _run_git_command(["git", "-C", git_asset_dir, "pull", "--ff-only"])
         return git_asset_dir
 
+    if local_path is None:
+        raise ValueError("local_path is required when retrieving an asset from a remote git repository.")
+
     git_asset_dir = _get_git_asset_cache_dir(git_path, cache_dir)
+    source_path = _resolve_git_asset_source_path(local_path, git_asset_dir)
 
     if os.path.isdir(os.path.join(git_asset_dir, ".git")):
         if force_update:
             _run_git_command(["git", "-C", git_asset_dir, "pull", "--ff-only"])
+        if not os.path.exists(source_path):
+            _sparse_checkout_git_asset_path(git_asset_dir, local_path)
     elif os.path.exists(git_asset_dir):
         raise RuntimeError(f"Git asset cache exists but is not a git repository: {git_asset_dir}")
     else:
         os.makedirs(os.path.dirname(git_asset_dir), exist_ok=True)
-        _run_git_command(["git", "clone", "--depth", "1", git_path, git_asset_dir])
+        _run_git_command(["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse", git_path, git_asset_dir])
+        _sparse_checkout_git_asset_path(git_asset_dir, local_path, replace=True)
 
     return git_asset_dir
+
+
+def _sparse_checkout_git_asset_path(git_asset_dir: str, local_path: str, replace: bool = False) -> None:
+    """Sparse-checkout a git asset path.
+
+    Args:
+        git_asset_dir: Local git repository checkout directory.
+        local_path: Asset path relative to :paramref:`git_asset_dir`, or an absolute path inside it.
+        replace: Whether to replace sparse-checkout patterns instead of adding to them.
+    """
+    command = "set" if replace or not _is_git_sparse_checkout_enabled(git_asset_dir) else "add"
+    sparse_checkout_command = ["git", "-C", git_asset_dir, "sparse-checkout", command]
+    if command == "set":
+        sparse_checkout_command.append("--no-cone")
+    sparse_checkout_command += ["--", *_get_git_asset_sparse_checkout_patterns(local_path, git_asset_dir)]
+    _run_git_command(sparse_checkout_command)
+
+
+def _is_git_sparse_checkout_enabled(git_asset_dir: str) -> bool:
+    """Return whether a git checkout has sparse-checkout patterns.
+
+    Args:
+        git_asset_dir: Local git repository checkout directory.
+
+    Returns:
+        True if sparse-checkout patterns exist in the git metadata directory.
+    """
+    return os.path.exists(os.path.join(git_asset_dir, ".git", "info", "sparse-checkout"))
+
+
+def _get_git_asset_sparse_checkout_patterns(local_path: str, git_asset_dir: str) -> list[str]:
+    """Return sparse-checkout patterns for an asset path.
+
+    Args:
+        local_path: Asset path relative to :paramref:`git_asset_dir`, or an absolute path inside it.
+        git_asset_dir: Local git repository checkout directory.
+
+    Returns:
+        Sparse-checkout patterns for the asset path and its descendants.
+    """
+    source_path = _resolve_git_asset_source_path(local_path, git_asset_dir)
+    repo_relative_path = os.path.relpath(source_path, git_asset_dir).replace(os.sep, posixpath.sep)
+    repo_relative_path = posixpath.normpath(repo_relative_path)
+    if repo_relative_path == ".":
+        return ["/*", "/**"]
+    return [f"/{repo_relative_path}", f"/{repo_relative_path}/**"]
 
 
 def _get_git_asset_cache_dir(git_path: str, cache_dir: str | None = None) -> str:

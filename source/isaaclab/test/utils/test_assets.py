@@ -84,18 +84,20 @@ def test_retrieve_git_asset_path_uses_local_repo_path(tmp_path):
     assert (asset_path / "example_bot.usd").read_text(encoding="utf-8") == "#usda 1.0\n"
 
 
-def test_retrieve_git_asset_path_clones_default_repo_cache(tmp_path, monkeypatch):
-    """Test that git assets are pulled into the default asset cache directory."""
+def test_retrieve_git_asset_path_sparse_clones_requested_asset(tmp_path, monkeypatch):
+    """Test that git assets are pulled into the cache with sparse checkout."""
     git_commands = []
     git_path = "https://example.com/example-assets.git"
 
     def mock_run_git_command(command):
         git_commands.append(command)
         repo_dir = tmp_path / "tmp" / "asset_cache" / "example-assets"
-        asset_dir = repo_dir / "Robots" / "Disney" / "ExampleBot"
-        asset_dir.mkdir(parents=True)
-        (repo_dir / ".git").mkdir()
-        (asset_dir / "example_bot.usd").write_text("#usda 1.0\n", encoding="utf-8")
+        if command[:2] == ["git", "clone"]:
+            (repo_dir / ".git" / "info").mkdir(parents=True)
+        elif command[:5] == ["git", "-C", str(repo_dir), "sparse-checkout", "set"]:
+            asset_dir = repo_dir / "Robots" / "Disney" / "ExampleBot"
+            asset_dir.mkdir(parents=True)
+            (asset_dir / "example_bot.usd").write_text("#usda 1.0\n", encoding="utf-8")
 
     monkeypatch.setattr(assets_utils, "GIT_ASSET_CACHE_DIR", str(tmp_path / "tmp" / "asset_cache"))
     monkeypatch.setattr(assets_utils, "_run_git_command", mock_run_git_command)
@@ -110,8 +112,59 @@ def test_retrieve_git_asset_path_clones_default_repo_cache(tmp_path, monkeypatch
             "clone",
             "--depth",
             "1",
+            "--filter=blob:none",
+            "--sparse",
             git_path,
             str(tmp_path / "tmp" / "asset_cache" / "example-assets"),
+        ],
+        [
+            "git",
+            "-C",
+            str(tmp_path / "tmp" / "asset_cache" / "example-assets"),
+            "sparse-checkout",
+            "set",
+            "--no-cone",
+            "--",
+            "/Robots/Disney/ExampleBot",
+            "/Robots/Disney/ExampleBot/**",
+        ],
+    ]
+
+
+def test_retrieve_git_asset_path_adds_missing_asset_to_sparse_cache(tmp_path, monkeypatch):
+    """Test that missing assets are added to an existing sparse checkout."""
+    git_commands = []
+    git_path = "https://example.com/example-assets.git"
+    cache_dir = tmp_path / "asset_cache"
+    repo_dir = cache_dir / "example-assets"
+    asset_dir = repo_dir / "Robots" / "Disney" / "ExampleBot"
+    (repo_dir / ".git" / "info").mkdir(parents=True)
+    (repo_dir / ".git" / "info" / "sparse-checkout").write_text("/Robots/Disney/ExampleBot\n", encoding="utf-8")
+
+    def mock_run_git_command(command):
+        git_commands.append(command)
+        if command[:5] == ["git", "-C", str(repo_dir), "sparse-checkout", "add"]:
+            asset_dir.mkdir(parents=True)
+            (asset_dir / "example_bot.usd").write_text("#usda 1.0\n", encoding="utf-8")
+
+    monkeypatch.setattr(assets_utils, "_run_git_command", mock_run_git_command)
+
+    asset_path = Path(
+        assets_utils.retrieve_git_asset_path(git_path, "Robots/Disney/ExampleBot", cache_dir=str(cache_dir))
+    )
+
+    assert asset_path == asset_dir
+    assert (asset_path / "example_bot.usd").read_text(encoding="utf-8") == "#usda 1.0\n"
+    assert git_commands == [
+        [
+            "git",
+            "-C",
+            str(repo_dir),
+            "sparse-checkout",
+            "add",
+            "--",
+            "/Robots/Disney/ExampleBot",
+            "/Robots/Disney/ExampleBot/**",
         ]
     ]
 
