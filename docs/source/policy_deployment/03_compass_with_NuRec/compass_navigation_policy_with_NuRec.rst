@@ -359,7 +359,7 @@ Execute the following command from the ``COMPASS`` directory (Terminal 2) to tra
 
 .. note::
 
-   To run in headless mode, either omit the ``--visualizer kit`` flag or specify ``--visualizer None``.
+   To run in headless mode, either omit the ``--visualizer kit`` flag or specify ``--viz none``.
 
 Where:
 
@@ -437,7 +437,7 @@ Execute the following command from the ``COMPASS`` directory to evaluate the tra
 
 .. note::
 
-   To run in headless mode, either omit the ``--visualizer kit`` flag or specify ``--visualizer None``.
+   To run in headless mode, either omit the ``--visualizer kit`` flag or specify ``--viz none``.
 
 Where:
 
