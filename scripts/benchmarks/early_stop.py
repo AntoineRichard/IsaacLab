@@ -235,7 +235,7 @@ def get_success_tracker(
 
     Prefers *live_tracker* (from the training wrapper/observer). If it never ran or recorded
     no iterations, falls back to building a post-hoc tracker by replaying the success metric
-    series out of TensorBoard *log_data* (from :func:`scripts.benchmarks.utils.parse_tf_logs`).
+    series out of TensorBoard *log_data* (from :func:`isaaclab.test.benchmark.metrics.parse_tf_logs`).
 
     Args:
         args_cli: Parsed arg namespace with the ``--success_*`` flags.

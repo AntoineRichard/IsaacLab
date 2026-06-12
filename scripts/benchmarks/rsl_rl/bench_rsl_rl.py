@@ -176,6 +176,7 @@ def run(argv: list[str]) -> None:
             after the dispatcher has stripped ``--rl_library``).
     """
     import contextlib
+    import importlib.metadata as metadata
     import os
     import time
     from datetime import datetime
@@ -191,7 +192,6 @@ def run(argv: list[str]) -> None:
     from isaaclab.test.benchmark.serialize import write_bundle_file
 
     from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
-    import importlib.metadata as metadata
 
     import isaaclab_tasks  # noqa: F401
 
@@ -257,7 +257,9 @@ def run(argv: list[str]) -> None:
         log_dir = os.path.join(log_root_path, log_dir)
 
         env_t0 = time.perf_counter_ns()
-        env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if getattr(args_cli, "video", False) else None)
+        env = gym.make(
+            args_cli.task, cfg=env_cfg, render_mode="rgb_array" if getattr(args_cli, "video", False) else None
+        )
         env_t1 = time.perf_counter_ns()
 
         env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
@@ -286,10 +288,8 @@ def run(argv: list[str]) -> None:
         # and Perf/learning_time in seconds (the printed "0.04s" is the raw value).
         coll = log_data.get("Perf/collection_time", [])
         learn_ = log_data.get("Perf/learning_time", [])
-        iteration_times_s = [c + l for c, l in zip(coll, learn_)]
-        collection_fps_series = [
-            env.unwrapped.num_envs * agent_cfg.num_steps_per_env / c for c in coll if c > 0
-        ]
+        iteration_times_s = [c + lrn for c, lrn in zip(coll, learn_)]
+        collection_fps_series = [env.unwrapped.num_envs * agent_cfg.num_steps_per_env / c for c in coll if c > 0]
         total_fps_series = list(log_data.get("Perf/total_fps", []))
 
         startup = StartupTime(
