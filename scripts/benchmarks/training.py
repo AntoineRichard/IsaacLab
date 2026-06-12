@@ -25,6 +25,7 @@ from common import dispatch_library_entrypoint  # noqa: E402
 LIBRARY_ENTRYPOINTS = {
     "rsl_rl": _SCRIPT_DIR / "rsl_rl" / "bench_rsl_rl.py",
     "rl_games": _SCRIPT_DIR / "rl_games" / "bench_rl_games.py",
+    "skrl": _SCRIPT_DIR / "skrl" / "bench_skrl.py",
 }
 
 
