@@ -16,10 +16,9 @@ from __future__ import annotations
 
 import argparse
 import os
-import statistics
 from typing import TYPE_CHECKING
 
-from scripts.benchmarks.utils import get_success_rate_log
+from isaaclab.test.benchmark.metrics import SuccessRateTracker, get_success_rate_log
 
 if TYPE_CHECKING:
     from rl_games.common.algo_observer import AlgoObserver
@@ -33,73 +32,6 @@ DEFAULT_SUCCESS_WINDOW = 20
 
 class EarlyStopConverged(Exception):
     """Raised by :class:`RslRlEarlyStopWrapper` when the metric has converged."""
-
-
-class SuccessRateTracker:
-    """Accumulates a per-iteration success-rate metric and checks trailing-window convergence.
-
-    Args:
-        threshold: Minimum value to consider a pass.
-        window: Consecutive iterations above *threshold* to trigger convergence.
-        num_steps_per_env: Steps per RL iteration (for boundary detection).
-    """
-
-    def __init__(self, threshold: float, window: int, num_steps_per_env: int):
-        self.threshold = threshold
-        self.window = window
-        self.num_steps_per_env = num_steps_per_env
-
-        self.history: list[float] = []
-        self._step_count = 0
-        self._iter_sum = 0.0
-        self._iter_count = 0
-
-    def record_step(self, extras: dict) -> None:
-        """Record one env step."""
-        val = get_success_rate_log(extras.get("log", {}))
-        if val is not None:
-            self._iter_sum += val.item() if hasattr(val, "item") else float(val)
-            self._iter_count += 1
-        self._step_count += 1
-
-    def end_iteration(self) -> float | None:
-        """Finalize the current iteration. Returns mean metric, or ``None`` if no data."""
-        if self._iter_count == 0:
-            return None
-        mean = self._iter_sum / self._iter_count
-        self.history.append(mean)
-        self._iter_sum = 0.0
-        self._iter_count = 0
-        return mean
-
-    @property
-    def at_iteration_boundary(self) -> bool:
-        """Whether the tracker has seen exactly a full iteration's worth of steps.
-
-        Assumes :meth:`record_step` is called exactly once per env step. This holds for
-        all current framework integrations (rsl_rl's patched ``env.step`` and rl_games'
-        ``AlgoObserver.process_infos``) — both pair a single step with a single record.
-        Integrations that call :meth:`record_step` more or fewer times per env step will
-        break iteration accounting.
-        """
-        return self.num_steps_per_env > 0 and self._step_count % self.num_steps_per_env == 0
-
-    @property
-    def converged(self) -> bool:
-        if len(self.history) < self.window:
-            return False
-        return all(v >= self.threshold for v in self.history[-self.window :])
-
-    @property
-    def current_iteration(self) -> int:
-        return len(self.history)
-
-    @property
-    def tail_mean(self) -> float:
-        if not self.history:
-            return 0.0
-        tail = self.history[-self.window :] if len(self.history) >= self.window else self.history
-        return statistics.mean(tail)
 
 
 class RslRlEarlyStopWrapper:
