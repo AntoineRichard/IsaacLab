@@ -18,10 +18,11 @@ object is accepted at call time; its recorder classes are never imported here.
 from __future__ import annotations
 
 import socket
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
-from isaaclab.test.benchmark.schema import GpuDeviceInfo, Hardware, MeanStd, Resources, Versions
+from isaaclab.test.benchmark.schema import GpuDeviceInfo, Hardware, MeanStd, Resources, RunConfig, Versions
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -242,6 +243,40 @@ def capture_hardware(bm: Any) -> Hardware:
         cpu_count=cpu_count,
         ram_gb=ram_gb,
     )
+
+
+_PHYSICS_PRESETS = {"physx", "newton_mjwarp", "newton_kamino", "ovphysx"}
+_PHYSICS_ALIASES = {"newton": "newton_mjwarp", "kamino": "newton_kamino"}
+_RENDERING_PRESETS = {
+    "isaacsim_rtx_renderer": "isaacsim_rtx",
+    "ovrtx_renderer": "ovrtx",
+    "newton_renderer": "newton",
+}
+
+
+def run_config_from_presets(tokens: Sequence[str]) -> RunConfig:
+    """Best-effort :class:`~isaaclab.test.benchmark.schema.RunConfig` from active Hydra preset tokens.
+
+    Picks the physics/rendering backend from recognised tokens (physics defaults
+    to ``"physx"``, rendering to ``"none"``) and stores ALL tokens verbatim in
+    ``presets``.
+
+    Args:
+        tokens: Active preset tokens (e.g. ``["newton_mjwarp", "rgb"]``).
+
+    Returns:
+        Populated :class:`~isaaclab.test.benchmark.schema.RunConfig`.
+    """
+    physics = "physx"
+    rendering = "none"
+    for t in tokens:
+        if t in _PHYSICS_PRESETS:
+            physics = t
+        elif t in _PHYSICS_ALIASES:
+            physics = _PHYSICS_ALIASES[t]
+        elif t in _RENDERING_PRESETS:
+            rendering = _RENDERING_PRESETS[t]
+    return RunConfig(physics_backend=physics, rendering_backend=rendering, presets=list(tokens))
 
 
 def capture_resources(bm: Any) -> Resources:

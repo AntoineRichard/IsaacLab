@@ -13,6 +13,7 @@ from isaaclab.test.benchmark.capture import (
     capture_versions,
     hostname,
     now_utc_iso,
+    run_config_from_presets,
     synth_run_id,
 )
 from isaaclab.test.benchmark.interfaces import MeasurementData
@@ -150,3 +151,12 @@ def test_synth_run_id_and_helpers():
     assert "rsl_rl" in rid and "physx" in rid and "42" in rid
     assert isinstance(hostname(), str) and hostname()
     assert "T" in now_utc_iso()
+
+
+def test_run_config_from_presets():
+    c0 = run_config_from_presets([])
+    assert c0.physics_backend == "physx" and c0.rendering_backend == "none" and c0.presets == []
+    c1 = run_config_from_presets(["newton_mjwarp", "ovrtx_renderer", "rgb"])
+    assert c1.physics_backend == "newton_mjwarp" and c1.rendering_backend == "ovrtx"
+    assert c1.presets == ["newton_mjwarp", "ovrtx_renderer", "rgb"]
+    assert run_config_from_presets(["newton"]).physics_backend == "newton_mjwarp"
