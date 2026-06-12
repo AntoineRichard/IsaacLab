@@ -1,0 +1,391 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""RL-Games training-benchmark adapter.
+
+Runs real training under a :class:`~isaaclab.test.benchmark.BenchmarkMonitor` and emits a
+:class:`~isaaclab.test.benchmark.schema.TrainingBundle` JSON file. Dispatched from
+``scripts/benchmarks/training.py`` via ``--rl_library rl_games``.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Path setup — locate scripts/reinforcement_learning without adding it to
+# sys.path (adding it would shadow the real ``rl_games`` package with the
+# ``scripts/reinforcement_learning/rl_games/`` scripts folder).
+# ---------------------------------------------------------------------------
+
+_BENCH_DIR = Path(__file__).resolve().parents[1]
+_RL_SCRIPTS = _BENCH_DIR.parent / "reinforcement_learning"
+
+
+def _import_from_path(module_name: str, module_path: Path):
+    """Import a module from an explicit file path without polluting sys.path.
+
+    Args:
+        module_name: Unique module name to use in ``sys.modules``.
+        module_path: Path to the Python file to import.
+
+    Returns:
+        The imported module.
+    """
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module {module_name!r} from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# Load common helpers via absolute path so that scripts/reinforcement_learning
+# is never added to sys.path.
+_common = _import_from_path("isaaclab_rl_common", _RL_SCRIPTS / "common.py")
+
+# ---------------------------------------------------------------------------
+# Backend-type mapping (no utils.py dependency)
+# ---------------------------------------------------------------------------
+
+_BACKEND_TYPE_MAP: dict[str, str] = {
+    "OmniPerfKPIFile": "omniperf",
+    "JSONFileMetrics": "json",
+    "OsmoKPIFile": "osmo",
+    "LocalLogMetrics": "json",
+    "omniperf": "omniperf",
+    "json": "json",
+    "osmo": "osmo",
+    "summary": "summary",
+}
+
+
+def _preset_tokens(folded: list[str]) -> list[str]:
+    """Extract active preset tokens from folded Hydra args.
+
+    Args:
+        folded: Folded Hydra argument list (output of
+            :func:`~isaaclab_tasks.utils.fold_preset_tokens`).
+
+    Returns:
+        List of active preset token strings.
+    """
+    for arg in folded:
+        if arg.startswith("presets="):
+            value = arg.split("=", 1)[1]
+            return value.split(",") if value else []
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_args(argv: list[str]):
+    """Parse CLI arguments and fold Hydra preset tokens.
+
+    Args:
+        argv: Raw command-line arguments (``sys.argv[1:]`` after dispatcher strips
+            ``--rl_library``).
+
+    Returns:
+        Tuple of ``(parsed_args, folded_remaining)`` where *folded_remaining* are
+        the collapsed Hydra tokens ready for ``launch_simulation``.
+    """
+    import argparse
+
+    from isaaclab_tasks.utils import fold_preset_tokens, setup_preset_cli
+
+    add_common_train_args = _common.add_common_train_args
+    add_isaaclab_launcher_args = _common.add_isaaclab_launcher_args
+    enable_cameras_for_video = _common.enable_cameras_for_video
+
+    parser = argparse.ArgumentParser(description="Benchmark RL training with RL-Games.")
+    add_common_train_args(
+        parser,
+        agent_default="rl_games_cfg_entry_point",
+        agent_help="Name of the RL agent configuration entry point.",
+    )
+    add_isaaclab_launcher_args(parser)
+
+    # benchmark-specific args
+    parser.add_argument("--output_path", type=str, default=".", help="Directory to write the output JSON.")
+    parser.add_argument(
+        "--benchmark_backend",
+        type=str,
+        default="omniperf",
+        choices=[
+            "json",
+            "osmo",
+            "omniperf",
+            "summary",
+            "LocalLogMetrics",
+            "JSONFileMetrics",
+            "OsmoKPIFile",
+            "OmniPerfKPIFile",
+        ],
+        help="Benchmarking backend. Defaults to omniperf.",
+    )
+    parser.add_argument(
+        "--ema_alpha",
+        type=float,
+        default=0.1,
+        help="EMA smoothing factor for learning curves (higher = more recent weight).",
+    )
+    parser.add_argument(
+        "--no_series",
+        action="store_true",
+        default=False,
+        help="Omit per-iteration series data from the bundle to reduce file size.",
+    )
+
+    from scripts.benchmarks.early_stop import add_success_cli_args
+
+    add_success_cli_args(parser)
+
+    args_cli, remaining_args = setup_preset_cli(parser, argv)
+    enable_cameras_for_video(args_cli)
+    folded = fold_preset_tokens(remaining_args)
+    sys.argv = [sys.argv[0]] + folded
+
+    return args_cli, folded
+
+
+# ---------------------------------------------------------------------------
+# Main run function (dispatch contract)
+# ---------------------------------------------------------------------------
+
+
+def run(argv: list[str]) -> None:
+    """Run the RL-Games training benchmark and write a :class:`~isaaclab.test.benchmark.schema.TrainingBundle`.
+
+    Args:
+        argv: Command-line arguments, excluding the script path (i.e. ``sys.argv[1:]``
+            after the dispatcher has stripped ``--rl_library``).
+    """
+    import contextlib
+    import math
+    import os
+    import random
+    import time
+    from datetime import datetime
+
+    import gymnasium as gym
+    import torch
+    from rl_games.common import env_configurations, vecenv
+    from rl_games.common.algo_observer import IsaacAlgoObserver
+    from rl_games.torch_runner import Runner
+
+    from isaaclab.test.benchmark import BaseIsaacLabBenchmark, BenchmarkMonitor, builders, capture
+    from isaaclab.test.benchmark.backend_descriptor import BACKEND_DESCRIPTORS
+    from isaaclab.test.benchmark.metrics import parse_tf_logs
+    from isaaclab.test.benchmark.schema import StartupTime
+    from isaaclab.test.benchmark.serialize import write_bundle_file
+
+    from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
+
+    import isaaclab_tasks  # noqa: F401
+
+    with contextlib.suppress(ImportError):
+        import isaaclab_tasks_experimental  # noqa: F401
+
+    from isaaclab_tasks.utils import launch_simulation, resolve_task_config
+
+    apply_env_overrides = _common.apply_env_overrides
+    from scripts.benchmarks.early_stop import RlGamesEarlyStopObserver, build_success_kwargs, get_success_tracker
+
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = False
+
+    args_cli, folded = _parse_args(argv)
+
+    env_cfg, agent_cfg = resolve_task_config(args_cli.task, args_cli.agent)
+
+    start_utc = capture.now_utc_iso()
+    app_t0 = time.perf_counter_ns()
+
+    with launch_simulation(env_cfg, args_cli):
+        app_t1 = time.perf_counter_ns()
+
+        # Apply CLI overrides to env config.
+        apply_env_overrides(args_cli, env_cfg)
+
+        # Apply seed override.
+        if args_cli.seed == -1:
+            args_cli.seed = random.randint(0, 10000)
+        agent_cfg["params"]["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["params"]["seed"]
+
+        # Apply max_iterations override.
+        if args_cli.max_iterations is not None:
+            agent_cfg["params"]["config"]["max_epochs"] = args_cli.max_iterations
+
+        env_cfg.seed = agent_cfg["params"]["seed"]
+
+        backend_type = _BACKEND_TYPE_MAP.get(args_cli.benchmark_backend, "omniperf")
+        tokens = _preset_tokens(folded)
+
+        benchmark = BaseIsaacLabBenchmark(
+            benchmark_name="benchmark_training",
+            backend_type=backend_type,
+            output_path=args_cli.output_path,
+            use_recorders=True,
+            frametime_recorders=backend_type in ("summary", "omniperf"),
+            output_prefix=f"benchmark_training_{args_cli.task}",
+            workflow_metadata={
+                "metadata": [
+                    {"name": "task", "data": args_cli.task},
+                    {"name": "seed", "data": agent_cfg["params"]["seed"]},
+                    {"name": "num_envs", "data": args_cli.num_envs},
+                    {"name": "max_iterations", "data": agent_cfg["params"]["config"].get("max_epochs")},
+                    {"name": "presets", "data": ",".join(tokens)},
+                ]
+            },
+        )
+
+        # Build log_dir the same way train_rl_games.py does.
+        config_name = agent_cfg["params"]["config"]["name"]
+        log_root_path = os.path.abspath(os.path.join("logs", "rl_games", config_name))
+        log_dir = agent_cfg["params"]["config"].get(
+            "full_experiment_name", datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        )
+        agent_cfg["params"]["config"]["train_dir"] = log_root_path
+        agent_cfg["params"]["config"]["full_experiment_name"] = log_dir
+
+        # Read rl_games device / clipping config.
+        rl_device = agent_cfg["params"]["config"]["device"]
+        clip_obs = agent_cfg["params"]["env"].get("clip_observations", math.inf)
+        clip_actions = agent_cfg["params"]["env"].get("clip_actions", math.inf)
+
+        env_t0 = time.perf_counter_ns()
+        env = gym.make(
+            args_cli.task, cfg=env_cfg, render_mode="rgb_array" if getattr(args_cli, "video", False) else None
+        )
+        env_t1 = time.perf_counter_ns()
+
+        # Wrap for rl_games.
+        env = RlGamesVecEnvWrapper(env, rl_device, clip_obs, clip_actions)
+
+        # Register with rl_games vecenv registry.
+        vecenv.register(
+            "IsaacRlgWrapper",
+            lambda config_name, num_actors, **kwargs: RlGamesGpuEnv(config_name, num_actors, **kwargs),
+        )
+        env_configurations.register("rlgpu", {"vecenv_type": "IsaacRlgWrapper", "env_creator": lambda **kwargs: env})
+
+        agent_cfg["params"]["config"]["num_actors"] = env.unwrapped.num_envs
+
+        observer = RlGamesEarlyStopObserver(IsaacAlgoObserver(), **build_success_kwargs(args_cli))
+        runner = Runner(observer)
+        runner.load(agent_cfg)
+        env.seed(agent_cfg["params"]["seed"])
+        runner.reset()
+
+        with BenchmarkMonitor(benchmark, interval=1.0):
+            runner.run({"train": True, "play": False, "sigma": None})
+
+        benchmark.update_manual_recorders()
+
+        # Flush and close the rl_games TensorBoard writer so all events are on
+        # disk before parse_tf_logs reads them.  The writer lives on the algo
+        # object attached to the observer after after_init().
+        if observer.algo is not None and getattr(observer.algo, "writer", None) is not None:
+            try:
+                observer.algo.writer.flush()
+                observer.algo.writer.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Parse TensorBoard logs.
+        desc = BACKEND_DESCRIPTORS["rl_games"]
+        tb_dir = os.path.join(log_root_path, log_dir)
+        log_data = parse_tf_logs(tb_dir, desc.tfevents_pattern)
+
+        # Derive per-iteration timing.
+        # rl_games logs FPS directly; iteration_time = steps / total_fps
+        horizon_length = agent_cfg["params"]["config"].get("horizon_length", 16)
+        steps_per_iteration = env.unwrapped.num_envs * horizon_length
+        total_fps_series = list(log_data.get("performance/step_inference_rl_update_fps", []))
+        collection_fps_series = list(log_data.get("performance/step_inference_fps", []))
+        iteration_times_s = [steps_per_iteration / f for f in total_fps_series if f > 0]
+
+        startup = StartupTime(
+            app_launch=(app_t1 - app_t0) / 1e9,
+            env_creation=(env_t1 - env_t0) / 1e9,
+            first_step=(iteration_times_s[0] if iteration_times_s else 0.0),
+        )
+
+        runtime = builders.build_runtime(
+            startup_time_s=startup,
+            iteration_times_s=iteration_times_s,
+            collection_fps=collection_fps_series,
+            total_fps=total_fps_series,
+            steps_per_iteration=steps_per_iteration,
+        )
+
+        learning = builders.build_learning(
+            reward_series=log_data.get(desc.reward_tag, []),
+            ep_length_series=log_data.get(desc.ep_length_tag, []),
+            ema_alpha=args_cli.ema_alpha,
+            keep_series=not args_cli.no_series,
+        )
+
+        tracker = get_success_tracker(args_cli, observer.tracker, log_data)
+        success_rate = round(tracker.tail_mean, 4) if (tracker and tracker.history) else None
+
+        versions = capture.capture_versions(benchmark)
+        hardware = capture.capture_hardware(benchmark)
+        resources = capture.capture_resources(benchmark)
+        cfg = capture.run_config_from_presets(tokens)
+
+        end_utc = capture.now_utc_iso()
+        stamp = end_utc.translate(str.maketrans("", "", ":-"))[:15]
+        seed = agent_cfg["params"]["seed"] if agent_cfg["params"]["seed"] is not None else 0
+
+        run_identity = builders.build_run_identity(
+            run_id=capture.synth_run_id("rl_games", cfg.physics_backend, args_cli.task, seed, stamp),
+            framework="rl_games",
+            config=cfg,
+            task=args_cli.task,
+            seed=seed,
+            start_utc=start_utc,
+            end_utc=end_utc,
+            num_envs=env.unwrapped.num_envs,
+            max_iterations=agent_cfg["params"]["config"].get("max_epochs"),
+        )
+
+        checkpoint_path = None
+        video_path = os.path.join(log_root_path, log_dir, "videos") if getattr(args_cli, "video", False) else None
+
+        bundle = builders.build_training_bundle(
+            run=run_identity,
+            versions=versions,
+            hardware=hardware,
+            runtime=runtime,
+            resources=resources,
+            learning=learning,
+            success_rate=success_rate,
+            checkpoint_path=checkpoint_path,
+            video_path=video_path,
+        )
+
+        out_path = os.path.join(args_cli.output_path, f"training_{args_cli.task}.json")
+        write_bundle_file(bundle, out_path)
+        print(f"[training] wrote {out_path}")
+
+        benchmark._finalize_impl()
+
+        env.close()
+
+
+if __name__ == "__main__":
+    run(sys.argv[1:])
