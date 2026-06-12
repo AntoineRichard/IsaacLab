@@ -131,17 +131,24 @@ def run(argv: list[str]) -> None:
         argv: Command-line arguments, excluding the script path (i.e.
             ``sys.argv[1:]``).
     """
+    import contextlib
     import os
     import time
 
     import gymnasium as gym
 
-    from isaaclab_tasks.utils import launch_simulation, resolve_task_config
-
-    from isaaclab.test.benchmark import BaseIsaacLabBenchmark, BenchmarkMonitor
-    from isaaclab.test.benchmark import builders, capture, stepping
+    from isaaclab.test.benchmark import BaseIsaacLabBenchmark, BenchmarkMonitor, builders, capture, stepping
     from isaaclab.test.benchmark.schema import StartupTime
     from isaaclab.test.benchmark.serialize import write_bundle_file
+
+    # Importing the task packages registers their gym environments so the
+    # requested ``--task`` can be resolved.
+    import isaaclab_tasks  # noqa: F401
+    from isaaclab_tasks.utils import launch_simulation, resolve_task_config
+
+    # PLACEHOLDER: Extension template (do not remove this comment)
+    with contextlib.suppress(ImportError):
+        import isaaclab_tasks_experimental  # noqa: F401
 
     args, folded = _parse_args(argv)
 
