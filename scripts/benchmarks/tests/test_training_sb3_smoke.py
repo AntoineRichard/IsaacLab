@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Smoke test for scripts/benchmarks/training.py with --rl_library skrl."""
+"""Smoke test for scripts/benchmarks/training.py with --rl_library sb3."""
 
 import json
 import subprocess
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
 _TASK = "Isaac-Cartpole-Direct-v0"
 
 
-def test_training_skrl_writes_training_bundle(tmp_path):
+def test_training_sb3_writes_training_bundle(tmp_path):
     sh = ROOT / "isaaclab.sh"
     if not sh.exists():
         pytest.skip("isaaclab.sh not found")
@@ -25,7 +25,7 @@ def test_training_skrl_writes_training_bundle(tmp_path):
         "-p",
         "scripts/benchmarks/training.py",
         "--rl_library",
-        "skrl",
+        "sb3",
         "--task",
         _TASK,
         "--num_envs",
@@ -52,10 +52,12 @@ def test_training_skrl_writes_training_bundle(tmp_path):
         )
         if any(m in blob for m in env_markers):
             pytest.skip(f"Isaac Sim / task registry unavailable in this env:\n{res.stderr[-1500:]}")
-        pytest.fail(f"training.py rc={res.returncode}\nSTDOUT:\n{res.stdout[-2000:]}\nSTDERR:\n{res.stderr[-2000:]}")
+        pytest.fail(
+            f"training.py rc={res.returncode}\nSTDOUT:\n{res.stdout[-2000:]}\nSTDERR:\n{res.stderr[-2000:]}"
+        )
     data = json.loads(out.read_text())
     assert data["schema_version"] == "1.0"
-    assert data["run"]["framework"] == "skrl"
+    assert data["run"]["framework"] == "sb3"
     assert data["run"]["config"]["physics_backend"] == "newton_mjwarp"
     assert 1 <= data["runtime"]["iterations_completed"] <= 5
     assert data["runtime"]["total_fps"]["mean"] > 0

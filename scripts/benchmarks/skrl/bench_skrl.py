@@ -135,9 +135,7 @@ def _build_benchmark_trainer_class():
             agent_obj = self.agents
             agent_cfg = getattr(agent_obj, "cfg", None)
             rollouts_val = (
-                getattr(agent_cfg, "rollouts", None)
-                if agent_cfg is not None
-                else getattr(agent_obj, "_rollouts", None)
+                getattr(agent_cfg, "rollouts", None) if agent_cfg is not None else getattr(agent_obj, "_rollouts", None)
             )
             if not rollouts_val:
                 super().train()
@@ -170,9 +168,7 @@ def _build_benchmark_trainer_class():
                     self.iter_rewards.append(_reward_sum[0] / max(_reward_count[0], 1))
                     # Episode length: skrl accumulates it in agent.tracking_data.
                     td = getattr(agent_obj, "tracking_data", {})
-                    ep_len_key = next(
-                        (k for k in td if "episode" in k.lower() and "timestep" in k.lower()), None
-                    )
+                    ep_len_key = next((k for k in td if "episode" in k.lower() and "timestep" in k.lower()), None)
                     ep_len_val = td.get(ep_len_key, []) if ep_len_key else []
                     self.iter_ep_lengths.append(float(ep_len_val[-1]) if ep_len_val else 0.0)
                     # Reset accumulators for next iteration.
@@ -353,9 +349,7 @@ def run(argv: list[str]) -> None:
         env_cfg.seed = agent_cfg["seed"]
 
         # Build log_dir (mirrors train_skrl.py).
-        log_root_path = os.path.abspath(
-            os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
-        )
+        log_root_path = os.path.abspath(os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"]))
         from datetime import datetime
 
         log_dir_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
