@@ -183,8 +183,8 @@ def capture_versions(bm: Any) -> Versions:
         rl_games=md.get("rl_games_version", None),
         skrl=md.get("skrl_version", None),
         sb3=md.get("stable_baselines3_version", None),
-        git_commit=dev.get("commit_hash", None),
-        git_branch=dev.get("branch", None),
+        git_commit=dev.get("commit_hash"),
+        git_branch=dev.get("branch"),
         git_dirty=dev.get("dirty", False),
     )
 
