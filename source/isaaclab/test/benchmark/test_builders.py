@@ -115,9 +115,7 @@ def test_build_training_bundle_round_trips(tmp_path):
         total_fps=[90.0],
         steps_per_iteration=24,
     )
-    learning = builders.build_learning(
-        reward_series=[1.0, 2.0, 3.0], ep_length_series=[10.0, 12.0], ema_alpha=0.1
-    )
+    learning = builders.build_learning(reward_series=[1.0, 2.0, 3.0], ep_length_series=[10.0, 12.0], ema_alpha=0.1)
     b = builders.build_training_bundle(
         run=run,
         versions=_versions(),
@@ -132,7 +130,8 @@ def test_build_training_bundle_round_trips(tmp_path):
     assert b.learning.reward.final_raw == pytest.approx(3.0)
     p = os.path.join(tmp_path, "training.json")
     write_bundle_file(b, p)
-    data = json.load(open(p))
+    with open(p) as fh:
+        data = json.load(fh)
     assert data["success_rate"] == pytest.approx(0.9)
     assert data["runtime"]["total_fps"]["mean"] == pytest.approx(90.0)
 
@@ -161,4 +160,5 @@ def test_build_runtime_bundle_no_learning(tmp_path):
     assert isinstance(b, RuntimeBundle)
     p = os.path.join(tmp_path, "runtime.json")
     write_bundle_file(b, p)
-    assert json.load(open(p))["run"]["framework"] is None
+    with open(p) as fh:
+        assert json.load(fh)["run"]["framework"] is None
