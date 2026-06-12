@@ -52,9 +52,7 @@ def test_training_sb3_writes_training_bundle(tmp_path):
         )
         if any(m in blob for m in env_markers):
             pytest.skip(f"Isaac Sim / task registry unavailable in this env:\n{res.stderr[-1500:]}")
-        pytest.fail(
-            f"training.py rc={res.returncode}\nSTDOUT:\n{res.stdout[-2000:]}\nSTDERR:\n{res.stderr[-2000:]}"
-        )
+        pytest.fail(f"training.py rc={res.returncode}\nSTDOUT:\n{res.stdout[-2000:]}\nSTDERR:\n{res.stderr[-2000:]}")
     data = json.loads(out.read_text())
     assert data["schema_version"] == "1.0"
     assert data["run"]["framework"] == "sb3"

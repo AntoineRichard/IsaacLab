@@ -271,9 +271,9 @@ def run(argv: list[str]) -> None:
     from isaaclab_tasks.utils import launch_simulation, resolve_task_config
 
     apply_env_overrides = _common.apply_env_overrides
-    from scripts.benchmarks.early_stop import add_success_cli_args, get_success_tracker  # noqa: F401
-
     import gymnasium as gym
+
+    from scripts.benchmarks.early_stop import get_success_tracker
 
     args_cli, folded = _parse_args(argv)
 
@@ -436,7 +436,9 @@ def run(argv: list[str]) -> None:
             max_iterations=args_cli.max_iterations,
         )
 
-        checkpoint_path = os.path.join(log_dir, "model.zip") if os.path.exists(os.path.join(log_dir, "model.zip")) else None
+        checkpoint_path = (
+            os.path.join(log_dir, "model.zip") if os.path.exists(os.path.join(log_dir, "model.zip")) else None
+        )
         video_path = os.path.join(log_dir, "videos") if getattr(args_cli, "video", False) else None
 
         bundle = builders.build_training_bundle(

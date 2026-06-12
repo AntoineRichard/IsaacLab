@@ -160,17 +160,25 @@ def _build_benchmark_trainer_class():
             _orig_post = agent_obj.post_interaction
             _iter_start_ns: list[int] = [time.perf_counter_ns()]
 
+            # Holds the last non-empty episode-length snapshot across steps.
+            _last_ep_len: list[float] = [0.0]
+
             def _patched_post(*, timestep: int, timesteps: int) -> None:
+                # Snapshot tracking_data BEFORE calling the original post_interaction,
+                # which may call write_tracking_data() → tracking_data.clear().
+                td = getattr(agent_obj, "tracking_data", {})
+                ep_len_key = next((k for k in td if "episode" in k.lower() and "timestep" in k.lower()), None)
+                ep_len_val = td.get(ep_len_key, []) if ep_len_key else []
+                if ep_len_val:
+                    _last_ep_len[0] = float(sum(ep_len_val) / len(ep_len_val))
+
                 _orig_post(timestep=timestep, timesteps=timesteps)
+
                 if (timestep + 1) % rollouts == 0:
                     iter_end_ns = time.perf_counter_ns()
                     self.iter_times_s.append((iter_end_ns - _iter_start_ns[0]) / 1e9)
                     self.iter_rewards.append(_reward_sum[0] / max(_reward_count[0], 1))
-                    # Episode length: skrl accumulates it in agent.tracking_data.
-                    td = getattr(agent_obj, "tracking_data", {})
-                    ep_len_key = next((k for k in td if "episode" in k.lower() and "timestep" in k.lower()), None)
-                    ep_len_val = td.get(ep_len_key, []) if ep_len_key else []
-                    self.iter_ep_lengths.append(float(ep_len_val[-1]) if ep_len_val else 0.0)
+                    self.iter_ep_lengths.append(_last_ep_len[0])
                     # Reset accumulators for next iteration.
                     _iter_start_ns[0] = time.perf_counter_ns()
                     _reward_sum[0] = 0.0
