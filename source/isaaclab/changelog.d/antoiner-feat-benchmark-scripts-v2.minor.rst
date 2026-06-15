@@ -17,3 +17,10 @@ Added
   ``benchmark_rlgames.py``, ``benchmark_non_rl.py``, and ``benchmark_startup.py``
   scripts as well as the ``run_training_benchmarks.sh``,
   ``run_non_rl_benchmarks.sh``, and ``run_physx_benchmarks.sh`` CI shell runners.
+
+Changed
+^^^^^^^
+
+* Routed the benchmark schema bundle through the :class:`~isaaclab.test.benchmark.BaseIsaacLabBenchmark`
+  backend system as a new ``schema`` output format (now the default for ``runtime.py``/``training.py``/``startup.py``).
+  ``--benchmark_backend`` accepts a comma-separated list (e.g. ``schema,omniperf``) to emit multiple formats in one run.

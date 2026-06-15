@@ -20,6 +20,24 @@ _TASK = "Isaac-Cartpole-Direct-v0"
 
 _EXPECTED_PHASES = {"app_launch", "python_imports", "task_config", "env_creation", "first_step"}
 
+# Top-level keys that identify a schema StartupBundle.
+_STARTUP_BUNDLE_KEYS = {"run", "phases"}
+
+
+def _find_bundle(out_dir: Path, expected_keys: set[str]) -> dict:
+    """Return the parsed JSON whose top-level keys cover ``expected_keys``.
+
+    The schema backend names its file from a timestamped prefix, so the smoke
+    tests glob the output directory rather than hardcode the filename.
+    """
+    candidates = sorted(out_dir.glob("*.json"))
+    assert candidates, f"no *.json written to {out_dir}"
+    for path in candidates:
+        data = json.loads(path.read_text())
+        if expected_keys <= set(data):
+            return data
+    pytest.fail(f"no bundle in {out_dir} contained keys {expected_keys}; found {[p.name for p in candidates]}")
+
 
 def test_startup_writes_startup_bundle(tmp_path, require_isaacsim):
     sh = ROOT / "isaaclab.sh"
@@ -39,11 +57,10 @@ def test_startup_writes_startup_bundle(tmp_path, require_isaacsim):
         "--headless",
     ]
     res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=900)
-    out = tmp_path / f"startup_{_TASK}.json"
-    if res.returncode != 0 or not out.exists():
+    if res.returncode != 0:
         pytest.fail(f"startup.py rc={res.returncode}\nSTDOUT:\n{res.stdout[-2000:]}\nSTDERR:\n{res.stderr[-2000:]}")
 
-    data = json.loads(out.read_text())
+    data = _find_bundle(tmp_path, _STARTUP_BUNDLE_KEYS)
 
     # Top-level schema
     assert data["schema_version"] == "1.0", f"unexpected schema_version: {data['schema_version']}"

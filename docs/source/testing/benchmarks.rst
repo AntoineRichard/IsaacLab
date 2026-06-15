@@ -97,8 +97,10 @@ Running Benchmark Scripts
 -------------------------
 
 Isaac Lab provides three unified entry points under ``scripts/benchmarks/``.  All three
-emit schema-v1 JSON bundles (``RuntimeBundle``, ``TrainingBundle``, or ``StartupBundle``)
-via :mod:`isaaclab.test.benchmark`.
+default to ``--benchmark_backend schema``, which emits a schema-v1 JSON bundle
+(``RuntimeBundle``, ``TrainingBundle``, or ``StartupBundle``) via :mod:`isaaclab.test.benchmark`.
+``--benchmark_backend`` accepts a comma-separated list (e.g. ``schema,omniperf``) to emit
+several formats in a single run; each backend writes its own timestamped output file.
 
 Non-RL / Runtime Benchmarks
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -253,8 +255,8 @@ A default whitelist is provided at ``scripts/benchmarks/startup_whitelist.yaml``
      - None
      - Path to YAML whitelist file
    * - ``--benchmark_backend``
-     - ``omniperf``
-     - Output backend (``json``, ``osmo``, ``omniperf``, ``summary``)
+     - ``schema``
+     - Output backend(s), comma-separated (``schema``, ``json``, ``osmo``, ``omniperf``, ``summary``)
    * - ``--output_path``
      - ``.``
      - Directory for output files
@@ -273,8 +275,8 @@ Common Arguments
      - Default
      - Description
    * - ``--benchmark_backend``
-     - ``json``
-     - Output backend: ``json``, ``osmo``, ``omniperf``, or ``summary``
+     - ``schema``
+     - Output backend(s), comma-separated: ``schema``, ``json``, ``osmo``, ``omniperf``, or ``summary``
    * - ``--output_path``
      - ``./``
      - Directory for output files
@@ -721,7 +723,7 @@ Ensure ``_finalize_impl()`` is called before the script exits:
 Backend Not Recognized
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Valid backend types are: ``json``, ``osmo``, ``omniperf``, ``summary``
+Valid backend types are: ``schema``, ``json``, ``osmo``, ``omniperf``, ``summary``
 
 .. code-block:: bash
 
