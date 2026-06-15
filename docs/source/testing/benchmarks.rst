@@ -298,7 +298,7 @@ Runtime Benchmark Arguments (``runtime.py``)
      - required
      - Environment task name (e.g., ``Isaac-Cartpole-v0``)
    * - ``--num_envs``
-     - ``4096``
+     - ``None`` (task config)
      - Number of parallel environments
    * - ``--num_frames``
      - ``100``
@@ -324,10 +324,10 @@ RL Training Arguments (``training.py``)
      - required
      - Environment task name
    * - ``--num_envs``
-     - ``4096``
+     - ``None`` (task config)
      - Number of parallel environments
    * - ``--max_iterations``
-     - ``500``
+     - ``None`` (task config)
      - Number of training iterations
 
 Measurement Types

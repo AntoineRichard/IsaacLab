@@ -288,7 +288,7 @@ to estimate the gain for your own task before committing to a migration.
         --benchmark_backend summary \
         --output_path benchmarks/warp
 
-The ``summary`` backend prints step time (mean / p50 / p99) and total throughput. Compare
+The ``summary`` backend prints step time (min / mean / max) and total throughput. Compare
 "step time" between the two runs to estimate the gain per env step.
 
 **Sweep across all available tasks**
@@ -299,7 +299,7 @@ directories.
 
 **What to look at in the output**
 
-- *Step time (mean / p99)*: the headline number — what each env step costs.
+- *Step time (min / mean / max)*: the headline number — what each env step costs.
 - *Iteration time*: includes policy update; useful for end-to-end training throughput.
 - *Capture overhead*: for warp runs, the first few iterations include CUDA graph capture
   cost; exclude those when comparing steady-state numbers.
