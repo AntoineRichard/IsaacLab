@@ -23,7 +23,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from scripts.benchmarks._common import get_backend_type, preset_tokens
+from scripts.benchmarks._common import get_backend_types, preset_tokens
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -58,18 +58,12 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--benchmark_backend",
         type=str,
-        default="omniperf",
-        choices=[
-            "json",
-            "osmo",
-            "omniperf",
-            "summary",
-            "LocalLogMetrics",
-            "JSONFileMetrics",
-            "OsmoKPIFile",
-            "OmniPerfKPIFile",
-        ],
-        help="Benchmarking backend. Defaults to omniperf.",
+        default="schema",
+        help=(
+            "Output format(s): comma-separated list of 'schema' (default, the typed benchmark bundle),"
+            " 'omniperf', 'osmo', 'json', 'summary'. Legacy long-form aliases accepted."
+            " Example: 'schema,omniperf'."
+        ),
     )
     add_launcher_args(parser)
 
@@ -92,14 +86,12 @@ def run(argv: list[str]) -> None:
             ``sys.argv[1:]``).
     """
     import contextlib
-    import os
     import time
 
     import gymnasium as gym
 
     from isaaclab.test.benchmark import BaseIsaacLabBenchmark, BenchmarkMonitor, builders, capture, stepping
     from isaaclab.test.benchmark.schema import StartupTime
-    from isaaclab.test.benchmark.serialize import write_bundle_file
 
     # Importing the task packages registers their gym environments so the
     # requested ``--task`` can be resolved.
@@ -125,15 +117,15 @@ def run(argv: list[str]) -> None:
         if args.seed is not None:
             env_cfg.seed = args.seed
 
-        backend_type = get_backend_type(args.benchmark_backend)
+        backend_types = get_backend_types(args.benchmark_backend)
         tokens = preset_tokens(folded)
 
         benchmark = BaseIsaacLabBenchmark(
             benchmark_name="benchmark_runtime",
-            backend_type=backend_type,
+            backend_type=backend_types,
             output_path=args.output_path,
             use_recorders=True,
-            frametime_recorders=backend_type in ("summary", "omniperf"),
+            frametime_recorders=any(t in ("summary", "omniperf") for t in backend_types),
             output_prefix=f"benchmark_runtime_{args.task}",
             workflow_metadata={
                 "metadata": [
@@ -202,9 +194,7 @@ def run(argv: list[str]) -> None:
             resources=resources,
         )
 
-        out_path = os.path.join(args.output_path, f"runtime_{args.task}.json")
-        write_bundle_file(bundle, out_path)
-        print(f"[runtime] wrote {out_path}")
+        benchmark.attach_bundle(bundle)
 
         benchmark._finalize_impl()
 

@@ -20,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-from scripts.benchmarks._common import get_backend_type, import_module_from_path, preset_tokens
+from scripts.benchmarks._common import get_backend_types, import_module_from_path, preset_tokens
 
 # ---------------------------------------------------------------------------
 # Path setup — locate scripts/reinforcement_learning and load common helpers
@@ -143,18 +143,12 @@ def _parse_args(argv: list[str]):
     parser.add_argument(
         "--benchmark_backend",
         type=str,
-        default="omniperf",
-        choices=[
-            "json",
-            "osmo",
-            "omniperf",
-            "summary",
-            "LocalLogMetrics",
-            "JSONFileMetrics",
-            "OsmoKPIFile",
-            "OmniPerfKPIFile",
-        ],
-        help="Benchmarking backend. Defaults to omniperf.",
+        default="schema",
+        help=(
+            "Output format(s): comma-separated list of 'schema' (default, the typed benchmark bundle),"
+            " 'omniperf', 'osmo', 'json', 'summary'. Legacy long-form aliases accepted."
+            " Example: 'schema,omniperf'."
+        ),
     )
     parser.add_argument(
         "--ema_alpha",
@@ -206,7 +200,6 @@ def run(argv: list[str]) -> None:
     from isaaclab.test.benchmark import BaseIsaacLabBenchmark, BenchmarkMonitor, builders, capture
     from isaaclab.test.benchmark.backend_descriptor import BACKEND_DESCRIPTORS
     from isaaclab.test.benchmark.schema import StartupTime
-    from isaaclab.test.benchmark.serialize import write_bundle_file
 
     from isaaclab_rl.sb3 import Sb3VecEnvWrapper, process_sb3_cfg
 
@@ -243,14 +236,14 @@ def run(argv: list[str]) -> None:
             agent_cfg["n_timesteps"] = args_cli.max_iterations * n_steps_cfg * env_cfg.scene.num_envs
 
         tokens = preset_tokens(folded)
-        backend_type = get_backend_type(args_cli.benchmark_backend)
+        backend_types = get_backend_types(args_cli.benchmark_backend)
 
         benchmark = BaseIsaacLabBenchmark(
             benchmark_name="benchmark_training",
-            backend_type=backend_type,
+            backend_type=backend_types,
             output_path=args_cli.output_path,
             use_recorders=True,
-            frametime_recorders=backend_type in ("summary", "omniperf"),
+            frametime_recorders=any(t in ("summary", "omniperf") for t in backend_types),
             output_prefix=f"benchmark_training_{args_cli.task}",
             workflow_metadata={
                 "metadata": [
@@ -404,9 +397,7 @@ def run(argv: list[str]) -> None:
             video_path=video_path,
         )
 
-        out_path = os.path.join(args_cli.output_path, f"training_{args_cli.task}.json")
-        write_bundle_file(bundle, out_path)
-        print(f"[training] wrote {out_path}")
+        benchmark.attach_bundle(bundle)
 
         benchmark._finalize_impl()
 
