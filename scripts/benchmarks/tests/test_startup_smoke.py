@@ -21,10 +21,8 @@ _TASK = "Isaac-Cartpole-Direct-v0"
 _EXPECTED_PHASES = {"app_launch", "python_imports", "task_config", "env_creation", "first_step"}
 
 
-def test_startup_writes_startup_bundle(tmp_path):
+def test_startup_writes_startup_bundle(tmp_path, require_isaacsim):
     sh = ROOT / "isaaclab.sh"
-    if not sh.exists():
-        pytest.skip("isaaclab.sh not found")
     cmd = [
         str(sh),
         "-p",
@@ -43,16 +41,6 @@ def test_startup_writes_startup_bundle(tmp_path):
     res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=900)
     out = tmp_path / f"startup_{_TASK}.json"
     if res.returncode != 0 or not out.exists():
-        blob = (res.stdout + res.stderr).lower()
-        env_markers = (
-            "isaacsim",
-            "isaac sim",
-            "no module named",
-            "no registered env",
-            "registrationerror",
-        )
-        if any(m in blob for m in env_markers):
-            pytest.skip(f"Isaac Sim / task registry unavailable in this env:\n{res.stderr[-1500:]}")
         pytest.fail(f"startup.py rc={res.returncode}\nSTDOUT:\n{res.stdout[-2000:]}\nSTDERR:\n{res.stderr[-2000:]}")
 
     data = json.loads(out.read_text())
