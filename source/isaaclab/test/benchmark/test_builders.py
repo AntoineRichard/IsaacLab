@@ -136,6 +136,24 @@ def test_build_training_bundle_round_trips(tmp_path):
     assert data["runtime"]["total_fps"]["mean"] == pytest.approx(90.0)
 
 
+def test_build_learning_empty_series():
+    learning = builders.build_learning(reward_series=[], ep_length_series=[], ema_alpha=0.1)
+    assert learning.reward.final_raw == pytest.approx(0.0)
+    assert learning.reward.final_ema == pytest.approx(0.0)
+    assert learning.reward.series_per_iter == []
+    assert learning.ep_length.final_raw == pytest.approx(0.0)
+    assert learning.ep_length.final_ema == pytest.approx(0.0)
+    assert learning.ep_length.series_per_iter == []
+
+
+def test_build_learning_keep_series_false():
+    learning = builders.build_learning(
+        reward_series=[1.0, 2.0], ep_length_series=[10.0], ema_alpha=0.1, keep_series=False
+    )
+    assert learning.reward.series_per_iter is None
+    assert learning.ep_length.series_per_iter is None
+
+
 def test_build_runtime_bundle_no_learning(tmp_path):
     run = builders.build_run_identity(
         run_id="x",

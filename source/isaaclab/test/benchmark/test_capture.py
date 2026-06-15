@@ -160,3 +160,71 @@ def test_run_config_from_presets():
     assert c1.physics_backend == "newton_mjwarp" and c1.rendering_backend == "ovrtx"
     assert c1.presets == ["newton_mjwarp", "ovrtx_renderer", "rgb"]
     assert run_config_from_presets(["newton"]).physics_backend == "newton_mjwarp"
+
+
+def test_capture_resources_peak_clamped_to_mean_when_peak_row_absent():
+    # Build a recorder that has mean/std rows but no peak rows.
+    # capture_resources must clamp peak to mean rather than leaving it at 0.0
+    # (which would violate MeanStd.__post_init__ since peak < mean).
+    gpu = _Rec(
+        MeasurementData(
+            measurements=[
+                SingleMeasurement(name="GPU Utilization", value=5.0, unit="%"),
+                SingleMeasurement(name="GPU Utilization std", value=1.0, unit="%"),
+                SingleMeasurement(name="GPU Memory Used", value=10.0, unit="GB"),
+                SingleMeasurement(name="GPU Memory Used std", value=0.5, unit="GB"),
+                # No "GPU Memory Used peak" row — peak defaults to 0.0 before clamping.
+            ],
+            metadata=[],
+            artefacts=[],
+        )
+    )
+    mem = _Rec(
+        MeasurementData(
+            measurements=[
+                SingleMeasurement(name="System Memory RSS", value=10.0, unit="GB"),
+                SingleMeasurement(name="System Memory RSS std", value=0.2, unit="GB"),
+                # No "System Memory RSS peak" row.
+            ],
+            metadata=[],
+            artefacts=[],
+        )
+    )
+    cpu = _Rec(
+        MeasurementData(
+            measurements=[
+                SingleMeasurement(name="CPU Utilization", value=20.0, unit="%"),
+                SingleMeasurement(name="CPU Utilization std", value=2.0, unit="%"),
+            ],
+            metadata=[],
+            artefacts=[],
+        )
+    )
+    # Must not raise ValueError from MeanStd.__post_init__.
+    r = capture_resources(_Bm({"GPUInfo": gpu, "CPUInfo": cpu, "MemoryInfo": mem}))
+    assert r.gpu_mem_gb.peak == pytest.approx(10.0)
+    assert r.ram_gb.peak == pytest.approx(10.0)
+
+
+def test_capture_hardware_gpu_devices_sorted_by_numeric_index():
+    # Keys "10", "2", "0" should be returned in numeric order 0, 2, 10 — not lexical "0","10","2".
+    gpu = _Rec(
+        MeasurementData(
+            measurements=[],
+            metadata=[
+                DictMetadata(
+                    name="gpu_devices",
+                    data={
+                        "10": {"name": "H100-10", "total_memory_gb": 80.0, "compute_capability": "9.0"},
+                        "2": {"name": "H100-2", "total_memory_gb": 80.0, "compute_capability": "9.0"},
+                        "0": {"name": "H100-0", "total_memory_gb": 80.0, "compute_capability": "9.0"},
+                    },
+                ),
+            ],
+            artefacts=[],
+        )
+    )
+    bm = _Bm({"GPUInfo": gpu})
+    h = capture_hardware(bm)
+    names = [d.name for d in h.gpu_devices]
+    assert names == ["H100-0", "H100-2", "H100-10"]

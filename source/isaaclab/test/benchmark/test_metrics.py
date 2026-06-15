@@ -76,3 +76,53 @@ def test_success_rate_tracker_convergence():
         t.end_iteration()
     assert t.converged is True
     assert t.tail_mean == pytest.approx(0.65)
+
+
+def test_check_convergence_high_cv_fails_despite_mean_above_threshold():
+    # Series whose tail mean clears the threshold but CV is too high to pass.
+    # With window_pct=1.0, the whole series is the tail.
+    # [1, 1000] -> tail_mean ~500.5, threshold=2.0, cv >> 20 -> passed False.
+    rewards = [1.0, 1000.0]
+    res = check_convergence(rewards, threshold=2.0, window_pct=1.0)
+    assert res["passed"] is False
+    assert res["cv"] > 20.0
+    assert res["tail_mean"] >= 2.0
+
+
+def test_check_convergence_empty_rewards():
+    res = check_convergence([], threshold=1.0)
+    assert res == {"tail_mean": 0.0, "cv": 999.9, "passed": False}
+
+
+def test_success_rate_tracker_multi_step_boundary():
+    # num_steps_per_env=3: boundary fires after step 3, not after 1 or 2.
+    t = SuccessRateTracker(threshold=0.5, window=1, num_steps_per_env=3)
+    t.record_step({"log": {"Metrics/success_rate": 0.6}})
+    assert t.at_iteration_boundary is False
+    t.record_step({"log": {"Metrics/success_rate": 0.6}})
+    assert t.at_iteration_boundary is False
+    t.record_step({"log": {"Metrics/success_rate": 0.6}})
+    assert t.at_iteration_boundary is True
+    t.end_iteration()
+    assert len(t.history) == 1
+
+
+def test_success_rate_tracker_item_tensor_path():
+    class _T:
+        def item(self):
+            return 0.7
+
+    t = SuccessRateTracker(threshold=0.5, window=1, num_steps_per_env=1)
+    t.record_step({"log": {"Metrics/success_rate": _T()}})
+    mean = t.end_iteration()
+    assert mean == pytest.approx(0.7)
+    assert t.history == [pytest.approx(0.7)]
+
+
+def test_success_rate_tracker_no_data_end_iteration_returns_none():
+    t = SuccessRateTracker(threshold=0.5, window=1, num_steps_per_env=1)
+    t.record_step({"log": {}})
+    assert t._step_count == 1
+    result = t.end_iteration()
+    assert result is None
+    assert t.history == []
