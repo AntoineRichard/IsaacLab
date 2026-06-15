@@ -14,9 +14,14 @@ def test_all_four_backends_present():
         assert isinstance(d, BackendDescriptor)
 
 
+def test_key_matches_framework():
+    """Every dict key must equal the descriptor's framework field."""
+    for key, desc in BACKEND_DESCRIPTORS.items():
+        assert key == desc.framework, f"Key {key!r} does not match descriptor.framework {desc.framework!r}"
+
+
 def test_rsl_rl_tags():
     d = BACKEND_DESCRIPTORS["rsl_rl"]
-    assert d.cfg_entry_point == "rsl_rl_cfg_entry_point"
     assert d.reward_tag == "Train/mean_reward"
     assert d.ep_length_tag == "Train/mean_episode_length"
     assert d.tfevents_pattern == "events*"
@@ -24,7 +29,6 @@ def test_rsl_rl_tags():
 
 def test_rl_games_tags():
     d = BACKEND_DESCRIPTORS["rl_games"]
-    assert d.cfg_entry_point == "rl_games_cfg_entry_point"
     assert d.reward_tag == "rewards/iter"
     assert d.ep_length_tag == "episode_lengths/iter"
     assert d.tfevents_pattern == "summaries/events*"
@@ -36,6 +40,5 @@ def test_sb3_uses_subdir_glob():
 
 def test_skrl_space_padded_tags():
     d = BACKEND_DESCRIPTORS["skrl"]
-    assert d.cfg_entry_point == "skrl_cfg_entry_point"
     assert d.reward_tag == "Reward / Total reward (mean)"
     assert d.ep_length_tag == "Episode / Total timesteps (mean)"

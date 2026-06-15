@@ -82,20 +82,7 @@ sys.argv = [sys.argv[0]] + _hydra_args
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
 
-# ---------------------------------------------------------------------------
-# Backend-type mapping (mirrors utils.get_backend_type; avoids utils.py import)
-# ---------------------------------------------------------------------------
-
-_BACKEND_TYPE_MAP: dict[str, str] = {
-    "OmniPerfKPIFile": "omniperf",
-    "JSONFileMetrics": "json",
-    "OsmoKPIFile": "osmo",
-    "LocalLogMetrics": "json",
-    "omniperf": "omniperf",
-    "json": "json",
-    "osmo": "osmo",
-    "summary": "summary",
-}
+from scripts.benchmarks._common import get_backend_type, preset_tokens  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Phase 1: python_imports (module-level profiling — timing must be real)
@@ -203,28 +190,6 @@ if args_cli.top_n is None:
 
 
 # ---------------------------------------------------------------------------
-# Preset-token extraction helper (mirrors runtime.py)
-# ---------------------------------------------------------------------------
-
-
-def _preset_tokens(folded: list[str]) -> list[str]:
-    """Extract active preset tokens from a folded Hydra argument list.
-
-    Args:
-        folded: Folded Hydra argument list (output of
-            :func:`~isaaclab_tasks.utils.fold_preset_tokens`).
-
-    Returns:
-        List of active preset token strings, or an empty list.
-    """
-    for arg in folded:
-        if arg.startswith("presets="):
-            value = arg.split("=", 1)[1]
-            return value.split(",") if value else []
-    return []
-
-
-# ---------------------------------------------------------------------------
 # Main profiling and bundle-assembly logic
 # ---------------------------------------------------------------------------
 
@@ -237,8 +202,8 @@ def _run_main(
     """Collect env-creation/first-step profiles and assemble the StartupBundle.
 
     This is separated from ``__main__`` so it executes inside the
-    ``launch_simulation`` context (Isaac Sim fabric still live), mirroring the
-    structure of ``benchmark_startup.py``.
+    ``launch_simulation`` context, ensuring env_creation and first_step are
+    profiled with the simulator live.
 
     Args:
         env_cfg: Resolved environment configuration for the task.
@@ -324,7 +289,7 @@ def _run_main(
 
         # ---- Assemble and write the bundle -------------------------------------
 
-        tokens = _preset_tokens(_hydra_args)
+        tokens = preset_tokens(_hydra_args)
         cfg = capture.run_config_from_presets(tokens)
 
         start_utc = capture.now_utc_iso()
@@ -346,7 +311,7 @@ def _run_main(
             max_iterations=None,
         )
 
-        backend_type = _BACKEND_TYPE_MAP.get(args_cli.benchmark_backend, "omniperf")
+        backend_type = get_backend_type(args_cli.benchmark_backend)
         benchmark = BaseIsaacLabBenchmark(
             benchmark_name="benchmark_startup",
             backend_type=backend_type,

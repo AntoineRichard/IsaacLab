@@ -53,7 +53,7 @@ def sample_random_actions(env) -> torch.Tensor | dict[str, torch.Tensor]:
             for agent, space in u.action_spaces.items()
         }
     else:
-        # Single-agent: uniform in [-1, 1] matching benchmark_non_rl.py.
+        # Single-agent: uniform random actions in [-1, 1].
         return 2.0 * torch.rand(u.num_envs, u.single_action_space.shape[0], device=u.device) - 1.0
 
 

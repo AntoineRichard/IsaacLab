@@ -23,21 +23,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-# ---------------------------------------------------------------------------
-# Backend-type mapping (mirrors utils.get_backend_type; no utils.py import)
-# ---------------------------------------------------------------------------
-
-_BACKEND_TYPE_MAP: dict[str, str] = {
-    "OmniPerfKPIFile": "omniperf",
-    "JSONFileMetrics": "json",
-    "OsmoKPIFile": "osmo",
-    "LocalLogMetrics": "json",
-    "omniperf": "omniperf",
-    "json": "json",
-    "osmo": "osmo",
-    "summary": "summary",
-}
-
+from scripts.benchmarks._common import get_backend_type, preset_tokens
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -94,32 +80,6 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Preset token extraction
-# ---------------------------------------------------------------------------
-
-
-def _preset_tokens(folded: list[str]) -> list[str]:
-    """Extract active preset tokens from folded Hydra args.
-
-    Searches *folded* for a ``presets=<value>`` argument and returns its
-    comma-split tokens.  Returns an empty list when no ``presets=`` argument
-    is present or its value is empty.
-
-    Args:
-        folded: Folded Hydra argument list (output of
-            :func:`~isaaclab_tasks.utils.fold_preset_tokens`).
-
-    Returns:
-        List of active preset token strings.
-    """
-    for arg in folded:
-        if arg.startswith("presets="):
-            value = arg.split("=", 1)[1]
-            return value.split(",") if value else []
-    return []
-
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -165,8 +125,8 @@ def run(argv: list[str]) -> None:
         if args.seed is not None:
             env_cfg.seed = args.seed
 
-        backend_type = _BACKEND_TYPE_MAP.get(args.benchmark_backend, "omniperf")
-        tokens = _preset_tokens(folded)
+        backend_type = get_backend_type(args.benchmark_backend)
+        tokens = preset_tokens(folded)
 
         benchmark = BaseIsaacLabBenchmark(
             benchmark_name="benchmark_runtime",

@@ -12,76 +12,21 @@ Runs real training under a :class:`~isaaclab.test.benchmark.BenchmarkMonitor` an
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
+from scripts.benchmarks._common import get_backend_type, import_module_from_path, preset_tokens
+
 # ---------------------------------------------------------------------------
-# Path setup — locate scripts/reinforcement_learning without adding it to
-# sys.path (adding it would shadow the real ``rsl_rl`` package with the
-# ``scripts/reinforcement_learning/rsl_rl/`` scripts folder).
+# Path setup — locate scripts/reinforcement_learning and load common helpers
+# via explicit file path so that scripts/reinforcement_learning is never added
+# to sys.path (it has no __init__.py and is not an importable package).
 # ---------------------------------------------------------------------------
 
 _BENCH_DIR = Path(__file__).resolve().parents[1]
 _RL_SCRIPTS = _BENCH_DIR.parent / "reinforcement_learning"
 
-
-def _import_from_path(module_name: str, module_path: Path):
-    """Import a module from an explicit file path without polluting sys.path.
-
-    Args:
-        module_name: Unique module name to use in ``sys.modules``.
-        module_path: Path to the Python file to import.
-
-    Returns:
-        The imported module.
-    """
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load module {module_name!r} from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-# Load common helpers via absolute path so that scripts/reinforcement_learning
-# is never added to sys.path.
-_common = _import_from_path("isaaclab_rl_common", _RL_SCRIPTS / "common.py")
-
-# ---------------------------------------------------------------------------
-# Backend-type mapping (no utils.py dependency)
-# ---------------------------------------------------------------------------
-
-_BACKEND_TYPE_MAP: dict[str, str] = {
-    "OmniPerfKPIFile": "omniperf",
-    "JSONFileMetrics": "json",
-    "OsmoKPIFile": "osmo",
-    "LocalLogMetrics": "json",
-    "omniperf": "omniperf",
-    "json": "json",
-    "osmo": "osmo",
-    "summary": "summary",
-}
-
-
-def _preset_tokens(folded: list[str]) -> list[str]:
-    """Extract active preset tokens from folded Hydra args.
-
-    Args:
-        folded: Folded Hydra argument list (output of
-            :func:`~isaaclab_tasks.utils.fold_preset_tokens`).
-
-    Returns:
-        List of active preset token strings.
-    """
-    for arg in folded:
-        if arg.startswith("presets="):
-            value = arg.split("=", 1)[1]
-            return value.split(",") if value else []
-    return []
+_common = import_module_from_path("isaaclab_rl_common", _RL_SCRIPTS / "common.py")
 
 
 # ---------------------------------------------------------------------------
@@ -228,8 +173,8 @@ def run(argv: list[str]) -> None:
         agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_rsl_rl)
         env_cfg.seed = agent_cfg.seed
 
-        backend_type = _BACKEND_TYPE_MAP.get(args_cli.benchmark_backend, "omniperf")
-        tokens = _preset_tokens(folded)
+        backend_type = get_backend_type(args_cli.benchmark_backend)
+        tokens = preset_tokens(folded)
 
         benchmark = BaseIsaacLabBenchmark(
             benchmark_name="benchmark_training",
