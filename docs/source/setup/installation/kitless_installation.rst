@@ -171,7 +171,8 @@ OVRTX provides GPU-accelerated rendering for vision tasks without Kit.
 
          ./isaaclab.sh -i ov[ovrtx]
 
-         ./isaaclab.sh -p scripts/benchmarks/benchmark_rsl_rl.py \
+         ./isaaclab.sh -p scripts/benchmarks/training.py \
+           --rl_library rsl_rl \
            --task Isaac-Repose-Cube-Shadow-Vision-Benchmark-Direct-v0 \
            --headless --enable_cameras --num_envs 16 --max_iterations 10 \
            presets=newton_mjwarp,ovrtx_renderer,simple_shading_diffuse_mdl
@@ -183,7 +184,8 @@ OVRTX provides GPU-accelerated rendering for vision tasks without Kit.
 
          isaaclab.bat -i ov[ovrtx]
 
-         isaaclab.bat -p scripts\benchmarks\benchmark_rsl_rl.py ^
+         isaaclab.bat -p scripts\benchmarks\training.py ^
+           --rl_library rsl_rl ^
            --task Isaac-Repose-Cube-Shadow-Vision-Benchmark-Direct-v0 ^
            --headless --enable_cameras --num_envs 16 --max_iterations 10 ^
            presets=newton_mjwarp,ovrtx_renderer,simple_shading_diffuse_mdl

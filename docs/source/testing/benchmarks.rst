@@ -96,20 +96,18 @@ Basic usage with :class:`~isaaclab.test.benchmark.BaseIsaacLabBenchmark`:
 Running Benchmark Scripts
 -------------------------
 
-Isaac Lab provides shell scripts for running benchmark suites:
+Isaac Lab provides three unified entry points under ``scripts/benchmarks/``.  All three
+emit schema-v1 JSON bundles (``RuntimeBundle``, ``TrainingBundle``, or ``StartupBundle``)
+via :mod:`isaaclab.test.benchmark`.
 
-Non-RL Benchmarks
-~~~~~~~~~~~~~~~~~
+Non-RL / Runtime Benchmarks
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Measure environment stepping performance without training:
+Measure environment stepping performance without any RL library:
 
 .. code-block:: bash
 
-   # Run all non-RL benchmarks
-   ./scripts/benchmarks/run_non_rl_benchmarks.sh ./output_dir
-
-   # Run a single benchmark manually
-   ./isaaclab.sh -p scripts/benchmarks/benchmark_non_rl.py \
+   ./isaaclab.sh -p scripts/benchmarks/runtime.py \
        --task Isaac-Cartpole-v0 \
        --num_envs 4096 \
        --num_frames 100 \
@@ -120,18 +118,38 @@ Measure environment stepping performance without training:
 RL Training Benchmarks
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Measure training performance with RSL-RL:
+Measure training performance.  Use ``--rl_library`` to select the backend
+(``rsl_rl``, ``rl_games``, ``skrl``, or ``sb3``):
 
 .. code-block:: bash
 
-   # Run training benchmarks
-   ./scripts/benchmarks/run_training_benchmarks.sh ./output_dir
-
-   # Run manually with RSL-RL
-   ./isaaclab.sh -p scripts/benchmarks/benchmark_rsl_rl.py \
+   # Benchmark with RSL-RL
+   ./isaaclab.sh -p scripts/benchmarks/training.py \
+       --rl_library rsl_rl \
        --task Isaac-Cartpole-v0 \
        --num_envs 4096 \
        --max_iterations 500 \
+       --headless \
+       --benchmark_backend json \
+       --output_path ./results
+
+   # Benchmark with RL Games
+   ./isaaclab.sh -p scripts/benchmarks/training.py \
+       --rl_library rl_games \
+       --task Isaac-Cartpole-v0 \
+       --num_envs 4096 \
+       --max_iterations 500 \
+       --headless \
+       --benchmark_backend json \
+       --output_path ./results
+
+   # Physics/rendering backend is selected via Hydra preset tokens
+   ./isaaclab.sh -p scripts/benchmarks/training.py \
+       --rl_library rsl_rl \
+       --task Isaac-Navigation-Flat-Anymal-C-v0 \
+       --num_envs 4096 \
+       --max_iterations 500 \
+       presets=newton_mjwarp \
        --headless \
        --benchmark_backend json \
        --output_path ./results
@@ -143,10 +161,7 @@ Measure asset method and property performance using mock interfaces:
 
 .. code-block:: bash
 
-   # Run PhysX micro-benchmarks
-   ./scripts/benchmarks/run_physx_benchmarks.sh ./output_dir
-
-   # Run articulation benchmarks manually
+   # Run articulation benchmarks
    ./isaaclab.sh -p source/isaaclab_physx/benchmark/assets/benchmark_articulation.py \
        --num_iterations 1000 \
        --num_instances 4096
@@ -165,7 +180,7 @@ understanding where time is spent during initialization.
 .. code-block:: bash
 
    # Basic usage — reports top 30 functions per phase
-   ./isaaclab.sh -p scripts/benchmarks/benchmark_startup.py \
+   ./isaaclab.sh -p scripts/benchmarks/startup.py \
        --task Isaac-Ant-v0 \
        --num_envs 4096 \
        --headless \
@@ -204,7 +219,7 @@ Patterns use ``fnmatch`` syntax (``*`` and ``?`` wildcards):
 
 .. code-block:: bash
 
-   ./isaaclab.sh -p scripts/benchmarks/benchmark_startup.py \
+   ./isaaclab.sh -p scripts/benchmarks/startup.py \
        --task Isaac-Ant-v0 \
        --num_envs 4096 \
        --headless \
@@ -267,8 +282,8 @@ Common Arguments
      - ``false``
      - Run without rendering
 
-Non-RL Benchmark Arguments
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Runtime Benchmark Arguments (``runtime.py``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
@@ -290,8 +305,8 @@ Non-RL Benchmark Arguments
      - ``false``
      - Enable camera rendering (for RGB/depth tasks)
 
-RL Training Arguments
-~~~~~~~~~~~~~~~~~~~~~
+RL Training Arguments (``training.py``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
@@ -300,6 +315,9 @@ RL Training Arguments
    * - Argument
      - Default
      - Description
+   * - ``--rl_library``
+     - required
+     - RL backend: ``rsl_rl``, ``rl_games``, ``skrl``, or ``sb3``
    * - ``--task``
      - required
      - Environment task name
@@ -627,14 +645,23 @@ Step 4: Finalize
 Integration with CI/CD
 ----------------------
 
-The shell scripts in ``scripts/benchmarks/`` are designed for CI/CD integration:
+The benchmark entry points under ``scripts/benchmarks/`` are designed for CI/CD integration:
 
 .. code-block:: bash
 
    # GitHub Actions / GitLab CI example
-   - name: Run Benchmarks
+   - name: Run Runtime Benchmark
      run: |
-       ./scripts/benchmarks/run_non_rl_benchmarks.sh ./benchmark_results
+       ./isaaclab.sh -p scripts/benchmarks/runtime.py \
+           --task Isaac-Cartpole-v0 --num_envs 4096 --num_frames 100 \
+           --headless --benchmark_backend json --output_path ./benchmark_results
+
+   - name: Run Training Benchmark
+     run: |
+       ./isaaclab.sh -p scripts/benchmarks/training.py \
+           --rl_library rsl_rl --task Isaac-Cartpole-v0 --num_envs 4096 \
+           --max_iterations 500 --headless --benchmark_backend json \
+           --output_path ./benchmark_results
 
    - name: Upload Results
      uses: actions/upload-artifact@v3
@@ -646,7 +673,9 @@ For Osmo integration, use the ``osmo`` backend:
 
 .. code-block:: bash
 
-   ./scripts/benchmarks/run_non_rl_benchmarks.sh ./results
+   ./isaaclab.sh -p scripts/benchmarks/runtime.py \
+       --task Isaac-Cartpole-v0 --num_envs 4096 --num_frames 100 \
+       --headless --benchmark_backend osmo --output_path ./results
    # Results are in Osmo-compatible JSON format
 
 Troubleshooting

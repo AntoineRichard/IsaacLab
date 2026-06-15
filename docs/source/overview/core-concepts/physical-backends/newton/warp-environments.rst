@@ -260,7 +260,7 @@ specific to warp envs; for Newton physics limitations see :doc:`supported-featur
 Benchmarking Your Environment
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The performance table above was produced with ``scripts/benchmarks/benchmark_rsl_rl.py``,
+The performance table above was produced with ``scripts/benchmarks/training.py``,
 which runs a fixed iteration count and reports step-time statistics. Use the same script
 to estimate the gain for your own task before committing to a migration.
 
@@ -269,7 +269,8 @@ to estimate the gain for your own task before committing to a migration.
 .. code-block:: bash
 
     # Stable variant
-    ./isaaclab.sh -p scripts/benchmarks/benchmark_rsl_rl.py \
+    ./isaaclab.sh -p scripts/benchmarks/training.py \
+        --rl_library rsl_rl \
         --task <Task-Name>-v0 \
         --num_envs 4096 \
         --max_iterations 500 \
@@ -278,7 +279,8 @@ to estimate the gain for your own task before committing to a migration.
         --output_path benchmarks/stable
 
     # Warp variant — same task with -Warp- suffix
-    ./isaaclab.sh -p scripts/benchmarks/benchmark_rsl_rl.py \
+    ./isaaclab.sh -p scripts/benchmarks/training.py \
+        --rl_library rsl_rl \
         --task <Task-Name>-Warp-v0 \
         --num_envs 4096 \
         --max_iterations 500 \
@@ -291,9 +293,9 @@ The ``summary`` backend prints step time (mean / p50 / p99) and total throughput
 
 **Sweep across all available tasks**
 
-``scripts/benchmarks/run_training_benchmarks.sh`` runs the full set of stable tasks listed
-in the script (cartpole, ant, humanoid, locomotion, manipulation). Pair it with a
-warp-tasks variant (substitute the ``-Warp-`` suffixed task ids) and diff the two outputs.
+Run ``training.py`` for each task in the stable set (cartpole, ant, humanoid, locomotion,
+manipulation) and again with the ``-Warp-`` suffixed task ids, then diff the two output
+directories.
 
 **What to look at in the output**
 
@@ -311,7 +313,7 @@ step time and look at where it's spent:
 - ``step_time`` dominated by ``manager.compute_*`` calls → expect large gains, since those
   are exactly what the warp managers replace with captured kernel launches.
 
-Use ``--num_frames`` on ``benchmark_non_rl.py`` for a no-policy step-time microbenchmark
+Use ``--num_frames`` on ``runtime.py`` for a no-policy step-time microbenchmark
 when you want to isolate env overhead from policy compute.
 
 
