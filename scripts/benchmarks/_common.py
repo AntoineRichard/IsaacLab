@@ -31,8 +31,33 @@ def get_backend_type(cli_backend: str) -> str:
         "json": "json",
         "osmo": "osmo",
         "summary": "summary",
+        "schema": "schema",
     }
     return mapping.get(cli_backend, "omniperf")
+
+
+def get_backend_types(cli_backend: str) -> list[str]:
+    """Split a comma-separated ``--benchmark_backend`` value into canonical backend types.
+
+    Each token is normalized with :func:`get_backend_type` (so legacy long-form aliases and
+    unknown-token fallback to ``"omniperf"`` still apply). Order is preserved and duplicates
+    are removed. An empty input yields ``["omniperf"]``.
+
+    Args:
+        cli_backend: Raw ``--benchmark_backend`` value, e.g. ``"schema"`` or ``"schema,omniperf"``.
+
+    Returns:
+        Ordered, de-duplicated list of canonical backend type strings.
+    """
+    out: list[str] = []
+    for tok in cli_backend.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        canon = get_backend_type(tok)
+        if canon not in out:
+            out.append(canon)
+    return out or ["omniperf"]
 
 
 def preset_tokens(folded: list[str]) -> list[str]:
