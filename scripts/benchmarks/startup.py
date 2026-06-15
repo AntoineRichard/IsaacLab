@@ -110,8 +110,11 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from isaaclab.envs import DirectMARLEnvCfg, DirectRLEnvCfg, ManagerBasedRLEnvCfg  # noqa: E402
-from isaaclab.test.benchmark import BaseIsaacLabBenchmark  # noqa: E402
-from isaaclab.test.benchmark import builders, capture  # noqa: E402
+from isaaclab.test.benchmark import (  # noqa: E402
+    BaseIsaacLabBenchmark,  # noqa: E402
+    builders,
+    capture,
+)
 from isaaclab.test.benchmark.profiling import parse_cprofile_stats  # noqa: E402
 from isaaclab.test.benchmark.schema import CProfileFunction, StartupPhase  # noqa: E402
 from isaaclab.test.benchmark.serialize import write_bundle_file  # noqa: E402

@@ -62,9 +62,7 @@ def test_startup_writes_startup_bundle(tmp_path):
     assert data["run"]["framework"] is None, "startup bundle should have framework=null"
 
     # All five phases must be present
-    assert _EXPECTED_PHASES == set(data["phases"].keys()), (
-        f"unexpected phases: {set(data['phases'].keys())}"
-    )
+    assert set(data["phases"].keys()) == _EXPECTED_PHASES, f"unexpected phases: {set(data['phases'].keys())}"
 
     # Each phase must have a positive total_time_s
     for phase_name, phase in data["phases"].items():

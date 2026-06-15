@@ -11,6 +11,8 @@ import argparse
 
 import pytest
 
+from isaaclab.test.benchmark.metrics import SUCCESS_RATE_LOG_TAGS
+
 from scripts.benchmarks.early_stop import (
     DEFAULT_SUCCESS_THRESHOLD,
     DEFAULT_SUCCESS_WINDOW,
@@ -21,7 +23,6 @@ from scripts.benchmarks.early_stop import (
     build_success_kwargs,
     get_success_tracker,
 )
-from scripts.benchmarks.utils import SUCCESS_RATE_LOG_TAGS, log_success
 
 DEFAULT_SUCCESS_TAG = SUCCESS_RATE_LOG_TAGS[0]
 
@@ -36,17 +37,6 @@ class _FakeTensor:
 
     def item(self) -> float:
         return self._value
-
-
-class _FakeBenchmark:
-    def __init__(self):
-        self.measurements: list[tuple[str, str, object, str]] = []
-
-    def add_measurement(self, phase, measurement):
-        self.measurements.append((phase, measurement.name, measurement.value, measurement.unit))
-
-    def by_name(self, name: str):
-        return next(m for m in self.measurements if m[1] == name)
 
 
 class _FakeLogger:
@@ -601,106 +591,3 @@ class TestRlGamesEarlyStopObserver:
         obs = RlGamesEarlyStopObserver(_FakeBaseObserver(), 0.5, 2)
         obs.after_init(_FakeAlgo(horizon_length=1, epoch_num=7))
         assert obs.framework_iteration_count == 7
-
-
-# -- log_success (scripts.benchmarks.utils) ---------------------------------
-
-
-class TestLogSuccess:
-    """Test cases for the benchmark-side success-metric logging helper."""
-
-    def _tracker_with(self, history: list[float]) -> SuccessRateTracker:
-        """Build a tracker with a pre-populated history for testing."""
-        t = SuccessRateTracker(0.5, 3, num_steps_per_env=4)
-        t.history = history
-        return t
-
-    def test_noop_when_tracker_is_none(self):
-        """Test that ``log_success`` emits nothing when no tracker is supplied."""
-        bench = _FakeBenchmark()
-        log_success(bench, None)
-        assert bench.measurements == []
-
-    def test_noop_when_history_empty(self):
-        """Test that an empty tracker history is a silent no-op."""
-        bench = _FakeBenchmark()
-        log_success(bench, self._tracker_with([]))
-        assert bench.measurements == []
-
-    def test_logs_full_measurement_set(self):
-        """Test that a populated tracker produces the full measurement set."""
-        bench = _FakeBenchmark()
-        log_success(bench, self._tracker_with([0.9, 0.9, 0.9]))
-        names = {m[1] for m in bench.measurements}
-        assert names == {"Success Rate (tail mean)", "Success Converged At Iter", "Success Passed"}
-
-    def test_converged_path(self):
-        """Test that a converged run reports ``Passed=1`` with the true converged iter + tail mean."""
-        bench = _FakeBenchmark()
-        log_success(bench, self._tracker_with([0.9, 0.9, 0.9]))
-        assert bench.by_name("Success Passed")[2] == 1
-        assert bench.by_name("Success Converged At Iter")[2] == 3
-        assert bench.by_name("Success Rate (tail mean)")[2] == pytest.approx(0.9)
-
-    def test_failed_path(self):
-        """Test that a non-converged run reports ``Passed=0`` and ``Converged At Iter=-1``."""
-        bench = _FakeBenchmark()
-        log_success(bench, self._tracker_with([0.1, 0.2, 0.3]))
-        assert bench.by_name("Success Passed")[2] == 0
-        assert bench.by_name("Success Converged At Iter")[2] == -1
-
-    def test_cadence_warning_fires_on_cadence_violation(self, capsys):
-        """Test that a 2x tracker/framework ratio triggers the cadence warning."""
-        bench = _FakeBenchmark()
-        log_success(bench, self._tracker_with([0.5] * 100), framework_iteration_count=50)
-        captured = capsys.readouterr().out
-        assert "[WARN]" in captured
-        assert "check record_step cadence" in captured
-
-    def test_no_cadence_warning_on_exact_agreement(self, capsys):
-        """Test that an exact tracker-vs-framework match (rl_games case) is silent."""
-        bench = _FakeBenchmark()
-        log_success(bench, self._tracker_with([0.5] * 50), framework_iteration_count=50)
-        assert "[WARN]" not in capsys.readouterr().out
-
-    def test_no_cadence_warning_on_rsl_rl_early_stop_offset(self, capsys):
-        """Test that the rsl_rl early-stop +1 offset (tracker=51, framework=50) is within slack."""
-        bench = _FakeBenchmark()
-        log_success(bench, self._tracker_with([0.5] * 51), framework_iteration_count=50)
-        assert "[WARN]" not in capsys.readouterr().out
-
-    def test_no_cadence_warning_when_framework_count_not_provided(self, capsys):
-        """Test that the cadence check is skipped entirely when no framework count is supplied."""
-        bench = _FakeBenchmark()
-        log_success(bench, self._tracker_with([0.5] * 999))
-        assert "[WARN]" not in capsys.readouterr().out
-
-    def test_cadence_violation_end_to_end_via_wrapper(self, capsys):
-        """Test that a simulated 2x env.step bug manifests as an overcounted tracker and is caught.
-
-        The wrapper can't distinguish "2 env.step calls that should have been 1" from normal
-        traffic — but the tracker overcounts iterations by 2x, and comparing against the
-        runner's independent counter catches the discrepancy.
-        """
-        env = _FakeEnv([{"log": {DEFAULT_SUCCESS_TAG: 0.5}}] * 100)
-        runner = _FakeRunner()
-        runner.current_learning_iteration = 9  # rsl_rl thinks 10 iterations completed
-        with RslRlEarlyStopWrapper(
-            env,
-            runner,
-            0.5,
-            3,
-            num_steps_per_env=2,
-            stop_on_convergence=False,
-        ) as ctx:
-            # simulate the bug: upstream calls env.step 2x per real rollout step
-            for _ in range(10 * 2 * 2):  # 10 iters * 2 steps/iter * 2x-bug
-                env.step(None)
-        # 40 calls with num_steps_per_env=2 => tracker.current_iteration = 20
-        assert ctx.tracker.current_iteration == 20
-        # framework's counter is independent: reports 10 iterations actually ran
-        assert ctx.framework_iteration_count == 10
-        bench = _FakeBenchmark()
-        log_success(bench, ctx.tracker, framework_iteration_count=ctx.framework_iteration_count)
-        captured = capsys.readouterr().out
-        assert "[WARN]" in captured
