@@ -9,6 +9,7 @@ and success-rate tracking."""
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import statistics
 from collections.abc import Sequence
@@ -31,6 +32,9 @@ def parse_tf_logs(log_dir: str, pattern: str = "events*") -> dict[str, list[floa
     """
     list_of_files = glob.glob(os.path.join(log_dir, pattern))
     if not list_of_files:
+        logging.getLogger(__name__).warning(
+            "No TensorBoard event files matched %r under %r; returning empty log data.", pattern, log_dir
+        )
         return {}
     latest_file = max(list_of_files, key=os.path.getctime)
     ea = event_accumulator.EventAccumulator(latest_file)
@@ -120,9 +124,10 @@ class SuccessRateTracker:
     def at_iteration_boundary(self) -> bool:
         """Whether the tracker has seen exactly a full iteration's worth of steps.
 
-        Assumes :meth:`record_step` is called exactly once per env step. This holds for
-        all current framework integrations (rsl_rl's patched ``env.step`` and rl_games'
-        ``AlgoObserver.process_infos``) — both pair a single step with a single record.
+        Assumes :meth:`record_step` is called exactly once per env step. This property is
+        used only by the rsl_rl wrapper (whose patched ``env.step`` calls
+        :meth:`record_step` once per env step); the rl_games observer ends iterations
+        directly via :meth:`after_steps` and does not use this property.
         Integrations that call :meth:`record_step` more or fewer times per env step will
         break iteration accounting.
         """

@@ -214,6 +214,11 @@ def run(argv: list[str]) -> None:
         else:
             # DistillationRunner or future runner types — fall through to OnPolicyRunner for
             # benchmarking purposes; the adapter only needs a running training loop.
+            print(
+                f"[WARNING] benchmarking '{agent_cfg.class_name}' as OnPolicyRunner;"
+                " specialized runner behavior is not benchmarked.",
+                file=sys.stderr,
+            )
             runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
 
         early = RslRlEarlyStopWrapper(
@@ -228,6 +233,12 @@ def run(argv: list[str]) -> None:
         # Parse TensorBoard logs.
         desc = BACKEND_DESCRIPTORS["rsl_rl"]
         log_data = parse_tf_logs(log_dir, desc.tfevents_pattern)
+        if not log_data or (not log_data.get(desc.reward_tag) and agent_cfg.max_iterations >= 1):
+            print(
+                f"[WARNING] No TensorBoard data parsed from {log_dir!r};"
+                " the emitted bundle will report zero metrics. Check the log directory.",
+                file=sys.stderr,
+            )
 
         # Derive per-iteration timing series.  rsl_rl logs Perf/collection_time
         # and Perf/learning_time in seconds (the printed "0.04s" is the raw value).

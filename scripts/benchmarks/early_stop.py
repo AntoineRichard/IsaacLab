@@ -171,7 +171,8 @@ class RlGamesEarlyStopObserver:
             self.algo.max_epochs = self.tracker.current_iteration
 
     def after_clear_stats(self):
-        self._base.after_clear_stats()
+        if hasattr(self._base, "after_clear_stats"):
+            self._base.after_clear_stats()
 
     def after_print_stats(self, frame, epoch_num, total_time):
         self._base.after_print_stats(frame, epoch_num, total_time)

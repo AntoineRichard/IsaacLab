@@ -247,13 +247,24 @@ def run(argv: list[str]) -> None:
             try:
                 observer.algo.writer.flush()
                 observer.algo.writer.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[WARNING] rl_games TensorBoard writer flush/close failed: {exc!r};"
+                    " TB logs may be incomplete and metrics may be zero.",
+                    file=sys.stderr,
+                )
 
         # Parse TensorBoard logs.
         desc = BACKEND_DESCRIPTORS["rl_games"]
         tb_dir = os.path.join(log_root_path, log_dir)
         log_data = parse_tf_logs(tb_dir, desc.tfevents_pattern)
+        max_epochs = agent_cfg["params"]["config"].get("max_epochs", 1)
+        if not log_data or (not log_data.get(desc.reward_tag) and max_epochs >= 1):
+            print(
+                f"[WARNING] No TensorBoard data parsed from {tb_dir!r};"
+                " the emitted bundle will report zero metrics. Check the log directory.",
+                file=sys.stderr,
+            )
 
         # Derive per-iteration timing.
         # rl_games logs FPS directly; iteration_time = steps / total_fps

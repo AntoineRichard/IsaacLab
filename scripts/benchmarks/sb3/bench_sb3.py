@@ -330,6 +330,12 @@ def run(argv: list[str]) -> None:
         # Filter out NaN entries from rollouts where no episode finished.
         reward_series = [v for v in cb.ep_rew_mean if v == v]  # NaN != NaN
         ep_len_series = [v for v in cb.ep_len_mean if v == v]
+        if not reward_series and iteration_times_s:
+            print(
+                "[WARNING] sb3: no episodes completed during the benchmarked rollouts;"
+                " reward/episode-length curves are empty.",
+                file=sys.stderr,
+            )
 
         startup = StartupTime(
             app_launch=(app_t1 - app_t0) / 1e9,

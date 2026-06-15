@@ -78,6 +78,11 @@ def _build_benchmark_trainer_class():
             the per-iter attributes empty.
             """
             if self.num_simultaneous_agents > 1 or self.env.num_agents > 1:
+                print(
+                    "[WARNING] BenchmarkTrainer: multi-agent — per-iteration timing/reward/episode-length"
+                    " series will be empty; the bundle's runtime/learning metrics will be zero.",
+                    file=sys.stderr,
+                )
                 super().train()
                 return
 
@@ -87,6 +92,12 @@ def _build_benchmark_trainer_class():
                 getattr(agent_cfg, "rollouts", None) if agent_cfg is not None else getattr(agent_obj, "_rollouts", None)
             )
             if not rollouts_val:
+                print(
+                    "[WARNING] BenchmarkTrainer: unresolved rollout boundary — per-iteration"
+                    " timing/reward/episode-length series will be empty;"
+                    " the bundle's runtime/learning metrics will be zero.",
+                    file=sys.stderr,
+                )
                 super().train()
                 return
 
@@ -432,6 +443,7 @@ def run(argv: list[str]) -> None:
             max_iterations=args_cli.max_iterations,
         )
 
+        series_extra = {"series_unavailable": "skrl_benchmark_trainer_fallback"} if not iter_times_s else None
         bundle = builders.build_training_bundle(
             run=run_identity,
             versions=versions,
@@ -442,6 +454,7 @@ def run(argv: list[str]) -> None:
             success_rate=success_rate,
             checkpoint_path=None,
             video_path=None,
+            extra=series_extra,
         )
 
         out_path = os.path.join(args_cli.output_path, f"training_{args_cli.task}.json")
