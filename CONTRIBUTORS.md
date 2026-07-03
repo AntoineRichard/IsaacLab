@@ -44,6 +44,7 @@ Guidelines for modifications:
 
 ## Contributors
 
+* Agon Serifi
 * Alessandro Assirelli
 * Alex Omar
 * Alexander Millane
@@ -131,6 +132,7 @@ Guidelines for modifications:
 * Michael Gussert
 * Michael Lin
 * Michael Noseworthy
+* Michal Hapala
 * Miguel Alonso Jr
 * Mihir Kulkarni
 * Mingxue Gu

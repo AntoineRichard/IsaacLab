@@ -2331,7 +2331,7 @@ class Articulation(BaseArticulation):
         if self._has_body_ordering:
             backend_staging.timestamp = validity
 
-        wp.copy(self.data._cpu_body_coms, body_com_backend)
+        wp.copy(self.data._cpu_body_coms, body_com_backend.view(wp.float32))
         if use_mask:
             self._root_view.set_attribute(
                 TT.BODY_COM_POSE, self.data._cpu_body_coms, mask=self._get_cpu_env_mask(env_sel)
