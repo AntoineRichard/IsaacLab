@@ -148,5 +148,305 @@
       "n": 3
     },
     "variant": "physx"
+  },
+  {
+    "ep_length": {
+      "half_width": 0.0,
+      "mean": 300.0,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.004732148676267049,
+      "mean": 0.26066917030290626,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.005034244086051115,
+      "mean": 4.942386325200399,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.0,
+      "mean": 1.0,
+      "n": 3
+    },
+    "task": "Isaac-Cartpole-Direct",
+    "total_fps": {
+      "half_width": 4446.902369627246,
+      "mean": 251501.70459770114,
+      "n": 3
+    },
+    "variant": "kamino_current"
+  },
+  {
+    "ep_length": {
+      "half_width": 0.0,
+      "mean": 300.0,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.00141425268945474,
+      "mean": 0.13263386693494073,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.013577468499883179,
+      "mean": 4.950012477238973,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.0,
+      "mean": 1.0,
+      "n": 3
+    },
+    "task": "Isaac-Cartpole-Direct",
+    "total_fps": {
+      "half_width": 5152.657948962006,
+      "mean": 494241.47471264366,
+      "n": 3
+    },
+    "variant": "kamino_pr_dvi"
+  },
+  {
+    "ep_length": {
+      "half_width": 0.0,
+      "mean": 300.0,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.002108876112972348,
+      "mean": 0.2599412145285771,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.014270006490476536,
+      "mean": 4.946351027488708,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.0,
+      "mean": 1.0,
+      "n": 3
+    },
+    "task": "Isaac-Cartpole-Direct",
+    "total_fps": {
+      "half_width": 2014.748460243135,
+      "mean": 252177.9275862069,
+      "n": 3
+    },
+    "variant": "kamino_pr_padmm"
+  },
+  {
+    "ep_length": {
+      "half_width": 0.19290243912346408,
+      "mean": 299.9551666259766,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.0012611213662236706,
+      "mean": 0.08746244633334807,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.00870266981730229,
+      "mean": 4.947261341412863,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.0,
+      "mean": 1.0,
+      "n": 3
+    },
+    "task": "Isaac-Cartpole-Direct",
+    "total_fps": {
+      "half_width": 9902.678201711286,
+      "mean": 749903.9862068966,
+      "n": 3
+    },
+    "variant": "mjwarp"
+  },
+  {
+    "ep_length": {
+      "half_width": 5.57221735686817,
+      "mean": 293.9526677449544,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.003648497031796545,
+      "mean": 0.13306672353854124,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.15117051467318557,
+      "mean": -5.541834354400635,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.008686999360163884,
+      "mean": 0.9704516212145488,
+      "n": 3
+    },
+    "task": "Isaac-Cartpole-Direct",
+    "total_fps": {
+      "half_width": 12632.538913590508,
+      "mean": 494030.3632183908,
+      "n": 3
+    },
+    "variant": "physx"
+  },
+  {
+    "ep_length": {
+      "half_width": 6.014152444493384,
+      "mean": 988.9686635335287,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.18304449430049946,
+      "mean": 6.056866357792384,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.3350289903974562,
+      "mean": 21.668183040618896,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.0022972757925562343,
+      "mean": 0.9971106221278508,
+      "n": 3
+    },
+    "task": "Isaac-Velocity-Flat-AnymalD",
+    "total_fps": {
+      "half_width": 422.64906467757885,
+      "mean": 16306.780459770116,
+      "n": 3
+    },
+    "variant": "kamino_current"
+  },
+  {
+    "ep_length": {
+      "half_width": 13.521423400042618,
+      "mean": 977.1124989827474,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.003905488367359562,
+      "mean": 0.8886635078780953,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.5088558326764043,
+      "mean": 21.683472633361816,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.004736911185456942,
+      "mean": 0.9951857497294744,
+      "n": 3
+    },
+    "task": "Isaac-Velocity-Flat-AnymalD",
+    "total_fps": {
+      "half_width": 449.97504091833304,
+      "mean": 110715.61494252873,
+      "n": 3
+    },
+    "variant": "kamino_pr_dvi"
+  },
+  {
+    "ep_length": {
+      "half_width": 3.082880320354879,
+      "mean": 985.2199940999349,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.10717433550775006,
+      "mean": 6.316987888566379,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.5968061592504845,
+      "mean": 21.721777407328286,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.006585823311368964,
+      "mean": 0.9967515250047048,
+      "n": 3
+    },
+    "task": "Isaac-Velocity-Flat-AnymalD",
+    "total_fps": {
+      "half_width": 253.70625238750736,
+      "mean": 15605.565517241379,
+      "n": 3
+    },
+    "variant": "kamino_pr_padmm"
+  },
+  {
+    "ep_length": {
+      "half_width": 31.81177307036031,
+      "mean": 978.6944976806641,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.014254176921009845,
+      "mean": 0.37092513078930733,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 15.940735847837427,
+      "mean": 15.859152173995973,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 1.068687078492586,
+      "mean": 0.7495198508103689,
+      "n": 3
+    },
+    "task": "Isaac-Velocity-Flat-AnymalD",
+    "total_fps": {
+      "half_width": 10653.289151953813,
+      "mean": 265485.58275862073,
+      "n": 3
+    },
+    "variant": "mjwarp"
+  },
+  {
+    "ep_length": {
+      "half_width": 3.058594362948503,
+      "mean": 986.7853352864583,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.01216009326289159,
+      "mean": 0.47948077903396785,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 2.9376800599484696,
+      "mean": 19.573797988891602,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.003269686788555314,
+      "mean": 0.9949154108762741,
+      "n": 3
+    },
+    "task": "Isaac-Velocity-Flat-AnymalD",
+    "total_fps": {
+      "half_width": 5188.538133747035,
+      "mean": 205414.22873563218,
+      "n": 3
+    },
+    "variant": "physx"
   }
 ]
