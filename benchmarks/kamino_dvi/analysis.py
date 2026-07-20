@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
-import statistics
 import json
+import statistics
 from dataclasses import dataclass
 from itertools import groupby
 from pathlib import Path
