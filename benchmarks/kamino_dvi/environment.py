@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -122,7 +123,9 @@ def probe_environment(
     Raises:
         ValueError: If the Newton installation lacks an immutable VCS revision.
     """
-    options = {"check": True, "capture_output": True, "text": True}
+    probe_env = os.environ.copy()
+    probe_env.pop("PYTHONPATH", None)
+    options = {"check": True, "capture_output": True, "text": True, "env": probe_env}
     probe = runner([str(python), "-c", _PROBE_SCRIPT], **options)
     data = json.loads(probe.stdout.splitlines()[-1])
     revision = data.get("newton_revision")

@@ -176,6 +176,8 @@ def execute_command(
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     timed_out = False
+    process_env = os.environ.copy()
+    process_env.pop("PYTHONPATH", None)
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
         process = popen_factory(
             command,
@@ -183,6 +185,7 @@ def execute_command(
             stderr=stderr,
             text=True,
             start_new_session=True,
+            env=process_env,
         )
         try:
             process.communicate(timeout=timeout_s)
