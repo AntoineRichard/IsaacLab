@@ -43,14 +43,13 @@ def _run(command: list[str]) -> None:
         "max_iterations",
         "formatter",
         "expect_reward_series",
-        "expect_success_rate",
         "expect_checkpoint",
     ),
     [
-        ("rl_games", 512, 20, "schema", True, True, False),
-        ("rsl_rl", 16, 20, "schema,omniperf", True, True, False),
-        ("sb3", 16, 70, "schema", False, True, True),
-        ("skrl", 16, 20, "schema", True, True, False),
+        ("rl_games", 512, 20, "schema", True, False),
+        ("rsl_rl", 16, 20, "schema,omniperf", True, False),
+        ("sb3", 16, 70, "schema", False, True),
+        ("skrl", 16, 20, "schema", True, False),
     ],
 )
 def test_training_and_play_write_bundles(
@@ -61,7 +60,6 @@ def test_training_and_play_write_bundles(
     max_iterations: int,
     formatter: str,
     expect_reward_series: bool,
-    expect_success_rate: bool,
     expect_checkpoint: bool,
 ):
     """Each RL library trains and plays a policy with benchmark output."""
@@ -105,14 +103,11 @@ def test_training_and_play_write_bundles(
     assert training_data["learning"]["reward"]["final_ema"] is not None
     if expect_reward_series:
         assert len(training_data["learning"]["reward"]["series_per_iter"]) >= 1
-    if expect_success_rate:
-        assert training_data["success_rate"] is not None
-        success_curve = training_data["learning"]["success_rate"]
-        assert success_curve is not None
-        assert success_curve["series_per_iter"]
-        assert success_curve["final_raw"] == pytest.approx(success_curve["series_per_iter"][-1])
-    else:
-        assert training_data["learning"]["success_rate"] is None
+    assert training_data["success_rate"] is not None
+    success_curve = training_data["learning"]["success_rate"]
+    assert success_curve is not None
+    assert success_curve["series_per_iter"]
+    assert success_curve["final_raw"] == pytest.approx(success_curve["series_per_iter"][-1])
     if expect_checkpoint:
         assert Path(training_data["checkpoint_path"]).is_file()
 
