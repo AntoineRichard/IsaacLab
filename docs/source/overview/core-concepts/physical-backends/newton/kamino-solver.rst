@@ -125,6 +125,8 @@ Core Integration
       - Description
     * - ``integrator``
       - Default: ``"euler"``. Time integration scheme. ``"moreau"`` is used by the validated Kamino task presets.
+    * - ``dynamics_solver``
+      - Default: ``None``. Uses the Newton revision's default constrained dynamics solver. Set to ``"dvi"`` to select the experimental DVI solver in compatible Newton versions.
     * - ``use_fk_solver``
       - Default: ``True``. Enables Kamino's forward-kinematics solver for resets. Keep this enabled for Isaac Lab tasks unless you have a task-specific reset path.
     * - ``rotation_correction``

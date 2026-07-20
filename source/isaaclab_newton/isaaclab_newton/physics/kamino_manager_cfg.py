@@ -45,6 +45,13 @@ class KaminoSolverCfg(NewtonSolverCfg):
     integrator: str = "euler"
     """Integrator type. Can be "euler" or "moreau"."""
 
+    dynamics_solver: str | None = None
+    """Constrained dynamics solver variant.
+
+    When ``None``, Newton's default dynamics solver is used. Set to ``"dvi"``
+    to select the experimental DVI solver in compatible Newton versions.
+    """
+
     use_collision_detector: bool = False
     """Whether to use Kamino's internal collision detector instead of Newton's pipeline."""
 
@@ -204,6 +211,10 @@ class KaminoSolverCfg(NewtonSolverCfg):
         if self.use_fk_solver is None:
             self.use_fk_solver = True
 
+        solver_kwargs: dict[str, str] = {}
+        if self.dynamics_solver is not None:
+            solver_kwargs["dynamics_solver"] = self.dynamics_solver
+
         # Build collision detector config if using Kamino's internal detector
         collision_detector = None
         if self.use_collision_detector:
@@ -251,4 +262,5 @@ class KaminoSolverCfg(NewtonSolverCfg):
                 warmstart_mode=self.padmm_warmstart_mode,
                 contact_warmstart_method=self.padmm_contact_warmstart_method,
             ),
+            **solver_kwargs,
         )
