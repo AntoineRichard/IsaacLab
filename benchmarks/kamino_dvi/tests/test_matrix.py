@@ -22,9 +22,6 @@ from benchmarks.kamino_dvi.models import EnvironmentLabel, Phase, TaskName, Vari
 EXPECTED_TASKS = (
     TaskName.CARTPOLE,
     TaskName.ANT,
-    TaskName.ANYMAL_D,
-    TaskName.DR_LEGS,
-    TaskName.FOURBAR_POLE,
 )
 ALL_VARIANTS = (
     Variant.KAMINO_CURRENT,
@@ -33,7 +30,6 @@ ALL_VARIANTS = (
     Variant.MJWARP,
     Variant.PHYSX,
 )
-KAMINO_VARIANTS = ALL_VARIANTS[:3]
 
 
 @pytest.fixture
@@ -46,7 +42,7 @@ def test_matrix_has_exact_revisions_seeds_counts_and_tasks(matrix):
     """The checked-in matrix must lock every approved experiment dimension."""
     assert tuple(task.name for task in matrix.tasks) == EXPECTED_TASKS
     assert tuple(variant.name for variant in matrix.variants) == ALL_VARIANTS
-    assert matrix.seeds == (42, 43, 44, 45, 46)
+    assert matrix.seeds == (42, 43, 44)
     assert matrix.environment_counts == (4096, 2048, 1024, 512, 256, 128)
     assert matrix.preflight_seed == 42
     assert matrix.preflight_iterations == 5
@@ -59,14 +55,14 @@ def test_matrix_has_exact_revisions_seeds_counts_and_tasks(matrix):
     assert matrix.revisions.newton_pr == "7906676b2e5061273db96af179d7081fc6cbbba0"
 
 
-def test_matrix_expands_to_21_cells_and_105_unique_full_runs(matrix):
+def test_matrix_expands_to_10_cells_and_30_unique_full_runs(matrix):
     """Every applicable task/variant/seed identity must appear exactly once."""
     cells = expand_cells(matrix)
     full_runs = expand_full_runs(matrix)
 
-    assert len(cells) == 21
-    assert len(full_runs) == 105
-    assert len(set(full_runs)) == 105
+    assert len(cells) == 10
+    assert len(full_runs) == 30
+    assert len(set(full_runs)) == 30
     assert all(run.phase is Phase.FULL for run in full_runs)
     assert all(run.max_iterations == 300 for run in full_runs)
     assert all(run.num_envs == 4096 for run in full_runs)
@@ -76,8 +72,8 @@ def test_preflights_cover_every_cell_at_seed_42_for_five_iterations(matrix):
     """Capacity selection must preflight each cell under one common protocol."""
     preflights = expand_preflights(matrix)
 
-    assert len(preflights) == 21
-    assert len(set(preflights)) == 21
+    assert len(preflights) == 10
+    assert len(set(preflights)) == 10
     assert all(run.phase is Phase.PREFLIGHT for run in preflights)
     assert all(run.seed == 42 for run in preflights)
     assert all(run.max_iterations == 5 for run in preflights)
@@ -86,18 +82,11 @@ def test_preflights_cover_every_cell_at_seed_42_for_five_iterations(matrix):
     assert ant_order == tuple(reversed(ALL_VARIANTS))
 
 
-@pytest.mark.parametrize("task", EXPECTED_TASKS[:3])
+@pytest.mark.parametrize("task", EXPECTED_TASKS)
 def test_common_tasks_use_all_variants(matrix, task):
-    """Cartpole, Ant, and ANYmal-D must include Kamino, MJWarp, and PhysX."""
+    """Cartpole and Ant must include Kamino, MJWarp, and PhysX."""
     task_spec = matrix.task(task)
     assert task_spec.variants == ALL_VARIANTS
-
-
-@pytest.mark.parametrize("task", EXPECTED_TASKS[3:])
-def test_closed_loop_tasks_use_only_kamino_variants(matrix, task):
-    """DR Legs and Four-bar Pole must not invent MJWarp or PhysX support."""
-    task_spec = matrix.task(task)
-    assert task_spec.variants == KAMINO_VARIANTS
 
 
 def test_variants_select_the_approved_locked_environment(matrix):
@@ -117,17 +106,11 @@ def test_variant_order_rotates_by_seed_and_reverses_on_alternating_tasks(matrix)
     assert ordered_variants(matrix, TaskName.CARTPOLE, 42) == ALL_VARIANTS
     assert ordered_variants(matrix, TaskName.CARTPOLE, 43) == ALL_VARIANTS[1:] + ALL_VARIANTS[:1]
     assert ordered_variants(matrix, TaskName.ANT, 42) == tuple(reversed(ALL_VARIANTS))
-    assert ordered_variants(matrix, TaskName.DR_LEGS, 42) == tuple(reversed(KAMINO_VARIANTS))
-    assert ordered_variants(matrix, TaskName.DR_LEGS, 44) == (
-        Variant.KAMINO_CURRENT,
-        Variant.KAMINO_PR_DVI,
-        Variant.KAMINO_PR_PADMM,
-    )
 
 
 def test_matrix_rejects_duplicate_seeds(tmp_path: Path):
     """Invalid duplicated experiment dimensions must fail before execution."""
-    text = DEFAULT_MATRIX_PATH.read_text(encoding="utf-8").replace("seeds: [42, 43, 44, 45, 46]", "seeds: [42, 42]")
+    text = DEFAULT_MATRIX_PATH.read_text(encoding="utf-8").replace("seeds: [42, 43, 44]", "seeds: [42, 42]")
     path = tmp_path / "matrix.yaml"
     path.write_text(text, encoding="utf-8")
 
