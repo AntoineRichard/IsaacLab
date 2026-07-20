@@ -74,8 +74,10 @@ _build
 **/tactile_record/*
 **/gelsight_r15_data/*
 
-# No benchmarks output
-/benchmarks/
+# No legacy benchmarks output, except tracked Kamino DVI tooling
+/benchmarks/*
+!/benchmarks/__init__.py
+!/benchmarks/kamino_dvi/
 
 # Ruff cache
 **/.ruff_cache/

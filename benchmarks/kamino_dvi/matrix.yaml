@@ -1,0 +1,50 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+revisions:
+  isaaclab: 79accca281128660a786abb599f40bd335963963
+  schema: 47d325124080d36a270daafe3d20e2a3d11f280b
+  newton_current: c7ae7c7648cd0717df39e5c94b95d5a02c997320
+  newton_pr: 7906676b2e5061273db96af179d7081fc6cbbba0
+
+seeds: [42, 43, 44, 45, 46]
+environment_counts: [4096, 2048, 1024, 512, 256, 128]
+preflight_seed: 42
+iterations:
+  preflight: 5
+  full: 300
+timeouts_s:
+  preflight: 1800
+  full: 14400
+
+variants:
+  - name: kamino_current
+    environment: current
+    preset: newton_kamino
+  - name: kamino_pr_padmm
+    environment: pr3570
+    preset: newton_kamino
+  - name: kamino_pr_dvi
+    environment: pr3570
+    preset: newton_kamino
+    dynamics_solver: dvi
+  - name: mjwarp
+    environment: current
+    preset: newton_mjwarp
+  - name: physx
+    environment: current
+    preset: physx
+
+tasks:
+  - name: Isaac-Cartpole-Direct
+    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
+  - name: Isaac-Ant-Direct
+    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
+  - name: Isaac-Velocity-Flat-AnymalD
+    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
+  - name: Isaac-DrLegs-Walk-v0
+    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi]
+  - name: Isaac-Fourbar-Pole-Swingup
+    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi]
