@@ -22,6 +22,7 @@ from benchmarks.kamino_dvi.models import EnvironmentLabel, Phase, TaskName, Vari
 EXPECTED_TASKS = (
     TaskName.CARTPOLE,
     TaskName.ANT,
+    TaskName.ANYMAL_D,
 )
 ALL_VARIANTS = (
     Variant.KAMINO_CURRENT,
@@ -55,14 +56,14 @@ def test_matrix_has_exact_revisions_seeds_counts_and_tasks(matrix):
     assert matrix.revisions.newton_pr == "7906676b2e5061273db96af179d7081fc6cbbba0"
 
 
-def test_matrix_expands_to_10_cells_and_30_unique_full_runs(matrix):
+def test_matrix_expands_to_15_cells_and_45_unique_full_runs(matrix):
     """Every applicable task/variant/seed identity must appear exactly once."""
     cells = expand_cells(matrix)
     full_runs = expand_full_runs(matrix)
 
-    assert len(cells) == 10
-    assert len(full_runs) == 30
-    assert len(set(full_runs)) == 30
+    assert len(cells) == 15
+    assert len(full_runs) == 45
+    assert len(set(full_runs)) == 45
     assert all(run.phase is Phase.FULL for run in full_runs)
     assert all(run.max_iterations == 300 for run in full_runs)
     assert all(run.num_envs == 4096 for run in full_runs)
@@ -72,8 +73,8 @@ def test_preflights_cover_every_cell_at_seed_42_for_five_iterations(matrix):
     """Capacity selection must preflight each cell under one common protocol."""
     preflights = expand_preflights(matrix)
 
-    assert len(preflights) == 10
-    assert len(set(preflights)) == 10
+    assert len(preflights) == 15
+    assert len(set(preflights)) == 15
     assert all(run.phase is Phase.PREFLIGHT for run in preflights)
     assert all(run.seed == 42 for run in preflights)
     assert all(run.max_iterations == 5 for run in preflights)
@@ -84,7 +85,7 @@ def test_preflights_cover_every_cell_at_seed_42_for_five_iterations(matrix):
 
 @pytest.mark.parametrize("task", EXPECTED_TASKS)
 def test_common_tasks_use_all_variants(matrix, task):
-    """Cartpole and Ant must include Kamino, MJWarp, and PhysX."""
+    """Cartpole, Ant, and ANYmal-D must include Kamino, MJWarp, and PhysX."""
     task_spec = matrix.task(task)
     assert task_spec.variants == ALL_VARIANTS
 
@@ -106,6 +107,7 @@ def test_variant_order_rotates_by_seed_and_reverses_on_alternating_tasks(matrix)
     assert ordered_variants(matrix, TaskName.CARTPOLE, 42) == ALL_VARIANTS
     assert ordered_variants(matrix, TaskName.CARTPOLE, 43) == ALL_VARIANTS[1:] + ALL_VARIANTS[:1]
     assert ordered_variants(matrix, TaskName.ANT, 42) == tuple(reversed(ALL_VARIANTS))
+    assert ordered_variants(matrix, TaskName.ANYMAL_D, 42) == ALL_VARIANTS
 
 
 def test_matrix_rejects_duplicate_seeds(tmp_path: Path):

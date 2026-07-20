@@ -41,3 +41,5 @@ tasks:
     variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
   - name: Isaac-Ant-Direct
     variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
+  - name: Isaac-Velocity-Flat-AnymalD
+    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]

@@ -113,10 +113,10 @@ def load_matrix(path: Path = DEFAULT_MATRIX_PATH) -> BenchmarkMatrix:
     )
     if matrix.preflight_seed not in matrix.seeds:
         raise ValueError("preflight seed must be one of the full-run seeds")
-    if len(expand_cells(matrix)) != 10:
-        raise ValueError("approved matrix must contain exactly 10 task/variant cells")
-    if len(expand_full_runs(matrix)) != 30:
-        raise ValueError("approved matrix must contain exactly 30 full runs")
+    if len(expand_cells(matrix)) != 15:
+        raise ValueError("approved matrix must contain exactly 15 task/variant cells")
+    if len(expand_full_runs(matrix)) != 45:
+        raise ValueError("approved matrix must contain exactly 45 full runs")
     return matrix
 
 
