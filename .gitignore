@@ -78,6 +78,7 @@ _build
 /benchmarks/*
 !/benchmarks/__init__.py
 !/benchmarks/kamino_dvi/
+/benchmark_artifacts/
 
 # Ruff cache
 **/.ruff_cache/
