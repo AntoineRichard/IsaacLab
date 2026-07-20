@@ -10,8 +10,8 @@ from isaaclab_newton.sensors import ContactSensorCfg as NewtonContactSensorCfg
 from isaaclab_ovphysx.physics import OvPhysxCfg
 from isaaclab_physx.physics import PhysxCfg
 
-from isaaclab_tasks.core.velocity.config.anymal_d.flat_env_cfg import PhysicsCfg
-from isaaclab_tasks.core.velocity.velocity_env_cfg import VelocityEnvContactSensorCfg
+from isaaclab_tasks.core.velocity.config.anymal_d.flat_env_cfg import AnymalDFlatEnvCfg, PhysicsCfg
+from isaaclab_tasks.utils.hydra import resolve_presets
 
 
 def test_anymal_d_flat_exposes_kamino_benchmark_preset():
@@ -59,9 +59,11 @@ def test_anymal_d_flat_preserves_existing_physics_presets():
     assert isinstance(physics.ovphysx, OvPhysxCfg)
 
 
-def test_anymal_d_flat_uses_newton_contact_sensor_for_kamino_dvi() -> None:
-    """ANYmal-D Flat must use its existing Newton sensor for the DVI preset."""
-    sensors = VelocityEnvContactSensorCfg()
+def test_anymal_d_flat_resolves_kamino_dvi_physics_and_contact_sensor() -> None:
+    """The DVI preset must resolve both ANYmal-D physics and its nested sensor."""
+    env_cfg = resolve_presets(AnymalDFlatEnvCfg(), selected=("newton_kamino_dvi",))
 
-    assert isinstance(sensors.newton_kamino_dvi, NewtonContactSensorCfg)
-    assert sensors.newton_kamino_dvi == sensors.newton_kamino
+    assert isinstance(env_cfg.sim.physics, NewtonCfg)
+    assert isinstance(env_cfg.sim.physics.solver_cfg, KaminoSolverCfg)
+    assert env_cfg.sim.physics.solver_cfg.dynamics_solver == "dvi"
+    assert isinstance(env_cfg.scene.contact_forces, NewtonContactSensorCfg)
