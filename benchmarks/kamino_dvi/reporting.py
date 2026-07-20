@@ -136,7 +136,7 @@ def _write_pdf(summaries: list[VariantSummary], issues: list[str], figure_paths:
         finding_lines = []
         for finding in _key_findings(summaries):
             finding_lines.extend(textwrap.wrap(f"• {finding}", width=145, subsequent_indent="  "))
-        figure.text(0.035, 0.870, "\n".join(finding_lines), fontsize=6.8, va="top", linespacing=1.2)
+        figure.text(0.035, 0.870, "\n".join(finding_lines), fontsize=6.8, va="top", linespacing=2.0)
 
         headers, rows = _pdf_summary_table(summaries)
         axis = figure.add_axes((0.025, 0.250, 0.950, 0.445))
@@ -156,7 +156,7 @@ def _write_pdf(summaries: list[VariantSummary], issues: list[str], figure_paths:
         warning_lines = []
         for issue in issues or ["No data-quality warnings or failed runs."]:
             warning_lines.extend(textwrap.wrap(f"• {issue}", width=175, subsequent_indent="  "))
-        figure.text(0.035, 0.182, "\n".join(warning_lines), fontsize=5.3, va="top", linespacing=1.05)
+        figure.text(0.035, 0.182, "\n".join(warning_lines), fontsize=5.3, va="top", linespacing=2.0)
         pdf.savefig(figure)
         plt.close(figure)
 
