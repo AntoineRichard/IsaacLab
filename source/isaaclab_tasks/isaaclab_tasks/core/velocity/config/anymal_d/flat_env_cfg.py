@@ -33,6 +33,26 @@ class PhysicsCfg(PresetCfg):
         num_substeps=1,
         debug_mode=False,
     )
+    newton_kamino_dvi = NewtonCfg(
+        solver_cfg=KaminoSolverCfg(
+            max_contacts_per_world=64,
+            integrator="moreau",
+            dynamics_solver="dvi",
+            sparse_jacobian=True,
+            sparse_dynamics=True,
+            dynamics_preconditioning=False,
+            dynamics_linear_solver_type="CR",
+            dynamics_linear_solver_max_iterations=9,
+            dvi_omega=0.3,
+            dvi_block_iterations=16,
+            dvi_contact_iterations=2,
+            dvi_bilateral_solve_period=2,
+            dvi_contact_jacobi_omega=0.45,
+            dvi_contact_jacobi_relaxation=0.9,
+        ),
+        num_substeps=1,
+        debug_mode=False,
+    )
     physx = default
     ovphysx = OvPhysxCfg()
 
