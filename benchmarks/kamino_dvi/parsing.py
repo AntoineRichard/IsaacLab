@@ -34,7 +34,7 @@ class TrainingTrace:
     total_fps: tuple[float, ...]
     reward: tuple[float, ...]
     ep_length: tuple[float, ...]
-    success_rate: tuple[float, ...] | None
+    success_rate: tuple[float, ...]
     success_schema_mismatch: bool
     resources: dict[str, Any]
 
@@ -66,7 +66,10 @@ def _tb_series(accumulator: EventAccumulator, tag: str, iterations: int) -> tupl
     expected_steps = tuple(range(iterations))
     if steps != expected_steps:
         raise MissingBenchmarkFieldError(f"TensorBoard:{tag} steps {steps!r} != {expected_steps!r}")
-    return tuple(float(event.value) for event in events)
+    values = tuple(float(event.value) for event in events)
+    if not all(math.isfinite(item) for item in values):
+        raise MissingBenchmarkFieldError(f"TensorBoard:{tag} contains non-finite values")
+    return values
 
 
 def locate_rsl_rl_events(bundle_path: Path, logs_root: Path) -> Path:
@@ -113,19 +116,14 @@ def parse_training_trace(bundle_path: Path, event_path: Path) -> TrainingTrace:
 
     reward = _series(data, "learning.reward.series_per_iter", iterations)
     ep_length = _series(data, "learning.ep_length.series_per_iter", iterations)
-    success: tuple[float, ...] | None = None
+    schema_success = _series(data, "learning.success_rate.series_per_iter", iterations)
+    success = schema_success
+    mismatch = False
     if "Metrics/success_rate" in accumulator.Tags().get("scalars", []):
         success = _tb_series(accumulator, "Metrics/success_rate", iterations)
-    schema_success = data.get("learning", {}).get("success_rate")
-    schema_success_values = schema_success.get("series_per_iter") if isinstance(schema_success, dict) else None
-    mismatch = success is not None and (
-        not isinstance(schema_success_values, list)
-        or len(schema_success_values) != len(success)
-        or any(
-            not math.isclose(float(left), right, rel_tol=1e-6, abs_tol=1e-7)
-            for left, right in zip(schema_success_values, success)
+        mismatch = any(
+            not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-7) for left, right in zip(schema_success, success)
         )
-    )
     return TrainingTrace(
         task=str(_field(data, "run.task")),
         seed=int(_field(data, "run.seed")),

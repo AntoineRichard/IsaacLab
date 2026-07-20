@@ -46,15 +46,16 @@ def _write_bundle(path: Path, *, include_reward: bool = True) -> None:
     )
 
 
-def _write_events(path: Path) -> None:
+def _write_events(path: Path, *, success_values: tuple[float, ...] | None = (1.0, 0.5, 0.0)) -> None:
     writer = SummaryWriter(path)
-    for step, (collection, learning, fps, success) in enumerate(
-        [(0.2, 0.1, 200_000.0, 1.0), (0.1, 0.05, 400_000.0, 0.5), (0.08, 0.04, 500_000.0, 0.0)]
+    for step, (collection, learning, fps) in enumerate(
+        [(0.2, 0.1, 200_000.0), (0.1, 0.05, 400_000.0), (0.08, 0.04, 500_000.0)]
     ):
         writer.add_scalar("Perf/collection_time", collection, step)
         writer.add_scalar("Perf/learning_time", learning, step)
         writer.add_scalar("Perf/total_fps", fps, step)
-        writer.add_scalar("Metrics/success_rate", success, step)
+        if success_values is not None:
+            writer.add_scalar("Metrics/success_rate", success_values[step], step)
     writer.close()
 
 
@@ -85,6 +86,58 @@ def test_parse_training_trace_reports_missing_required_schema_field(tmp_path: Pa
 
     with pytest.raises(MissingBenchmarkFieldError, match="learning.reward.series_per_iter"):
         parse_training_trace(bundle, events)
+
+
+def test_parse_training_trace_requires_schema_success_series(tmp_path: Path):
+    """Completed bundles must include schema success data for every iteration."""
+    bundle = tmp_path / "bundle.json"
+    events = tmp_path / "events"
+    _write_bundle(bundle)
+    data = json.loads(bundle.read_text(encoding="utf-8"))
+    del data["learning"]["success_rate"]
+    bundle.write_text(json.dumps(data), encoding="utf-8")
+    _write_events(events)
+
+    with pytest.raises(MissingBenchmarkFieldError, match="learning.success_rate.series_per_iter"):
+        parse_training_trace(bundle, events)
+
+
+def test_parse_training_trace_rejects_non_finite_schema_success(tmp_path: Path):
+    """Non-finite schema success data must not enter aggregation."""
+    bundle = tmp_path / "bundle.json"
+    events = tmp_path / "events"
+    _write_bundle(bundle)
+    data = json.loads(bundle.read_text(encoding="utf-8"))
+    data["learning"]["success_rate"]["series_per_iter"] = [1.0, float("nan"), 0.0]
+    bundle.write_text(json.dumps(data), encoding="utf-8")
+    _write_events(events)
+
+    with pytest.raises(MissingBenchmarkFieldError, match="learning.success_rate.series_per_iter.*non-finite"):
+        parse_training_trace(bundle, events)
+
+
+def test_parse_training_trace_rejects_non_finite_tensorboard_success(tmp_path: Path):
+    """Non-finite TensorBoard success data must not enter aggregation."""
+    bundle = tmp_path / "bundle.json"
+    events = tmp_path / "events"
+    _write_bundle(bundle)
+    _write_events(events, success_values=(1.0, float("nan"), 0.0))
+
+    with pytest.raises(MissingBenchmarkFieldError, match="TensorBoard:Metrics/success_rate.*non-finite"):
+        parse_training_trace(bundle, events)
+
+
+def test_parse_training_trace_uses_schema_success_without_tensorboard_tag(tmp_path: Path):
+    """Required schema success remains available when TensorBoard omits the tag."""
+    bundle = tmp_path / "bundle.json"
+    events = tmp_path / "events"
+    _write_bundle(bundle)
+    _write_events(events, success_values=None)
+
+    trace = parse_training_trace(bundle, events)
+
+    assert trace.success_rate == (1.0, 0.7, 0.4)
+    assert trace.success_schema_mismatch is False
 
 
 def test_series_rejects_non_finite_metric_values():
