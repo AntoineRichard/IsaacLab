@@ -118,7 +118,10 @@ def parse_training_trace(bundle_path: Path, event_path: Path) -> TrainingTrace:
     mismatch = success is not None and (
         not isinstance(schema_success_values, list)
         or len(schema_success_values) != len(success)
-        or any(not math.isclose(float(left), right, rel_tol=1e-6, abs_tol=1e-7) for left, right in zip(schema_success_values, success))
+        or any(
+            not math.isclose(float(left), right, rel_tol=1e-6, abs_tol=1e-7)
+            for left, right in zip(schema_success_values, success)
+        )
     )
     return TrainingTrace(
         task=str(_field(data, "run.task")),

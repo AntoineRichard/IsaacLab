@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 T_975_DF4 = 2.7764451051977987
 
