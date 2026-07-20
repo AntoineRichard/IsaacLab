@@ -58,17 +58,17 @@ def _markdown(summaries: list[VariantSummary], issues: list[str], figure_paths: 
             "## Protocol",
             "",
             "- RSL-RL, 300 training iterations, seeds 42–46.",
-            "- A common environment count is selected per task from 4096 downward only after explicit capacity failures.",
-            "- Runs are sequential on one GPU and validated against immutable IsaacLab/Newton revisions and schema v1.1.",
+            "- A common environment count is selected per task from 4096 downward only after explicit capacity "
+            "failures.",
+            "- Runs are sequential on one GPU and validated against immutable IsaacLab/Newton revisions and schema "
+            "v1.1.",
             "- Reward and episode length use schema series; success rate uses the matching TensorBoard trace.",
         ]
     )
     return "\n".join(lines) + "\n"
 
 
-def _write_pdf(
-    summaries: list[VariantSummary], issues: list[str], figure_paths: list[Path], output_path: Path
-) -> None:
+def _write_pdf(summaries: list[VariantSummary], issues: list[str], figure_paths: list[Path], output_path: Path) -> None:
     with PdfPages(output_path) as pdf:
         figure = plt.figure(figsize=(11.69, 8.27))
         figure.text(0.07, 0.93, "Kamino DVI Solver Benchmark", fontsize=22, fontweight="bold")
