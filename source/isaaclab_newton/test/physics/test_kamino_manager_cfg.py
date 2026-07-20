@@ -8,7 +8,6 @@
 from types import SimpleNamespace
 
 import newton.solvers
-
 from isaaclab_newton.physics import KaminoSolverCfg
 
 
