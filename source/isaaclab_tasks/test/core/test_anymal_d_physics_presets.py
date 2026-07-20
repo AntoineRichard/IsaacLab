@@ -6,10 +6,12 @@
 """Tests for the ANYmal-D Flat physics presets."""
 
 from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.sensors import ContactSensorCfg as NewtonContactSensorCfg
 from isaaclab_ovphysx.physics import OvPhysxCfg
 from isaaclab_physx.physics import PhysxCfg
 
 from isaaclab_tasks.core.velocity.config.anymal_d.flat_env_cfg import PhysicsCfg
+from isaaclab_tasks.core.velocity.velocity_env_cfg import VelocityEnvContactSensorCfg
 
 
 def test_anymal_d_flat_exposes_kamino_benchmark_preset():
@@ -55,3 +57,11 @@ def test_anymal_d_flat_preserves_existing_physics_presets():
     assert isinstance(physics.newton_mjwarp, NewtonCfg)
     assert isinstance(physics.newton_mjwarp.solver_cfg, MJWarpSolverCfg)
     assert isinstance(physics.ovphysx, OvPhysxCfg)
+
+
+def test_anymal_d_flat_uses_newton_contact_sensor_for_kamino_dvi() -> None:
+    """ANYmal-D Flat must use its existing Newton sensor for the DVI preset."""
+    sensors = VelocityEnvContactSensorCfg()
+
+    assert isinstance(sensors.newton_kamino_dvi, NewtonContactSensorCfg)
+    assert sensors.newton_kamino_dvi == sensors.newton_kamino
