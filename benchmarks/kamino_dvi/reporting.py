@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -44,13 +45,18 @@ def _key_findings(summaries: list[VariantSummary]) -> list[str]:
                 )
         if comparisons:
             findings.append(f"{task}: tuned DVI is {' and '.join(comparisons)}.")
-        gaps = []
+        backend_findings = []
         for variant, label in (("mjwarp", "MJWarp"), ("physx", "PhysX")):
             other = rows.get(variant)
-            if other is not None:
-                gaps.append(f"{dvi.iteration_time_s.mean / other.iteration_time_s.mean:.1f}× slower than {label}")
-        if gaps:
-            findings.append(f"{task}: tuned DVI remains {' and '.join(gaps)}.")
+            if other is None:
+                continue
+            ratio = dvi.iteration_time_s.mean / other.iteration_time_s.mean
+            if 0.95 <= ratio <= 1.05:
+                backend_findings.append(f"is approximately equal to {label}")
+            else:
+                backend_findings.append(f"remains {ratio:.1f}× slower than {label}")
+        if backend_findings:
+            findings.append(f"{task}: tuned DVI {' and '.join(backend_findings)}.")
     return findings
 
 
@@ -97,38 +103,61 @@ def _markdown(summaries: list[VariantSummary], issues: list[str], figure_paths: 
     return "\n".join(lines) + "\n"
 
 
+def _pdf_summary_table(summaries: list[VariantSummary]) -> tuple[list[str], list[list[str]]]:
+    """Return PDF summary headers and rows including all required learning metrics."""
+    headers = ["Task", "Variant", "Envs", "Iteration [s]", "Total FPS", "Reward", "Episode length", "Success"]
+    rows = [
+        [
+            row.task,
+            VARIANT_LABELS.get(row.variant, row.variant),
+            str(row.num_envs),
+            _estimate(row.iteration_time_s),
+            _estimate(row.total_fps, 0),
+            _estimate(row.reward),
+            _estimate(row.ep_length),
+            _estimate(row.success_rate),
+        ]
+        for row in summaries
+    ]
+    return headers, rows
+
+
 def _write_pdf(summaries: list[VariantSummary], issues: list[str], figure_paths: list[Path], output_path: Path) -> None:
     with PdfPages(output_path) as pdf:
         figure = plt.figure(figsize=(11.69, 8.27))
-        figure.text(0.07, 0.93, "Kamino DVI Solver Benchmark", fontsize=22, fontweight="bold")
-        figure.text(0.07, 0.88, "RSL-RL · 300 iterations · three seeds · mean ± 95% Student-t CI", fontsize=11)
-        finding_text = "\n".join(f"• {finding}" for finding in _key_findings(summaries))
-        figure.text(0.07, 0.80, finding_text, fontsize=9, va="top", wrap=True)
-        rows = [
-            [
-                row.task,
-                VARIANT_LABELS.get(row.variant, row.variant),
-                str(row.num_envs),
-                _estimate(row.iteration_time_s),
-                _estimate(row.total_fps, 0),
-                _estimate(row.reward),
-            ]
-            for row in summaries
-        ]
-        axis = figure.add_axes((0.04, 0.20, 0.92, 0.55))
+        figure.text(0.035, 0.965, "Kamino DVI Solver Benchmark", fontsize=18, fontweight="bold", va="top")
+        figure.text(
+            0.035,
+            0.915,
+            "RSL-RL · 300 iterations · three seeds · mean ± 95% Student-t CI",
+            fontsize=9,
+            va="top",
+        )
+        finding_lines = []
+        for finding in _key_findings(summaries):
+            finding_lines.extend(textwrap.wrap(f"• {finding}", width=145, subsequent_indent="  "))
+        figure.text(0.035, 0.870, "\n".join(finding_lines), fontsize=6.8, va="top", linespacing=1.2)
+
+        headers, rows = _pdf_summary_table(summaries)
+        axis = figure.add_axes((0.025, 0.250, 0.950, 0.445))
         axis.axis("off")
         table = axis.table(
             cellText=rows,
-            colLabels=["Task", "Variant", "Envs", "Iteration [s]", "Total FPS", "Reward"],
-            loc="upper center",
+            colLabels=headers,
+            colWidths=[0.19, 0.125, 0.045, 0.115, 0.085, 0.13, 0.15, 0.13],
+            loc="center",
             cellLoc="left",
         )
         table.auto_set_font_size(False)
-        table.set_fontsize(7.5)
-        table.scale(1, 1.35)
-        warning_text = "\n".join(f"• {issue}" for issue in issues) or "• No data-quality warnings or failed runs."
-        figure.text(0.07, 0.08, warning_text, fontsize=9, va="bottom", wrap=True)
-        pdf.savefig(figure, bbox_inches="tight")
+        table.set_fontsize(5.6)
+        table.scale(1, 1.15)
+
+        figure.text(0.035, 0.205, "Data quality and failures", fontsize=7.2, fontweight="bold", va="top")
+        warning_lines = []
+        for issue in issues or ["No data-quality warnings or failed runs."]:
+            warning_lines.extend(textwrap.wrap(f"• {issue}", width=175, subsequent_indent="  "))
+        figure.text(0.035, 0.182, "\n".join(warning_lines), fontsize=5.3, va="top", linespacing=1.05)
+        pdf.savefig(figure)
         plt.close(figure)
 
         for path in figure_paths:

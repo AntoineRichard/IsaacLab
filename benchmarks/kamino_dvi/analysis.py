@@ -31,6 +31,7 @@ class RunMetrics:
     ep_length: tuple[float, ...]
     success_rate: tuple[float, ...] | None
     success_schema_mismatch: bool = False
+    success_schema_mismatch_points: int = 0
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ def load_records(artifact_root: Path, logs_root: Path, task: str | None = None) 
                 ep_length=trace.ep_length,
                 success_rate=trace.success_rate,
                 success_schema_mismatch=trace.success_schema_mismatch,
+                success_schema_mismatch_points=trace.success_schema_mismatch_points,
             )
         )
     return records

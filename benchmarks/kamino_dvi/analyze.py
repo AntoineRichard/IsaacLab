@@ -12,7 +12,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from .analysis import VariantSummary, complete_three_seed_records, load_records, summarize_records
+from .analysis import RunMetrics, VariantSummary, complete_three_seed_records, load_records, summarize_records
 from .matrix import DEFAULT_MATRIX_PATH, load_matrix
 from .plotting import VARIANT_LABELS, plot_learning, plot_runtime
 from .reporting import write_reports
@@ -21,21 +21,28 @@ from .reporting import write_reports
 def quality_issues(records, summaries: list[VariantSummary], artifact_root: Path) -> list[str]:
     """Return explicit schema, capacity, failure, and learning-quality warnings."""
     issues: list[str] = []
-    mismatch_count = sum(record.success_schema_mismatch for record in records)
-    if mismatch_count:
+    records_by_task: dict[str, list[RunMetrics]] = {}
+    for record in records:
+        records_by_task.setdefault(record.task, []).append(record)
+    for task, task_records in sorted(records_by_task.items()):
+        mismatch_runs = sum(record.success_schema_mismatch for record in task_records)
+        mismatch_points = sum(record.success_schema_mismatch_points for record in task_records)
+        total_points = sum(len(record.success_rate or ()) for record in task_records)
         issues.append(
-            f"Schema v1.1 success series differs from TensorBoard in {mismatch_count} of {len(records)} runs; "
-            "report uses TensorBoard success. This is the known generator bug addressed separately in PR 6624."
+            f"{task}: schema v1.1 success differs from TensorBoard in {mismatch_runs}/{len(task_records)} runs "
+            f"and {mismatch_points}/{total_points} points; report uses TensorBoard success."
+        )
+    if records:
+        issues.append(
+            "Schema validation confirms every required reward, episode-length, and success field exists; "
+            "this is a value mismatch, not missing data."
         )
     for summary in summaries:
-        if (
-            summary.variant == "kamino_pr_dvi"
-            and summary.success_rate is not None
-            and summary.success_rate.half_width > 0.25
-        ):
+        if summary.success_rate is not None and summary.success_rate.half_width > 0.25:
+            label = VARIANT_LABELS.get(summary.variant, summary.variant)
             issues.append(
-                f"{summary.task} tuned DVI success is seed-sensitive: the three-seed 95% CI half-width is "
-                f"{summary.success_rate.half_width:.3f}."
+                f"{summary.task} {label} has seed-sensitive weak learning: the three-seed success 95% CI "
+                f"half-width is {summary.success_rate.half_width:.3f}; this is not a runtime or stability failure."
             )
         if summary.num_envs < 4096:
             issues.append(f"{summary.task} used {summary.num_envs} environments after a documented capacity fallback.")

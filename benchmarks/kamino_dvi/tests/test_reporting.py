@@ -7,8 +7,9 @@
 
 from pathlib import Path
 
+from benchmarks.kamino_dvi import reporting
 from benchmarks.kamino_dvi.analysis import VariantSummary
-from benchmarks.kamino_dvi.reporting import write_reports
+from benchmarks.kamino_dvi.reporting import _key_findings, write_reports
 from benchmarks.kamino_dvi.statistics import Estimate
 
 
@@ -31,3 +32,28 @@ def test_write_reports_emits_markdown_and_pdf(tmp_path: Path):
     assert "slower than MJWarp" in markdown.read_text(encoding="utf-8")
     assert pdf.read_bytes().startswith(b"%PDF")
     assert pdf.stat().st_size > 1000
+
+
+def test_key_findings_describes_near_equal_backend_runtime():
+    """A near-unity runtime ratio is described as approximately equal, not slower."""
+    estimate = Estimate(1.0, 0.1, 3)
+    summaries = [
+        VariantSummary("task", "kamino_pr_dvi", 4096, Estimate(1.0, 0.1, 3), estimate, estimate, estimate, estimate),
+        VariantSummary("task", "physx", 4096, Estimate(1.02, 0.1, 3), estimate, estimate, estimate, estimate),
+    ]
+
+    findings = _key_findings(summaries)
+
+    assert findings == ["task: tuned DVI is approximately equal to PhysX."]
+
+
+def test_pdf_summary_table_includes_all_learning_metrics():
+    """The PDF summary table contains runtime and all required learning columns."""
+    estimate = Estimate(1.0, 0.1, 3)
+    summaries = [VariantSummary("task", "physx", 4096, estimate, estimate, estimate, estimate, estimate)]
+
+    headers, rows = reporting._pdf_summary_table(summaries)
+
+    assert headers == ["Task", "Variant", "Envs", "Iteration [s]", "Total FPS", "Reward", "Episode length", "Success"]
+    assert len(rows) == 1
+    assert len(rows[0]) == len(headers) == 8

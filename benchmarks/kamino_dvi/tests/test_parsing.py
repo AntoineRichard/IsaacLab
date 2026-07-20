@@ -75,6 +75,7 @@ def test_parse_training_trace_aligns_runtime_and_learning_series(tmp_path: Path)
     assert trace.ep_length == (10.0, 20.0, 30.0)
     assert trace.success_rate == (1.0, 0.5, 0.0)
     assert trace.success_schema_mismatch is True
+    assert trace.success_schema_mismatch_points == 2
 
 
 def test_parse_training_trace_reports_missing_required_schema_field(tmp_path: Path):
@@ -138,6 +139,7 @@ def test_parse_training_trace_uses_schema_success_without_tensorboard_tag(tmp_pa
 
     assert trace.success_rate == (1.0, 0.7, 0.4)
     assert trace.success_schema_mismatch is False
+    assert trace.success_schema_mismatch_points == 0
 
 
 def test_series_rejects_non_finite_metric_values():

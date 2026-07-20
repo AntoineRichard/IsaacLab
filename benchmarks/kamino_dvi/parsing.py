@@ -37,6 +37,7 @@ class TrainingTrace:
     success_rate: tuple[float, ...]
     success_schema_mismatch: bool
     resources: dict[str, Any]
+    success_schema_mismatch_points: int = 0
 
 
 def _field(data: dict[str, Any], path: str) -> Any:
@@ -118,10 +119,10 @@ def parse_training_trace(bundle_path: Path, event_path: Path) -> TrainingTrace:
     ep_length = _series(data, "learning.ep_length.series_per_iter", iterations)
     schema_success = _series(data, "learning.success_rate.series_per_iter", iterations)
     success = schema_success
-    mismatch = False
+    mismatch_points = 0
     if "Metrics/success_rate" in accumulator.Tags().get("scalars", []):
         success = _tb_series(accumulator, "Metrics/success_rate", iterations)
-        mismatch = any(
+        mismatch_points = sum(
             not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-7) for left, right in zip(schema_success, success)
         )
     return TrainingTrace(
@@ -135,6 +136,7 @@ def parse_training_trace(bundle_path: Path, event_path: Path) -> TrainingTrace:
         reward=reward,
         ep_length=ep_length,
         success_rate=success,
-        success_schema_mismatch=mismatch,
+        success_schema_mismatch=mismatch_points > 0,
         resources=dict(_field(data, "resources")),
+        success_schema_mismatch_points=mismatch_points,
     )
