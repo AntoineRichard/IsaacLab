@@ -125,6 +125,23 @@ class BenchmarkMatrix:
                 return task
         raise KeyError(name)
 
+    def variant(self, name: Variant) -> VariantSpec:
+        """Return the specification for a physics variant.
+
+        Args:
+            name: Variant identifier to find.
+
+        Returns:
+            The matching variant specification.
+
+        Raises:
+            KeyError: If the variant is not part of this matrix.
+        """
+        for variant in self.variants:
+            if variant.name is name:
+                return variant
+        raise KeyError(name)
+
 
 @dataclass(frozen=True)
 class BenchmarkCell:

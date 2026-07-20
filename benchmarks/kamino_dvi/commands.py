@@ -1,0 +1,54 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Pure command construction for Kamino DVI training runs."""
+
+from pathlib import Path
+
+from .environment import python_executable
+from .models import BenchmarkMatrix, RunIdentity
+
+
+def build_training_command(
+    matrix: BenchmarkMatrix,
+    identity: RunIdentity,
+    repo_root: Path,
+    output_path: Path,
+) -> list[str]:
+    """Build one shell-free unified RSL-RL benchmark command.
+
+    Args:
+        matrix: Validated benchmark matrix.
+        identity: Exact run identity to execute.
+        repo_root: Isaac Lab worktree root.
+        output_path: Directory for the canonical benchmark bundle.
+
+    Returns:
+        Subprocess argument vector for the run.
+    """
+    variant = matrix.variant(identity.variant)
+    command = [
+        str(python_executable(repo_root, variant.environment)),
+        str(repo_root / "scripts" / "benchmarks" / "training.py"),
+        "--rl_library",
+        "rsl_rl",
+        "--task",
+        identity.task.value,
+        "--num_envs",
+        str(identity.num_envs),
+        "--seed",
+        str(identity.seed),
+        "--max_iterations",
+        str(identity.max_iterations),
+        "--output_path",
+        str(output_path),
+        "--benchmark_formatter",
+        "schema",
+        "--headless",
+        f"presets={variant.preset}",
+    ]
+    if variant.dynamics_solver is not None:
+        command.append(f"env.sim.physics.solver_cfg.dynamics_solver={variant.dynamics_solver}")
+    return command
