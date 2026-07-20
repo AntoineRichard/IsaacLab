@@ -65,7 +65,14 @@ def test_training_command_uses_exact_environment_and_protocol(matrix, variant, e
         "schema",
         "--headless",
         f"presets={preset}",
-    ] + (["env.sim.physics.solver_cfg.dynamics_solver=dvi"] if variant is Variant.KAMINO_PR_DVI else [])
+    ] + (
+        [
+            "env.sim.physics.solver_cfg.dynamics_solver=dvi",
+            "env.sim.physics.solver_cfg.dynamics_preconditioning=False",
+        ]
+        if variant is Variant.KAMINO_PR_DVI
+        else []
+    )
     assert all(isinstance(argument, str) for argument in command)
 
 

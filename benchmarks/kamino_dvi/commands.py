@@ -50,5 +50,10 @@ def build_training_command(
         f"presets={variant.preset}",
     ]
     if variant.dynamics_solver is not None:
-        command.append(f"env.sim.physics.solver_cfg.dynamics_solver={variant.dynamics_solver}")
+        command.extend(
+            [
+                f"env.sim.physics.solver_cfg.dynamics_solver={variant.dynamics_solver}",
+                "env.sim.physics.solver_cfg.dynamics_preconditioning=False",
+            ]
+        )
     return command
