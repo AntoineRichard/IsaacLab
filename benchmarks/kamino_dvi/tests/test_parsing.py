@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 from torch.utils.tensorboard import SummaryWriter
 
-from benchmarks.kamino_dvi.parsing import MissingBenchmarkFieldError, locate_rsl_rl_events, parse_training_trace
+from benchmarks.kamino_dvi.parsing import (
+    MissingBenchmarkFieldError,
+    _series,
+    locate_rsl_rl_events,
+    parse_training_trace,
+)
 
 
 def _write_bundle(path: Path, *, include_reward: bool = True) -> None:
@@ -80,6 +85,14 @@ def test_parse_training_trace_reports_missing_required_schema_field(tmp_path: Pa
 
     with pytest.raises(MissingBenchmarkFieldError, match="learning.reward.series_per_iter"):
         parse_training_trace(bundle, events)
+
+
+def test_series_rejects_non_finite_metric_values():
+    """A completed bundle with NaN learning data must not enter aggregation."""
+    data = {"learning": {"reward": {"series_per_iter": [1.0, float("nan"), 3.0]}}}
+
+    with pytest.raises(MissingBenchmarkFieldError, match="non-finite"):
+        _series(data, "learning.reward.series_per_iter", 3)
 
 
 def test_locate_rsl_rl_events_matches_task_and_utc_creation_time(tmp_path: Path):

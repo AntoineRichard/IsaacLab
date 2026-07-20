@@ -52,7 +52,10 @@ def _series(data: dict[str, Any], path: str, iterations: int) -> tuple[float, ..
     value = _field(data, path)
     if not isinstance(value, list) or len(value) != iterations:
         raise MissingBenchmarkFieldError(f"{path} must contain {iterations} values")
-    return tuple(float(item) for item in value)
+    values = tuple(float(item) for item in value)
+    if not all(math.isfinite(item) for item in values):
+        raise MissingBenchmarkFieldError(f"{path} contains non-finite values")
+    return values
 
 
 def _tb_series(accumulator: EventAccumulator, tag: str, iterations: int) -> tuple[float, ...]:
