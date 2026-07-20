@@ -29,8 +29,12 @@ def build_training_command(
         Subprocess argument vector for the run.
     """
     variant = matrix.variant(identity.variant)
+    environment_root = python_executable(repo_root, variant.environment).parent.parent
     command = [
-        str(python_executable(repo_root, variant.environment)),
+        "/usr/bin/env",
+        f"VIRTUAL_ENV={environment_root}",
+        str(repo_root / "isaaclab.sh"),
+        "-p",
         str(repo_root / "scripts" / "benchmarks" / "training.py"),
         "--rl_library",
         "rsl_rl",

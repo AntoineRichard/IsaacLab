@@ -44,11 +44,14 @@ def test_training_command_uses_exact_environment_and_protocol(matrix, variant, e
 
     command = build_training_command(matrix, identity, repo_root, output_path)
 
-    assert command[:2] == [
-        str(repo_root / environment / "bin" / "python"),
+    assert command[:5] == [
+        "/usr/bin/env",
+        f"VIRTUAL_ENV={repo_root / environment}",
+        str(repo_root / "isaaclab.sh"),
+        "-p",
         str(repo_root / "scripts" / "benchmarks" / "training.py"),
     ]
-    assert command[2:] == [
+    assert command[5:] == [
         "--rl_library",
         "rsl_rl",
         "--task",

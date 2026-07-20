@@ -5,16 +5,21 @@
 
 """Tests for the single-GPU benchmark subprocess runner."""
 
+import json
 import subprocess
 from pathlib import Path
 
+from benchmarks.kamino_dvi.manifests import read_manifest
 from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
-from benchmarks.kamino_dvi.models import TaskName, Variant
+from benchmarks.kamino_dvi.models import TaskName, TerminalState, Variant
 from benchmarks.kamino_dvi.run import (
     ProcessOutcome,
     build_parser,
     execute_command,
+    execute_identity,
     execute_sequentially,
+    inspect_bundle,
+    run_directory,
     select_identities,
 )
 
@@ -126,3 +131,80 @@ def test_cli_full_seed_filter_keeps_all_applicable_task_variants():
     assert len(identities) == 5
     assert {identity.variant for identity in identities} == set(matrix.task(TaskName.ANT).variants)
     assert all(identity.seed == 46 for identity in identities)
+
+
+def test_run_directory_is_stable_and_keeps_outputs_together(tmp_path: Path):
+    """Each identity must map to one deterministic artifact directory."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    identity = select_identities(
+        matrix,
+        build_parser().parse_args(
+            ["--full-only", "--task", TaskName.CARTPOLE.value, "--variant", Variant.MJWARP.value, "--seed", "42"]
+        ),
+    )[0]
+
+    path = run_directory(tmp_path, identity)
+
+    assert path == tmp_path / "full__Isaac-Cartpole-Direct__mjwarp__seed42__env4096__iter300"
+
+
+def test_inspect_bundle_requires_completed_expected_iterations(tmp_path: Path):
+    """A schema bundle is successful only when status and iteration count match."""
+    bundle_path = tmp_path / "benchmark_training_task.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.1",
+                "run": {"status": "completed"},
+                "runtime": {"iterations_completed": 300},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = inspect_bundle(tmp_path, expected_iterations=300)
+
+    assert status.path == bundle_path
+    assert status.schema_version == "1.1"
+    assert status.completed_iterations == 300
+    assert status.complete is True
+
+
+def test_execute_identity_writes_terminal_manifest_and_resumes(tmp_path: Path):
+    """A successful exact run must persist completion and skip on resume."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    identity = select_identities(
+        matrix,
+        build_parser().parse_args(
+            ["--full-only", "--task", TaskName.CARTPOLE.value, "--variant", Variant.MJWARP.value, "--seed", "42"]
+        ),
+    )[0]
+    calls = 0
+
+    def executor(command, stdout_path, stderr_path, *, timeout_s):
+        nonlocal calls
+        calls += 1
+        output_path = Path(command[command.index("--output_path") + 1])
+        output_path.mkdir(parents=True, exist_ok=True)
+        (output_path / "benchmark_training_task.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.1",
+                    "run": {"status": "completed"},
+                    "runtime": {"iterations_completed": 300},
+                }
+            ),
+            encoding="utf-8",
+        )
+        stdout_path.write_text("ok\n", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        return ProcessOutcome(returncode=0, timed_out=False)
+
+    first = execute_identity(matrix, identity, Path("/repo"), tmp_path, resume=False, executor=executor)
+    second = execute_identity(matrix, identity, Path("/repo"), tmp_path, resume=True, executor=executor)
+
+    manifest = read_manifest(run_directory(tmp_path, identity) / "manifest.json")
+    assert first is TerminalState.COMPLETED
+    assert second is TerminalState.COMPLETED
+    assert manifest.state is TerminalState.COMPLETED
+    assert calls == 1
