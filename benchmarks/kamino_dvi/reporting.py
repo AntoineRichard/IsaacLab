@@ -95,8 +95,8 @@ def _markdown(summaries: list[VariantSummary], issues: list[str], figure_paths: 
             "- RSL-RL, 300 training iterations, seeds 42–44.",
             "- A common environment count is selected per task from 4096 downward only after explicit capacity "
             "failures.",
-            "- Runs are sequential on one GPU and validated against immutable IsaacLab/Newton revisions and schema "
-            "v1.1.",
+            "- Current/future runner protocol: runs are sequential on one GPU and validated against exact Newton "
+            "revisions and clean IsaacLab/schema ancestry for schema v1.1.",
             "- Reward and episode length use schema series; success rate uses the matching TensorBoard trace.",
         ]
     )

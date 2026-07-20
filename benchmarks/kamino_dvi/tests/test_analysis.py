@@ -5,7 +5,13 @@
 
 """Tests for benchmark run aggregation."""
 
+from dataclasses import replace
+
+import pytest
+
+from benchmarks.kamino_dvi import analysis
 from benchmarks.kamino_dvi.analysis import RunMetrics, summarize_records
+from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
 
 
 def test_summarize_records_excludes_warmup_and_uses_final_learning_window():
@@ -36,3 +42,58 @@ def test_summarize_records_excludes_warmup_and_uses_final_learning_window():
     assert summary.ep_length.mean == 20.0
     assert summary.success_rate is not None
     assert summary.success_rate.mean == 1.0
+
+
+def _record(task: str, variant: str, seed: int, num_envs: int = 4096) -> RunMetrics:
+    """Return one valid synthetic full-run record."""
+    series = tuple(float(index) for index in range(20))
+    return RunMetrics(task, variant, seed, num_envs, series, series, series, series, series)
+
+
+def test_validate_record_matrix_rejects_incomplete_task_variant_seed_matrix():
+    """A report must not silently summarize a subset of the approved matrix."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    records = [
+        _record(task.name.value, variant.value, seed)
+        for task in matrix.tasks
+        for variant in task.variants
+        for seed in matrix.seeds
+    ]
+
+    with pytest.raises(ValueError, match="missing.*Isaac-Cartpole-Direct.*kamino_current.*42"):
+        analysis.validate_record_matrix(records[1:], matrix)
+
+
+def test_validate_record_matrix_rejects_unexpected_or_duplicate_identity():
+    """Stale, mislabeled, and duplicate run identities must not enter a report."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    records = [
+        _record(task.name.value, variant.value, seed)
+        for task in matrix.tasks
+        for variant in task.variants
+        for seed in matrix.seeds
+    ]
+    records.append(replace(records[0], seed=99))
+
+    with pytest.raises(ValueError, match="unexpected.*seed=99"):
+        analysis.validate_record_matrix(records, matrix)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        analysis.validate_record_matrix(records[:-1] + [records[0]], matrix)
+
+
+def test_validate_record_matrix_rejects_mixed_or_unapproved_environment_counts():
+    """Every task uses one approved capacity count across all variants and seeds."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    records = [
+        _record(task.name.value, variant.value, seed)
+        for task in matrix.tasks
+        for variant in task.variants
+        for seed in matrix.seeds
+    ]
+
+    with pytest.raises(ValueError, match="mixes environment counts"):
+        analysis.validate_record_matrix([replace(records[0], num_envs=2048), *records[1:]], matrix)
+
+    with pytest.raises(ValueError, match="unapproved environment count 777"):
+        analysis.validate_record_matrix([replace(record, num_envs=777) for record in records], matrix)

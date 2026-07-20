@@ -56,6 +56,6 @@ def capacity_retry(
         invalidated_count=current_count,
         next_count=next_count,
         preflights=preflights,
-        full_results_invalidated=failed_phase is Phase.FULL,
+        full_results_invalidated=True,
         parent_run_id=failed_run_id,
     )

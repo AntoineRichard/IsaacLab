@@ -40,6 +40,8 @@ Steady-state runtime excludes iterations 1–10; learning metrics average the fi
 - Schema validation confirms every required reward, episode-length, and success field exists; this is a value mismatch, not missing data.
 - Isaac-Ant-Direct PR3570 tuned DVI has seed-sensitive weak learning: the three-seed success 95% CI half-width is 0.539; this is not a runtime or stability failure.
 - Isaac-Velocity-Flat-AnymalD MJWarp has seed-sensitive weak learning: the three-seed success 95% CI half-width is 1.069; this is not a runtime or stability failure.
+- Legacy campaign source provenance: bundles record 3 distinct commits; 30/45 full runs report versions.git_dirty=true. Runner manifests did not capture exact HEAD, and these runs did not pass the current clean-source check.
+- Legacy integrity limitation: TensorBoard event hash was not recorded in 45/45 completed full-run manifests; TensorBoard event files used by those runs were not retained or hashed.
 - Isaac-Cartpole-Direct PhysX has materially lower final-window reward than current Kamino.
 
 ## Figures
@@ -51,5 +53,5 @@ Steady-state runtime excludes iterations 1–10; learning metrics average the fi
 
 - RSL-RL, 300 training iterations, seeds 42–44.
 - A common environment count is selected per task from 4096 downward only after explicit capacity failures.
-- Runs are sequential on one GPU and validated against immutable IsaacLab/Newton revisions and schema v1.1.
+- Current/future runner protocol: runs are sequential on one GPU and validated against exact Newton revisions and clean IsaacLab/schema ancestry for schema v1.1.
 - Reward and episode length use schema series; success rate uses the matching TensorBoard trace.

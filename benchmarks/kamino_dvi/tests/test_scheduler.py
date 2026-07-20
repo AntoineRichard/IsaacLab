@@ -40,7 +40,7 @@ def test_capacity_retry_repreflights_every_task_variant_at_new_common_count(matr
 
     assert decision.invalidated_count == 4096
     assert decision.next_count == 2048
-    assert decision.full_results_invalidated is (phase is Phase.FULL)
+    assert decision.full_results_invalidated is True
     assert decision.parent_run_id == "failed"
     assert len(decision.preflights) == 5
     assert all(run.task is TaskName.ANT for run in decision.preflights)

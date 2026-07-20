@@ -5,6 +5,7 @@
 
 """Tests for atomic and resumable benchmark manifests."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -45,6 +46,7 @@ def manifest(matrix, identity):
         revisions=matrix.revisions,
         schema_version="1.1",
         artifact_root="full/cartpole/kamino_pr_dvi/seed42",
+        isaaclab_head="f" * 40,
     )
 
 
@@ -79,6 +81,17 @@ def test_manifest_round_trip_is_atomic_and_typed(tmp_path: Path, manifest):
     assert path.read_text(encoding="utf-8").endswith("\n")
 
 
+def test_manifest_reads_legacy_artifact_without_exact_isaaclab_head(tmp_path: Path, manifest):
+    """Completed raw artifacts from the original campaign remain analyzable."""
+    path = tmp_path / "manifest.json"
+    write_manifest(path, manifest)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["isaaclab_head"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert read_manifest(path).isaaclab_head is None
+
+
 def test_manifest_allows_only_legal_state_transitions(manifest):
     """Run state must advance monotonically to one terminal outcome."""
     running = transition(manifest, TerminalState.RUNNING)
@@ -101,6 +114,7 @@ def test_resume_requires_exact_completed_manifest(manifest):
         command=manifest.command,
         revisions=manifest.revisions,
         schema_version="1.1",
+        isaaclab_head=manifest.isaaclab_head,
     )
     assert not resume_matches(
         replace(completed, state=TerminalState.FAILED),
@@ -108,6 +122,7 @@ def test_resume_requires_exact_completed_manifest(manifest):
         command=manifest.command,
         revisions=manifest.revisions,
         schema_version="1.1",
+        isaaclab_head=manifest.isaaclab_head,
     )
     assert not resume_matches(
         completed,
@@ -115,6 +130,7 @@ def test_resume_requires_exact_completed_manifest(manifest):
         command=manifest.command,
         revisions=manifest.revisions,
         schema_version="1.1",
+        isaaclab_head=manifest.isaaclab_head,
     )
     assert not resume_matches(
         completed,
@@ -122,6 +138,7 @@ def test_resume_requires_exact_completed_manifest(manifest):
         command=manifest.command + ("--extra",),
         revisions=manifest.revisions,
         schema_version="1.1",
+        isaaclab_head=manifest.isaaclab_head,
     )
     assert not resume_matches(
         completed,
@@ -129,6 +146,7 @@ def test_resume_requires_exact_completed_manifest(manifest):
         command=manifest.command,
         revisions=replace(manifest.revisions, newton_pr="0" * 40),
         schema_version="1.1",
+        isaaclab_head=manifest.isaaclab_head,
     )
     assert not resume_matches(
         completed,
@@ -136,4 +154,13 @@ def test_resume_requires_exact_completed_manifest(manifest):
         command=manifest.command,
         revisions=manifest.revisions,
         schema_version="1.0",
+        isaaclab_head=manifest.isaaclab_head,
+    )
+    assert not resume_matches(
+        completed,
+        identity=manifest.identity,
+        command=manifest.command,
+        revisions=manifest.revisions,
+        schema_version="1.1",
+        isaaclab_head="0" * 40,
     )

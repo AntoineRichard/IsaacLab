@@ -12,7 +12,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from .analysis import RunMetrics, VariantSummary, complete_three_seed_records, load_records, summarize_records
+from .analysis import RunMetrics, VariantSummary, load_records, summarize_records, validate_record_matrix
 from .matrix import DEFAULT_MATRIX_PATH, load_matrix
 from .plotting import VARIANT_LABELS, plot_learning, plot_runtime
 from .reporting import write_reports
@@ -46,7 +46,48 @@ def quality_issues(records, summaries: list[VariantSummary], artifact_root: Path
             )
         if summary.num_envs < 4096:
             issues.append(f"{summary.task} used {summary.num_envs} environments after a documented capacity fallback.")
-    for manifest_path in sorted(artifact_root.glob("*/manifest.json")):
+    full_manifests = [
+        (path, json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(artifact_root.glob("full__*/manifest.json"))
+    ]
+    legacy_manifests = [
+        (path, manifest)
+        for path, manifest in full_manifests
+        if manifest.get("state") == "completed" and not manifest.get("isaaclab_head")
+    ]
+    if legacy_manifests:
+        bundle_commits: set[str] = set()
+        dirty_bundles = 0
+        bundles_with_provenance = 0
+        for manifest_path, _ in legacy_manifests:
+            bundles = tuple(manifest_path.parent.glob("benchmark_training_*.json"))
+            if len(bundles) != 1:
+                continue
+            bundle = json.loads(bundles[0].read_text(encoding="utf-8"))
+            commit = bundle.get("versions", {}).get("git_commit")
+            dirty = bundle.get("versions", {}).get("git_dirty")
+            if isinstance(commit, str) and isinstance(dirty, bool):
+                bundle_commits.add(commit)
+                dirty_bundles += dirty
+                bundles_with_provenance += 1
+        issues.append(
+            f"Legacy campaign source provenance: bundles record {len(bundle_commits)} distinct commits; "
+            f"{dirty_bundles}/{bundles_with_provenance} full runs report versions.git_dirty=true. Runner manifests "
+            "did not capture exact HEAD, and these runs did not pass the current clean-source check."
+        )
+    completed_full_manifests = [manifest for _, manifest in full_manifests if manifest.get("state") == "completed"]
+    unhashed_events = sum(
+        not manifest.get("tensorboard_event_path") or not manifest.get("tensorboard_event_hash")
+        for manifest in completed_full_manifests
+    )
+    if unhashed_events:
+        issues.append(
+            f"Legacy integrity limitation: TensorBoard event hash was not recorded in "
+            f"{unhashed_events}/{len(completed_full_manifests)} completed full-run manifests; TensorBoard event files "
+            "used by those runs were not retained or hashed."
+        )
+    manifest_paths = sorted(artifact_root.glob("*/manifest.json"))
+    for manifest_path in manifest_paths:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("state") == "failed":
             identity = manifest["identity"]
@@ -86,8 +127,9 @@ def main(argv: list[str] | None = None) -> int:
     """Load validated runs and generate all compact report artifacts."""
     args = build_parser().parse_args(argv)
     matrix = load_matrix(args.matrix)
-    records = [record for record in load_records(args.artifact_root, args.logs_root) if record.seed in matrix.seeds]
-    summaries = summarize_records(complete_three_seed_records(records))
+    records = load_records(args.artifact_root, args.logs_root, matrix=matrix)
+    validate_record_matrix(records, matrix)
+    summaries = summarize_records(records)
     if not summaries:
         raise RuntimeError("no complete three-seed task/variant groups are available")
     args.output_dir.mkdir(parents=True, exist_ok=True)

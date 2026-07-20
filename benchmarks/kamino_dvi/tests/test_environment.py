@@ -5,6 +5,7 @@
 
 """Tests for locked benchmark environment validation."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,14 @@ def test_environment_accepts_required_isaaclab_ancestry_and_newton_revision(matr
     candidate = provenance.replace(newton_revision=newton_revision)
 
     validate_environment(matrix, label, candidate)
+
+
+def test_environment_rejects_dirty_isaaclab_worktree(matrix, provenance):
+    """Tracked IsaacLab changes must fail before training starts."""
+    candidate = provenance.replace(isaaclab=replace(provenance.isaaclab, dirty=True))
+
+    with pytest.raises(ValueError, match="dirty"):
+        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate)
 
 
 def test_environment_rejects_wrong_newton_revision(matrix, provenance):

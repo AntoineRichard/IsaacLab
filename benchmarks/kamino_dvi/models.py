@@ -51,6 +51,7 @@ class TerminalState(StrEnum):
     PLANNED = "planned"
     RUNNING = "running"
     COMPLETED = "completed"
+    INVALIDATED = "invalidated"
     FAILED = "failed"
 
 
@@ -182,6 +183,9 @@ class RunManifest:
     revisions: Revisions
     schema_version: str
     artifact_root: str
+    isaaclab_head: str | None = None
+    tensorboard_event_path: str | None = None
+    tensorboard_event_hash: str | None = None
     artifact_hashes: dict[str, str] = field(default_factory=dict)
     state: TerminalState = TerminalState.PLANNED
     failure_category: FailureCategory | None = None

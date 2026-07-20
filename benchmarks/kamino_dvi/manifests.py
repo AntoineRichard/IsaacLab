@@ -108,6 +108,9 @@ def read_manifest(path: Path) -> RunManifest:
         revisions=Revisions(**data["revisions"]),
         schema_version=data["schema_version"],
         artifact_root=data["artifact_root"],
+        isaaclab_head=data.get("isaaclab_head"),
+        tensorboard_event_path=data.get("tensorboard_event_path"),
+        tensorboard_event_hash=data.get("tensorboard_event_hash"),
         artifact_hashes=dict(data["artifact_hashes"]),
         state=TerminalState(data["state"]),
         failure_category=(FailureCategory(data["failure_category"]) if data["failure_category"] else None),
@@ -118,7 +121,8 @@ def read_manifest(path: Path) -> RunManifest:
 _LEGAL_TRANSITIONS = {
     TerminalState.PLANNED: frozenset({TerminalState.RUNNING}),
     TerminalState.RUNNING: frozenset({TerminalState.COMPLETED, TerminalState.FAILED}),
-    TerminalState.COMPLETED: frozenset(),
+    TerminalState.COMPLETED: frozenset({TerminalState.INVALIDATED}),
+    TerminalState.INVALIDATED: frozenset(),
     TerminalState.FAILED: frozenset(),
 }
 
@@ -146,6 +150,7 @@ def resume_matches(
     command: tuple[str, ...] | list[str],
     revisions: Revisions,
     schema_version: str,
+    isaaclab_head: str,
 ) -> bool:
     """Return whether a completed manifest exactly matches a requested run."""
     return (
@@ -154,4 +159,5 @@ def resume_matches(
         and manifest.command_hash == command_hash(command)
         and manifest.revisions == revisions
         and manifest.schema_version == schema_version
+        and manifest.isaaclab_head == isaaclab_head
     )

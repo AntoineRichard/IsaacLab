@@ -30,6 +30,9 @@ def test_write_reports_emits_markdown_and_pdf(tmp_path: Path):
     assert "4096" in markdown.read_text(encoding="utf-8")
     assert "faster than current Kamino" in markdown.read_text(encoding="utf-8")
     assert "slower than MJWarp" in markdown.read_text(encoding="utf-8")
+    assert "Current/future runner protocol" in markdown.read_text(encoding="utf-8")
+    assert "exact Newton revisions and clean IsaacLab/schema ancestry" in markdown.read_text(encoding="utf-8")
+    assert "immutable IsaacLab/Newton revisions" not in markdown.read_text(encoding="utf-8")
     assert pdf.read_bytes().startswith(b"%PDF")
     assert pdf.stat().st_size > 1000
 

@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import statistics
+from collections import Counter
 from dataclasses import dataclass
 from itertools import groupby
 from pathlib import Path
 
+from .manifests import command_hash, read_manifest, sha256_file, stable_run_id
+from .models import BenchmarkMatrix, Phase
 from .parsing import locate_rsl_rl_events, parse_training_trace
 from .statistics import Estimate, final_window_mean, mean_ci95
 
@@ -84,6 +87,41 @@ def summarize_records(records: list[RunMetrics]) -> list[VariantSummary]:
     return summaries
 
 
+def _identity_text(identity: tuple[str, str, int]) -> str:
+    """Format a task, variant, and seed identity for validation errors."""
+    task, variant, seed = identity
+    return f"task={task}, variant={variant}, seed={seed}"
+
+
+def validate_record_matrix(records: list[RunMetrics], matrix: BenchmarkMatrix) -> None:
+    """Validate exact task, variant, seed, and capacity coverage against the matrix."""
+    expected = {
+        (task.name.value, variant.value, seed)
+        for task in matrix.tasks
+        for variant in task.variants
+        for seed in matrix.seeds
+    }
+    identities = [(record.task, record.variant, record.seed) for record in records]
+    counts = Counter(identities)
+    unexpected = sorted(set(identities) - expected)
+    if unexpected:
+        raise ValueError(f"unexpected benchmark record: {_identity_text(unexpected[0])}")
+    duplicates = sorted(identity for identity, count in counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate benchmark record: {_identity_text(duplicates[0])}")
+    missing = sorted(expected - set(identities))
+    if missing:
+        raise ValueError(f"missing benchmark record: {_identity_text(missing[0])}")
+
+    for task in matrix.tasks:
+        environment_counts = {record.num_envs for record in records if record.task == task.name.value}
+        if len(environment_counts) != 1:
+            raise ValueError(f"{task.name.value} mixes environment counts")
+        num_envs = next(iter(environment_counts))
+        if num_envs not in matrix.environment_counts:
+            raise ValueError(f"{task.name.value} uses unapproved environment count {num_envs}")
+
+
 def complete_three_seed_records(records: list[RunMetrics]) -> list[RunMetrics]:
     """Return only task/variant groups with all three unique approved seeds."""
     complete: list[RunMetrics] = []
@@ -95,24 +133,165 @@ def complete_three_seed_records(records: list[RunMetrics]) -> list[RunMetrics]:
     return complete
 
 
-def load_records(artifact_root: Path, logs_root: Path, task: str | None = None) -> list[RunMetrics]:
+def _validate_command_semantics(manifest_path: Path, matrix: BenchmarkMatrix) -> None:
+    """Validate that a self-hashed command has one exact supported experiment shape."""
+    manifest = read_manifest(manifest_path)
+    identity = manifest.identity
+    command = manifest.command
+    variant = matrix.variant(identity.variant)
+    try:
+        if len(command) < 20 or command[0] != "/usr/bin/env":
+            raise ValueError("command must start with /usr/bin/env and contain the full benchmark protocol")
+        environment = command[1]
+        if not environment.startswith("VIRTUAL_ENV="):
+            raise ValueError("VIRTUAL_ENV must immediately follow /usr/bin/env")
+
+        cursor = 2
+        python_path: str | None = None
+        if command[cursor].startswith("PYTHONPATH="):
+            python_path = command[cursor].partition("=")[2]
+            cursor += 1
+        isaaclab_script = Path(command[cursor])
+        if isaaclab_script.name != "isaaclab.sh":
+            raise ValueError("command must invoke isaaclab.sh")
+        repo_root = isaaclab_script.parent
+        if (
+            Path(environment.partition("=")[2]).resolve()
+            != (repo_root / f".venv-{variant.environment.value}").resolve()
+        ):
+            raise ValueError("VIRTUAL_ENV does not match the variant")
+        if (
+            python_path is not None
+            and Path(python_path).resolve() != (repo_root / "source" / "isaaclab_tasks").resolve()
+        ):
+            raise ValueError("PYTHONPATH does not select the worktree's isaaclab_tasks")
+        if command[cursor + 1] != "-p":
+            raise ValueError("isaaclab.sh must use -p")
+        if Path(command[cursor + 2]).resolve() != (repo_root / "scripts" / "benchmarks" / "training.py").resolve():
+            raise ValueError("command must invoke the worktree's benchmark training script")
+
+        expected_tail = [
+            "--rl_library",
+            "rsl_rl",
+            "--task",
+            identity.task.value,
+            "--num_envs",
+            str(identity.num_envs),
+            "--seed",
+            str(identity.seed),
+            "--max_iterations",
+            str(identity.max_iterations),
+            "--output_path",
+            str(manifest_path.parent),
+            "--benchmark_formatter",
+            "schema",
+            "--headless",
+            f"presets={variant.preset}",
+        ]
+        if variant.dynamics_solver is not None:
+            expected_tail.extend(
+                [
+                    f"env.sim.physics.solver_cfg.dynamics_solver={variant.dynamics_solver}",
+                    "env.sim.physics.solver_cfg.dynamics_preconditioning=False",
+                ]
+            )
+        if list(command[cursor + 3 :]) != expected_tail:
+            raise ValueError("arguments or Hydra overrides do not exactly match the configured protocol")
+    except (IndexError, ValueError) as error:
+        raise ValueError(f"{manifest_path}: command semantics mismatch: {error}") from error
+
+
+def _validate_event_integrity(manifest_path: Path, event_path: Path) -> None:
+    """Validate an optional future-run TensorBoard event path and hash."""
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    recorded_path = data.get("tensorboard_event_path")
+    recorded_hash = data.get("tensorboard_event_hash")
+    if recorded_path is None and recorded_hash is None:
+        return
+    if not isinstance(recorded_path, str) or not isinstance(recorded_hash, str):
+        raise ValueError(f"{manifest_path}: TensorBoard event integrity fields are incomplete")
+    if Path(recorded_path).resolve() != event_path.resolve():
+        raise ValueError(f"{manifest_path}: TensorBoard event path does not match the parsed event")
+    if sha256_file(event_path) != recorded_hash:
+        raise ValueError(f"{manifest_path}: TensorBoard event hash mismatch")
+
+
+def _validate_manifest(manifest_path: Path, bundle: Path, matrix: BenchmarkMatrix) -> None:
+    """Validate a completed manifest's protocol identity and retained provenance."""
+    manifest = read_manifest(manifest_path)
+    identity = manifest.identity
+    expected_cells = {(task.name, variant) for task in matrix.tasks for variant in task.variants}
+    if (identity.task, identity.variant) not in expected_cells or identity.seed not in matrix.seeds:
+        raise ValueError(f"{manifest_path}: unexpected matrix identity {identity}")
+    if identity.phase is not Phase.FULL:
+        raise ValueError(f"{manifest_path}: identity phase must be full")
+    if identity.max_iterations != matrix.full_iterations:
+        raise ValueError(f"{manifest_path}: max_iterations {identity.max_iterations} != {matrix.full_iterations}")
+    if identity.num_envs not in matrix.environment_counts:
+        raise ValueError(f"{manifest_path}: unapproved environment count {identity.num_envs}")
+    if manifest.revisions != matrix.revisions:
+        raise ValueError(f"{manifest_path}: revisions do not match the benchmark matrix")
+    if manifest.schema_version != "1.1":
+        raise ValueError(f"{manifest_path}: schema version is not 1.1")
+    if manifest.command_hash != command_hash(manifest.command):
+        raise ValueError(f"{manifest_path}: command hash does not match the recorded command")
+    _validate_command_semantics(manifest_path, matrix)
+    if manifest.run_id != stable_run_id(identity) or manifest_path.parent.name != manifest.run_id:
+        raise ValueError(f"{manifest_path}: run identity does not match its directory")
+    if Path(manifest.artifact_root).resolve() != manifest_path.parent.resolve():
+        raise ValueError(f"{manifest_path}: artifact root does not match its directory")
+
+    for name, expected_hash in manifest.artifact_hashes.items():
+        artifact = manifest_path.parent / name
+        try:
+            artifact.resolve().relative_to(manifest_path.parent.resolve())
+        except ValueError as error:
+            raise ValueError(f"{manifest_path}: artifact path escapes its run directory") from error
+        if not artifact.is_file() or sha256_file(artifact) != expected_hash:
+            raise ValueError(f"{manifest_path}: artifact hash mismatch for {name}")
+    if bundle.name not in manifest.artifact_hashes:
+        raise ValueError(f"{manifest_path}: schema bundle has no recorded artifact hash")
+
+
+def load_records(
+    artifact_root: Path,
+    logs_root: Path,
+    task: str | None = None,
+    *,
+    matrix: BenchmarkMatrix | None = None,
+) -> list[RunMetrics]:
     """Load every completed full-run manifest and its matched TensorBoard trace."""
     records: list[RunMetrics] = []
     for manifest_path in sorted(artifact_root.glob("full__*/manifest.json")):
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        identity = manifest.get("identity", {})
-        if manifest.get("state") != "completed" or (task is not None and identity.get("task") != task):
+        manifest = read_manifest(manifest_path)
+        identity = manifest.identity
+        if manifest.state.value != "completed" or (task is not None and identity.task.value != task):
             continue
         bundles = tuple(manifest_path.parent.glob("benchmark_training_*.json"))
         if not bundles:
             raise ValueError(f"{manifest_path.parent} contains no schema bundle")
         bundle = max(bundles, key=lambda path: path.stat().st_mtime)
+        if matrix is not None:
+            _validate_manifest(manifest_path, bundle, matrix)
         event_path = locate_rsl_rl_events(bundle, logs_root)
+        _validate_event_integrity(manifest_path, event_path)
         trace = parse_training_trace(bundle, event_path)
+        if (
+            trace.task,
+            trace.seed,
+            trace.num_envs,
+            trace.iterations,
+        ) != (
+            identity.task.value,
+            identity.seed,
+            identity.num_envs,
+            identity.max_iterations,
+        ):
+            raise ValueError(f"{bundle}: bundle identity does not match its manifest")
         records.append(
             RunMetrics(
                 task=trace.task,
-                variant=str(identity["variant"]),
+                variant=identity.variant.value,
                 seed=trace.seed,
                 num_envs=trace.num_envs,
                 iteration_time_s=trace.iteration_time_s,

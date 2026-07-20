@@ -128,18 +128,15 @@ def test_parse_training_trace_rejects_non_finite_tensorboard_success(tmp_path: P
         parse_training_trace(bundle, events)
 
 
-def test_parse_training_trace_uses_schema_success_without_tensorboard_tag(tmp_path: Path):
-    """Required schema success remains available when TensorBoard omits the tag."""
+def test_parse_training_trace_rejects_missing_tensorboard_success_tag(tmp_path: Path):
+    """Schema v1.1 success is known-invalid and must not replace missing TensorBoard data."""
     bundle = tmp_path / "bundle.json"
     events = tmp_path / "events"
     _write_bundle(bundle)
     _write_events(events, success_values=None)
 
-    trace = parse_training_trace(bundle, events)
-
-    assert trace.success_rate == (1.0, 0.7, 0.4)
-    assert trace.success_schema_mismatch is False
-    assert trace.success_schema_mismatch_points == 0
+    with pytest.raises(MissingBenchmarkFieldError, match="TensorBoard:Metrics/success_rate"):
+        parse_training_trace(bundle, events)
 
 
 def test_series_rejects_non_finite_metric_values():

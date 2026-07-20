@@ -35,7 +35,7 @@ def test_probe_environment_captures_packages_newton_path_and_git_state(monkeypat
             return CompletedProcess(command, 0, stdout="f" * 40 + "\n", stderr="")
         if command[-2:] == ["rev-list", "HEAD"]:
             return CompletedProcess(command, 0, stdout="f" * 40 + "\n" + "a" * 40 + "\n", stderr="")
-        if command[-2:] == ["status", "--porcelain"]:
+        if command[-3:] == ["status", "--porcelain", "--untracked-files=no"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         raise AssertionError(command)
 

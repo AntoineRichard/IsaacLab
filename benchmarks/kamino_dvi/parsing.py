@@ -118,13 +118,10 @@ def parse_training_trace(bundle_path: Path, event_path: Path) -> TrainingTrace:
     reward = _series(data, "learning.reward.series_per_iter", iterations)
     ep_length = _series(data, "learning.ep_length.series_per_iter", iterations)
     schema_success = _series(data, "learning.success_rate.series_per_iter", iterations)
-    success = schema_success
-    mismatch_points = 0
-    if "Metrics/success_rate" in accumulator.Tags().get("scalars", []):
-        success = _tb_series(accumulator, "Metrics/success_rate", iterations)
-        mismatch_points = sum(
-            not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-7) for left, right in zip(schema_success, success)
-        )
+    success = _tb_series(accumulator, "Metrics/success_rate", iterations)
+    mismatch_points = sum(
+        not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-7) for left, right in zip(schema_success, success)
+    )
     return TrainingTrace(
         task=str(_field(data, "run.task")),
         seed=int(_field(data, "run.seed")),

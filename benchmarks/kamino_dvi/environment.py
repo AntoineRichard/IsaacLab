@@ -68,6 +68,8 @@ def validate_environment(
     Raises:
         ValueError: If Isaac Lab or Newton does not match the approved revisions.
     """
+    if provenance.isaaclab.dirty:
+        raise ValueError("IsaacLab worktree has dirty tracked files")
     expected_newton = (
         matrix.revisions.newton_current if label is EnvironmentLabel.CURRENT else matrix.revisions.newton_pr
     )
@@ -135,7 +137,7 @@ def probe_environment(
     git = ["git", "-C", str(repo_root)]
     head = runner(git + ["rev-parse", "HEAD"], **options).stdout.strip()
     reachable = runner(git + ["rev-list", "HEAD"], **options).stdout.splitlines()
-    dirty = bool(runner(git + ["status", "--porcelain"], **options).stdout.strip())
+    dirty = bool(runner(git + ["status", "--porcelain", "--untracked-files=no"], **options).stdout.strip())
     return EnvironmentProvenance(
         python=python,
         packages=dict(data["packages"]),

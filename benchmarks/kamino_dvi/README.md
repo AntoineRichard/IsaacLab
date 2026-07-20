@@ -15,8 +15,7 @@ uv pip install --python .venv-pr3570/bin/python --no-deps --reinstall --no-cache
   "git+https://github.com/newton-physics/newton.git@7906676b2e5061273db96af179d7081fc6cbbba0"
 ```
 
-For PhysX, `_isaac_sim` must point to a working Isaac Sim binary installation. The runner probes and validates both
-Newton revisions before executing any selected identity.
+For PhysX, `_isaac_sim` must point to a working Isaac Sim binary installation. The current/future runner validates exact Newton revisions, clean tracked IsaacLab files, and the configured IsaacLab/schema ancestry before executing any selected identity. New manifests record the exact clean IsaacLab HEAD and the matched TensorBoard event path and hash. The completed campaign predates those checks: its bundles record `versions.git_commit` and `versions.git_dirty`, but its manifests did not capture the runner-validated HEAD or retain and hash TensorBoard event files; the generated report discloses those limitations.
 
 ## Execute
 
