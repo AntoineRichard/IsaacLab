@@ -40,9 +40,10 @@ class FakeProcess:
         return
 
 
-def test_execute_command_streams_logs_and_starts_new_process_group(tmp_path: Path):
+def test_execute_command_streams_logs_and_starts_new_process_group(tmp_path: Path, monkeypatch):
     """Training output must stream to files and execute in its own process group."""
     captured = {}
+    monkeypatch.setenv("PYTHONPATH", "/contaminated/kit/python")
 
     def factory(command, **kwargs):
         captured.update(kwargs)
@@ -61,6 +62,7 @@ def test_execute_command_streams_logs_and_starts_new_process_group(tmp_path: Pat
     assert outcome == ProcessOutcome(returncode=0, timed_out=False)
     assert captured["start_new_session"] is True
     assert captured["text"] is True
+    assert "PYTHONPATH" not in captured["env"]
     assert (tmp_path / "stdout.log").read_text(encoding="utf-8") == "stdout line\n"
     assert (tmp_path / "stderr.log").read_text(encoding="utf-8") == "stderr line\n"
 

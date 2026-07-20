@@ -202,6 +202,44 @@ P-ADMM Solver Controls
       - Default: ``True``. Uses CUDA graph conditional nodes for the iterative solver when ``True``. Setting it to ``False`` unrolls to fixed loops over the maximum iteration count.
 
 
+DVI Solver Controls
+^^^^^^^^^^^^^^^^^^^
+
+These options are forwarded only when ``dynamics_solver="dvi"`` and require a
+Newton revision that provides the DVI solver.
+
+.. list-table::
+    :header-rows: 1
+    :widths: 30 70
+
+    * - Parameter
+      - Description
+    * - ``dvi_max_iterations``
+      - Default: ``100``. Maximum projected iterations for the all-constraint fallback path.
+    * - ``dvi_tolerance``
+      - Default: ``1e-5``. Convergence tolerance on the projected update size.
+    * - ``dvi_regularization``
+      - Default: ``1e-6``. Diagonal regularization for projected updates.
+    * - ``dvi_omega``
+      - Default: ``1.0``. Relaxation factor for projected updates.
+    * - ``dvi_block_iterations``
+      - Default: ``32``. Outer block iterations alternating bilateral and unilateral solves.
+    * - ``dvi_contact_iterations``
+      - Default: ``4``. Projected contact sweeps per block iteration.
+    * - ``dvi_bilateral_solve_period``
+      - Default: ``1``. Block iterations between repeated bilateral solves.
+    * - ``dvi_contact_jacobi_omega``
+      - Default: ``0.3``. Step size for contact Jacobi updates.
+    * - ``dvi_contact_jacobi_relaxation``
+      - Default: ``0.9``. Solution mixing factor for contact Jacobi updates.
+    * - ``dvi_contact_block_preconditioner``
+      - Default: ``False``. Enables the full 3-by-3 contact diagonal block preconditioner.
+    * - ``dvi_warmstart_mode``
+      - Default: ``"containers"``. DVI warm-start source.
+    * - ``dvi_contact_warmstart_method``
+      - Default: ``"key_and_position_with_net_force_backup"``. Contact matching method for container warm-starting.
+
+
 Sparsity, Dynamics, and Debugging
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -217,6 +255,10 @@ Sparsity, Dynamics, and Debugging
       - Default: ``False``. Uses sparse dynamics computation.
     * - ``dynamics_preconditioning``
       - Default: ``True``. Enables preconditioning for constrained dynamics. Preconditioning can improve P-ADMM convergence.
+    * - ``dynamics_linear_solver_type``
+      - Default: ``None``. Uses Newton's default constrained-dynamics linear solver. Sparse DVI commonly uses ``"CR"``.
+    * - ``dynamics_linear_solver_max_iterations``
+      - Default: ``None``. Uses Newton's default iteration budget when unset.
     * - ``collect_solver_info``
       - Default: ``False``. Collects solver convergence and performance information. Enable only for debugging because it significantly increases runtime.
     * - ``compute_solution_metrics``

@@ -24,7 +24,7 @@ def matrix():
     [
         (Variant.KAMINO_CURRENT, ".venv-current", "newton_kamino"),
         (Variant.KAMINO_PR_PADMM, ".venv-pr3570", "newton_kamino"),
-        (Variant.KAMINO_PR_DVI, ".venv-pr3570", "newton_kamino"),
+        (Variant.KAMINO_PR_DVI, ".venv-pr3570", "newton_kamino_dvi"),
         (Variant.MJWARP, ".venv-current", "newton_mjwarp"),
         (Variant.PHYSX, ".venv-current", "physx"),
     ],
@@ -68,15 +68,11 @@ def test_training_command_uses_exact_environment_and_protocol(matrix, variant, e
         "schema",
         "--headless",
         f"presets={preset}",
-    ] + (
-        [
-            "env.sim.physics.solver_cfg.dynamics_solver=dvi",
-            "env.sim.physics.solver_cfg.dynamics_preconditioning=False",
-        ]
-        if variant is Variant.KAMINO_PR_DVI
-        else []
-    )
+    ]
     assert all(isinstance(argument, str) for argument in command)
+    if variant is Variant.KAMINO_PR_DVI:
+        assert not any("dynamics_solver" in argument for argument in command)
+        assert not any("dynamics_preconditioning" in argument for argument in command)
 
 
 def test_pr_padmm_does_not_override_newtons_default_solver(matrix):

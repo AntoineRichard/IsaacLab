@@ -84,7 +84,7 @@ def test_preflights_cover_every_cell_at_seed_42_for_five_iterations(matrix):
 
 @pytest.mark.parametrize("task", EXPECTED_TASKS)
 def test_common_tasks_use_all_variants(matrix, task):
-    """Cartpole, Ant, and ANYmal-D must include Kamino, MJWarp, and PhysX."""
+    """Cartpole and Ant must include Kamino, MJWarp, and PhysX."""
     task_spec = matrix.task(task)
     assert task_spec.variants == ALL_VARIANTS
 
