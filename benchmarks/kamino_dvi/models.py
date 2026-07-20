@@ -173,10 +173,16 @@ class RetryLineage:
 
 @dataclass(frozen=True)
 class RunManifest:
-    """Minimal persistent state shared by runner and analysis tooling."""
+    """Persistent state shared by runner and analysis tooling."""
 
     run_id: str
     identity: RunIdentity
+    command: tuple[str, ...]
+    command_hash: str
+    revisions: Revisions
+    schema_version: str
+    artifact_root: str
+    artifact_hashes: dict[str, str] = field(default_factory=dict)
     state: TerminalState = TerminalState.PLANNED
     failure_category: FailureCategory | None = None
     retry: RetryLineage = field(default_factory=RetryLineage)
