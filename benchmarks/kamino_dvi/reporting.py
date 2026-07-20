@@ -31,7 +31,7 @@ def _markdown(summaries: list[VariantSummary], issues: list[str], figure_paths: 
     lines = [
         "# Kamino DVI Solver Benchmark",
         "",
-        "RSL-RL training benchmark; values are five-seed means ± two-sided 95% Student-t confidence intervals.",
+        "RSL-RL training benchmark; values are three-seed means ± two-sided 95% Student-t confidence intervals.",
         "Steady-state runtime excludes iterations 1–10; learning metrics average the final 20 iterations.",
         "",
         "## Summary",
@@ -57,7 +57,7 @@ def _markdown(summaries: list[VariantSummary], issues: list[str], figure_paths: 
             "",
             "## Protocol",
             "",
-            "- RSL-RL, 300 training iterations, seeds 42–46.",
+            "- RSL-RL, 300 training iterations, seeds 42–44.",
             "- A common environment count is selected per task from 4096 downward only after explicit capacity "
             "failures.",
             "- Runs are sequential on one GPU and validated against immutable IsaacLab/Newton revisions and schema "
@@ -72,7 +72,7 @@ def _write_pdf(summaries: list[VariantSummary], issues: list[str], figure_paths:
     with PdfPages(output_path) as pdf:
         figure = plt.figure(figsize=(11.69, 8.27))
         figure.text(0.07, 0.93, "Kamino DVI Solver Benchmark", fontsize=22, fontweight="bold")
-        figure.text(0.07, 0.88, "RSL-RL · 300 iterations · five seeds · mean ± 95% Student-t CI", fontsize=11)
+        figure.text(0.07, 0.88, "RSL-RL · 300 iterations · three seeds · mean ± 95% Student-t CI", fontsize=11)
         rows = [
             [
                 row.task,

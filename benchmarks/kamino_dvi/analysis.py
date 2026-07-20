@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Aggregate validated benchmark traces into five-seed summaries."""
+"""Aggregate validated benchmark traces into three-seed summaries."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class RunMetrics:
 
 @dataclass(frozen=True)
 class VariantSummary:
-    """Five-seed estimates for one task and physics variant."""
+    """Three-seed estimates for one task and physics variant."""
 
     task: str
     variant: str
@@ -54,15 +54,15 @@ def _steady_mean(values: tuple[float, ...]) -> float:
 
 
 def summarize_records(records: list[RunMetrics]) -> list[VariantSummary]:
-    """Reduce complete five-seed records with the approved runtime and learning windows."""
+    """Reduce complete three-seed records with the approved runtime and learning windows."""
     summaries: list[VariantSummary] = []
     ordered = sorted(records, key=lambda record: (record.task, record.variant, record.seed))
     for (task, variant), grouped in groupby(ordered, key=lambda record: (record.task, record.variant)):
         runs = list(grouped)
         seeds = {run.seed for run in runs}
         counts = {run.num_envs for run in runs}
-        if len(runs) != 5 or len(seeds) != 5:
-            raise ValueError(f"{task}/{variant} requires five unique successful seeds")
+        if len(runs) != 3 or len(seeds) != 3:
+            raise ValueError(f"{task}/{variant} requires three unique successful seeds")
         if len(counts) != 1:
             raise ValueError(f"{task}/{variant} mixes environment counts")
         success = None
@@ -83,13 +83,13 @@ def summarize_records(records: list[RunMetrics]) -> list[VariantSummary]:
     return summaries
 
 
-def complete_five_seed_records(records: list[RunMetrics]) -> list[RunMetrics]:
-    """Return only task/variant groups with all five unique approved seeds."""
+def complete_three_seed_records(records: list[RunMetrics]) -> list[RunMetrics]:
+    """Return only task/variant groups with all three unique approved seeds."""
     complete: list[RunMetrics] = []
     ordered = sorted(records, key=lambda record: (record.task, record.variant, record.seed))
     for _, grouped in groupby(ordered, key=lambda record: (record.task, record.variant)):
         runs = list(grouped)
-        if len(runs) == 5 and len({run.seed for run in runs}) == 5:
+        if len(runs) == 3 and len({run.seed for run in runs}) == 3:
             complete.extend(runs)
     return complete
 

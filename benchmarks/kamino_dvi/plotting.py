@@ -33,7 +33,7 @@ VARIANT_COLORS = {
 
 
 def plot_runtime(summaries: list[VariantSummary], output_path: Path) -> None:
-    """Plot mean steady-state iteration time with five-seed 95% intervals."""
+    """Plot mean steady-state iteration time with three-seed 95% intervals."""
     tasks = list(dict.fromkeys(summary.task for summary in summaries))
     figure, axes = plt.subplots(1, len(tasks), figsize=(max(5.5, 4.2 * len(tasks)), 4.4), squeeze=False)
     for axis, task in zip(axes[0], tasks):
@@ -48,7 +48,7 @@ def plot_runtime(summaries: list[VariantSummary], output_path: Path) -> None:
         axis.tick_params(axis="x", rotation=30)
         axis.grid(axis="y", alpha=0.25)
         axis.set_axisbelow(True)
-    figure.suptitle("RSL-RL runtime (mean ± 95% CI, five seeds)", fontweight="bold")
+    figure.suptitle("RSL-RL runtime (mean ± 95% CI, three seeds)", fontweight="bold")
     figure.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output_path, dpi=180, bbox_inches="tight")

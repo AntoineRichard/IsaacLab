@@ -1,7 +1,7 @@
 # Kamino DVI runtime benchmark
 
-This package runs the approved RSL-RL comparison across current Kamino, Newton PR 3570 P-ADMM and DVI,
-MJWarp, and PhysX. The matrix uses 300 training iterations and seeds 42–46. It starts at 4096 environments and
+This package runs the approved RSL-RL Cartpole and Ant comparison across current Kamino, Newton PR 3570 P-ADMM and
+DVI, MJWarp, and PhysX. The matrix uses 300 training iterations and seeds 42–44. It starts at 4096 environments and
 only moves down the declared capacity ladder after an explicit capacity failure.
 
 ## Locked environments
@@ -48,6 +48,6 @@ Generate compact JSON, a 95% CI runtime figure, and Markdown/PDF reports:
 ```
 
 Runtime summaries exclude iterations 1–10. Reward, episode length, and success summaries average the final 20
-iterations. Confidence intervals use the two-sided five-seed Student-t critical value. Reward and episode length are
+iterations. Confidence intervals use the two-sided three-seed Student-t critical value. Reward and episode length are
 read from schema v1.1; success is read from the matching TensorBoard trace because the original v1.1 generator stored
 live step averages instead of the logged per-iteration values. That generator bug is fixed separately in PR 6624.

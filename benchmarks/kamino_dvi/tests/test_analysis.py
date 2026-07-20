@@ -22,7 +22,7 @@ def test_summarize_records_excludes_warmup_and_uses_final_learning_window():
             ep_length=tuple([0.0] * 10 + [20.0] * 20),
             success_rate=tuple([0.0] * 10 + [1.0] * 20),
         )
-        for seed in range(42, 47)
+        for seed in range(42, 45)
     ]
 
     summary = summarize_records(records)[0]
@@ -30,7 +30,7 @@ def test_summarize_records_excludes_warmup_and_uses_final_learning_window():
     assert summary.task == "task"
     assert summary.variant == "dvi"
     assert summary.num_envs == 4096
-    assert summary.iteration_time_s.mean == 3.0
+    assert summary.iteration_time_s.mean == 2.0
     assert summary.total_fps.mean == 1000.0
     assert summary.reward.mean == 10.0
     assert summary.ep_length.mean == 20.0

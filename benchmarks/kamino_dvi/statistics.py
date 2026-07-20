@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Five-seed statistics for the Kamino DVI benchmark report."""
+"""Three-seed statistics for the Kamino DVI benchmark report."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-T_975_DF4 = 2.7764451051977987
+T_975_DF2 = 4.302652729696142
 
 
 @dataclass(frozen=True)
@@ -25,12 +25,12 @@ class Estimate:
 
 
 def mean_ci95(values: Sequence[float]) -> Estimate:
-    """Return the approved five-seed Student-t mean and interval."""
+    """Return the approved three-seed Student-t mean and interval."""
     samples = tuple(float(value) for value in values)
-    if len(samples) != 5:
-        raise ValueError("95% benchmark intervals require exactly five seeds")
+    if len(samples) != 3:
+        raise ValueError("95% benchmark intervals require exactly three seeds")
     mean = statistics.mean(samples)
-    half_width = T_975_DF4 * statistics.stdev(samples) / math.sqrt(len(samples))
+    half_width = T_975_DF2 * statistics.stdev(samples) / math.sqrt(len(samples))
     return Estimate(mean=mean, half_width=half_width, n=len(samples))
 
 
@@ -51,8 +51,8 @@ def rolling_mean(values: Sequence[float], window: int = 10) -> tuple[float, ...]
 
 
 def paired_ratio(baseline: Mapping[int, float], candidate: Mapping[int, float]) -> Estimate:
-    """Return the five-seed baseline/candidate ratio paired by seed."""
-    if set(baseline) != set(candidate) or len(baseline) != 5:
-        raise ValueError("paired comparison requires matching five seeds")
+    """Return the three-seed baseline/candidate ratio paired by seed."""
+    if set(baseline) != set(candidate) or len(baseline) != 3:
+        raise ValueError("paired comparison requires matching three seeds")
     ratios = [float(baseline[seed]) / float(candidate[seed]) for seed in sorted(baseline)]
     return mean_ci95(ratios)

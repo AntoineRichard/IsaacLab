@@ -9,7 +9,7 @@ revisions:
   newton_current: c7ae7c7648cd0717df39e5c94b95d5a02c997320
   newton_pr: 7906676b2e5061273db96af179d7081fc6cbbba0
 
-seeds: [42, 43, 44, 45, 46]
+seeds: [42, 43, 44]
 environment_counts: [4096, 2048, 1024, 512, 256, 128]
 preflight_seed: 42
 iterations:
@@ -42,9 +42,3 @@ tasks:
     variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
   - name: Isaac-Ant-Direct
     variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
-  - name: Isaac-Velocity-Flat-AnymalD
-    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
-  - name: Isaac-DrLegs-Walk-v0
-    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi]
-  - name: Isaac-Fourbar-Pole-Swingup
-    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi]

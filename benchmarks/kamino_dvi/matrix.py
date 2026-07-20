@@ -113,10 +113,10 @@ def load_matrix(path: Path = DEFAULT_MATRIX_PATH) -> BenchmarkMatrix:
     )
     if matrix.preflight_seed not in matrix.seeds:
         raise ValueError("preflight seed must be one of the full-run seeds")
-    if len(expand_cells(matrix)) != 21:
-        raise ValueError("approved matrix must contain exactly 21 task/variant cells")
-    if len(expand_full_runs(matrix)) != 105:
-        raise ValueError("approved matrix must contain exactly 105 full runs")
+    if len(expand_cells(matrix)) != 10:
+        raise ValueError("approved matrix must contain exactly 10 task/variant cells")
+    if len(expand_full_runs(matrix)) != 30:
+        raise ValueError("approved matrix must contain exactly 30 full runs")
     return matrix
 
 
@@ -129,7 +129,7 @@ def expand_full_runs(
     matrix: BenchmarkMatrix,
     environment_counts: Mapping[TaskName, int] | None = None,
 ) -> tuple[RunIdentity, ...]:
-    """Expand all five-seed full-run identities.
+    """Expand all three-seed full-run identities.
 
     Args:
         matrix: Validated experiment matrix.

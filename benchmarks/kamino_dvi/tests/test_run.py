@@ -124,13 +124,13 @@ def test_cli_filters_select_exact_preflight_identity():
 def test_cli_full_seed_filter_keeps_all_applicable_task_variants():
     """A full-run seed filter must retain every applicable variant for its task."""
     matrix = load_matrix(DEFAULT_MATRIX_PATH)
-    args = build_parser().parse_args(["--full-only", "--task", TaskName.ANT.value, "--seed", "46"])
+    args = build_parser().parse_args(["--full-only", "--task", TaskName.ANT.value, "--seed", "44"])
 
     identities = select_identities(matrix, args)
 
     assert len(identities) == 5
     assert {identity.variant for identity in identities} == set(matrix.task(TaskName.ANT).variants)
-    assert all(identity.seed == 46 for identity in identities)
+    assert all(identity.seed == 44 for identity in identities)
 
 
 def test_run_directory_is_stable_and_keeps_outputs_together(tmp_path: Path):

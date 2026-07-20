@@ -12,7 +12,8 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from .analysis import VariantSummary, complete_five_seed_records, load_records, summarize_records
+from .analysis import VariantSummary, complete_three_seed_records, load_records, summarize_records
+from .matrix import DEFAULT_MATRIX_PATH, load_matrix
 from .plotting import VARIANT_LABELS, plot_runtime
 from .reporting import write_reports
 
@@ -59,16 +60,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-root", type=Path, default=Path("benchmark_artifacts/kamino_dvi/runs"))
     parser.add_argument("--logs-root", type=Path, default=Path("logs"))
     parser.add_argument("--output-dir", type=Path, default=Path("benchmarks/kamino_dvi/results"))
+    parser.add_argument("--matrix", type=Path, default=DEFAULT_MATRIX_PATH)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     """Load validated runs and generate all compact report artifacts."""
     args = build_parser().parse_args(argv)
-    records = load_records(args.artifact_root, args.logs_root)
-    summaries = summarize_records(complete_five_seed_records(records))
+    matrix = load_matrix(args.matrix)
+    records = [record for record in load_records(args.artifact_root, args.logs_root) if record.seed in matrix.seeds]
+    summaries = summarize_records(complete_three_seed_records(records))
     if not summaries:
-        raise RuntimeError("no complete five-seed task/variant groups are available")
+        raise RuntimeError("no complete three-seed task/variant groups are available")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     runtime_figure = args.output_dir / "runtime.png"
     plot_runtime(summaries, runtime_figure)
