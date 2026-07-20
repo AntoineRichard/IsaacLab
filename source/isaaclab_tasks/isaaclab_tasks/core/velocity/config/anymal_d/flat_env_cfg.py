@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg
 from isaaclab_ovphysx.physics import OvPhysxCfg
 from isaaclab_physx.physics import PhysxCfg
 
@@ -25,6 +25,11 @@ class PhysicsCfg(PresetCfg):
             cone="elliptic",
             impratio=100.0,
         ),
+        num_substeps=1,
+        debug_mode=False,
+    )
+    newton_kamino = NewtonCfg(
+        solver_cfg=KaminoSolverCfg(max_contacts_per_world=64),
         num_substeps=1,
         debug_mode=False,
     )
