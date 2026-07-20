@@ -189,6 +189,55 @@ class KaminoSolverCfg(NewtonSolverCfg):
     problem. Disabling may be useful for debugging or profiling solver behavior.
     """
 
+    dynamics_linear_solver_type: str | None = None
+    """Linear solver used for constrained dynamics.
+
+    When ``None``, Newton selects its default. DVI sparse dynamics commonly uses
+    ``"CR"``.
+    """
+
+    dynamics_linear_solver_max_iterations: int | None = None
+    """Maximum constrained-dynamics linear-solver iterations.
+
+    When ``None``, Newton selects the iteration budget.
+    """
+
+    dvi_max_iterations: int = 100
+    """Maximum DVI projected iterations for the all-constraint fallback path."""
+
+    dvi_tolerance: float = 1e-5
+    """DVI convergence tolerance on the projected update size."""
+
+    dvi_regularization: float = 1e-6
+    """Diagonal regularization applied to DVI projected update denominators."""
+
+    dvi_omega: float = 1.0
+    """Relaxation factor applied to DVI projected updates."""
+
+    dvi_block_iterations: int = 32
+    """Number of outer DVI block iterations."""
+
+    dvi_contact_iterations: int = 4
+    """Number of projected contact sweeps per DVI block iteration."""
+
+    dvi_bilateral_solve_period: int = 1
+    """Number of DVI block iterations between bilateral solves."""
+
+    dvi_contact_jacobi_omega: float = 0.3
+    """Step size for DVI contact Jacobi updates."""
+
+    dvi_contact_jacobi_relaxation: float = 0.9
+    """Solution mixing factor for DVI contact Jacobi updates."""
+
+    dvi_contact_block_preconditioner: bool = False
+    """Whether to use a full 3-by-3 contact diagonal block preconditioner."""
+
+    dvi_warmstart_mode: str = "containers"
+    """DVI warm-start mode. Can be "none", "internal", or "containers"."""
+
+    dvi_contact_warmstart_method: str = "key_and_position_with_net_force_backup"
+    """Contact matching method used for DVI container warm-starting."""
+
     def to_solver_config(self) -> SolverKamino.Config:
         """Build a :class:`SolverKamino.Config` from this configuration.
 
@@ -211,9 +260,34 @@ class KaminoSolverCfg(NewtonSolverCfg):
         if self.use_fk_solver is None:
             self.use_fk_solver = True
 
-        solver_kwargs: dict[str, str] = {}
+        dynamics_kwargs: dict[str, object] = {"preconditioning": self.dynamics_preconditioning}
+        if self.dynamics_linear_solver_type is not None:
+            dynamics_kwargs["linear_solver_type"] = self.dynamics_linear_solver_type
+        if self.dynamics_linear_solver_max_iterations is not None:
+            dynamics_kwargs["linear_solver_kwargs"] = {
+                "maxiter": self.dynamics_linear_solver_max_iterations,
+            }
+
+        solver_kwargs: dict[str, object] = {}
         if self.dynamics_solver is not None:
             solver_kwargs["dynamics_solver"] = self.dynamics_solver
+        if self.dynamics_solver == "dvi":
+            from newton._src.solvers.kamino.config import DVISolverConfig
+
+            solver_kwargs["dvi"] = DVISolverConfig(
+                max_iterations=self.dvi_max_iterations,
+                tolerance=self.dvi_tolerance,
+                regularization=self.dvi_regularization,
+                omega=self.dvi_omega,
+                block_iterations=self.dvi_block_iterations,
+                contact_iterations=self.dvi_contact_iterations,
+                bilateral_solve_period=self.dvi_bilateral_solve_period,
+                contact_jacobi_omega=self.dvi_contact_jacobi_omega,
+                contact_jacobi_relaxation=self.dvi_contact_jacobi_relaxation,
+                contact_block_preconditioner=self.dvi_contact_block_preconditioner,
+                warmstart_mode=self.dvi_warmstart_mode,
+                contact_warmstart_method=self.dvi_contact_warmstart_method,
+            )
 
         # Build collision detector config if using Kamino's internal detector
         collision_detector = None
@@ -247,9 +321,7 @@ class KaminoSolverCfg(NewtonSolverCfg):
                 gamma=self.constraints_gamma,
                 delta=self.constraints_delta,
             ),
-            dynamics=ConstrainedDynamicsConfig(
-                preconditioning=self.dynamics_preconditioning,
-            ),
+            dynamics=ConstrainedDynamicsConfig(**dynamics_kwargs),
             padmm=PADMMSolverConfig(
                 max_iterations=self.padmm_max_iterations,
                 primal_tolerance=self.padmm_primal_tolerance,
