@@ -333,16 +333,17 @@ def run(argv: list[str]) -> None:
             steps_per_iteration=steps_per_iteration,
         )
 
+        desc = RL_LIBRARY_DESCRIPTORS["sb3"]
+        log_data = parse_tf_logs(log_dir, desc.tfevents_pattern)
+        success_tracker = get_success_tracker(args_cli, success_context.tracker, log_data)
         learning = builders.build_learning(
             reward_series=reward_series,
             ep_length_series=ep_len_series,
+            success_rate_series=success_tracker.history if success_tracker is not None else None,
             ema_alpha=args_cli.ema_alpha,
             keep_series=not args_cli.no_series,
         )
 
-        desc = RL_LIBRARY_DESCRIPTORS["sb3"]
-        log_data = parse_tf_logs(log_dir, desc.tfevents_pattern)
-        success_tracker = get_success_tracker(args_cli, success_context.tracker, log_data)
         success_rate = round(success_tracker.tail_mean, 4) if (success_tracker and success_tracker.history) else None
 
         versions = capture.capture_versions(benchmark)
