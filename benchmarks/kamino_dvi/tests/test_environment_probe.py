@@ -15,7 +15,7 @@ from benchmarks.kamino_dvi.environment import probe_environment
 def test_probe_environment_captures_packages_newton_path_and_git_state():
     """The environment probe must retain package and source provenance."""
     calls: list[list[str]] = []
-    probe_output = json.dumps(
+    probe_output = "Warp 1.12.0 initialized:\n   CUDA Toolkit 12.9\n" + json.dumps(
         {
             "packages": {"newton": "0.1.0", "torch": "2.11.0"},
             "newton_path": "/venv/site-packages/newton/__init__.py",

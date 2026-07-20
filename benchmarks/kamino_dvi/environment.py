@@ -124,7 +124,7 @@ def probe_environment(
     """
     options = {"check": True, "capture_output": True, "text": True}
     probe = runner([str(python), "-c", _PROBE_SCRIPT], **options)
-    data = json.loads(probe.stdout)
+    data = json.loads(probe.stdout.splitlines()[-1])
     revision = data.get("newton_revision")
     if not isinstance(revision, str) or len(revision) != 40:
         raise ValueError("Newton installation does not expose a 40-character VCS revision")
