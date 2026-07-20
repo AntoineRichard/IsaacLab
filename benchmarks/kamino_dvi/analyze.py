@@ -14,18 +14,29 @@ from pathlib import Path
 
 from .analysis import VariantSummary, complete_three_seed_records, load_records, summarize_records
 from .matrix import DEFAULT_MATRIX_PATH, load_matrix
-from .plotting import VARIANT_LABELS, plot_runtime
+from .plotting import VARIANT_LABELS, plot_learning, plot_runtime
 from .reporting import write_reports
 
 
 def quality_issues(records, summaries: list[VariantSummary], artifact_root: Path) -> list[str]:
     """Return explicit schema, capacity, failure, and learning-quality warnings."""
     issues: list[str] = []
-    if any(record.success_schema_mismatch for record in records):
+    mismatch_count = sum(record.success_schema_mismatch for record in records)
+    if mismatch_count:
         issues.append(
-            "Schema v1.1 success series differs from TensorBoard for at least one run; report uses TensorBoard success."
+            f"Schema v1.1 success series differs from TensorBoard in {mismatch_count} of {len(records)} runs; "
+            "report uses TensorBoard success. This is the known generator bug addressed separately in PR 6624."
         )
     for summary in summaries:
+        if (
+            summary.variant == "kamino_pr_dvi"
+            and summary.success_rate is not None
+            and summary.success_rate.half_width > 0.25
+        ):
+            issues.append(
+                f"{summary.task} tuned DVI success is seed-sensitive: the three-seed 95% CI half-width is "
+                f"{summary.success_rate.half_width:.3f}."
+            )
         if summary.num_envs < 4096:
             issues.append(f"{summary.task} used {summary.num_envs} environments after a documented capacity fallback.")
     for manifest_path in sorted(artifact_root.glob("*/manifest.json")):
@@ -74,7 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("no complete three-seed task/variant groups are available")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     runtime_figure = args.output_dir / "runtime.png"
+    learning_figure = args.output_dir / "learning.png"
     plot_runtime(summaries, runtime_figure)
+    plot_learning(summaries, learning_figure)
     issues = quality_issues(records, summaries, args.artifact_root)
     (args.output_dir / "summary.json").write_text(
         json.dumps([asdict(summary) for summary in summaries], indent=2, sort_keys=True) + "\n",
@@ -83,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     write_reports(
         summaries,
         issues,
-        [runtime_figure],
+        [runtime_figure, learning_figure],
         args.output_dir / "kamino_dvi_benchmark.md",
         args.output_dir / "kamino_dvi_benchmark.pdf",
     )

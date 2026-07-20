@@ -38,7 +38,7 @@ launching an environment.
 
 ## Analyze
 
-Generate compact JSON, a 95% CI runtime figure, and Markdown/PDF reports:
+Generate compact JSON, 95% CI runtime and learning figures, and Markdown/PDF reports:
 
 ```bash
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze \

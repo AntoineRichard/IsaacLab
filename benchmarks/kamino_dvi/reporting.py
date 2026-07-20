@@ -27,6 +27,33 @@ def _estimate(value: Estimate | None, digits: int = 3) -> str:
     return f"{value.mean:.{digits}f} ± {value.half_width:.{digits}f}"
 
 
+def _key_findings(summaries: list[VariantSummary]) -> list[str]:
+    """Return concise per-task runtime comparisons for the tuned DVI solver."""
+    findings: list[str] = []
+    for task in dict.fromkeys(summary.task for summary in summaries):
+        rows = {summary.variant: summary for summary in summaries if summary.task == task}
+        dvi = rows.get("kamino_pr_dvi")
+        if dvi is None:
+            continue
+        comparisons = []
+        for variant, label in (("kamino_current", "current Kamino"), ("kamino_pr_padmm", "PR3570 P-ADMM")):
+            other = rows.get(variant)
+            if other is not None:
+                comparisons.append(
+                    f"{other.iteration_time_s.mean / dvi.iteration_time_s.mean:.1f}× faster than {label}"
+                )
+        if comparisons:
+            findings.append(f"{task}: tuned DVI is {' and '.join(comparisons)}.")
+        gaps = []
+        for variant, label in (("mjwarp", "MJWarp"), ("physx", "PhysX")):
+            other = rows.get(variant)
+            if other is not None:
+                gaps.append(f"{dvi.iteration_time_s.mean / other.iteration_time_s.mean:.1f}× slower than {label}")
+        if gaps:
+            findings.append(f"{task}: tuned DVI remains {' and '.join(gaps)}.")
+    return findings
+
+
 def _markdown(summaries: list[VariantSummary], issues: list[str], figure_paths: list[Path]) -> str:
     lines = [
         "# Kamino DVI Solver Benchmark",
@@ -39,6 +66,8 @@ def _markdown(summaries: list[VariantSummary], issues: list[str], figure_paths: 
         "| Task | Variant | Envs | Iteration time [s] | Total FPS | Reward | Episode length | Success rate |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
+    findings = _key_findings(summaries)
+    lines[5:5] = ["## Key findings", "", *(f"- {finding}" for finding in findings), ""]
     for row in summaries:
         lines.append(
             f"| {row.task} | {VARIANT_LABELS.get(row.variant, row.variant)} | {row.num_envs} | "
@@ -73,6 +102,8 @@ def _write_pdf(summaries: list[VariantSummary], issues: list[str], figure_paths:
         figure = plt.figure(figsize=(11.69, 8.27))
         figure.text(0.07, 0.93, "Kamino DVI Solver Benchmark", fontsize=22, fontweight="bold")
         figure.text(0.07, 0.88, "RSL-RL · 300 iterations · three seeds · mean ± 95% Student-t CI", fontsize=11)
+        finding_text = "\n".join(f"• {finding}" for finding in _key_findings(summaries))
+        figure.text(0.07, 0.80, finding_text, fontsize=9, va="top", wrap=True)
         rows = [
             [
                 row.task,
@@ -84,7 +115,7 @@ def _write_pdf(summaries: list[VariantSummary], issues: list[str], figure_paths:
             ]
             for row in summaries
         ]
-        axis = figure.add_axes((0.04, 0.22, 0.92, 0.6))
+        axis = figure.add_axes((0.04, 0.20, 0.92, 0.55))
         axis.axis("off")
         table = axis.table(
             cellText=rows,

@@ -1,0 +1,152 @@
+[
+  {
+    "ep_length": {
+      "half_width": 1.1692708442154869,
+      "mean": 898.7163330078125,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.02809962285725843,
+      "mean": 2.0398693276547837,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 1650.4005471720347,
+      "mean": 7402.7405192057295,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.0,
+      "mean": 1.0,
+      "n": 3
+    },
+    "task": "Isaac-Ant-Direct",
+    "total_fps": {
+      "half_width": 890.1452719111597,
+      "mean": 64263.29195402299,
+      "n": 3
+    },
+    "variant": "kamino_current"
+  },
+  {
+    "ep_length": {
+      "half_width": 218.99894016276608,
+      "mean": 845.2611643473307,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.004797487357001751,
+      "mean": 0.41330148379007975,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 3745.487755806513,
+      "mean": 10785.472916666666,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.5385587690269663,
+      "mean": 0.8631150851647059,
+      "n": 3
+    },
+    "task": "Isaac-Ant-Direct",
+    "total_fps": {
+      "half_width": 3709.3044152341063,
+      "mean": 317194.0126436782,
+      "n": 3
+    },
+    "variant": "kamino_pr_dvi"
+  },
+  {
+    "ep_length": {
+      "half_width": 3.2587947905162236,
+      "mean": 897.7383341471354,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.023208699542320455,
+      "mean": 2.0484970945051346,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 4094.7771348808724,
+      "mean": 8547.08788248698,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.0,
+      "mean": 1.0,
+      "n": 3
+    },
+    "task": "Isaac-Ant-Direct",
+    "total_fps": {
+      "half_width": 722.3604167721271,
+      "mean": 63990.12298850575,
+      "n": 3
+    },
+    "variant": "kamino_pr_padmm"
+  },
+  {
+    "ep_length": {
+      "half_width": 25.822458811133934,
+      "mean": 876.5014984130859,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.0010313945150331623,
+      "mean": 0.16680198373465702,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 33.53047718289619,
+      "mean": 8872.347119140624,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.07528543592708731,
+      "mean": 0.9209325432777405,
+      "n": 3
+    },
+    "task": "Isaac-Ant-Direct",
+    "total_fps": {
+      "half_width": 4857.236589112169,
+      "mean": 785923.5758620689,
+      "n": 3
+    },
+    "variant": "mjwarp"
+  },
+  {
+    "ep_length": {
+      "half_width": 18.859859276180902,
+      "mean": 845.5608337402343,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.007386909853117429,
+      "mean": 0.3043879728207643,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 1341.0160360107725,
+      "mean": 6588.875187174479,
+      "n": 3
+    },
+    "success_rate": {
+      "half_width": 0.032227518277933215,
+      "mean": 0.8877976268529892,
+      "n": 3
+    },
+    "task": "Isaac-Ant-Direct",
+    "total_fps": {
+      "half_width": 9769.008232177963,
+      "mean": 433084.32988505746,
+      "n": 3
+    },
+    "variant": "physx"
+  }
+]

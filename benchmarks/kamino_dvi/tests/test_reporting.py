@@ -14,14 +14,20 @@ from benchmarks.kamino_dvi.statistics import Estimate
 
 def test_write_reports_emits_markdown_and_pdf(tmp_path: Path):
     """The report renderer produces both human-readable requested formats."""
-    estimate = Estimate(1.0, 0.1, 5)
-    summary = VariantSummary("task", "kamino_pr_dvi", 4096, estimate, estimate, estimate, estimate, estimate)
+    estimate = Estimate(1.0, 0.1, 3)
+    summaries = [
+        VariantSummary("task", "kamino_current", 4096, Estimate(2.0, 0.1, 3), estimate, estimate, estimate, estimate),
+        VariantSummary("task", "kamino_pr_dvi", 4096, Estimate(0.4, 0.1, 3), estimate, estimate, estimate, estimate),
+        VariantSummary("task", "mjwarp", 4096, Estimate(0.2, 0.1, 3), estimate, estimate, estimate, estimate),
+    ]
     markdown = tmp_path / "report.md"
     pdf = tmp_path / "report.pdf"
 
-    write_reports([summary], ["Schema success series differs from TensorBoard."], [], markdown, pdf)
+    write_reports(summaries, ["Schema success series differs from TensorBoard."], [], markdown, pdf)
 
     assert "Kamino DVI Solver Benchmark" in markdown.read_text(encoding="utf-8")
     assert "4096" in markdown.read_text(encoding="utf-8")
+    assert "faster than current Kamino" in markdown.read_text(encoding="utf-8")
+    assert "slower than MJWarp" in markdown.read_text(encoding="utf-8")
     assert pdf.read_bytes().startswith(b"%PDF")
     assert pdf.stat().st_size > 1000
