@@ -6,11 +6,11 @@ Steady-state runtime excludes iterations 1–10; learning metrics average the fi
 ## Key findings
 
 - Isaac-Ant-Direct: tuned DVI is 4.9× faster than current Kamino and 5.0× faster than PR3570 P-ADMM.
-- Isaac-Ant-Direct: tuned DVI remains 2.5× slower than MJWarp and 1.4× slower than PhysX.
+- Isaac-Ant-Direct: tuned DVI remains 2.5× slower than MJWarp and remains 1.4× slower than PhysX.
 - Isaac-Cartpole-Direct: tuned DVI is 2.0× faster than current Kamino and 2.0× faster than PR3570 P-ADMM.
-- Isaac-Cartpole-Direct: tuned DVI remains 1.5× slower than MJWarp and 1.0× slower than PhysX.
+- Isaac-Cartpole-Direct: tuned DVI remains 1.5× slower than MJWarp and is approximately equal to PhysX.
 - Isaac-Velocity-Flat-AnymalD: tuned DVI is 6.8× faster than current Kamino and 7.1× faster than PR3570 P-ADMM.
-- Isaac-Velocity-Flat-AnymalD: tuned DVI remains 2.4× slower than MJWarp and 1.9× slower than PhysX.
+- Isaac-Velocity-Flat-AnymalD: tuned DVI remains 2.4× slower than MJWarp and remains 1.9× slower than PhysX.
 
 ## Summary
 
@@ -34,8 +34,12 @@ Steady-state runtime excludes iterations 1–10; learning metrics average the fi
 
 ## Data quality and failures
 
-- Schema v1.1 success series differs from TensorBoard in 30 of 45 runs; report uses TensorBoard success. This is the known generator bug addressed separately in PR 6624.
-- Isaac-Ant-Direct tuned DVI success is seed-sensitive: the three-seed 95% CI half-width is 0.539.
+- Isaac-Ant-Direct: schema v1.1 success differs from TensorBoard in 15/15 runs and 3556/4500 points; report uses TensorBoard success.
+- Isaac-Cartpole-Direct: schema v1.1 success differs from TensorBoard in 15/15 runs and 1600/4500 points; report uses TensorBoard success.
+- Isaac-Velocity-Flat-AnymalD: schema v1.1 success differs from TensorBoard in 0/15 runs and 0/4500 points; report uses TensorBoard success.
+- Schema validation confirms every required reward, episode-length, and success field exists; this is a value mismatch, not missing data.
+- Isaac-Ant-Direct PR3570 tuned DVI has seed-sensitive weak learning: the three-seed success 95% CI half-width is 0.539; this is not a runtime or stability failure.
+- Isaac-Velocity-Flat-AnymalD MJWarp has seed-sensitive weak learning: the three-seed success 95% CI half-width is 1.069; this is not a runtime or stability failure.
 - Isaac-Cartpole-Direct PhysX has materially lower final-window reward than current Kamino.
 
 ## Figures
