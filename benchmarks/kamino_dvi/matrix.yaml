@@ -28,8 +28,7 @@ variants:
     preset: newton_kamino
   - name: kamino_pr_dvi
     environment: pr3570
-    preset: newton_kamino
-    dynamics_solver: dvi
+    preset: newton_kamino_dvi
   - name: mjwarp
     environment: current
     preset: newton_mjwarp
