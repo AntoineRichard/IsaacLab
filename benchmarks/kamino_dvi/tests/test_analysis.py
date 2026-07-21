@@ -64,6 +64,28 @@ def test_validate_record_matrix_rejects_incomplete_task_variant_seed_matrix():
         analysis.validate_record_matrix(records[1:], matrix)
 
 
+def test_validate_record_matrix_accepts_only_incomplete_explicitly_omitted_cell():
+    """Validated terminal failures may omit an empty or partially completed cell."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    omitted = ("IsaacContrib-DrLegs-Walk", "kamino_pr_dvi")
+    records = [
+        _record(task.name.value, variant.value, seed)
+        for task in matrix.tasks
+        for variant in task.variants
+        for seed in matrix.seeds
+        if (task.name.value, variant.value) != omitted
+    ]
+
+    analysis.validate_record_matrix(records, matrix, omitted_cells={omitted})
+
+    partial = [*records, _record(*omitted, matrix.seeds[0]), _record(*omitted, matrix.seeds[2])]
+    analysis.validate_record_matrix(partial, matrix, omitted_cells={omitted})
+
+    complete = [*partial, _record(*omitted, matrix.seeds[1])]
+    with pytest.raises(ValueError, match="omitted benchmark cell is complete"):
+        analysis.validate_record_matrix(complete, matrix, omitted_cells={omitted})
+
+
 def test_validate_record_matrix_rejects_unexpected_or_duplicate_identity():
     """Stale, mislabeled, and duplicate run identities must not enter a report."""
     matrix = load_matrix(DEFAULT_MATRIX_PATH)

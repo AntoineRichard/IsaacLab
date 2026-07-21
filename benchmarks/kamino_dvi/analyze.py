@@ -12,7 +12,14 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from .analysis import RunMetrics, VariantSummary, load_records, summarize_records, validate_record_matrix
+from .analysis import (
+    RunMetrics,
+    VariantSummary,
+    load_records,
+    summarize_records,
+    validate_failure_omissions,
+    validate_record_matrix,
+)
 from .matrix import DEFAULT_MATRIX_PATH, load_matrix
 from .plotting import VARIANT_LABELS, plot_learning, plot_runtime
 from .reporting import write_reports
@@ -111,7 +118,7 @@ def quality_issues(records, summaries: list[VariantSummary], artifact_root: Path
         if manifest.get("state") == "failed":
             identity = manifest["identity"]
             issues.append(
-                f"Failed {identity['task']} / {identity['variant']} / seed {identity['seed']}: "
+                f"Failed {identity['phase']} {identity['task']} / {identity['variant']} / seed {identity['seed']}: "
                 f"{manifest.get('failure_category')}."
             )
     by_task = {summary.task for summary in summaries}
@@ -147,8 +154,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     matrix = load_matrix(args.matrix)
     records = load_records(args.artifact_root, args.logs_root, matrix=matrix)
-    validate_record_matrix(records, matrix)
-    summaries = summarize_records(records)
+    omitted_cells = validate_failure_omissions(records, args.artifact_root, matrix)
+    validate_record_matrix(records, matrix, omitted_cells=omitted_cells)
+    summary_records = [record for record in records if (record.task, record.variant) not in omitted_cells]
+    summaries = summarize_records(summary_records)
     if not summaries:
         raise RuntimeError("no complete three-seed task/variant groups are available")
     args.output_dir.mkdir(parents=True, exist_ok=True)

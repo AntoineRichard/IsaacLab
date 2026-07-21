@@ -12,10 +12,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from benchmarks.kamino_dvi.analysis import VariantSummary, load_records
+from benchmarks.kamino_dvi.analysis import (
+    RunMetrics,
+    VariantSummary,
+    load_records,
+    validate_failed_preflight_omissions,
+    validate_failure_omissions,
+)
 from benchmarks.kamino_dvi.analyze import main, quality_issues
-from benchmarks.kamino_dvi.manifests import command_hash
+from benchmarks.kamino_dvi.commands import build_training_command
+from benchmarks.kamino_dvi.manifests import command_hash, stable_run_id
 from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
+from benchmarks.kamino_dvi.models import Phase, RunIdentity, TaskName, Variant
 from benchmarks.kamino_dvi.statistics import Estimate
 
 
@@ -210,6 +218,340 @@ def _write_run_artifacts(tmp_path: Path, *, manifest_changes: dict | None = None
     return run_dir.parent
 
 
+def _complete_records_except(matrix, omitted: tuple[str, str]) -> list[RunMetrics]:
+    """Build a complete synthetic matrix except for one whole task/variant cell."""
+    series = (1.0,) * matrix.full_iterations
+    return [
+        RunMetrics(
+            task.name.value,
+            variant.value,
+            seed,
+            4096,
+            series,
+            series,
+            series,
+            series,
+            series,
+        )
+        for task in matrix.tasks
+        for variant in task.variants
+        for seed in matrix.seeds
+        if (task.name.value, variant.value) != omitted
+    ]
+
+
+def _write_failed_preflight(
+    tmp_path: Path,
+    *,
+    manifest_changes: dict | None = None,
+) -> tuple[Path, list[RunMetrics]]:
+    """Write one exact retained numerical preflight and the complementary full records."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    identity = RunIdentity(
+        TaskName.DR_LEGS_WALK,
+        Variant.KAMINO_PR_DVI,
+        matrix.preflight_seed,
+        Phase.PREFLIGHT,
+        4096,
+        matrix.preflight_iterations,
+    )
+    artifact_root = tmp_path / "artifacts"
+    run_dir = artifact_root / stable_run_id(identity)
+    run_dir.mkdir(parents=True)
+    stdout = run_dir / "stdout.log"
+    stderr = run_dir / "stderr.log"
+    stdout.write_text("Training failed: NaN\n", encoding="utf-8")
+    stderr.write_text("numerical instability\n", encoding="utf-8")
+    command = build_training_command(matrix, identity, tmp_path, run_dir)
+    manifest = {
+        "artifact_hashes": {
+            stdout.name: sha256(stdout.read_bytes()).hexdigest(),
+            stderr.name: sha256(stderr.read_bytes()).hexdigest(),
+        },
+        "artifact_root": str(run_dir),
+        "command": command,
+        "command_hash": command_hash(command),
+        "failure_category": "numerical",
+        "identity": {
+            "max_iterations": identity.max_iterations,
+            "num_envs": identity.num_envs,
+            "phase": identity.phase.value,
+            "seed": identity.seed,
+            "task": identity.task.value,
+            "variant": identity.variant.value,
+        },
+        "isaaclab_head": "f" * 40,
+        "retry": {"attempt": 0, "parent_run_id": None},
+        "revisions": {
+            "isaaclab": matrix.revisions.isaaclab,
+            "schema": matrix.revisions.schema,
+            "newton_current": matrix.revisions.newton_current,
+            "newton_pr": matrix.revisions.newton_pr,
+        },
+        "run_id": run_dir.name,
+        "schema_version": "1.1",
+        "state": "failed",
+        "tensorboard_event_hash": None,
+        "tensorboard_event_path": None,
+    }
+    for key, value in (manifest_changes or {}).items():
+        if key.startswith("identity."):
+            manifest["identity"][key.removeprefix("identity.")] = value
+        elif key.startswith("revisions."):
+            manifest["revisions"][key.removeprefix("revisions.")] = value
+        else:
+            manifest[key] = value
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    omitted = (identity.task.value, identity.variant.value)
+    return artifact_root, _complete_records_except(matrix, omitted)
+
+
+def test_failed_preflight_omits_exact_whole_cell_and_is_disclosed(tmp_path):
+    """An exact numerical preflight authorizes omitting all full seeds for only its cell."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    artifact_root, records = _write_failed_preflight(tmp_path)
+
+    omissions = validate_failed_preflight_omissions(records, artifact_root, matrix)
+    issues = quality_issues(records, [], artifact_root)
+
+    assert omissions == {("IsaacContrib-DrLegs-Walk", "kamino_pr_dvi")}
+    assert any("Failed preflight" in issue and "numerical" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"state": "completed"}, "terminal failed preflight"),
+        ({"schema_version": "1.0"}, "schema version"),
+        ({"identity.seed": 43}, "identity does not match"),
+        ({"identity.num_envs": 2048}, "identity does not match"),
+        ({"revisions.isaaclab": "0" * 40}, "revisions"),
+        ({"command_hash": "0" * 64}, "command hash"),
+        ({"artifact_hashes": {}}, "retained stdout and stderr"),
+    ],
+)
+def test_failed_preflight_omission_rejects_inexact_evidence(tmp_path, changes, message):
+    """Stale, non-terminal, or wrong-identity preflights cannot excuse missing full runs."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    artifact_root, records = _write_failed_preflight(tmp_path, manifest_changes=changes)
+
+    with pytest.raises(ValueError, match=message):
+        validate_failed_preflight_omissions(records, artifact_root, matrix)
+
+
+def _write_partial_failed_full_campaign(
+    tmp_path: Path,
+    *,
+    completed_seeds: tuple[int, ...] = (42, 44),
+    manifest_changes: dict | None = None,
+) -> tuple[Path, list[RunMetrics]]:
+    """Write one failed full seed plus the cell's selected successful seeds."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    identity = RunIdentity(
+        TaskName.DR_LEGS_WALK,
+        Variant.KAMINO_CURRENT,
+        43,
+        Phase.FULL,
+        4096,
+        matrix.full_iterations,
+    )
+    artifact_root = tmp_path / "artifacts"
+    run_dir = artifact_root / stable_run_id(identity)
+    run_dir.mkdir(parents=True)
+    stdout = run_dir / "stdout.log"
+    stderr = run_dir / "stderr.log"
+    stdout.write_text("Learning iteration 172/300\n", encoding="utf-8")
+    stderr.write_text("policy observations contain NaN\n", encoding="utf-8")
+    command = build_training_command(matrix, identity, tmp_path, run_dir)
+    manifest = {
+        "artifact_hashes": {
+            stdout.name: sha256(stdout.read_bytes()).hexdigest(),
+            stderr.name: sha256(stderr.read_bytes()).hexdigest(),
+        },
+        "artifact_root": str(run_dir),
+        "command": command,
+        "command_hash": command_hash(command),
+        "failure_category": "numerical",
+        "identity": {
+            "max_iterations": identity.max_iterations,
+            "num_envs": identity.num_envs,
+            "phase": identity.phase.value,
+            "seed": identity.seed,
+            "task": identity.task.value,
+            "variant": identity.variant.value,
+        },
+        "isaaclab_head": "f" * 40,
+        "retry": {"attempt": 0, "parent_run_id": None},
+        "revisions": {
+            "isaaclab": matrix.revisions.isaaclab,
+            "schema": matrix.revisions.schema,
+            "newton_current": matrix.revisions.newton_current,
+            "newton_pr": matrix.revisions.newton_pr,
+        },
+        "run_id": run_dir.name,
+        "schema_version": "1.1",
+        "state": "failed",
+        "tensorboard_event_hash": None,
+        "tensorboard_event_path": None,
+    }
+    for key, value in (manifest_changes or {}).items():
+        if key.startswith("identity."):
+            manifest["identity"][key.removeprefix("identity.")] = value
+        elif key.startswith("revisions."):
+            manifest["revisions"][key.removeprefix("revisions.")] = value
+        else:
+            manifest[key] = value
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    omitted = (identity.task.value, identity.variant.value)
+    records = _complete_records_except(matrix, omitted)
+    series = (1.0,) * matrix.full_iterations
+    records.extend(
+        RunMetrics(
+            identity.task.value,
+            identity.variant.value,
+            seed,
+            identity.num_envs,
+            series,
+            series,
+            series,
+            series,
+            series,
+        )
+        for seed in completed_seeds
+    )
+    return artifact_root, records
+
+
+def test_failed_full_omission_requires_exact_failure_for_each_missing_seed(tmp_path):
+    """One exact failed full seed excludes its whole partially successful cell."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    artifact_root, records = _write_partial_failed_full_campaign(tmp_path)
+
+    omissions = validate_failure_omissions(records, artifact_root, matrix)
+
+    assert omissions == {("IsaacContrib-DrLegs-Walk", "kamino_current")}
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"state": "completed"}, "terminal failed full run"),
+        ({"schema_version": "1.0"}, "schema version"),
+        ({"identity.seed": 42}, "identity does not match"),
+        ({"identity.num_envs": 2048}, "identity does not match"),
+        ({"revisions.isaaclab": "0" * 40}, "revisions"),
+        ({"command_hash": "0" * 64}, "command hash"),
+        ({"artifact_hashes": {}}, "retained stdout and stderr"),
+    ],
+)
+def test_failed_full_omission_rejects_inexact_evidence(tmp_path, changes, message):
+    """A stale or unauthenticated failed full run cannot excuse partial coverage."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    artifact_root, records = _write_partial_failed_full_campaign(tmp_path, manifest_changes=changes)
+
+    with pytest.raises(ValueError, match=message):
+        validate_failure_omissions(records, artifact_root, matrix)
+
+
+def test_failed_full_omission_rejects_second_missing_seed_without_failure(tmp_path):
+    """Every missing full seed needs its own exact terminal failure evidence."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    artifact_root, records = _write_partial_failed_full_campaign(tmp_path, completed_seeds=(42,))
+
+    with pytest.raises(ValueError, match="missing failed full run.*seed=44"):
+        validate_failure_omissions(records, artifact_root, matrix)
+
+
+def test_main_generates_report_without_failed_preflight_cell(tmp_path, monkeypatch):
+    """The report entry point summarizes complete groups and omits the failed preflight bar."""
+    artifact_root, records = _write_failed_preflight(tmp_path)
+    output_dir = tmp_path / "report"
+    written: dict[str, object] = {}
+    monkeypatch.setattr("benchmarks.kamino_dvi.analyze.load_records", lambda *_args, **_kwargs: records)
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.analyze.plot_runtime",
+        lambda _summaries, path: path.write_bytes(b"runtime"),
+    )
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.analyze.plot_learning",
+        lambda _summaries, path: path.write_bytes(b"learning"),
+    )
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.analyze.write_reports",
+        lambda summaries, issues, *_args: written.update(summaries=summaries, issues=issues),
+    )
+
+    assert (
+        main(
+            [
+                "--artifact-root",
+                str(artifact_root),
+                "--logs-root",
+                str(tmp_path),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+        == 0
+    )
+    summaries = written["summaries"]
+    assert len(summaries) == 20
+    assert not any(
+        summary.task == TaskName.DR_LEGS_WALK and summary.variant == Variant.KAMINO_PR_DVI for summary in summaries
+    )
+    assert any("Failed preflight" in issue and "numerical" in issue for issue in written["issues"])
+
+
+def test_main_excludes_partial_failed_full_cell_but_keeps_quality_records(tmp_path, monkeypatch):
+    """Partial successes stay in quality accounting but not summaries when another seed failed."""
+    artifact_root, records = _write_partial_failed_full_campaign(tmp_path)
+    output_dir = tmp_path / "report"
+    written: dict[str, object] = {}
+    quality_record_count: list[int] = []
+    real_quality_issues = quality_issues
+    monkeypatch.setattr("benchmarks.kamino_dvi.analyze.load_records", lambda *_args, **_kwargs: records)
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.analyze.plot_runtime",
+        lambda _summaries, path: path.write_bytes(b"runtime"),
+    )
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.analyze.plot_learning",
+        lambda _summaries, path: path.write_bytes(b"learning"),
+    )
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.analyze.quality_issues",
+        lambda quality_records, summaries, root: (
+            quality_record_count.append(len(quality_records)) or real_quality_issues(quality_records, summaries, root)
+        ),
+    )
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.analyze.write_reports",
+        lambda summaries, issues, *_args: written.update(summaries=summaries, issues=issues),
+    )
+
+    assert (
+        main(
+            [
+                "--artifact-root",
+                str(artifact_root),
+                "--logs-root",
+                str(tmp_path),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+        == 0
+    )
+    summaries = written["summaries"]
+    assert len(summaries) == 20
+    assert not any(
+        summary.task == TaskName.DR_LEGS_WALK and summary.variant == Variant.KAMINO_CURRENT for summary in summaries
+    )
+    assert quality_record_count == [62]
+    assert any("Failed full" in issue and "seed 43" in issue and "numerical" in issue for issue in written["issues"])
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
@@ -221,8 +563,8 @@ def _write_run_artifacts(tmp_path: Path, *, manifest_changes: dict | None = None
 )
 def test_load_records_rejects_stale_manifest_provenance(tmp_path, monkeypatch, changes, message):
     """Completed labels are insufficient without exact protocol provenance and hashes."""
-    artifact_root = _write_run_artifacts(tmp_path, manifest_changes=changes)
     matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    artifact_root = _write_run_artifacts(tmp_path, manifest_changes=changes)
     monkeypatch.setattr("benchmarks.kamino_dvi.analysis.locate_rsl_rl_events", lambda *_: tmp_path / "events")
 
     with pytest.raises(ValueError, match=message):
@@ -231,8 +573,8 @@ def test_load_records_rejects_stale_manifest_provenance(tmp_path, monkeypatch, c
 
 def test_load_records_rejects_bundle_identity_that_disagrees_with_manifest(tmp_path, monkeypatch):
     """A stale bundle must not inherit the task, seed, or capacity label from its directory."""
-    artifact_root = _write_run_artifacts(tmp_path)
     matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    artifact_root = _write_run_artifacts(tmp_path)
     series = (1.0,) * 300
     trace = SimpleNamespace(
         task="Isaac-Ant-Direct",
@@ -281,8 +623,8 @@ def test_analyze_rejects_partial_matrix_before_writing_report(tmp_path, monkeypa
 
 def test_load_records_ignores_explicitly_invalidated_full_result(tmp_path, monkeypatch):
     """Invalidated manifests retain raw evidence but cannot become analyzer records."""
-    artifact_root = _write_run_artifacts(tmp_path, manifest_changes={"state": "invalidated"})
     matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    artifact_root = _write_run_artifacts(tmp_path, manifest_changes={"state": "invalidated"})
     monkeypatch.setattr(
         "benchmarks.kamino_dvi.analysis.parse_training_trace",
         lambda *_: pytest.fail("invalidated result was parsed"),
@@ -327,6 +669,7 @@ def test_quality_issues_counts_legacy_full_manifests_without_event_hash(tmp_path
 )
 def test_load_records_rejects_self_hashed_command_with_wrong_semantics(tmp_path, monkeypatch, selector, replacement):
     """A self-consistent command hash cannot legitimize a command for another run."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
     artifact_root = _write_run_artifacts(tmp_path)
     manifest_path = next(artifact_root.glob("full__*/manifest.json"))
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -338,7 +681,6 @@ def test_load_records_rejects_self_hashed_command_with_wrong_semantics(tmp_path,
         command[index] = replacement
     manifest["command_hash"] = command_hash(command)
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    matrix = load_matrix(DEFAULT_MATRIX_PATH)
     monkeypatch.setattr("benchmarks.kamino_dvi.analysis.locate_rsl_rl_events", lambda *_: tmp_path / "events")
 
     with pytest.raises(ValueError, match="command semantics"):
@@ -347,13 +689,13 @@ def test_load_records_rejects_self_hashed_command_with_wrong_semantics(tmp_path,
 
 def test_load_records_rejects_missing_headless_command_flag(tmp_path, monkeypatch):
     """The recorded training command must preserve headless benchmark execution."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
     artifact_root = _write_run_artifacts(tmp_path)
     manifest_path = next(artifact_root.glob("full__*/manifest.json"))
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["command"].remove("--headless")
     manifest["command_hash"] = command_hash(manifest["command"])
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    matrix = load_matrix(DEFAULT_MATRIX_PATH)
     monkeypatch.setattr("benchmarks.kamino_dvi.analysis.locate_rsl_rl_events", lambda *_: tmp_path / "events")
 
     with pytest.raises(ValueError, match="command semantics"):
@@ -362,6 +704,7 @@ def test_load_records_rejects_missing_headless_command_flag(tmp_path, monkeypatc
 
 def test_load_records_rejects_wrong_recorded_tensorboard_event_hash(tmp_path, monkeypatch):
     """Future manifests must authenticate the exact TensorBoard event parsed by analysis."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
     artifact_root = _write_run_artifacts(tmp_path)
     manifest_path = next(artifact_root.glob("full__*/manifest.json"))
     event_path = tmp_path / "events.out.tfevents.test"
@@ -370,7 +713,6 @@ def test_load_records_rejects_wrong_recorded_tensorboard_event_hash(tmp_path, mo
     manifest["tensorboard_event_path"] = str(event_path)
     manifest["tensorboard_event_hash"] = "0" * 64
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    matrix = load_matrix(DEFAULT_MATRIX_PATH)
     monkeypatch.setattr("benchmarks.kamino_dvi.analysis.locate_rsl_rl_events", lambda *_: event_path)
 
     with pytest.raises(ValueError, match="TensorBoard event hash"):
@@ -379,13 +721,13 @@ def test_load_records_rejects_wrong_recorded_tensorboard_event_hash(tmp_path, mo
 
 def test_load_records_rejects_unconfigured_hydra_solver_override(tmp_path, monkeypatch):
     """A correct preset cannot be combined with an unconfigured solver override."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
     artifact_root = _write_run_artifacts(tmp_path)
     manifest_path = next(artifact_root.glob("full__*/manifest.json"))
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["command"].append("env.sim.physics.solver_cfg.dynamics_solver=dvi")
     manifest["command_hash"] = command_hash(manifest["command"])
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    matrix = load_matrix(DEFAULT_MATRIX_PATH)
     monkeypatch.setattr("benchmarks.kamino_dvi.analysis.locate_rsl_rl_events", lambda *_: tmp_path / "events")
 
     with pytest.raises(ValueError, match="command semantics"):

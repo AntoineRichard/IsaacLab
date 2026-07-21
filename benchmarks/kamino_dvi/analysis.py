@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import statistics
 from collections import Counter
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from itertools import groupby
 from pathlib import Path
 
 from .manifests import command_hash, read_manifest, sha256_file, stable_run_id
-from .models import BenchmarkMatrix, Phase
+from .models import BenchmarkMatrix, Phase, RunIdentity
 from .parsing import locate_rsl_rl_events, parse_training_trace
 from .statistics import Estimate, final_window_mean, mean_ci95
 
@@ -93,25 +94,39 @@ def _identity_text(identity: tuple[str, str, int]) -> str:
     return f"task={task}, variant={variant}, seed={seed}"
 
 
-def validate_record_matrix(records: list[RunMetrics], matrix: BenchmarkMatrix) -> None:
+def validate_record_matrix(
+    records: list[RunMetrics],
+    matrix: BenchmarkMatrix,
+    *,
+    omitted_cells: set[tuple[str, str]] | frozenset[tuple[str, str]] = frozenset(),
+) -> None:
     """Validate exact task, variant, seed, and capacity coverage against the matrix."""
-    expected = {
+    expected_cells = {(task.name.value, variant.value) for task in matrix.tasks for variant in task.variants}
+    unexpected_omissions = sorted(set(omitted_cells) - expected_cells)
+    if unexpected_omissions:
+        raise ValueError(f"unexpected omitted benchmark cell: {unexpected_omissions[0]}")
+    expected_all = {
         (task.name.value, variant.value, seed)
         for task in matrix.tasks
         for variant in task.variants
         for seed in matrix.seeds
     }
+    expected_required = {identity for identity in expected_all if (identity[0], identity[1]) not in omitted_cells}
     identities = [(record.task, record.variant, record.seed) for record in records]
     counts = Counter(identities)
-    unexpected = sorted(set(identities) - expected)
+    unexpected = sorted(set(identities) - expected_all)
     if unexpected:
         raise ValueError(f"unexpected benchmark record: {_identity_text(unexpected[0])}")
     duplicates = sorted(identity for identity, count in counts.items() if count > 1)
     if duplicates:
         raise ValueError(f"duplicate benchmark record: {_identity_text(duplicates[0])}")
-    missing = sorted(expected - set(identities))
+    missing = sorted(expected_required - set(identities))
     if missing:
         raise ValueError(f"missing benchmark record: {_identity_text(missing[0])}")
+    for cell in omitted_cells:
+        present_seeds = {seed for task, variant, seed in identities if (task, variant) == cell}
+        if present_seeds == set(matrix.seeds):
+            raise ValueError(f"omitted benchmark cell is complete: task={cell[0]}, variant={cell[1]}")
 
     for task in matrix.tasks:
         environment_counts = {record.num_envs for record in records if record.task == task.name.value}
@@ -160,11 +175,15 @@ def _validate_command_semantics(manifest_path: Path, matrix: BenchmarkMatrix) ->
             != (repo_root / f".venv-{variant.environment.value}").resolve()
         ):
             raise ValueError("VIRTUAL_ENV does not match the variant")
-        if (
-            python_path is not None
-            and Path(python_path).resolve() != (repo_root / "source" / "isaaclab_tasks").resolve()
-        ):
-            raise ValueError("PYTHONPATH does not select the worktree's isaaclab_tasks")
+        if python_path is not None:
+            expected_tasks = (repo_root / "source" / "isaaclab_tasks").resolve()
+            expected_current = (
+                (repo_root / "source" / "isaaclab_newton").resolve(),
+                expected_tasks,
+            )
+            resolved_paths = tuple(Path(path).resolve() for path in python_path.split(os.pathsep))
+            if resolved_paths not in ((expected_tasks,), expected_current):
+                raise ValueError("PYTHONPATH does not select the worktree's exact benchmark sources")
         if command[cursor + 1] != "-p":
             raise ValueError("isaaclab.sh must use -p")
         if Path(command[cursor + 2]).resolve() != (repo_root / "scripts" / "benchmarks" / "training.py").resolve():
@@ -251,6 +270,99 @@ def _validate_manifest(manifest_path: Path, bundle: Path, matrix: BenchmarkMatri
             raise ValueError(f"{manifest_path}: artifact hash mismatch for {name}")
     if bundle.name not in manifest.artifact_hashes:
         raise ValueError(f"{manifest_path}: schema bundle has no recorded artifact hash")
+
+
+def _validate_failed_manifest(
+    manifest_path: Path,
+    expected: RunIdentity,
+    matrix: BenchmarkMatrix,
+    *,
+    label: str,
+) -> None:
+    """Validate one terminal failed run that excuses incomplete matrix coverage."""
+    manifest = read_manifest(manifest_path)
+    if manifest.state.value != "failed" or manifest.failure_category is None:
+        raise ValueError(f"{manifest_path}: expected a terminal failed {label}")
+    if manifest.identity != expected:
+        raise ValueError(f"{manifest_path}: identity does not match the expected failed {label}")
+    if manifest.revisions != matrix.revisions:
+        raise ValueError(f"{manifest_path}: revisions do not match the benchmark matrix")
+    if manifest.schema_version != "1.1":
+        raise ValueError(f"{manifest_path}: schema version is not 1.1")
+    if manifest.command_hash != command_hash(manifest.command):
+        raise ValueError(f"{manifest_path}: command hash does not match the recorded command")
+    _validate_command_semantics(manifest_path, matrix)
+    if manifest.run_id != stable_run_id(expected) or manifest_path.parent.name != manifest.run_id:
+        raise ValueError(f"{manifest_path}: run identity does not match its directory")
+    if Path(manifest.artifact_root).resolve() != manifest_path.parent.resolve():
+        raise ValueError(f"{manifest_path}: artifact root does not match its directory")
+    if not {"stdout.log", "stderr.log"}.issubset(manifest.artifact_hashes):
+        raise ValueError(f"{manifest_path}: failed {label} requires retained stdout and stderr")
+    for name, expected_hash in manifest.artifact_hashes.items():
+        artifact = manifest_path.parent / name
+        try:
+            artifact.resolve().relative_to(manifest_path.parent.resolve())
+        except ValueError as error:
+            raise ValueError(f"{manifest_path}: artifact path escapes its run directory") from error
+        if not artifact.is_file() or sha256_file(artifact) != expected_hash:
+            raise ValueError(f"{manifest_path}: artifact hash mismatch for {name}")
+
+
+def validate_failure_omissions(
+    records: list[RunMetrics], artifact_root: Path, matrix: BenchmarkMatrix
+) -> set[tuple[str, str]]:
+    """Return incomplete cells authorized by exact terminal preflight or full-run failures."""
+    present = {(record.task, record.variant, record.seed) for record in records}
+    omissions: set[tuple[str, str]] = set()
+    for task in matrix.tasks:
+        for variant in task.variants:
+            cell = (task.name.value, variant.value)
+            present_seeds = {seed for seed in matrix.seeds if (*cell, seed) in present}
+            if present_seeds == set(matrix.seeds):
+                continue
+            environment_counts = {record.num_envs for record in records if record.task == task.name.value}
+            if len(environment_counts) != 1:
+                raise ValueError(f"{task.name.value} cannot resolve one expected failure environment count")
+            num_envs = next(iter(environment_counts))
+            if not present_seeds:
+                expected = RunIdentity(
+                    task=task.name,
+                    variant=variant,
+                    seed=matrix.preflight_seed,
+                    phase=Phase.PREFLIGHT,
+                    num_envs=num_envs,
+                    max_iterations=matrix.preflight_iterations,
+                )
+                manifest_path = artifact_root / stable_run_id(expected) / "manifest.json"
+                if not manifest_path.is_file():
+                    raise ValueError(f"missing failed preflight for task={cell[0]}, variant={cell[1]}")
+                _validate_failed_manifest(manifest_path, expected, matrix, label="preflight")
+            else:
+                for seed in sorted(set(matrix.seeds) - present_seeds):
+                    expected = RunIdentity(
+                        task=task.name,
+                        variant=variant,
+                        seed=seed,
+                        phase=Phase.FULL,
+                        num_envs=num_envs,
+                        max_iterations=matrix.full_iterations,
+                    )
+                    manifest_path = artifact_root / stable_run_id(expected) / "manifest.json"
+                    if not manifest_path.is_file():
+                        raise ValueError(f"missing failed full run for task={cell[0]}, variant={cell[1]}, seed={seed}")
+                    _validate_failed_manifest(manifest_path, expected, matrix, label="full run")
+            omissions.add(cell)
+    return omissions
+
+
+def validate_failed_preflight_omissions(
+    records: list[RunMetrics], artifact_root: Path, matrix: BenchmarkMatrix
+) -> set[tuple[str, str]]:
+    """Return incomplete cells authorized by exact terminal failure evidence.
+
+    This compatibility name is retained for callers of the original preflight-only resolver.
+    """
+    return validate_failure_omissions(records, artifact_root, matrix)
 
 
 def load_records(
