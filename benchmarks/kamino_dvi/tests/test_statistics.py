@@ -28,6 +28,15 @@ def test_mean_ci95_uses_student_t_interval_for_two_stage2_seeds():
     assert estimate.n == 2
 
 
+def test_mean_ci95_two_seed_zero_variance_has_zero_half_width():
+    """A constant two-seed Stage-2 metric has a finite zero-width interval."""
+    estimate = mean_ci95([3.0, 3.0])
+
+    assert estimate.mean == 3.0
+    assert estimate.half_width == 0.0
+    assert estimate.n == 2
+
+
 def test_final_window_and_rolling_means_preserve_iteration_meaning():
     """Learning summaries use the final 20 iterations and exact rolling windows."""
     series = tuple(float(value) for value in range(1, 31))

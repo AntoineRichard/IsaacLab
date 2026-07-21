@@ -1117,6 +1117,7 @@ def _early_stop_report(args: argparse.Namespace, chain: Mapping[str, Any], final
                 "candidate": row["candidate"],
                 "mean": row["runtime"]["mean"],
                 "half_width": row["runtime"]["half_width"],
+                "interval_status": "student_t_ci95",
                 "n": row["runtime"]["n"],
             }
             for row in stage2_rows
@@ -1126,7 +1127,8 @@ def _early_stop_report(args: argparse.Namespace, chain: Mapping[str, Any], final
                 "stage": record.metrics.stage,
                 "candidate": record.metrics.candidate,
                 "mean": record.metrics.steady_time(matrix.warmup_iterations),
-                "half_width": 0.0,
+                "half_width": None,
+                "interval_status": "single_seed_no_ci",
                 "n": 1,
             }
             for record in [*chain["wave1"], *chain["wave2"]]
@@ -1289,7 +1291,8 @@ def _report_action(args: argparse.Namespace) -> None:
                 "stage": record.metrics.stage,
                 "candidate": record.metrics.candidate,
                 "mean": record.metrics.steady_time(matrix.warmup_iterations),
-                "half_width": 0.0,
+                "half_width": None,
+                "interval_status": "single_seed_no_ci",
                 "n": 1,
             }
             for record in [*chain["wave1"], *chain["wave2"]]

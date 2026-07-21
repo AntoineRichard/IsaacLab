@@ -47,6 +47,7 @@ from benchmarks.kamino_dvi.tuning import (
     load_tuning_matrix,
     resolve_config,
 )
+from benchmarks.kamino_dvi.tuning_reporting import _paginate_text
 
 
 def _trace(identity: TuningIdentity, *, offset: float = 0.0) -> TrainingTrace:
@@ -1658,6 +1659,8 @@ def test_report_writes_exact_early_stop_outputs_without_final_or_canonical(tmp_p
     ]
     candidate = tuning.wave1[0]
     resolved = resolve_config(tuning, candidate)
+    wave1 = [_synthetic_record(candidate.name, "wave1", 42, tuning.screen_iterations, resolved)]
+    wave2 = [_synthetic_record(candidate.name, "wave2", 42, tuning.screen_iterations, resolved)]
     halve = [
         _synthetic_record(candidate.name, "halve", seed, tuning.halve_iterations, resolved, reward=7.0)
         for seed in (42, 43)
@@ -1672,8 +1675,8 @@ def test_report_writes_exact_early_stop_outputs_without_final_or_canonical(tmp_p
     chain = {
         "matrix": tuning,
         "baseline": baseline,
-        "wave1": [],
-        "wave2": [],
+        "wave1": wave1,
+        "wave2": wave2,
         "halve": halve,
         "wave2_decision": {"selected": [], "rejected": {}},
         "stage2_decision": {"selected": [candidate.name], "rejected": {}},
@@ -1723,3 +1726,30 @@ def test_report_writes_exact_early_stop_outputs_without_final_or_canonical(tmp_p
     assert summary["winner_config"] is None
     assert summary["coverage"]["final"] == []
     assert summary["coverage"]["canonical"] == []
+    assert summary["speedups"] == {}
+    stage2 = summary["final_rows"][0]
+    for metric in ("runtime", "reward", "success", "episode_length"):
+        assert stage2[metric]["n"] == 2
+        assert stage2[metric]["half_width"] == 0.0
+    screening = [row for row in summary["runtime_rows"] if row["stage"] in {"wave1", "wave2"}]
+    assert len(screening) == 2
+    assert all(row["half_width"] is None for row in screening)
+    assert all(row["interval_status"] == "single_seed_no_ci" for row in screening)
+    assert summary["rejections"] == [f"{candidate.name}: seed 42: reward below 80% of baseline"]
+    assert {row["variant"] for row in summary["legacy_comparison"]} == {"mjwarp", "physx"}
+
+    markdown = (output / "anymal_d_dvi_tuning.md").read_text(encoding="utf-8")
+    for text in (
+        "stopped with no safe finalist",
+        "Stage-2 metrics use two-sided 95% Student-t confidence intervals with n=2",
+        "preset was not modified",
+        "seed 42: reward below 80% of baseline",
+        "mjwarp",
+        "physx",
+        "No apples-to-apples winner speedup",
+    ):
+        assert text in markdown
+    assert "clean DVI:" not in markdown
+    pdf_source_text = "\n".join(_paginate_text(markdown))
+    assert "stopped with no safe finalist" in pdf_source_text
+    assert "No apples-to-apples winner speedup" in pdf_source_text

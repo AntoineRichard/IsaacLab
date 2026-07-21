@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from benchmarks.kamino_dvi.tuning_reporting import _paginate_text, write_tuning_report
+from benchmarks.kamino_dvi.tuning_reporting import _paginate_text, _runtime_title, write_tuning_report
 
 
 def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp_path: Path):
@@ -118,6 +118,15 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
         "projected in memory",
     ):
         assert text in markdown
+    assert "Final/canonical metrics use two-sided 95% Student-t confidence intervals with n=3" in markdown
+    assert "Stage-2 metrics use two-sided 95% Student-t confidence intervals with n=2" not in markdown
+    assert _runtime_title("completed") == "Wave 1/2 runtime ranking (single-seed observations; no CI)"
+
+
+def test_early_stop_runtime_title_distinguishes_stage2_intervals():
+    assert (
+        _runtime_title("stopped_no_safe_finalist") == "Stage-2 runtime (95% CI, n=2) and Wave 1/2 (single seed; no CI)"
+    )
 
 
 def test_pdf_page_text_paginates_without_truncating_final_sentinel():

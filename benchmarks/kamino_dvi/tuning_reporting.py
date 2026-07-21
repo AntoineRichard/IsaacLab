@@ -29,16 +29,33 @@ def _estimate(value: Any) -> str:
     return str(value)
 
 
-def _runtime_plot(rows: Sequence[Mapping[str, Any]], path: Path) -> None:
+def _runtime_title(terminal_status: str) -> str:
+    """Return the runtime figure title for one terminal report state."""
+    if terminal_status == "stopped_no_safe_finalist":
+        return "Stage-2 runtime (95% CI, n=2) and Wave 1/2 (single seed; no CI)"
+    return "Wave 1/2 runtime ranking (single-seed observations; no CI)"
+
+
+def _runtime_plot(rows: Sequence[Mapping[str, Any]], path: Path, terminal_status: str) -> None:
     ordered = sorted(rows, key=lambda row: (float(row["mean"]), str(row["candidate"])))
     figure, axis = plt.subplots(figsize=(9, max(3, 0.28 * len(ordered))))
     labels = [f"{row.get('stage', '')}: {row['candidate']}" for row in ordered]
     values = [float(row["mean"]) for row in ordered]
-    errors = [float(row.get("half_width", 0.0)) for row in ordered]
-    axis.barh(labels, values, xerr=errors, color="#4978a8")
+    axis.barh(labels, values, color="#4978a8")
+    for index, row in enumerate(ordered):
+        half_width = row.get("half_width")
+        if half_width is not None:
+            axis.errorbar(
+                float(row["mean"]),
+                index,
+                xerr=float(half_width),
+                color="black",
+                capsize=3,
+                fmt="none",
+            )
     axis.invert_yaxis()
     axis.set_xlabel("Steady iteration time after iterations 1-10 [s]")
-    axis.set_title("Screening runtimes (single seed) and Stage-2 runtimes (95% CI)")
+    axis.set_title(_runtime_title(terminal_status))
     figure.tight_layout()
     figure.savefig(path, dpi=160)
     plt.close(figure)
@@ -71,10 +88,16 @@ def _markdown(report: Mapping[str, Any]) -> str:
             if stopped
             else "**Outcome: completed with a canonical winner.**"
         ),
-        "Stage-2 uncertainty intervals are two-sided 95% Student-t confidence intervals. "
-        "Wave 1/2 rankings are single-seed observations without confidence intervals. Runtime "
-        "excludes iterations 1--10; reward, TensorBoard `Metrics/success_rate`, and episode length "
-        "use the final 20 iterations.",
+        (
+            "Stage-2 metrics use two-sided 95% Student-t confidence intervals with n=2. "
+            if stopped
+            else "Final/canonical metrics use two-sided 95% Student-t confidence intervals with n=3. "
+        )
+        + (
+            "Wave 1/2 rankings are single-seed observations without confidence intervals. Runtime excludes "
+            "iterations 1--10; reward, TensorBoard `Metrics/success_rate`, and episode length use the final "
+            "20 iterations."
+        ),
         "",
         "## Early-stop decision" if stopped else "## Winner and canonical gate",
         "",
@@ -211,7 +234,7 @@ def write_tuning_report(report: Mapping[str, Any], output_dir: Path) -> tuple[Pa
     learning_path = output_dir / "learning.png"
     markdown_path = output_dir / "anymal_d_dvi_tuning.md"
     pdf_path = output_dir / "anymal_d_dvi_tuning.pdf"
-    _runtime_plot(report.get("runtime_rows", []), runtime_path)
+    _runtime_plot(report.get("runtime_rows", []), runtime_path, str(report.get("terminal_status", "completed")))
     _guardrail_plot(report.get("learning_traces", []), learning_path)
     markdown = _markdown(report)
     markdown_path.write_text(markdown, encoding="utf-8")
