@@ -444,6 +444,29 @@ def test_loader_rejects_undeclared_artifact_directory(tmp_path):
         load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
 
 
+def test_validate_ignores_only_configured_decision_directory(tmp_path, monkeypatch):
+    """The configured decision directory is metadata, while any other unknown child remains invalid."""
+    artifact_root = tmp_path / "artifacts"
+    decision_root = artifact_root / "decisions"
+    decision_root.mkdir(parents=True)
+    monkeypatch.setattr(analysis_module, "_validation_stage", lambda *_args: ((), None))
+    argv = [
+        "validate",
+        "--stages",
+        "wave2",
+        "--artifact-root",
+        str(artifact_root),
+        "--decision-root",
+        str(decision_root),
+    ]
+
+    assert main(argv) == 0
+
+    (artifact_root / "mystery").mkdir()
+    with pytest.raises(ValueError, match=r"undeclared tuning directory: .*mystery"):
+        main(argv)
+
+
 @pytest.mark.parametrize(("field", "value"), (("seed", 42.0), ("attempt", False)))
 def test_loader_rejects_noninteger_identity_fields(tmp_path, monkeypatch, field, value):
     """Identity integers reject float and bool values before semantic validation."""

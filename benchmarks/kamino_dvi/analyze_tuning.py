@@ -176,6 +176,7 @@ def load_tuning_records(  # noqa: C901
     expected_candidate_configs: Mapping[str, Mapping[str, Any]] | None = None,
     matrix_path: Path = DEFAULT_MATRIX_PATH,
     tuning_matrix_path: Path = DEFAULT_TUNING_MATRIX_PATH,
+    decision_root: Path | None = None,
 ) -> list[TuningRecord]:
     """Load terminal tuning attempts only after exact evidence validation.
 
@@ -186,6 +187,7 @@ def load_tuning_records(  # noqa: C901
         expected_candidate_configs: Exact expected configurations for adaptive screening candidates.
         matrix_path: Locked benchmark matrix path.
         tuning_matrix_path: Locked tuning matrix path.
+        decision_root: Configured directory containing persisted tuning decisions.
 
     Returns:
         Validated completed records and explicit failed rejection records.
@@ -207,6 +209,7 @@ def load_tuning_records(  # noqa: C901
         expected_preflight_configs = {}
     attempts: dict[tuple[str, str, int, int, int], list[tuple[Any, TuningRecord]]] = {}
     resolved_artifact_root = artifact_root.resolve()
+    resolved_decision_root = decision_root.resolve() if decision_root is not None else None
     seen: set[tuple[str, str, int, int, int, int]] = set()
     stage_protocol = {
         "baseline": (matrix_seeds := set(tuning_matrix.seeds), tuning_matrix.final_iterations),
@@ -218,10 +221,13 @@ def load_tuning_records(  # noqa: C901
     }
     directories = sorted(path for path in artifact_root.iterdir() if path.is_dir()) if artifact_root.exists() else ()
     for run_dir in directories:
+        resolved_run_dir = run_dir.resolve()
         try:
-            run_dir.resolve().relative_to(resolved_artifact_root)
+            resolved_run_dir.relative_to(resolved_artifact_root)
         except ValueError as error:
             raise ValueError(f"tuning run directory escapes artifact root: {run_dir}") from error
+        if resolved_run_dir == resolved_decision_root:
+            continue
         components = run_dir.name.split("__")
         if len(components) != 6 or components[0] not in {*stage_protocol, "preflight"}:
             raise ValueError(f"undeclared tuning directory: {run_dir}")
@@ -751,6 +757,7 @@ def _records(args: argparse.Namespace, stage: str, decision: Mapping[str, Any] |
         expected_candidate_configs=expected_configs,
         matrix_path=getattr(args, "matrix", DEFAULT_MATRIX_PATH),
         tuning_matrix_path=args.tuning_matrix,
+        decision_root=args.decision_root,
     )
 
 
@@ -1249,6 +1256,7 @@ def _validate_action(args: argparse.Namespace) -> None:
             ),
             matrix_path=args.matrix,
             tuning_matrix_path=args.tuning_matrix,
+            decision_root=args.decision_root,
         )
         validate_tuning_records(records, expected)
         if decision is not None:
