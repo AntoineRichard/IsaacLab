@@ -834,6 +834,37 @@ def test_loader_rejects_nonterminal_preflight(tmp_path, monkeypatch):
         load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
 
 
+def test_loader_rejects_failed_manifest_without_failure_category(tmp_path, monkeypatch):
+    """A failed lifecycle state must retain its real failure category."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category=None,
+        keep_measured=False,
+    )
+
+    with pytest.raises(ValueError, match="failed manifest requires a failure category"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+@pytest.mark.parametrize("state", ("planned", "running", "completed", "invalidated"))
+def test_loader_rejects_nonfailed_manifest_with_failure_category(tmp_path, monkeypatch, state):
+    """Only the failed lifecycle state may carry a failure category."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state=state,
+        failure_category="crash",
+        keep_measured=False,
+    )
+
+    with pytest.raises(ValueError, match="failure category is only valid for a failed manifest"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
 def test_loader_rejects_preflight_without_hashed_standard_logs(tmp_path, monkeypatch):
     """A failed preflight must retain hashes for both standard output streams."""
     artifact_root = _write_completed_artifact(tmp_path, monkeypatch)

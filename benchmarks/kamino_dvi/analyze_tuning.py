@@ -151,7 +151,7 @@ def _validate_series(metrics: TuningRunMetrics, iterations: int, manifest_path: 
 
 def _failed_record(manifest_path: Path, manifest, resolved: dict[str, Any]) -> TuningRecord:
     identity = manifest.identity
-    reason = manifest.failure_category.value if manifest.failure_category is not None else "failed without category"
+    reason = manifest.failure_category.value
     metrics = TuningRunMetrics(
         identity.candidate, identity.stage, identity.seed, identity.num_envs, (), (), (), (), reason
     )
@@ -238,6 +238,11 @@ def load_tuning_records(  # noqa: C901
             manifest = read_tuning_manifest(manifest_path)
         except Exception as error:
             raise ValueError(f"{manifest_path}: invalid typed tuning manifest: {error}") from error
+        if manifest.state is TerminalState.FAILED:
+            if manifest.failure_category is None:
+                raise ValueError(f"{manifest_path}: failed manifest requires a failure category")
+        elif manifest.failure_category is not None:
+            raise ValueError(f"{manifest_path}: failure category is only valid for a failed manifest")
         identity = manifest.identity
         key = (
             identity.stage,
