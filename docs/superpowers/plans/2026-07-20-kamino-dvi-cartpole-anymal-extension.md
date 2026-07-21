@@ -657,4 +657,3 @@ git add benchmarks/kamino_dvi/results/summary.json \
   benchmarks/kamino_dvi/results/kamino_dvi_benchmark.pdf
 git commit -m "Report Cartpole and ANYmal DVI benchmarks"
 ```
-
