@@ -38,9 +38,7 @@ def test_resolved_hash_is_order_independent_and_hydra_values_are_canonical():
     resolved = resolve_config(matrix, candidate)
     assert resolved["dynamics_preconditioning"] is True
     assert config_hash(dict(reversed(tuple(resolved.items())))) == config_hash(resolved)
-    assert hydra_overrides(matrix, candidate) == (
-        "env.sim.physics.solver_cfg.dynamics_preconditioning=true",
-    )
+    assert hydra_overrides(matrix, candidate) == ("env.sim.physics.solver_cfg.dynamics_preconditioning=true",)
 
 
 def _write_matrix(tmp_path: Path, mutate) -> Path:
@@ -58,7 +56,9 @@ def _write_matrix(tmp_path: Path, mutate) -> Path:
         (lambda data: data["wave1"].append(data["wave1"][0]), "duplicate candidate names"),
         (lambda data: data.update(task="Isaac-Ant-Direct"), "ANYmal"),
         (lambda data: data.update(num_envs=2048), "4096"),
+        (lambda data: data.update(num_envs=4096.5), "integer"),
         (lambda data: data.update(seeds=[42, 43]), "seeds"),
+        (lambda data: data.update(seeds=[42.9, 43, 44]), "integers"),
         (lambda data: data["wave1"].pop(), "18"),
         (lambda data: data["wave1"][0]["overrides"].update(dvi_omega=0.5), "exactly one"),
         (lambda data: data["baseline"].pop("dvi_omega"), "baseline"),

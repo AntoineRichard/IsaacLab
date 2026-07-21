@@ -82,13 +82,27 @@ class TuningMatrix:
 
 
 def config_hash(config: Mapping[str, SolverValue]) -> str:
-    """Return the canonical SHA-256 hash of a resolved solver configuration."""
+    """Return the canonical SHA-256 hash of a resolved solver configuration.
+
+    Args:
+        config: Resolved solver configuration to hash.
+
+    Returns:
+        The lowercase hexadecimal SHA-256 digest.
+    """
     payload = json.dumps(dict(sorted(config.items())), separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def resolve_config(matrix: TuningMatrix, candidate: TuningCandidate) -> dict[str, SolverValue]:
     """Overlay one candidate on the baseline solver configuration.
+
+    Args:
+        matrix: Tuning matrix containing the baseline configuration.
+        candidate: Candidate overrides to apply.
+
+    Returns:
+        A resolved copy of the solver configuration.
 
     Raises:
         ValueError: If the candidate contains fields outside the baseline schema.
@@ -106,11 +120,20 @@ def _hydra_value(value: SolverValue) -> str:
 
 
 def hydra_overrides(matrix: TuningMatrix, candidate: TuningCandidate) -> tuple[str, ...]:
-    """Return deterministic Hydra overrides for a tuning candidate."""
+    """Return deterministic Hydra overrides for a tuning candidate.
+
+    Args:
+        matrix: Tuning matrix containing the baseline schema.
+        candidate: Candidate overrides to serialize.
+
+    Returns:
+        Canonically ordered Hydra override strings.
+
+    Raises:
+        ValueError: If the candidate contains fields outside the baseline schema.
+    """
     resolve_config(matrix, candidate)
-    return tuple(
-        f"{HYDRA_PREFIX}{name}={_hydra_value(value)}" for name, value in sorted(candidate.overrides.items())
-    )
+    return tuple(f"{HYDRA_PREFIX}{name}={_hydra_value(value)}" for name, value in sorted(candidate.overrides.items()))
 
 
 def load_tuning_matrix(path: Path = DEFAULT_TUNING_MATRIX_PATH) -> TuningMatrix:
@@ -138,10 +161,14 @@ def load_tuning_matrix(path: Path = DEFAULT_TUNING_MATRIX_PATH) -> TuningMatrix:
     if data["preset"] != benchmark_matrix.variant(variant).preset:
         raise ValueError("tuning preset must match the locked benchmark matrix")
 
-    num_envs = int(data["num_envs"])
+    num_envs = data["num_envs"]
+    if not isinstance(num_envs, int) or isinstance(num_envs, bool):
+        raise ValueError("tuning environment count must be an integer")
     if num_envs != 4096:
         raise ValueError("tuning matrix must use exactly 4096 environments")
-    seeds = tuple(int(seed) for seed in data["seeds"])
+    if any(not isinstance(seed, int) or isinstance(seed, bool) for seed in data["seeds"]):
+        raise ValueError("tuning matrix seeds must be integers")
+    seeds = tuple(data["seeds"])
     if seeds != (42, 43, 44):
         raise ValueError("tuning matrix seeds must be exactly (42, 43, 44)")
 
