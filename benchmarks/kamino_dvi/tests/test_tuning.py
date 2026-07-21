@@ -229,7 +229,7 @@ def make_metric(
 @pytest.fixture
 def baseline_100():
     """Return the two-seed Stage 2 baseline."""
-    return tuple(make_metric("baseline", "stage2", seed, 100, runtime=0.2) for seed in (42, 43))
+    return tuple(make_metric("baseline", "halve", seed, 100, runtime=0.2) for seed in (42, 43))
 
 
 def make_two_seed_metrics(
@@ -239,7 +239,7 @@ def make_two_seed_metrics(
     return tuple(
         make_metric(
             candidate,
-            "stage2",
+            "halve",
             seed,
             100,
             runtime=0.1,
@@ -350,7 +350,7 @@ def baseline_final():
     return tuple(
         make_metric(
             "baseline",
-            "final",
+            "baseline",
             seed,
             300,
             runtime=runtime,
@@ -502,3 +502,114 @@ def test_winner_rejects_empty_qualified_set_and_missing_config(matrix):
     qualified = {"candidate": make_qualification("candidate", Estimate(0.1, 0.0, 3))}
     with pytest.raises(ValueError, match="resolved configuration"):
         select_winner(matrix, qualified, {})
+
+
+_PROTOCOL_MUTATIONS = (
+    ("num_envs", "4096 environments"),
+    ("stage", "stage"),
+    ("iteration_time_s", "iteration_time_s"),
+    ("reward", "reward"),
+    ("success_rate", "success_rate"),
+    ("ep_length", "ep_length"),
+)
+
+
+def invalidate_protocol(record: TuningRunMetrics, field: str) -> TuningRunMetrics:
+    """Return a record with one protocol identity field made invalid."""
+    if field == "num_envs":
+        return dataclasses.replace(record, num_envs=2048)
+    if field == "stage":
+        return dataclasses.replace(record, stage="wrong_stage")
+    values = getattr(record, field)
+    return dataclasses.replace(record, **{field: values[:-1]})
+
+
+@pytest.mark.parametrize(("field", "reason"), _PROTOCOL_MUTATIONS)
+def test_wave2_excludes_records_with_invalid_protocol_identity(matrix, field: str, reason: str):
+    """Wave 2 excludes wrong environments, stages, and non-exact traces."""
+    results = [make_screen_metric(candidate.name, index) for index, candidate in enumerate(matrix.wave1)]
+    results[0] = invalidate_protocol(results[0], field)
+
+    largest = resolve_wave2(matrix, results)[-1]
+
+    assert "integrator" not in largest.overrides, reason
+
+
+@pytest.mark.parametrize(("field", "reason"), _PROTOCOL_MUTATIONS)
+def test_stage1_rejects_records_with_invalid_protocol_identity(matrix, field: str, reason: str):
+    """Stage 1 rejects wrong environments, stages, and non-exact traces."""
+    invalid = invalidate_protocol(make_screen_metric("invalid", 0), field)
+    valid = make_screen_metric("valid", 1)
+
+    decision = promote_stage2(matrix, (invalid, valid))
+
+    assert decision.selected == ("valid",)
+    assert reason in decision.rejected["invalid"]
+
+
+@pytest.mark.parametrize(("field", "reason"), _PROTOCOL_MUTATIONS)
+def test_stage2_rejects_records_with_invalid_protocol_identity(matrix, baseline_100, field: str, reason: str):
+    """Stage 2 rejects wrong environments, stages, and non-exact traces."""
+    candidate = list(make_two_seed_metrics(reward_scale=1.0, success_delta=0.0, ep_length_scale=1.0))
+    candidate[0] = invalidate_protocol(candidate[0], field)
+
+    decision = promote_finalists(matrix, baseline_100, candidate)
+
+    assert decision.selected == ()
+    assert reason in decision.rejected["candidate"]
+
+
+def test_stage2_retains_terminal_failure_reason(matrix, baseline_100):
+    """Stage 2 retains an explicit terminal failure instead of treating it as malformed data."""
+    candidate = list(make_two_seed_metrics(reward_scale=1.0, success_delta=0.0, ep_length_scale=1.0))
+    candidate[0] = dataclasses.replace(candidate[0], failure="capacity")
+
+    decision = promote_finalists(matrix, baseline_100, candidate)
+
+    assert decision.rejected == {"candidate": "seed 42: capacity"}
+
+
+@pytest.mark.parametrize(("field", "reason"), _PROTOCOL_MUTATIONS)
+def test_final_gate_rejects_records_with_invalid_protocol_identity(
+    matrix, baseline_final, candidate_final, field: str, reason: str
+):
+    """Final qualification rejects wrong environments, stages, and non-exact traces."""
+    candidate = list(candidate_final)
+    candidate[0] = invalidate_protocol(candidate[0], field)
+
+    qualification = qualify_finalists(matrix, baseline_final, candidate)["candidate"]
+
+    assert qualification.qualified is False
+    assert reason in qualification.reason
+
+
+@pytest.mark.parametrize(("field", "reason"), _PROTOCOL_MUTATIONS)
+def test_final_gate_requires_valid_baseline_protocol_identity(
+    matrix, baseline_final, candidate_final, field: str, reason: str
+):
+    """Final qualification refuses a malformed baseline protocol identity."""
+    baseline = list(baseline_final)
+    baseline[0] = invalidate_protocol(baseline[0], field)
+
+    with pytest.raises(ValueError, match=reason):
+        qualify_finalists(matrix, baseline, candidate_final)
+
+
+def test_stage1_accepts_wave2_records_and_rejects_non_screen_seed(matrix):
+    """Stage 1 promotion accepts both waves but only the screening seed."""
+    wave2 = dataclasses.replace(make_screen_metric("wave2", 0), stage="wave2")
+    wrong_seed = dataclasses.replace(make_screen_metric("wrong_seed", 1), seed=43)
+
+    decision = promote_stage2(matrix, (wave2, wrong_seed))
+
+    assert decision.selected == ("wave2",)
+    assert decision.rejected == {"wrong_seed": "requires seed 42"}
+
+
+def test_stage2_requires_halve_stage_for_baseline(matrix, baseline_100):
+    """Stage 2 refuses a baseline record from a different stage."""
+    baseline = (dataclasses.replace(baseline_100[0], stage="baseline"), baseline_100[1])
+    candidate = make_two_seed_metrics(reward_scale=1.0, success_delta=0.0, ep_length_scale=1.0)
+
+    with pytest.raises(ValueError, match="stage halve"):
+        promote_finalists(matrix, baseline, candidate)

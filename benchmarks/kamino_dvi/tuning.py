@@ -206,7 +206,11 @@ def resolve_wave2(matrix: TuningMatrix, results: Sequence[TuningRunMetrics]) -> 
     if len(terminal) != len(results) or set(terminal) != expected:
         raise ValueError("Wave 1 requires exactly 18 terminal candidate results")
 
-    valid = {name: result for name, result in terminal.items() if result.failure is None}
+    valid = {
+        name: result
+        for name, result in terminal.items()
+        if _record_problem(matrix, result, stages={"wave1"}, seeds={42}, iterations=matrix.screen_iterations) is None
+    }
     if len(valid) < 7:
         raise ValueError("Wave 2 requires at least seven valid one-field changes")
     ordered = sorted(
@@ -352,36 +356,54 @@ def _group_required_seeds(
     return grouped
 
 
+def _record_problem(
+    matrix: TuningMatrix,
+    result: TuningRunMetrics,
+    *,
+    stages: set[str],
+    seeds: set[int],
+    iterations: int,
+) -> str | None:
+    if result.failure is not None:
+        return result.failure
+    if result.num_envs != matrix.num_envs:
+        return f"requires {matrix.num_envs} environments"
+    if result.stage not in stages:
+        expected = " or ".join(sorted(stages))
+        return f"requires stage {expected}"
+    if result.seed not in seeds:
+        expected = " or ".join(str(seed) for seed in sorted(seeds))
+        return f"requires seed {expected}"
+    for field in ("iteration_time_s", "reward", "success_rate", "ep_length"):
+        if len(getattr(result, field)) != iterations:
+            return f"{field} requires exactly {iterations} values"
+    return None
+
+
 def _baseline_by_seed(
-    matrix: TuningMatrix, results: Sequence[TuningRunMetrics], required_seeds: set[int], description: str
+    matrix: TuningMatrix,
+    results: Sequence[TuningRunMetrics],
+    required_seeds: set[int],
+    description: str,
+    *,
+    stage: str,
+    iterations: int,
 ) -> dict[int, TuningRunMetrics]:
     grouped = _group_required_seeds(results, required_seeds, description)
     if len(grouped) != 1:
         raise ValueError(f"{description} requires exactly one baseline candidate")
     baseline = next(iter(grouped.values()))
     for result in baseline.values():
-        if result.failure is not None:
-            raise ValueError(f"{description} baseline failed: {result.failure}")
-        if result.num_envs != matrix.num_envs:
-            raise ValueError(f"{description} baseline requires {matrix.num_envs} environments")
-        result.steady_time(matrix.warmup_iterations)
-        for values in (result.reward, result.success_rate, result.ep_length):
-            result.final_mean(values, matrix.learning_window)
+        problem = _record_problem(
+            matrix,
+            result,
+            stages={stage},
+            seeds=required_seeds,
+            iterations=iterations,
+        )
+        if problem is not None:
+            raise ValueError(f"{description} baseline seed {result.seed}: {problem}")
     return baseline
-
-
-def _record_failure(matrix: TuningMatrix, result: TuningRunMetrics) -> str | None:
-    if result.failure is not None:
-        return result.failure
-    if result.num_envs != matrix.num_envs:
-        return f"requires {matrix.num_envs} environments"
-    try:
-        result.steady_time(matrix.warmup_iterations)
-        for values in (result.reward, result.success_rate, result.ep_length):
-            result.final_mean(values, matrix.learning_window)
-    except ValueError as error:
-        return str(error)
-    return None
 
 
 def promote_stage2(matrix: TuningMatrix, results: Sequence[TuningRunMetrics]) -> PromotionDecision:
@@ -395,17 +417,22 @@ def promote_stage2(matrix: TuningMatrix, results: Sequence[TuningRunMetrics]) ->
         Deterministic promotion decision ordered by steady-state runtime.
 
     Raises:
-        ValueError: If candidate names are duplicated or a record uses a seed
-            other than 42.
+        ValueError: If candidate names are duplicated.
     """
-    if len({result.candidate for result in results}) != len(results) or any(result.seed != 42 for result in results):
-        raise ValueError("Stage 1 requires one seed-42 result per candidate")
+    if len({result.candidate for result in results}) != len(results):
+        raise ValueError("Stage 1 requires one result per candidate")
     rejected: dict[str, str] = {}
     ranked: list[tuple[float, str]] = []
     for result in results:
-        failure = _record_failure(matrix, result)
-        if failure is not None:
-            rejected[result.candidate] = failure
+        problem = _record_problem(
+            matrix,
+            result,
+            stages={"wave1", "wave2"},
+            seeds={42},
+            iterations=matrix.screen_iterations,
+        )
+        if problem is not None:
+            rejected[result.candidate] = problem
         else:
             ranked.append((result.steady_time(matrix.warmup_iterations), result.candidate))
     ranked.sort()
@@ -435,7 +462,14 @@ def promote_finalists(
         ValueError: If baseline or candidate seed sets are incomplete.
     """
     required_seeds = {42, 43}
-    baseline = _baseline_by_seed(matrix, baseline_results, required_seeds, "Stage 2")
+    baseline = _baseline_by_seed(
+        matrix,
+        baseline_results,
+        required_seeds,
+        "Stage 2",
+        stage="halve",
+        iterations=matrix.halve_iterations,
+    )
     grouped = _group_required_seeds(candidate_results, required_seeds, "Stage 2")
     rejected: dict[str, str] = {}
     ranked: list[tuple[float, str]] = []
@@ -443,9 +477,15 @@ def promote_finalists(
         reason: str | None = None
         for seed in sorted(required_seeds):
             result = by_seed[seed]
-            failure = _record_failure(matrix, result)
-            if failure is not None:
-                reason = f"seed {seed}: {failure}"
+            problem = _record_problem(
+                matrix,
+                result,
+                stages={"halve"},
+                seeds=required_seeds,
+                iterations=matrix.halve_iterations,
+            )
+            if problem is not None:
+                reason = f"seed {seed}: {problem}"
                 break
             reference = baseline[seed]
             candidate_reward = result.final_mean(result.reward, matrix.learning_window)
@@ -512,7 +552,14 @@ def qualify_finalists(
         ValueError: If baseline or candidate seed sets are incomplete.
     """
     required_seeds = {42, 43, 44}
-    baseline = _baseline_by_seed(matrix, baseline_results, required_seeds, "Final qualification")
+    baseline = _baseline_by_seed(
+        matrix,
+        baseline_results,
+        required_seeds,
+        "Final qualification",
+        stage="baseline",
+        iterations=matrix.final_iterations,
+    )
     baseline_estimates = _estimate_final(matrix, baseline)
     reward_floor = baseline_estimates[1].mean - baseline_estimates[1].half_width
     success_floor = baseline_estimates[2].mean - baseline_estimates[2].half_width
@@ -521,9 +568,15 @@ def qualify_finalists(
     for candidate, by_seed in grouped.items():
         reason: str | None = None
         for seed in sorted(required_seeds):
-            failure = _record_failure(matrix, by_seed[seed])
-            if failure is not None:
-                reason = f"seed {seed}: {failure}"
+            problem = _record_problem(
+                matrix,
+                by_seed[seed],
+                stages={"final"},
+                seeds=required_seeds,
+                iterations=matrix.final_iterations,
+            )
+            if problem is not None:
+                reason = f"seed {seed}: {problem}"
                 break
         if reason is not None:
             invalid = _invalid_estimate()
