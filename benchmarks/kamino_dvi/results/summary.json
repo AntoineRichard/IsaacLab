@@ -301,6 +301,84 @@
   },
   {
     "ep_length": {
+      "half_width": 0.0,
+      "mean": 300.0,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.01601501714723373,
+      "mean": 1.2604649406740034,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.7030258385536623,
+      "mean": 3.2830702781677243,
+      "n": 3
+    },
+    "success_rate": null,
+    "task": "Isaac-Fourbar-Pole-Swingup",
+    "total_fps": {
+      "half_width": 606.82119214698,
+      "mean": 52150.73218390805,
+      "n": 3
+    },
+    "variant": "kamino_current"
+  },
+  {
+    "ep_length": {
+      "half_width": 0.0,
+      "mean": 300.0,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.029249927344534722,
+      "mean": 0.6469760354908034,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.43825732759676855,
+      "mean": 3.468918816248576,
+      "n": 3
+    },
+    "success_rate": null,
+    "task": "Isaac-Fourbar-Pole-Swingup",
+    "total_fps": {
+      "half_width": 4569.756721329895,
+      "mean": 102082.22298850575,
+      "n": 3
+    },
+    "variant": "kamino_pr_dvi"
+  },
+  {
+    "ep_length": {
+      "half_width": 0.0,
+      "mean": 300.0,
+      "n": 3
+    },
+    "iteration_time_s": {
+      "half_width": 0.049040217297102714,
+      "mean": 1.2563988833591857,
+      "n": 3
+    },
+    "num_envs": 4096,
+    "reward": {
+      "half_width": 0.3015113796170409,
+      "mean": 3.8624109307924908,
+      "n": 3
+    },
+    "success_rate": null,
+    "task": "Isaac-Fourbar-Pole-Swingup",
+    "total_fps": {
+      "half_width": 1840.6688058954512,
+      "mean": 52374.37816091954,
+      "n": 3
+    },
+    "variant": "kamino_pr_padmm"
+  },
+  {
+    "ep_length": {
       "half_width": 6.014152444493384,
       "mean": 988.9686635335287,
       "n": 3

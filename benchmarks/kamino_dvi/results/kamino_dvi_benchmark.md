@@ -9,6 +9,7 @@ Steady-state runtime excludes iterations 1–10; learning metrics average the fi
 - Isaac-Ant-Direct: tuned DVI remains 2.5× slower than MJWarp and remains 1.4× slower than PhysX.
 - Isaac-Cartpole-Direct: tuned DVI is 2.0× faster than current Kamino and 2.0× faster than PR3570 P-ADMM.
 - Isaac-Cartpole-Direct: tuned DVI remains 1.5× slower than MJWarp and is approximately equal to PhysX.
+- Isaac-Fourbar-Pole-Swingup: tuned DVI is 1.9× faster than current Kamino and 1.9× faster than PR3570 P-ADMM.
 - Isaac-Velocity-Flat-AnymalD: tuned DVI is 6.8× faster than current Kamino and 7.1× faster than PR3570 P-ADMM.
 - Isaac-Velocity-Flat-AnymalD: tuned DVI remains 2.4× slower than MJWarp and remains 1.9× slower than PhysX.
 
@@ -26,22 +27,41 @@ Steady-state runtime excludes iterations 1–10; learning metrics average the fi
 | Isaac-Cartpole-Direct | PR3570 P-ADMM | 4096 | 0.260 ± 0.002 | 252178 ± 2015 | 4.946 ± 0.014 | 300.000 ± 0.000 | 1.000 ± 0.000 |
 | Isaac-Cartpole-Direct | MJWarp | 4096 | 0.087 ± 0.001 | 749904 ± 9903 | 4.947 ± 0.009 | 299.955 ± 0.193 | 1.000 ± 0.000 |
 | Isaac-Cartpole-Direct | PhysX | 4096 | 0.133 ± 0.004 | 494030 ± 12633 | -5.542 ± 0.151 | 293.953 ± 5.572 | 0.970 ± 0.009 |
+| Isaac-Fourbar-Pole-Swingup | Kamino current | 4096 | 1.260 ± 0.016 | 52151 ± 607 | 3.283 ± 0.703 | 300.000 ± 0.000 | N/A |
+| Isaac-Fourbar-Pole-Swingup | PR3570 tuned DVI | 4096 | 0.647 ± 0.029 | 102082 ± 4570 | 3.469 ± 0.438 | 300.000 ± 0.000 | N/A |
+| Isaac-Fourbar-Pole-Swingup | PR3570 P-ADMM | 4096 | 1.256 ± 0.049 | 52374 ± 1841 | 3.862 ± 0.302 | 300.000 ± 0.000 | N/A |
 | Isaac-Velocity-Flat-AnymalD | Kamino current | 4096 | 6.057 ± 0.183 | 16307 ± 423 | 21.668 ± 0.335 | 988.969 ± 6.014 | 0.997 ± 0.002 |
 | Isaac-Velocity-Flat-AnymalD | PR3570 tuned DVI | 4096 | 0.889 ± 0.004 | 110716 ± 450 | 21.683 ± 0.509 | 977.112 ± 13.521 | 0.995 ± 0.005 |
 | Isaac-Velocity-Flat-AnymalD | PR3570 P-ADMM | 4096 | 6.317 ± 0.107 | 15606 ± 254 | 21.722 ± 0.597 | 985.220 ± 3.083 | 0.997 ± 0.007 |
 | Isaac-Velocity-Flat-AnymalD | MJWarp | 4096 | 0.371 ± 0.014 | 265486 ± 10653 | 15.859 ± 15.941 | 978.694 ± 31.812 | 0.750 ± 1.069 |
 | Isaac-Velocity-Flat-AnymalD | PhysX | 4096 | 0.479 ± 0.012 | 205414 ± 5189 | 19.574 ± 2.938 | 986.785 ± 3.059 | 0.995 ± 0.003 |
 
+## Incomplete cells: descriptive successful seeds
+
+These are descriptive per-seed results from successful runs in incomplete cells. They are excluded from summaries, plots, confidence intervals, and comparative speedups.
+
+| Task | Variant | Seed | Envs | Completed | Iteration [s] | Total FPS | Reward | Episode length | Success |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| IsaacContrib-DrLegs-Walk | Kamino current | 42 | 4096 | 2/3 | 8.228 | 11981 | 247.393 | 469.982 | 0.000 |
+| IsaacContrib-DrLegs-Walk | Kamino current | 44 | 4096 | 2/3 | 8.168 | 12082 | 48.200 | 467.342 | 0.000 |
+| IsaacContrib-DrLegs-Walk | PR3570 P-ADMM | 42 | 4096 | 2/3 | 9.785 | 10047 | 7.735 | 24.799 | 0.065 |
+| IsaacContrib-DrLegs-Walk | PR3570 P-ADMM | 44 | 4096 | 2/3 | 9.722 | 10112 | 7.690 | 24.483 | 0.065 |
+
 ## Data quality and failures
 
 - Isaac-Ant-Direct: schema v1.1 success differs from TensorBoard in 15/15 runs and 3556/4500 points; report uses TensorBoard success.
 - Isaac-Cartpole-Direct: schema v1.1 success differs from TensorBoard in 15/15 runs and 1600/4500 points; report uses TensorBoard success.
+- Isaac-Fourbar-Pole-Swingup: learning.success_rate.series_per_iter and TensorBoard Metrics/success_rate are absent in 9/9 runs; this is a benchmark/task-stack bug. Report shows N/A.
 - Isaac-Velocity-Flat-AnymalD: schema v1.1 success differs from TensorBoard in 0/15 runs and 0/4500 points; report uses TensorBoard success.
-- Schema validation confirms every required reward, episode-length, and success field exists; this is a value mismatch, not missing data.
+- IsaacContrib-DrLegs-Walk: schema v1.1 success differs from TensorBoard in 0/4 runs and 0/1200 points; report uses TensorBoard success.
 - Isaac-Ant-Direct PR3570 tuned DVI has seed-sensitive weak learning: the three-seed success 95% CI half-width is 0.539; this is not a runtime or stability failure.
 - Isaac-Velocity-Flat-AnymalD MJWarp has seed-sensitive weak learning: the three-seed success 95% CI half-width is 1.069; this is not a runtime or stability failure.
-- Legacy campaign source provenance: bundles record 3 distinct commits; 30/45 full runs report versions.git_dirty=true. Runner manifests did not capture exact HEAD, and these runs did not pass the current clean-source check.
-- Legacy integrity limitation: TensorBoard event hash was not recorded in 45/45 completed full-run manifests; TensorBoard event files used by those runs were not retained or hashed.
+- Bundle workspace status: 43/58 completed full runs report versions.git_dirty=true; 58/58 expose a boolean status. This field includes untracked paths and is broader than the runner's tracked-source check; true does not by itself contradict exact-HEAD validation in current manifests.
+- Legacy campaign source provenance: legacy bundles record 3 distinct commits. Runner manifests did not capture exact HEAD, and these runs did not pass the current clean-source check.
+- Legacy integrity limitation: TensorBoard event hash was not recorded in 45/58 completed full-run manifests; TensorBoard event files used by those runs were not retained or hashed.
+- Failed full IsaacContrib-DrLegs-Walk / kamino_current / seed 43: numerical.
+- Failed full IsaacContrib-DrLegs-Walk / kamino_pr_padmm / seed 43: numerical.
+- Failed preflight IsaacContrib-DrLegs-Walk / kamino_pr_dvi / seed 42: numerical.
 - Isaac-Cartpole-Direct PhysX has materially lower final-window reward than current Kamino.
 
 ## Figures
