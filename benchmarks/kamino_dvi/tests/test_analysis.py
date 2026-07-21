@@ -44,6 +44,51 @@ def test_summarize_records_excludes_warmup_and_uses_final_learning_window():
     assert summary.success_rate.mean == 1.0
 
 
+def test_summarize_partial_records_returns_descriptive_successful_seeds_only():
+    """Omitted cells retain per-seed windows without entering confidence estimates."""
+    omitted = {("task", "kamino_current")}
+    records = [
+        RunMetrics(
+            task="task",
+            variant="kamino_current",
+            seed=42,
+            num_envs=4096,
+            iteration_time_s=tuple([100.0] * 10 + [2.0] * 20),
+            total_fps=tuple([1.0] * 10 + [2000.0] * 20),
+            reward=tuple([0.0] * 10 + [10.0] * 20),
+            ep_length=tuple([0.0] * 10 + [20.0] * 20),
+            success_rate=tuple([0.0] * 10 + [0.5] * 20),
+        ),
+        RunMetrics(
+            task="task",
+            variant="kamino_current",
+            seed=44,
+            num_envs=4096,
+            iteration_time_s=tuple([100.0] * 10 + [4.0] * 20),
+            total_fps=tuple([1.0] * 10 + [1000.0] * 20),
+            reward=tuple([0.0] * 10 + [30.0] * 20),
+            ep_length=tuple([0.0] * 10 + [40.0] * 20),
+            success_rate=None,
+        ),
+        RunMetrics("other", "physx", 42, 4096, (1.0,) * 20, (1.0,) * 20, (1.0,) * 20, (1.0,) * 20, None),
+    ]
+
+    partials = analysis.summarize_partial_records(records, omitted, required_seeds=(42, 43, 44))
+
+    assert [row.seed for row in partials] == [42, 44]
+    assert partials[0].task == "task"
+    assert partials[0].variant == "kamino_current"
+    assert partials[0].num_envs == 4096
+    assert partials[0].iteration_time_s == 2.0
+    assert partials[0].total_fps == 2000.0
+    assert partials[0].reward == 10.0
+    assert partials[0].ep_length == 20.0
+    assert partials[0].success_rate == 0.5
+    assert partials[0].completed_runs == 2
+    assert partials[0].required_runs == 3
+    assert partials[1].success_rate is None
+
+
 def _record(task: str, variant: str, seed: int, num_envs: int = 4096) -> RunMetrics:
     """Return one valid synthetic full-run record."""
     series = tuple(float(index) for index in range(20))

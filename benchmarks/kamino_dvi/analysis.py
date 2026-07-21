@@ -52,6 +52,23 @@ class VariantSummary:
     success_rate: Estimate | None
 
 
+@dataclass(frozen=True)
+class PartialRunSummary:
+    """Descriptive metrics for one successful seed in an incomplete benchmark cell."""
+
+    task: str
+    variant: str
+    seed: int
+    num_envs: int
+    iteration_time_s: float
+    total_fps: float
+    reward: float
+    ep_length: float
+    success_rate: float | None
+    completed_runs: int
+    required_runs: int
+
+
 def _steady_mean(values: tuple[float, ...]) -> float:
     if len(values) <= 10:
         raise ValueError("runtime series must contain more than ten warmup iterations")
@@ -86,6 +103,36 @@ def summarize_records(records: list[RunMetrics]) -> list[VariantSummary]:
             )
         )
     return summaries
+
+
+def summarize_partial_records(
+    records: list[RunMetrics],
+    omitted_cells: set[tuple[str, str]],
+    *,
+    required_seeds: tuple[int, ...],
+) -> list[PartialRunSummary]:
+    """Reduce successful seeds from omitted cells into descriptive metrics without confidence intervals."""
+    partial_records = sorted(
+        (record for record in records if (record.task, record.variant) in omitted_cells),
+        key=lambda record: (record.task, record.variant, record.seed),
+    )
+    completed_by_cell = Counter((record.task, record.variant) for record in partial_records)
+    return [
+        PartialRunSummary(
+            task=record.task,
+            variant=record.variant,
+            seed=record.seed,
+            num_envs=record.num_envs,
+            iteration_time_s=_steady_mean(record.iteration_time_s),
+            total_fps=_steady_mean(record.total_fps),
+            reward=final_window_mean(record.reward),
+            ep_length=final_window_mean(record.ep_length),
+            success_rate=(final_window_mean(record.success_rate) if record.success_rate is not None else None),
+            completed_runs=completed_by_cell[(record.task, record.variant)],
+            required_runs=len(required_seeds),
+        )
+        for record in partial_records
+    ]
 
 
 def _identity_text(identity: tuple[str, str, int]) -> str:

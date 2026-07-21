@@ -16,6 +16,7 @@ from .analysis import (
     RunMetrics,
     VariantSummary,
     load_records,
+    summarize_partial_records,
     summarize_records,
     validate_failure_omissions,
     validate_record_matrix,
@@ -158,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     validate_record_matrix(records, matrix, omitted_cells=omitted_cells)
     summary_records = [record for record in records if (record.task, record.variant) not in omitted_cells]
     summaries = summarize_records(summary_records)
+    partial_summaries = summarize_partial_records(records, omitted_cells, required_seeds=matrix.seeds)
     if not summaries:
         raise RuntimeError("no complete three-seed task/variant groups are available")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         [runtime_figure, learning_figure],
         args.output_dir / "kamino_dvi_benchmark.md",
         args.output_dir / "kamino_dvi_benchmark.pdf",
+        partial_summaries=partial_summaries,
     )
     return 0
 

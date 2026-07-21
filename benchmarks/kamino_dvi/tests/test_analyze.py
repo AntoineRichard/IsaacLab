@@ -479,7 +479,7 @@ def test_main_generates_report_without_failed_preflight_cell(tmp_path, monkeypat
     )
     monkeypatch.setattr(
         "benchmarks.kamino_dvi.analyze.write_reports",
-        lambda summaries, issues, *_args: written.update(summaries=summaries, issues=issues),
+        lambda summaries, issues, *_args, **_kwargs: written.update(summaries=summaries, issues=issues),
     )
 
     assert (
@@ -527,7 +527,9 @@ def test_main_excludes_partial_failed_full_cell_but_keeps_quality_records(tmp_pa
     )
     monkeypatch.setattr(
         "benchmarks.kamino_dvi.analyze.write_reports",
-        lambda summaries, issues, *_args: written.update(summaries=summaries, issues=issues),
+        lambda summaries, issues, *_args, partial_summaries: written.update(
+            summaries=summaries, issues=issues, partial_summaries=partial_summaries
+        ),
     )
 
     assert (
@@ -548,6 +550,11 @@ def test_main_excludes_partial_failed_full_cell_but_keeps_quality_records(tmp_pa
     assert not any(
         summary.task == TaskName.DR_LEGS_WALK and summary.variant == Variant.KAMINO_CURRENT for summary in summaries
     )
+    partial_summaries = written["partial_summaries"]
+    assert [summary.seed for summary in partial_summaries] == [42, 44]
+    assert all(summary.task == TaskName.DR_LEGS_WALK for summary in partial_summaries)
+    assert all(summary.variant == Variant.KAMINO_CURRENT for summary in partial_summaries)
+    assert all((summary.completed_runs, summary.required_runs) == (2, 3) for summary in partial_summaries)
     assert quality_record_count == [62]
     assert any("Failed full" in issue and "seed 43" in issue and "numerical" in issue for issue in written["issues"])
 
