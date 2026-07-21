@@ -17,6 +17,14 @@ uv pip install --python .venv-pr3570/bin/python --no-deps --reinstall --no-cache
 
 For PhysX, `_isaac_sim` must point to a working Isaac Sim binary installation. The current/future runner validates exact Newton revisions, clean tracked IsaacLab files, and the configured IsaacLab/schema ancestry before executing any selected identity. New manifests record the exact clean IsaacLab HEAD and the matched TensorBoard event path and hash. The completed campaign predates those checks: its bundles record `versions.git_commit` and `versions.git_dirty`, but its manifests did not capture the runner-validated HEAD or retain and hash TensorBoard event files; the generated report discloses those limitations.
 
+Training commands prepend the launched checkout's `source/isaaclab_newton` and
+`source/isaaclab_tasks` directories to the child `PYTHONPATH`. Before GPU work,
+the runner probes that exact environment and rejects an `isaaclab_newton`
+import outside the launched checkout. Tuning manifest schema 1.2 persists the
+resolved module path, distribution location, and `direct_url.json` metadata.
+Schema 1.1 tuning manifests are intentionally not resumable as schema 1.2
+evidence; start a new artifact root when migrating a campaign.
+
 ## Execute
 
 Run five-iteration construction preflights first:
@@ -57,6 +65,14 @@ The tuning campaign always uses 4096 environments. Run each measured stage only
 after its candidate preflights, and create the named decision before starting
 the next adaptive stage. The analyzer rejects incomplete identity coverage,
 reduced counts, nonfinite data, and mismatched evidence provenance.
+
+Adaptive decision schema 1.1 includes package-location provenance. Before a
+`wave2`, `halve`, `final`, or `canonical` production launch, the runner uses the
+strict analyzer to recompute the complete persisted decision chain from raw
+evidence. Any changed selection, configuration, status, revision, source hash,
+rejection provenance, or upstream decision stops before source probing or GPU
+execution. Report schema 1.2 labels run counts separately from candidate
+learning rejections and promotions.
 
 For Wave 1 and Wave 2 seed 42, the analyzer also validates the exact
 five-iteration screening preflight for each expected candidate. When the

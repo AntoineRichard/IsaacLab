@@ -6,6 +6,15 @@ Added
 * Added constrained-dynamics linear-solver and DVI tuning options to
   :class:`~isaaclab_newton.physics.KaminoSolverCfg`.
 
+
+Changed
+^^^^^^^
+
+* Changed Kamino DVI tuning manifests to schema 1.2 and adaptive decisions to
+  schema 1.1 to record the imported ``isaaclab_newton`` package location and
+  strictly recompute decisions before adaptive launches. Existing schema 1.1
+  tuning manifests cannot be resumed; start a new tuning artifact root.
+
 Fixed
 ^^^^^
 
