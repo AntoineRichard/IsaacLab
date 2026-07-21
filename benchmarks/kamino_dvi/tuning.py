@@ -18,6 +18,10 @@ import yaml
 
 from .matrix import DEFAULT_MATRIX_PATH, load_matrix
 from .models import TaskName, Variant
+
+TUNING_DECISION_SCHEMA_VERSION = "1.1"
+TUNING_REPORT_SCHEMA_VERSION = "1.2"
+
 from .statistics import Estimate, mean_ci95
 
 SolverValue = str | int | float | bool
@@ -294,16 +298,18 @@ def load_tuning_matrix(path: Path = DEFAULT_TUNING_MATRIX_PATH) -> TuningMatrix:
         raise ValueError("tuning matrix seeds must be exactly (42, 43, 44)")
 
     iterations = data["iterations"]
-    protocol_values = (
-        int(iterations["preflight"]),
-        int(iterations["screen"]),
-        int(iterations["halve"]),
-        int(iterations["final"]),
-        int(data["warmup_iterations"]),
-        int(data["learning_window"]),
+    protocol_fields = (
+        ("preflight", iterations["preflight"]),
+        ("screen", iterations["screen"]),
+        ("halve", iterations["halve"]),
+        ("final", iterations["final"]),
+        ("warmup", data["warmup_iterations"]),
+        ("learning_window", data["learning_window"]),
     )
-    if any(value <= 0 for value in protocol_values):
-        raise ValueError("iteration and window values must be positive")
+    invalid = [name for name, value in protocol_fields if type(value) is not int or value <= 0]
+    if invalid:
+        raise ValueError(f"protocol values must be positive integers: {invalid}")
+    protocol_values = tuple(value for _, value in protocol_fields)
 
     baseline = dict(data["baseline"])
     missing_baseline_keys = _BASELINE_KEYS - baseline.keys()

@@ -8,9 +8,12 @@
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from benchmarks.kamino_dvi import tune as tune_module
+from benchmarks.kamino_dvi.environment import PackageLocation
 from benchmarks.kamino_dvi.manifests import command_hash, write_json_atomic
 from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
 from benchmarks.kamino_dvi.models import FailureCategory, RetryLineage, TaskName, TerminalState
@@ -59,6 +62,11 @@ def completed_tuning_manifest(tmp_path: Path) -> TuningManifest:
         revisions=locked.revisions,
         schema_version=SCHEMA_VERSION,
         isaaclab_head="f" * 40,
+        isaaclab_newton=PackageLocation(
+            module_path=str(tmp_path / "source/isaaclab_newton/isaaclab_newton/__init__.py"),
+            distribution_path=str(tmp_path / "source/isaaclab_newton"),
+            direct_url={"url": (tmp_path / "source/isaaclab_newton").as_uri(), "dir_info": {"editable": True}},
+        ),
         artifact_root=str(tmp_path / "run"),
         tensorboard_event_path=str(tmp_path / "events.out.tfevents.test"),
         tensorboard_event_hash="e" * 64,
@@ -69,12 +77,33 @@ def completed_tuning_manifest(tmp_path: Path) -> TuningManifest:
     )
 
 
+def test_manifest_round_trip_persists_package_location_and_schema(tmp_path):
+    """Manifest schema 1.2 retains exact imported-package provenance."""
+    path = tmp_path / "manifest.json"
+    manifest = completed_tuning_manifest(tmp_path)
+
+    write_tuning_manifest(path, manifest)
+
+    assert SCHEMA_VERSION == "1.2"
+    assert read_tuning_manifest(path) == manifest
+
+
+def test_resume_rejects_changed_package_location(tmp_path):
+    """Completed evidence cannot resume under a different imported checkout."""
+    manifest = completed_tuning_manifest(tmp_path)
+    stale = replace(manifest.isaaclab_newton, module_path="/stale/isaaclab_newton/__init__.py")
+
+    assert not tuning_resume_matches(
+        manifest, manifest.identity, manifest.command, manifest.config_hash, "f" * 40, stale
+    )
+
+
 def write_winner_decision(tmp_path: Path, candidate) -> dict:
     """Write the canonical winner decision consumed by the runner."""
     tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
     resolved = resolve_config(tuning, candidate)
     winner = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "action": "select-winner",
         "candidate": candidate.name,
         "resolved_config": resolved,
@@ -234,7 +263,7 @@ def write_candidates_decision(path: Path, candidates) -> None:
     }
     write_json_atomic(
         path,
-        {"schema_version": "1.0", "action": actions[path.name], "resolved_candidates": records},
+        {"schema_version": "1.1", "action": actions[path.name], "resolved_candidates": records},
     )
 
 
@@ -535,7 +564,15 @@ def test_preflight_gate_requires_exact_config_and_source_head(tmp_path, monkeypa
 
 
 def test_measured_only_cli_refuses_absent_preflight(tmp_path, monkeypatch):
-    monkeypatch.setattr("benchmarks.kamino_dvi.tune._validated_source_head", lambda matrix, root: "f" * 40)
+    package = PackageLocation(
+        module_path=str(tmp_path / "source/isaaclab_newton/isaaclab_newton/__init__.py"),
+        distribution_path=str(tmp_path / "source/isaaclab_newton"),
+        direct_url={},
+    )
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.tune._validated_environment",
+        lambda matrix, root: SimpleNamespace(isaaclab=SimpleNamespace(head="f" * 40), isaaclab_newton=package),
+    )
     with pytest.raises(RuntimeError, match="completed exact preflight"):
         main(
             [
@@ -855,3 +892,49 @@ def test_runner_rejects_wrong_decision_schema_or_action(tmp_path):
 
     with pytest.raises(ValueError, match="schema/action"):
         select_tuning_identities(tuning, args)
+
+
+def test_tampered_adaptive_decision_is_rejected_before_source_probe(tmp_path, monkeypatch):
+    """Strict raw-evidence recomputation must gate every adaptive launch."""
+    source_probed = False
+
+    def reject(*_args, **_kwargs):
+        raise ValueError("persisted decision does not match recomputed raw evidence")
+
+    def source_probe(*_args, **_kwargs):
+        nonlocal source_probed
+        source_probed = True
+        raise AssertionError("source probe must not run")
+
+    monkeypatch.setattr(tune_module, "_validate_adaptive_decisions", reject)
+    monkeypatch.setattr(tune_module, "_validated_environment", source_probe)
+
+    with pytest.raises(ValueError, match="does not match recomputed raw evidence"):
+        main(
+            [
+                "--stage",
+                "wave2",
+                "--artifact-root",
+                str(tmp_path / "artifacts"),
+                "--decision-root",
+                str(tmp_path / "decisions"),
+            ]
+        )
+
+    assert source_probed is False
+
+
+def test_exact_adaptive_decision_reaches_source_probe(tmp_path, monkeypatch):
+    """An exact recomputed decision may proceed to environment validation."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    decisions = tmp_path / "decisions"
+    write_candidates_decision(decisions / "wave2.json", tuning.wave1[:6])
+    monkeypatch.setattr(tune_module, "_validate_adaptive_decisions", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tune_module,
+        "_validated_environment",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("source probe reached")),
+    )
+
+    with pytest.raises(RuntimeError, match="source probe reached"):
+        main(["--stage", "wave2", "--decision-root", str(decisions)])

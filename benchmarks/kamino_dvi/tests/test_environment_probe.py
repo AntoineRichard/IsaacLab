@@ -21,13 +21,18 @@ def test_probe_environment_captures_packages_newton_path_and_git_state(monkeypat
             "packages": {"newton": "0.1.0", "torch": "2.11.0"},
             "newton_path": "/venv/site-packages/newton/__init__.py",
             "newton_revision": "c" * 40,
+            "isaaclab_newton": {
+                "module_path": "/repo/source/isaaclab_newton/isaaclab_newton/__init__.py",
+                "distribution_path": "/repo/source/isaaclab_newton",
+                "direct_url": {"url": "file:///repo/source/isaaclab_newton", "dir_info": {"editable": True}},
+            },
         }
     )
 
     def runner(command, **kwargs):
         calls.append(command)
         if command[0] == "/repo/.venv-current/bin/python":
-            assert "PYTHONPATH" not in kwargs["env"]
+            assert kwargs["env"]["PYTHONPATH"] == "/repo/source/isaaclab_newton:/repo/source/isaaclab_tasks"
             assert command[1] == "-c"
             assert "importlib.metadata" in command[2]
             return CompletedProcess(command, 0, stdout=probe_output, stderr="")
@@ -44,6 +49,9 @@ def test_probe_environment_captures_packages_newton_path_and_git_state(monkeypat
     assert provenance.packages == {"newton": "0.1.0", "torch": "2.11.0"}
     assert provenance.newton_path == Path("/venv/site-packages/newton/__init__.py")
     assert provenance.newton_revision == "c" * 40
+    assert provenance.isaaclab_newton.module_path == "/repo/source/isaaclab_newton/isaaclab_newton/__init__.py"
+    assert provenance.isaaclab_newton.distribution_path == "/repo/source/isaaclab_newton"
+    assert provenance.isaaclab_newton.direct_url["dir_info"]["editable"] is True
     assert provenance.isaaclab.head == "f" * 40
     assert provenance.isaaclab.ancestors == frozenset({"a" * 40})
     assert provenance.isaaclab.dirty is False

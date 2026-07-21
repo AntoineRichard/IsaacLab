@@ -191,6 +191,29 @@ def test_tuning_matrix_rejects_invalid_protocol(tmp_path: Path, mutate, message:
         load_tuning_matrix(_write_matrix(tmp_path, mutate))
 
 
+@pytest.mark.parametrize(
+    ("container", "field"),
+    (
+        ("iterations", "preflight"),
+        ("iterations", "screen"),
+        ("iterations", "halve"),
+        ("iterations", "final"),
+        (None, "warmup_iterations"),
+        (None, "learning_window"),
+    ),
+)
+@pytest.mark.parametrize("invalid", [True, 5.0, "5"])
+def test_tuning_matrix_rejects_coerced_protocol_iteration_types(tmp_path: Path, container, field, invalid):
+    """Protocol dimensions require exact positive integer YAML values."""
+
+    def mutate(data):
+        target = data if container is None else data[container]
+        target[field] = invalid
+
+    with pytest.raises(ValueError, match="positive integer"):
+        load_tuning_matrix(_write_matrix(tmp_path, mutate))
+
+
 def test_resolve_config_rejects_unknown_override_fields():
     """Candidate fields outside the baseline schema must be rejected."""
     matrix = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)

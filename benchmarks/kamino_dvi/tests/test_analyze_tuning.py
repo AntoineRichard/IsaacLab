@@ -155,8 +155,16 @@ def _write_completed_artifact(tmp_path: Path, monkeypatch, candidate_name: str =
         "command": command,
         "command_hash": command_hash(command),
         "revisions": dataclasses.asdict(matrix.revisions),
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "isaaclab_head": source_head,
+        "isaaclab_newton": {
+            "module_path": str(repo_root / "source/isaaclab_newton/isaaclab_newton/__init__.py"),
+            "distribution_path": str(repo_root / "source/isaaclab_newton"),
+            "direct_url": {
+                "url": (repo_root / "source/isaaclab_newton").as_uri(),
+                "dir_info": {"editable": True},
+            },
+        },
         "artifact_root": str(run_dir),
         "tensorboard_event_path": str(event_path.resolve()),
         "tensorboard_event_hash": sha256_file(event_path),
@@ -325,6 +333,18 @@ def _set_bundle_git_dirty(artifact_root: Path, value) -> None:
     manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
 
 
+def test_loader_rejects_tampered_package_location(tmp_path, monkeypatch):
+    """Strict analysis rejects a manifest repointed to a stale package checkout."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    manifest_path = next(artifact_root.glob("*/manifest.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["isaaclab_newton"]["module_path"] = "/stale/isaaclab_newton/__init__.py"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="isaaclab_newton import"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
 @pytest.mark.parametrize("value", (False, True))
 def test_loader_preserves_boolean_bundle_git_dirty(tmp_path, monkeypatch, value):
     """Both broad boolean bundle flags load and remain available for audit."""
@@ -436,7 +456,7 @@ def test_resolve_wave2_writes_resolved_configs_and_canonical_hashes(tmp_path, mo
     argv = ["resolve-wave2", "--artifact-root", str(tmp_path), "--logs-root", str(tmp_path), "--output", str(output)]
     assert main(argv) == 0
     decision = json.loads(output.read_text(encoding="utf-8"))
-    assert decision["schema_version"] == "1.0"
+    assert decision["schema_version"] == "1.1"
     assert decision["action"] == "resolve-wave2"
     assert decision["source_stage"] == "wave1"
     assert decision["bundle_git_dirty"]["count"] == 1
@@ -602,7 +622,7 @@ def test_strict_decision_parser_rejects_tampered_resolved_provenance(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "schema_version": "1.0",
+                "schema_version": "1.1",
                 "action": "promote-stage2",
                 "source_stage": "stage1",
                 "source_artifact_root": str(tmp_path),
@@ -653,7 +673,7 @@ def test_strict_decision_parser_rejects_tampered_bundle_dirty_disclosure(tmp_pat
     candidate = tuning.wave1[0]
     resolved = resolve_config(tuning, candidate)
     data = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "action": "promote-stage2",
         "source_stage": "stage1",
         "source_artifact_root": str(tmp_path),
@@ -712,6 +732,7 @@ def test_strict_decision_parser_rejects_tampered_bundle_dirty_disclosure(tmp_pat
         "missing_preflight_identity",
         "mismatched_preflight_identity",
         "measured_with_preflight_identity",
+        "malformed_package_location",
         "disclosure_mismatch",
     ),
 )
@@ -730,12 +751,17 @@ def test_strict_decision_parser_rejects_tampered_preflight_provenance(tmp_path, 
         "event_path": None,
         "event_hash": None,
         "bundle_git_dirty": None,
+        "isaaclab_newton": {
+            "module_path": str(tmp_path / "source/isaaclab_newton/isaaclab_newton/__init__.py"),
+            "distribution_path": str(tmp_path / "source/isaaclab_newton"),
+            "direct_url": {},
+        },
         "derived_from_preflight": True,
         "preflight_identity": dataclasses.asdict(identity),
         "failure": "preflight:numerical",
     }
     data = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "action": "promote-stage2",
         "source_stage": "stage1",
         "source_artifact_root": str(tmp_path),
@@ -769,6 +795,8 @@ def test_strict_decision_parser_rejects_tampered_preflight_provenance(tmp_path, 
         source["preflight_identity"]["candidate"] = "wrong"
     elif tampering == "measured_with_preflight_identity":
         source["derived_from_preflight"] = False
+    elif tampering == "malformed_package_location":
+        source["isaaclab_newton"]["module_path"] = 1
     elif tampering == "disclosure_mismatch":
         data["derived_preflight_rejections"]["count"] = 0
     path = tmp_path / "decision.json"
@@ -1125,11 +1153,18 @@ def test_stage_funnel_separates_wave1_and_wave2_origins():
     chain = {
         "baseline": [record("baseline", "baseline") for _ in range(3)],
         "wave1": [record("w1_good", "wave1"), record("w1_bad", "wave1", "numerical")],
-        "wave2": [record("w2_good", "wave2"), record("w2_bad", "wave2", "timeout")],
+        "wave2": [
+            record("w2_good", "wave2"),
+            record("w2_slow", "wave2"),
+            record("w2_bad", "wave2", "timeout"),
+        ],
         "halve": [record("w1_good", "halve"), record("w2_good", "halve")],
         "final": [record("w2_good", "final")],
         "wave2_decision": {"selected": [f"derived_{index}" for index in range(6)]},
-        "stage2_decision": {"selected": ["w1_good", "w2_good"]},
+        "stage2_decision": {
+            "selected": ["w1_good", "w2_good"],
+            "rejected": {"w2_slow": "slower", "w2_bad": "timeout"},
+        },
         "finalists_decision": {"selected": ["w2_good"], "rejected": {"w1_good": "slower"}},
     }
     winner = {"rejected": {}}
@@ -1141,14 +1176,15 @@ def test_stage_funnel_separates_wave1_and_wave2_origins():
 
     assert rows["Wave 1"] == {
         "stage": "Wave 1",
-        "attempted": 2,
-        "valid": 1,
-        "rejected": 1,
-        "derived_preflight": 0,
-        "promoted": 6,
+        "attempted_runs": 2,
+        "valid_runs": 1,
+        "terminal_rejected_runs": 1,
+        "learning_rejected_candidates": 0,
+        "promoted_candidates": 6,
     }
-    assert rows["Wave 2"]["rejected"] == 1
-    assert rows["Wave 2"]["promoted"] == 1
+    assert rows["Wave 2"]["terminal_rejected_runs"] == 1
+    assert rows["Wave 2"]["learning_rejected_candidates"] == 1
+    assert rows["Wave 2"]["promoted_candidates"] == 1
     assert rows["Wave 2"]["selected_from_wave1"] == 1
 
 
@@ -1617,7 +1653,7 @@ def test_final_runner_rejects_terminal_zero_survivor_decision(tmp_path):
     (tmp_path / "finalists.json").write_text(
         json.dumps(
             {
-                "schema_version": "1.0",
+                "schema_version": "1.1",
                 "action": "promote-finalists",
                 "terminal_status": "stopped_no_safe_finalist",
                 "stop_reason": "No Stage-2 candidate satisfied every per-seed learning guardrail.",

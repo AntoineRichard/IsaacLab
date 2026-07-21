@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.kamino_dvi.environment import EnvironmentProvenance, GitState, python_executable, validate_environment
+from benchmarks.kamino_dvi.environment import (
+    EnvironmentProvenance,
+    GitState,
+    PackageLocation,
+    python_executable,
+    validate_environment,
+)
 from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
 from benchmarks.kamino_dvi.models import EnvironmentLabel
 
@@ -27,6 +33,11 @@ def provenance(matrix):
         packages={"newton": "0.1.0", "torch": "2.11.0"},
         newton_path=Path("/venv/site-packages/newton/__init__.py"),
         newton_revision=matrix.revisions.newton_current,
+        isaaclab_newton=PackageLocation(
+            module_path="/repo/source/isaaclab_newton/isaaclab_newton/__init__.py",
+            distribution_path="/repo/source/isaaclab_newton",
+            direct_url={"url": "file:///repo/source/isaaclab_newton", "dir_info": {"editable": True}},
+        ),
         isaaclab=GitState(
             head="059e5e8d8a700000000000000000000000000000",
             ancestors=frozenset({matrix.revisions.isaaclab, matrix.revisions.schema}),
@@ -50,7 +61,7 @@ def test_environment_accepts_required_isaaclab_ancestry_and_newton_revision(matr
     )
     candidate = provenance.replace(newton_revision=newton_revision)
 
-    validate_environment(matrix, label, candidate)
+    validate_environment(matrix, label, candidate, Path("/repo"))
 
 
 def test_environment_rejects_dirty_isaaclab_worktree(matrix, provenance):
@@ -58,7 +69,7 @@ def test_environment_rejects_dirty_isaaclab_worktree(matrix, provenance):
     candidate = provenance.replace(isaaclab=replace(provenance.isaaclab, dirty=True))
 
     with pytest.raises(ValueError, match="dirty"):
-        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate)
+        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate, Path("/repo"))
 
 
 def test_environment_rejects_wrong_newton_revision(matrix, provenance):
@@ -66,7 +77,7 @@ def test_environment_rejects_wrong_newton_revision(matrix, provenance):
     candidate = provenance.replace(newton_revision="0" * 40)
 
     with pytest.raises(ValueError, match="Newton revision"):
-        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate)
+        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate, Path("/repo"))
 
 
 def test_environment_rejects_missing_isaaclab_base_revision(matrix, provenance):
@@ -76,7 +87,7 @@ def test_environment_rejects_missing_isaaclab_base_revision(matrix, provenance):
     )
 
     with pytest.raises(ValueError, match="IsaacLab base revision"):
-        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate)
+        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate, Path("/repo"))
 
 
 def test_environment_rejects_missing_schema_revision(matrix, provenance):
@@ -86,4 +97,17 @@ def test_environment_rejects_missing_schema_revision(matrix, provenance):
     )
 
     with pytest.raises(ValueError, match="schema prerequisite"):
-        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate)
+        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate, Path("/repo"))
+
+
+def test_environment_rejects_isaaclab_newton_import_outside_launched_checkout(matrix, provenance):
+    """A stale editable installation must fail before training starts."""
+    candidate = provenance.replace(
+        isaaclab_newton=replace(
+            provenance.isaaclab_newton,
+            module_path="/stale/IsaacLab/source/isaaclab_newton/isaaclab_newton/__init__.py",
+        )
+    )
+
+    with pytest.raises(ValueError, match="isaaclab_newton import"):
+        validate_environment(matrix, EnvironmentLabel.CURRENT, candidate, Path("/repo"))

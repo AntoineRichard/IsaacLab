@@ -33,7 +33,7 @@ def build_training_command(
     command = [
         "/usr/bin/env",
         f"VIRTUAL_ENV={environment_root}",
-        f"PYTHONPATH={repo_root / 'source' / 'isaaclab_tasks'}",
+        (f"PYTHONPATH={repo_root / 'source' / 'isaaclab_newton'}:{repo_root / 'source' / 'isaaclab_tasks'}"),
         str(repo_root / "isaaclab.sh"),
         "-p",
         str(repo_root / "scripts" / "benchmarks" / "training.py"),

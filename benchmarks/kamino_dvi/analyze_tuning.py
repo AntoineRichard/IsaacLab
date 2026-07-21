@@ -17,14 +17,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .environment import PackageLocation, validate_package_location
 from .manifests import command_hash, sha256_file, write_json_atomic
 from .matrix import DEFAULT_MATRIX_PATH, load_matrix
 from .models import TerminalState
 from .parsing import parse_training_trace
 from .statistics import mean_ci95
-from .tune import ResolvedTuningCandidate, TuningIdentity, _command_for_candidate, read_tuning_manifest
+from .tune import SCHEMA_VERSION, ResolvedTuningCandidate, TuningIdentity, _command_for_candidate, read_tuning_manifest
 from .tuning import (
     DEFAULT_TUNING_MATRIX_PATH,
+    TUNING_DECISION_SCHEMA_VERSION,
+    TUNING_REPORT_SCHEMA_VERSION,
     FinalQualification,
     TuningCandidate,
     TuningMatrix,
@@ -47,6 +50,7 @@ BUNDLE_GIT_DIRTY_ADVISORY = (
 
 NO_SAFE_FINALIST_STATUS = "stopped_no_safe_finalist"
 NO_SAFE_FINALIST_REASON = "No Stage-2 candidate satisfied every per-seed learning guardrail."
+DECISION_SCHEMA_VERSION = TUNING_DECISION_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class TuningRecord:
     completed_at_utc: str | None = None
     source_head: str | None = None
     bundle_git_dirty: bool | None = None
+    isaaclab_newton: PackageLocation | None = None
     derived_from_preflight: bool = False
     preflight_identity: TuningIdentity | None = None
 
@@ -85,6 +90,7 @@ def _record_provenance(record: TuningRecord) -> dict[str, Any]:
         "event_path": str(record.event_path) if record.event_path is not None else None,
         "event_hash": record.event_hash,
         "bundle_git_dirty": record.bundle_git_dirty,
+        "isaaclab_newton": dataclasses.asdict(record.isaaclab_newton) if record.isaaclab_newton else None,
         "derived_from_preflight": record.derived_from_preflight,
         "preflight_identity": (
             dataclasses.asdict(record.preflight_identity) if record.preflight_identity is not None else None
@@ -168,6 +174,7 @@ def _failed_record(manifest_path: Path, manifest, resolved: dict[str, Any]) -> T
         config_hash=manifest.config_hash,
         resolved_config=resolved,
         source_head=manifest.isaaclab_head,
+        isaaclab_newton=manifest.isaaclab_newton,
     )
 
 
@@ -292,7 +299,7 @@ def load_tuning_records(  # noqa: C901
             raise ValueError(f"{manifest_path}: artifact root does not match its directory")
         if identity.num_envs != tuning_matrix.num_envs:
             raise ValueError(f"{manifest_path}: reduced environment count is forbidden")
-        if manifest.revisions != benchmark_matrix.revisions or manifest.schema_version != "1.1":
+        if manifest.revisions != benchmark_matrix.revisions or manifest.schema_version != SCHEMA_VERSION:
             raise ValueError(f"{manifest_path}: locked revisions or schema mismatch")
         resolved = dict(manifest.resolved_config)
         if manifest.config_hash != config_hash(resolved):
@@ -303,6 +310,7 @@ def load_tuning_records(  # noqa: C901
         if manifest.command_hash != command_hash(manifest.command):
             raise ValueError(f"{manifest_path}: command hash mismatch")
         repo_root = _repo_root(manifest.command, manifest_path)
+        validate_package_location(manifest.isaaclab_newton, repo_root)
         expected_command = tuple(
             _command_for_candidate(benchmark_matrix, tuning_matrix, candidate, identity, repo_root, run_dir)
         )
@@ -396,6 +404,7 @@ def load_tuning_records(  # noqa: C901
             completed_at,
             source_head,
             bundle_git_dirty,
+            isaaclab_newton=manifest.isaaclab_newton,
         )
         attempts.setdefault(logical_identity, []).append((manifest, completed_record))
     records: list[TuningRecord] = []
@@ -531,7 +540,7 @@ def _base_decision(source_stage: str, artifact_root: Path, records: Sequence[Tun
         "bundle_git_dirty": _bundle_git_dirty_disclosure(records),
         "derived_preflight_rejections": _derived_preflight_disclosure(records),
         "timestamp_utc": _timestamp(records),
-        "schema_version": "1.0",
+        "schema_version": DECISION_SCHEMA_VERSION,
         "action": {
             "wave1": "resolve-wave2",
             "stage1": "promote-stage2",
@@ -555,6 +564,7 @@ def _decision_preflight_provenance_is_valid(
         "event_path",
         "event_hash",
         "bundle_git_dirty",
+        "isaaclab_newton",
         "derived_from_preflight",
         "preflight_identity",
         "failure",
@@ -574,6 +584,17 @@ def _decision_preflight_provenance_is_valid(
         if item.get("failure") is not None and not isinstance(item["failure"], str):
             return False
         identity_data = item.get("preflight_identity")
+        package_location = item.get("isaaclab_newton")
+        if not isinstance(package_location, dict) or set(package_location) != {
+            "module_path",
+            "distribution_path",
+            "direct_url",
+        }:
+            return False
+        if not all(isinstance(package_location.get(key), str) for key in ("module_path", "distribution_path")):
+            return False
+        if not isinstance(package_location.get("direct_url"), dict):
+            return False
         if not item["derived_from_preflight"]:
             if identity_data is not None:
                 return False
@@ -627,7 +648,7 @@ def load_decision(
 ) -> dict[str, Any]:
     """Strictly parse and recompute every persisted decision candidate."""
     data = _read_mapping(path)
-    if data.get("schema_version") != "1.0" or data.get("action") != expected_action:
+    if data.get("schema_version") != DECISION_SCHEMA_VERSION or data.get("action") != expected_action:
         raise ValueError(f"{path}: decision schema/action mismatch")
     if data.get("revisions") != dataclasses.asdict(load_matrix(matrix_path).revisions):
         raise ValueError(f"{path}: decision revisions mismatch")
@@ -967,6 +988,64 @@ def _recompute_chain(args: argparse.Namespace, through: str) -> dict[str, Any]:
     }
 
 
+def validate_stage_decision_for_launch(
+    stage: str,
+    artifact_root: Path,
+    logs_root: Path,
+    decision_root: Path,
+    *,
+    matrix_path: Path = DEFAULT_MATRIX_PATH,
+    tuning_matrix_path: Path = DEFAULT_TUNING_MATRIX_PATH,
+) -> None:
+    """Recompute and validate the complete adaptive decision chain before launch."""
+    if stage not in {"wave2", "halve", "final", "canonical"}:
+        return
+    args = argparse.Namespace(
+        artifact_root=artifact_root,
+        logs_root=logs_root,
+        decision_root=decision_root,
+        matrix=matrix_path,
+        tuning_matrix=tuning_matrix_path,
+    )
+    if stage == "wave2":
+        chain = _recompute_chain(args, "wave2")
+        _require_persisted(
+            decision_root / "wave2.json",
+            "resolve-wave2",
+            chain["matrix"],
+            chain["wave2_decision"],
+            6,
+            6,
+        )
+        return
+    if stage == "halve":
+        chain = _recompute_chain(args, "stage2")
+        _require_persisted(
+            decision_root / "stage2.json",
+            "promote-stage2",
+            chain["matrix"],
+            chain["stage2_decision"],
+            1,
+            8,
+        )
+        return
+    if stage == "final":
+        chain = _recompute_chain(args, "finalists")
+        persisted = _require_persisted(
+            decision_root / "finalists.json",
+            "promote-finalists",
+            chain["matrix"],
+            chain["finalists_decision"],
+            0,
+            3,
+        )
+        if not persisted["selected"]:
+            raise ValueError("no safe finalists survived Stage 2; final launch is unavailable")
+        return
+    chain = _recompute_chain(args, "winner")
+    _require_persisted(decision_root / "winner.json", "select-winner", chain["matrix"], chain["winner_decision"], 1, 1)
+
+
 def _resolve_wave2_action(args: argparse.Namespace) -> None:
     chain = _recompute_chain(args, "wave2")
     write_decision(args.output, chain["wave2_decision"])
@@ -1002,55 +1081,62 @@ def _stage_funnel(
     def failed(records: Sequence[TuningRecord]) -> int:
         return sum(record.metrics.failure is not None for record in records)
 
+    def learning_rejected(decision: Mapping[str, Any], records: Sequence[TuningRecord]) -> int:
+        """Count learning rejections after excluding candidates with terminal runs."""
+        terminal_candidates = {record.metrics.candidate for record in records if record.metrics.failure is not None}
+        return len(set(decision.get("rejected", {})) - terminal_candidates)
+
     return [
         {
             "stage": "baseline",
-            "attempted": len(chain["baseline"]),
-            "valid": len(chain["baseline"]) - failed(chain["baseline"]),
-            "rejected": failed(chain["baseline"]),
-            "derived_preflight": sum(record.derived_from_preflight for record in chain["baseline"]),
-            "promoted": 1,
+            "attempted_runs": len(chain["baseline"]),
+            "valid_runs": len(chain["baseline"]) - failed(chain["baseline"]),
+            "terminal_rejected_runs": failed(chain["baseline"]),
+            "learning_rejected_candidates": 0,
+            "promoted_candidates": 1,
         },
         {
             "stage": "Wave 1",
-            "attempted": len(chain["wave1"]),
-            "valid": len(chain["wave1"]) - failed(chain["wave1"]),
-            "rejected": failed(chain["wave1"]),
-            "derived_preflight": sum(record.derived_from_preflight for record in chain["wave1"]),
-            "promoted": len(chain["wave2_decision"]["selected"]),
+            "attempted_runs": len(chain["wave1"]),
+            "valid_runs": len(chain["wave1"]) - failed(chain["wave1"]),
+            "terminal_rejected_runs": failed(chain["wave1"]),
+            "learning_rejected_candidates": 0,
+            "promoted_candidates": len(chain["wave2_decision"]["selected"]),
         },
         {
             "stage": "Wave 2",
-            "attempted": len(chain["wave2"]),
-            "valid": len(chain["wave2"]) - failed(chain["wave2"]),
-            "rejected": failed(chain["wave2"]),
-            "derived_preflight": sum(record.derived_from_preflight for record in chain["wave2"]),
-            "promoted": wave2_promoted,
+            "attempted_runs": len(chain["wave2"]),
+            "valid_runs": len(chain["wave2"]) - failed(chain["wave2"]),
+            "terminal_rejected_runs": failed(chain["wave2"]),
+            "learning_rejected_candidates": learning_rejected(
+                chain["stage2_decision"], [*chain["wave1"], *chain["wave2"]]
+            ),
+            "promoted_candidates": wave2_promoted,
             "selected_from_wave1": wave1_promoted_to_stage2,
         },
         {
             "stage": "halve",
-            "attempted": len(chain["halve"]),
-            "valid": len(chain["halve"]) - failed(chain["halve"]),
-            "rejected": len(chain["finalists_decision"]["rejected"]),
-            "derived_preflight": sum(record.derived_from_preflight for record in chain["halve"]),
-            "promoted": len(chain["finalists_decision"]["selected"]),
+            "attempted_runs": len(chain["halve"]),
+            "valid_runs": len(chain["halve"]) - failed(chain["halve"]),
+            "terminal_rejected_runs": failed(chain["halve"]),
+            "learning_rejected_candidates": learning_rejected(chain["finalists_decision"], chain["halve"]),
+            "promoted_candidates": len(chain["finalists_decision"]["selected"]),
         },
         {
             "stage": "final",
-            "attempted": len(chain["final"]),
-            "valid": len(chain["final"]) - failed(chain["final"]),
-            "rejected": len(winner["rejected"]),
-            "derived_preflight": sum(record.derived_from_preflight for record in chain["final"]),
-            "promoted": int(bool(winner.get("candidate"))),
+            "attempted_runs": len(chain["final"]),
+            "valid_runs": len(chain["final"]) - failed(chain["final"]),
+            "terminal_rejected_runs": failed(chain["final"]),
+            "learning_rejected_candidates": learning_rejected(winner, chain["final"]),
+            "promoted_candidates": int(bool(winner.get("candidate"))),
         },
         {
             "stage": "canonical",
-            "attempted": len(canonical),
-            "valid": len(canonical) - failed(canonical),
-            "rejected": failed(canonical),
-            "derived_preflight": sum(record.derived_from_preflight for record in canonical),
-            "promoted": int(bool(winner.get("candidate")) and bool(canonical)),
+            "attempted_runs": len(canonical),
+            "valid_runs": len(canonical) - failed(canonical),
+            "terminal_rejected_runs": failed(canonical),
+            "learning_rejected_candidates": 0,
+            "promoted_candidates": int(bool(winner.get("candidate")) and bool(canonical)),
         },
     ]
 
@@ -1097,7 +1183,7 @@ def _early_stop_report(args: argparse.Namespace, chain: Mapping[str, Any], final
         "winner": None,
     }
     report = {
-        "schema_version": "1.1",
+        "schema_version": TUNING_REPORT_SCHEMA_VERSION,
         "terminal_status": NO_SAFE_FINALIST_STATUS,
         "stop_reason": finalists["stop_reason"],
         "winner": None,
@@ -1259,7 +1345,7 @@ def _report_action(args: argparse.Namespace) -> None:
     derived_baseline, _ = derive_stage2_baseline(chain["baseline"], matrix.halve_iterations)
     canonical_estimates = canonical_comparison["canonical"]
     report = {
-        "schema_version": "1.1",
+        "schema_version": TUNING_REPORT_SCHEMA_VERSION,
         "terminal_status": "completed",
         "stop_reason": None,
         "winner": winner["candidate"],

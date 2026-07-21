@@ -47,7 +47,7 @@ def test_training_command_uses_exact_environment_and_protocol(matrix, variant, e
     assert command[:6] == [
         "/usr/bin/env",
         f"VIRTUAL_ENV={repo_root / environment}",
-        f"PYTHONPATH={repo_root / 'source' / 'isaaclab_tasks'}",
+        (f"PYTHONPATH={repo_root / 'source' / 'isaaclab_newton'}:{repo_root / 'source' / 'isaaclab_tasks'}"),
         str(repo_root / "isaaclab.sh"),
         "-p",
         str(repo_root / "scripts" / "benchmarks" / "training.py"),

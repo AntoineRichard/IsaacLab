@@ -110,13 +110,17 @@ def _markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Stage funnel",
         "",
-        "| Stage | Attempted | Valid | Rejected | Derived preflight | Promoted |",
+        (
+            "| Stage | Attempted runs | Valid runs | Terminal-rejected runs | "
+            "Learning-rejected candidates | Promoted candidates |"
+        ),
         "|---|---:|---:|---:|---:|---:|",
     ]
     for row in report.get("funnel", []):
         lines.append(
-            f"| {row['stage']} | {row['attempted']} | {row['valid']} | {row['rejected']} | "
-            f"{int(row.get('derived_preflight', 0))} | {row['promoted']} |"
+            f"| {row['stage']} | {row['attempted_runs']} | {row['valid_runs']} | "
+            f"{row['terminal_rejected_runs']} | {row['learning_rejected_candidates']} | "
+            f"{row['promoted_candidates']} |"
         )
     selected_from_wave1 = sum(int(row.get("selected_from_wave1", 0)) for row in report.get("funnel", []))
     if selected_from_wave1:

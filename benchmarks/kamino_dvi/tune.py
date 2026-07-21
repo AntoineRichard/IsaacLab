@@ -16,7 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from .commands import build_training_command
-from .environment import probe_environment, python_executable, validate_environment
+from .environment import (
+    EnvironmentProvenance,
+    PackageLocation,
+    probe_environment,
+    python_executable,
+    validate_environment,
+)
 from .failures import classify_failure
 from .manifests import command_hash, sha256_file, write_json_atomic
 from .matrix import DEFAULT_MATRIX_PATH, load_matrix
@@ -35,6 +41,7 @@ from .parsing import locate_rsl_rl_events, parse_training_trace
 from .run import BundleStatus, ProcessOutcome, execute_command, inspect_bundle
 from .tuning import (
     DEFAULT_TUNING_MATRIX_PATH,
+    TUNING_DECISION_SCHEMA_VERSION,
     SolverValue,
     TuningCandidate,
     TuningMatrix,
@@ -44,7 +51,7 @@ from .tuning import (
     resolve_config,
 )
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 _CANONICAL_CANDIDATE = "canonical_winner"
 
 
@@ -92,6 +99,7 @@ class TuningManifest:
         schema_version: Required benchmark bundle schema version.
         isaaclab_head: Exact source HEAD used by the run.
         artifact_root: Absolute attempt artifact directory.
+        isaaclab_newton: Exact imported package and distribution location.
         tensorboard_event_path: Matched RSL-RL event path, if available.
         tensorboard_event_hash: SHA-256 of the matched event, if available.
         artifact_hashes: SHA-256 values for stdout, stderr, and bundle artifacts.
@@ -109,6 +117,7 @@ class TuningManifest:
     revisions: Revisions
     schema_version: str
     isaaclab_head: str
+    isaaclab_newton: PackageLocation
     artifact_root: str
     tensorboard_event_path: str | None = None
     tensorboard_event_hash: str | None = None
@@ -207,6 +216,7 @@ def tuning_resume_matches(
     command: tuple[str, ...] | list[str],
     expected_config_hash: str,
     isaaclab_head: str,
+    isaaclab_newton: PackageLocation | None = None,
 ) -> bool:
     """Return whether a completed tuning manifest exactly matches provenance."""
     expected_command = tuple(command)
@@ -218,6 +228,7 @@ def tuning_resume_matches(
         and manifest.command_hash == command_hash(expected_command)
         and manifest.config_hash == expected_config_hash
         and manifest.isaaclab_head == isaaclab_head
+        and (isaaclab_newton is None or manifest.isaaclab_newton == isaaclab_newton)
         and manifest.tensorboard_event_path is not None
         and manifest.tensorboard_event_hash is not None
     )
@@ -288,6 +299,7 @@ def read_tuning_manifest(path: Path) -> TuningManifest:
         revisions=Revisions(**data["revisions"]),
         schema_version=data["schema_version"],
         isaaclab_head=data["isaaclab_head"],
+        isaaclab_newton=PackageLocation(**data["isaaclab_newton"]),
         artifact_root=data["artifact_root"],
         tensorboard_event_path=data.get("tensorboard_event_path"),
         tensorboard_event_hash=data.get("tensorboard_event_hash"),
@@ -428,6 +440,7 @@ def execute_tuning_identity(
     *,
     isaaclab_head: str,
     resume: bool,
+    isaaclab_newton: PackageLocation | None = None,
     executor: Callable[..., ProcessOutcome] | None = None,
 ) -> TerminalState:
     """Execute one tuning identity without overwriting any prior attempt.
@@ -440,6 +453,7 @@ def execute_tuning_identity(
         repo_root: Isaac Lab repository root.
         artifact_root: Root containing immutable attempt directories.
         isaaclab_head: Exact source HEAD used for provenance and resume matching.
+        isaaclab_newton: Exact package location probed in the child environment.
         resume: Whether an exact latest completed attempt may be skipped.
         executor: Optional subprocess executor used by tests.
 
@@ -452,6 +466,13 @@ def execute_tuning_identity(
     """
     if executor is None:
         executor = execute_command
+    if isaaclab_newton is None:
+        source_root = (repo_root / "source" / "isaaclab_newton").resolve()
+        isaaclab_newton = PackageLocation(
+            module_path=str(source_root / "isaaclab_newton" / "__init__.py"),
+            distribution_path=str(source_root),
+            direct_url={"url": source_root.as_uri(), "dir_info": {"editable": True}},
+        )
     resolved_candidate = _candidate_provenance(tuning_matrix, candidate)
     if identity.stage == "canonical" and resolved_candidate.name != _CANONICAL_CANDIDATE:
         raise ValueError("canonical stage requires the reserved canonical_winner candidate")
@@ -477,6 +498,7 @@ def execute_tuning_identity(
                 expected_command,
                 resolved_candidate.config_hash,
                 isaaclab_head,
+                isaaclab_newton,
             )
             and _recorded_artifacts_intact(previous)
         ):
@@ -501,6 +523,7 @@ def execute_tuning_identity(
         schema_version=SCHEMA_VERSION,
         isaaclab_head=isaaclab_head,
         artifact_root=str(output_path.resolve()),
+        isaaclab_newton=isaaclab_newton,
         retry=retry,
     )
     manifest_path = output_path / "manifest.json"
@@ -601,7 +624,7 @@ def _load_resolved_candidates(
     maximum_count: int,
 ) -> tuple[ResolvedTuningCandidate, ...]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("schema_version") != "1.0" or data.get("action") != expected_action:
+    if data.get("schema_version") != TUNING_DECISION_SCHEMA_VERSION or data.get("action") != expected_action:
         raise ValueError(f"{path.name} decision schema/action mismatch")
     records = data.get("resolved_candidates")
     if not isinstance(records, list) or not minimum_count <= len(records) <= maximum_count:
@@ -627,7 +650,7 @@ def _load_resolved_candidates(
 
 def _canonical_candidate(tuning_matrix: TuningMatrix, decision_root: Path) -> ResolvedTuningCandidate:
     winner = json.loads((decision_root / "winner.json").read_text(encoding="utf-8"))
-    if winner.get("schema_version") != "1.0" or winner.get("action") != "select-winner":
+    if winner.get("schema_version") != TUNING_DECISION_SCHEMA_VERSION or winner.get("action") != "select-winner":
         raise ValueError("winner decision schema/action mismatch")
     resolved = dict(winner["resolved_config"])
     digest = config_hash(resolved)
@@ -664,6 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--artifact-root", type=Path, default=Path("benchmark_artifacts/kamino_dvi/tuning"))
     parser.add_argument("--decision-root", type=Path, default=Path("benchmark_artifacts/kamino_dvi/decisions"))
+    parser.add_argument("--logs-root", type=Path, default=Path("logs"))
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--preflight-only", action="store_true")
     modes.add_argument("--measured-only", action="store_true")
@@ -740,6 +764,7 @@ def preflight_completed(
     repo_root: Path,
     artifact_root: Path,
     isaaclab_head: str,
+    isaaclab_newton: PackageLocation | None = None,
 ) -> bool:
     """Return whether exact intact preflight evidence already exists."""
     resolved_candidate = _candidate_provenance(tuning_matrix, candidate)
@@ -770,6 +795,7 @@ def preflight_completed(
                 command,
                 resolved_candidate.config_hash,
                 isaaclab_head,
+                isaaclab_newton,
             )
             and _recorded_artifacts_intact(manifest)
         ):
@@ -777,11 +803,23 @@ def preflight_completed(
     return False
 
 
-def _validated_source_head(matrix: BenchmarkMatrix, repo_root: Path) -> str:
+def _validated_environment(matrix: BenchmarkMatrix, repo_root: Path) -> EnvironmentProvenance:
     label = matrix.variant(Variant.KAMINO_PR_DVI).environment
     provenance = probe_environment(python_executable(repo_root, label), repo_root)
-    validate_environment(matrix, label, provenance)
-    return provenance.isaaclab.head
+    validate_environment(matrix, label, provenance, repo_root)
+    return provenance
+
+
+def _validate_adaptive_decisions(args: argparse.Namespace) -> None:
+    """Strictly recompute persisted adaptive decisions before production launch."""
+    from .analyze_tuning import validate_stage_decision_for_launch
+
+    validate_stage_decision_for_launch(
+        args.stage,
+        args.artifact_root,
+        args.logs_root,
+        args.decision_root,
+    )
 
 
 def _selected_candidates(tuning_matrix: TuningMatrix, args: argparse.Namespace) -> tuple[ResolvedTuningCandidate, ...]:
@@ -801,6 +839,9 @@ def main(argv: list[str] | None = None) -> int:
     tuning_matrix = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
     args.artifact_root = args.artifact_root if args.artifact_root.is_absolute() else repo_root / args.artifact_root
     args.decision_root = args.decision_root if args.decision_root.is_absolute() else repo_root / args.decision_root
+    args.logs_root = args.logs_root if args.logs_root.is_absolute() else repo_root / args.logs_root
+    if not args.dry_run:
+        _validate_adaptive_decisions(args)
     candidates = _selected_candidates(tuning_matrix, args)
     candidates_by_name = {candidate.name: candidate for candidate in candidates}
     identities = select_tuning_identities(tuning_matrix, args)
@@ -820,7 +861,8 @@ def main(argv: list[str] | None = None) -> int:
             print(shlex.join(command))
         return 0
 
-    isaaclab_head = _validated_source_head(matrix, repo_root)
+    environment = _validated_environment(matrix, repo_root)
+    isaaclab_head = environment.isaaclab.head
     failures = 0
     for identity in identities:
         candidate = candidates_by_name[identity.candidate]
@@ -831,6 +873,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_root,
             args.artifact_root,
             isaaclab_head,
+            environment.isaaclab_newton,
         )
         is_preflight = identity.max_iterations == tuning_matrix.preflight_iterations
         if is_preflight and has_preflight:
@@ -854,6 +897,7 @@ def main(argv: list[str] | None = None) -> int:
             args.artifact_root,
             isaaclab_head=isaaclab_head,
             resume=args.resume,
+            isaaclab_newton=environment.isaaclab_newton,
         )
         if state is not TerminalState.COMPLETED:
             failures += 1

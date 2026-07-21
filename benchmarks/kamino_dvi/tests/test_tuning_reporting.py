@@ -22,19 +22,19 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
         "funnel": [
             {
                 "stage": "Wave 1",
-                "attempted": 18,
-                "valid": 15,
-                "rejected": 3,
-                "derived_preflight": 3,
-                "promoted": 6,
+                "attempted_runs": 18,
+                "valid_runs": 15,
+                "terminal_rejected_runs": 3,
+                "learning_rejected_candidates": 0,
+                "promoted_candidates": 6,
             },
             {
                 "stage": "Wave 2",
-                "attempted": 6,
-                "valid": 5,
-                "rejected": 1,
-                "derived_preflight": 0,
-                "promoted": 2,
+                "attempted_runs": 6,
+                "valid_runs": 5,
+                "terminal_rejected_runs": 1,
+                "learning_rejected_candidates": 0,
+                "promoted_candidates": 2,
                 "selected_from_wave1": 3,
             },
         ],
@@ -116,6 +116,8 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
         "Derived preflight",
         "preflight__failed_candidate__seed42__env4096__iter5__attempt0",
         "projected in memory",
+        "Attempted runs",
+        "Learning-rejected candidates",
     ):
         assert text in markdown
     assert "Final/canonical metrics use two-sided 95% Student-t confidence intervals with n=3" in markdown
