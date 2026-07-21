@@ -85,6 +85,15 @@ def _markdown(report: Mapping[str, Any]) -> str:
         lines.append(
             f"| {row['stage']} | {row['attempted']} | {row['valid']} | {row['rejected']} | {row['promoted']} |"
         )
+    selected_from_wave1 = sum(int(row.get("selected_from_wave1", 0)) for row in report.get("funnel", []))
+    if selected_from_wave1:
+        lines.extend(
+            [
+                "",
+                f"Stage 2 also selected {selected_from_wave1} candidate(s) that originated in Wave 1; "
+                "these are not counted as Wave 2 promotions.",
+            ]
+        )
     lines.extend(
         [
             "",

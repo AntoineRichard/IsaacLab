@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.kamino_dvi import analyze_tuning as analysis_module
 from benchmarks.kamino_dvi.analyze_tuning import (
     TuningRecord,
     _canonical_comparison,
@@ -30,7 +31,12 @@ from benchmarks.kamino_dvi.manifests import command_hash, sha256_file
 from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
 from benchmarks.kamino_dvi.parsing import TrainingTrace
 from benchmarks.kamino_dvi.statistics import Estimate
-from benchmarks.kamino_dvi.tune import TuningIdentity, build_tuning_command
+from benchmarks.kamino_dvi.tune import (
+    ResolvedTuningCandidate,
+    TuningIdentity,
+    _command_for_candidate,
+    build_tuning_command,
+)
 from benchmarks.kamino_dvi.tuning import (
     DEFAULT_TUNING_MATRIX_PATH,
     FinalQualification,
@@ -380,3 +386,251 @@ def test_report_parser_exposes_tuning_matrix_for_raw_chain_recomputation(tmp_pat
     )
 
     assert args.tuning_matrix == matrix_path
+
+
+def _copy_retry_attempt(artifact_root: Path, attempt: int, parent_run_id: str) -> Path:
+    """Copy the single synthetic run into a provenance-consistent retry attempt."""
+    import shutil
+
+    source_dir = next(path for path in artifact_root.iterdir() if path.is_dir())
+    source_manifest = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
+    identity = TuningIdentity(**source_manifest["identity"])
+    retry_identity = dataclasses.replace(identity, attempt=attempt)
+    retry_dir = artifact_root / retry_identity.run_id
+    shutil.copytree(source_dir, retry_dir)
+    manifest_path = retry_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["run_id"] = retry_identity.run_id
+    manifest["identity"] = dataclasses.asdict(retry_identity)
+    manifest["artifact_root"] = str(retry_dir)
+    manifest["retry"] = {"attempt": attempt, "parent_run_id": parent_run_id}
+    manifest["state"] = "completed"
+    manifest["failure_category"] = None
+    command = list(manifest["command"])
+    command = [argument.replace(str(source_dir), str(retry_dir)) for argument in command]
+    manifest["command"] = command
+    manifest["command_hash"] = command_hash(command)
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    return retry_dir
+
+
+def test_loader_selects_only_highest_terminal_retry_attempt(tmp_path, monkeypatch):
+    """A failed attempt followed by a completed retry yields one completed record."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    attempt0_dir = next(path for path in artifact_root.iterdir() if path.is_dir())
+    attempt0_path = attempt0_dir / "manifest.json"
+    attempt0 = json.loads(attempt0_path.read_text(encoding="utf-8"))
+    attempt0["state"] = "failed"
+    attempt0["failure_category"] = "numerical"
+    attempt0_path.write_text(json.dumps(attempt0, sort_keys=True), encoding="utf-8")
+    attempt1_dir = _copy_retry_attempt(artifact_root, 1, attempt0["run_id"])
+
+    records = load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+    assert len(records) == 1
+    assert records[0].run_id == attempt1_dir.name
+    assert records[0].metrics.failure is None
+
+
+def test_loader_rejects_retry_with_wrong_parent(tmp_path, monkeypatch):
+    """Every later readable attempt must name the preceding attempt as parent."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _copy_retry_attempt(artifact_root, 1, "wrong-parent")
+
+    with pytest.raises(ValueError, match="retry parent"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_stage_funnel_separates_wave1_and_wave2_origins():
+    """Wave 2 promotion counts only selected candidates originating in Wave 2."""
+
+    def record(name: str, stage: str, failure: str | None = None) -> TuningRecord:
+        metrics = TuningRunMetrics(name, stage, 42, 4096, (1.0,), (1.0,), (1.0,), (1.0,), failure)
+        return TuningRecord(metrics, name, Path(name), "a" * 64, None, None, "b" * 64, {})
+
+    chain = {
+        "baseline": [record("baseline", "baseline") for _ in range(3)],
+        "wave1": [record("w1_good", "wave1"), record("w1_bad", "wave1", "numerical")],
+        "wave2": [record("w2_good", "wave2"), record("w2_bad", "wave2", "timeout")],
+        "halve": [record("w1_good", "halve"), record("w2_good", "halve")],
+        "final": [record("w2_good", "final")],
+        "wave2_decision": {"selected": [f"derived_{index}" for index in range(6)]},
+        "stage2_decision": {"selected": ["w1_good", "w2_good"]},
+        "finalists_decision": {"selected": ["w2_good"], "rejected": {"w1_good": "slower"}},
+    }
+    winner = {"rejected": {}}
+
+    rows = {
+        row["stage"]: row
+        for row in analysis_module._stage_funnel(chain, [record("canonical_winner", "canonical")], winner)
+    }
+
+    assert rows["Wave 1"] == {"stage": "Wave 1", "attempted": 2, "valid": 1, "rejected": 1, "promoted": 6}
+    assert rows["Wave 2"]["rejected"] == 1
+    assert rows["Wave 2"]["promoted"] == 1
+    assert rows["Wave 2"]["selected_from_wave1"] == 1
+
+
+def _add_canonical_artifact(source_dir: Path, identity: TuningIdentity) -> Path:
+    """Copy a fixture into one exact canonical preflight or measured artifact."""
+    import shutil
+
+    artifact_root = source_dir.parent
+    run_dir = artifact_root / identity.run_id
+    shutil.copytree(source_dir, run_dir)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    resolved = dict(manifest["resolved_config"])
+    candidate = ResolvedTuningCandidate("canonical_winner", {}, resolved, config_hash(resolved))
+    repo_root = Path(__file__).resolve().parents[3]
+    command = tuple(_command_for_candidate(matrix, tuning, candidate, identity, repo_root, run_dir))
+    bundle_path = next(run_dir.glob("benchmark_training_*.json"))
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    bundle["run"].update(seed=identity.seed, max_iterations=identity.max_iterations)
+    bundle["runtime"]["iterations_completed"] = identity.max_iterations
+    bundle_path.write_text(json.dumps(bundle, sort_keys=True), encoding="utf-8")
+    manifest.update(
+        run_id=identity.run_id,
+        identity=dataclasses.asdict(identity),
+        config_hash=config_hash(resolved),
+        resolved_config=resolved,
+        command=command,
+        command_hash=command_hash(command),
+        artifact_root=str(run_dir),
+        artifact_hashes={name: sha256_file(run_dir / name) for name in ("stdout.log", "stderr.log", bundle_path.name)},
+        state="completed",
+        failure_category=None,
+        retry={"attempt": 0, "parent_run_id": None},
+    )
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    return run_dir
+
+
+def test_canonical_preflight_is_excluded_before_report_ci_gate(tmp_path, monkeypatch):
+    """Normal canonical preflight plus three measured seeds reaches the CI gate."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    source_dir = next(path for path in artifact_root.iterdir() if path.is_dir())
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    identities = [
+        TuningIdentity("canonical", "canonical_winner", 42, tuning.num_envs, tuning.preflight_iterations),
+        *[
+            TuningIdentity("canonical", "canonical_winner", seed, tuning.num_envs, tuning.final_iterations)
+            for seed in tuning.seeds
+        ],
+    ]
+    for identity in identities:
+        _add_canonical_artifact(source_dir, identity)
+
+    def parse(bundle_path: Path, _event_path: Path) -> TrainingTrace:
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        run = bundle["run"]
+        identity = TuningIdentity("canonical", "canonical_winner", run["seed"], run["num_envs"], run["max_iterations"])
+        return _trace(identity)
+
+    monkeypatch.setattr("benchmarks.kamino_dvi.analyze_tuning.parse_training_trace", parse)
+    records = load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="canonical")
+
+    validate_tuning_records(records, (("canonical_winner", seed) for seed in tuning.seeds))
+    comparison = _canonical_comparison(
+        tuning, [record.metrics for record in records], [record.metrics for record in records]
+    )
+    assert comparison["qualified"] is True
+    assert {record.metrics.seed for record in records} == set(tuning.seeds)
+
+    def as_stage(record: TuningRecord, candidate: str, stage: str) -> TuningRecord:
+        source = record.metrics
+        metrics = TuningRunMetrics(
+            candidate,
+            stage,
+            source.seed,
+            source.num_envs,
+            source.iteration_time_s,
+            source.reward,
+            source.success_rate,
+            source.ep_length,
+        )
+        return dataclasses.replace(record, metrics=metrics, run_id=f"{stage}-{source.seed}")
+
+    baseline = [as_stage(record, "baseline", "baseline") for record in records]
+    final = [as_stage(record, "winner", "final") for record in records]
+    estimates = comparison["override_final"]
+    qualification = {
+        "qualified": True,
+        "reason": None,
+        "runtime": estimates["runtime"],
+        "reward": estimates["reward"],
+        "success_rate": estimates["success"],
+        "ep_length": estimates["episode_length"],
+    }
+    winner = {
+        "candidate": "winner",
+        "resolved_config": records[0].resolved_config,
+        "config_hash": records[0].config_hash,
+        "qualifications": {"winner": qualification},
+        "rejected": {},
+    }
+    chain = {
+        "matrix": tuning,
+        "baseline": baseline,
+        "wave1": [],
+        "wave2": [],
+        "halve": [],
+        "final": final,
+        "wave2_decision": {"selected": [], "rejected": {}},
+        "stage2_decision": {"selected": [], "rejected": {}},
+        "finalists_decision": {"selected": ["winner"], "rejected": {}},
+        "winner_decision": winner,
+    }
+    comparison_summary = tmp_path / "comparison.json"
+    comparison_summary.write_text(
+        json.dumps(
+            [
+                {"task": tuning.task, "variant": "mjwarp", "iteration_time_s": {"mean": 0.2}},
+                {"task": tuning.task, "variant": "physx", "iteration_time_s": {"mean": 0.3}},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(analysis_module, "_recompute_chain", lambda *_args: chain)
+    monkeypatch.setattr(analysis_module, "_require_persisted", lambda *_args: winner)
+    output_dir = tmp_path / "report"
+
+    assert (
+        main(
+            [
+                "report",
+                "--artifact-root",
+                str(artifact_root),
+                "--logs-root",
+                str(tmp_path / "logs"),
+                "--decision-root",
+                str(tmp_path),
+                "--comparison-summary",
+                str(comparison_summary),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+        == 0
+    )
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["canonical_comparison"]["qualified"] is True
+
+
+@pytest.mark.parametrize(("field", "value"), (("candidate", "wrong"), ("seed", 43)))
+def test_loader_rejects_malformed_five_iteration_canonical_identity(tmp_path, monkeypatch, field, value):
+    """Only canonical_winner seed 42 is the canonical five-step preflight."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    source_dir = next(path for path in artifact_root.iterdir() if path.is_dir())
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    preflight = TuningIdentity("canonical", "canonical_winner", 42, tuning.num_envs, tuning.preflight_iterations)
+    run_dir = _add_canonical_artifact(source_dir, preflight)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"][field] = value
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid canonical preflight identity"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="canonical")

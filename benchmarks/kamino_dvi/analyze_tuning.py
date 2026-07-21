@@ -150,9 +150,9 @@ def load_tuning_records(  # noqa: C901
     """
     benchmark_matrix = load_matrix(matrix_path)
     tuning_matrix = load_tuning_matrix(tuning_matrix_path)
-    records: list[TuningRecord] = []
+    attempts: dict[tuple[str, str, int, int, int], list[tuple[Any, TuningRecord]]] = {}
     resolved_artifact_root = artifact_root.resolve()
-    seen: set[tuple[str, str, int, int]] = set()
+    seen: set[tuple[str, str, int, int, int, int]] = set()
     stage_protocol = {
         "baseline": (matrix_seeds := set(tuning_matrix.seeds), tuning_matrix.final_iterations),
         "wave1": ({42}, tuning_matrix.screen_iterations),
@@ -182,7 +182,14 @@ def load_tuning_records(  # noqa: C901
         except Exception as error:
             raise ValueError(f"{manifest_path}: invalid typed tuning manifest: {error}") from error
         identity = manifest.identity
-        key = (identity.stage, identity.candidate, identity.seed, identity.attempt)
+        key = (
+            identity.stage,
+            identity.candidate,
+            identity.seed,
+            identity.num_envs,
+            identity.max_iterations,
+            identity.attempt,
+        )
         if key in seen:
             raise ValueError(f"duplicate tuning record: {key}")
         seen.add(key)
@@ -190,11 +197,18 @@ def load_tuning_records(  # noqa: C901
             raise ValueError(f"{manifest_path}: expected stage {expected_stage}")
         if identity.stage not in stage_protocol:
             raise ValueError(f"{manifest_path}: unsupported measured stage {identity.stage}")
-        allowed_seeds, required_iterations = stage_protocol[identity.stage]
-        if identity.seed not in allowed_seeds:
-            raise ValueError(f"{identity.stage} uses an invalid seed {identity.seed}")
-        if identity.max_iterations != required_iterations:
-            raise ValueError(f"{identity.stage} requires exactly {required_iterations} iterations")
+        is_canonical_preflight = (
+            identity.stage == "canonical" and identity.max_iterations == tuning_matrix.preflight_iterations
+        )
+        if is_canonical_preflight:
+            if identity.candidate != "canonical_winner" or identity.seed != 42:
+                raise ValueError(f"{manifest_path}: invalid canonical preflight identity")
+        else:
+            allowed_seeds, required_iterations = stage_protocol[identity.stage]
+            if identity.seed not in allowed_seeds:
+                raise ValueError(f"{identity.stage} uses an invalid seed {identity.seed}")
+            if identity.max_iterations != required_iterations:
+                raise ValueError(f"{identity.stage} requires exactly {required_iterations} iterations")
         if manifest.run_id != identity.run_id or run_dir.name != identity.run_id:
             raise ValueError(f"{manifest_path}: run identity does not match its directory")
         if Path(manifest.artifact_root).resolve() != run_dir.resolve():
@@ -223,8 +237,16 @@ def load_tuning_records(  # noqa: C901
                 raise ValueError(f"{manifest_path}: artifact path escapes its run directory") from error
             if not artifact.is_file() or sha256_file(artifact) != expected_hash:
                 raise ValueError(f"{manifest_path}: artifact hash mismatch for {name}")
+        logical_identity = (
+            identity.stage,
+            identity.candidate,
+            identity.seed,
+            identity.num_envs,
+            identity.max_iterations,
+        )
         if manifest.state is TerminalState.FAILED:
-            records.append(_failed_record(manifest_path, manifest, resolved))
+            failed_record = _failed_record(manifest_path, manifest, resolved)
+            attempts.setdefault(logical_identity, []).append((manifest, failed_record))
             continue
         if manifest.state is not TerminalState.COMPLETED:
             raise ValueError(f"{manifest_path}: manifest is incomplete ({manifest.state.value})")
@@ -279,20 +301,31 @@ def load_tuning_records(  # noqa: C901
         _validate_series(metrics, identity.max_iterations, manifest_path)
         completed_at = str(_bundle_field(bundle, "run", "end_time_utc"))
         source_head = manifest.isaaclab_head
-        records.append(
-            TuningRecord(
-                metrics,
-                manifest.run_id,
-                manifest_path,
-                sha256_file(manifest_path),
-                event_path,
-                manifest.tensorboard_event_hash,
-                manifest.config_hash,
-                resolved,
-                completed_at,
-                source_head,
-            )
+        completed_record = TuningRecord(
+            metrics,
+            manifest.run_id,
+            manifest_path,
+            sha256_file(manifest_path),
+            event_path,
+            manifest.tensorboard_event_hash,
+            manifest.config_hash,
+            resolved,
+            completed_at,
+            source_head,
         )
+        attempts.setdefault(logical_identity, []).append((manifest, completed_record))
+    records: list[TuningRecord] = []
+    for logical_identity, logical_attempts in sorted(attempts.items()):
+        ordered = sorted(logical_attempts, key=lambda item: item[0].identity.attempt)
+        if ordered[0][0].identity.attempt != 0 or ordered[0][0].retry.parent_run_id is not None:
+            raise ValueError(f"{ordered[0][1].manifest_path}: retry attempt 0 must have no parent")
+        for index, (manifest, record) in enumerate(ordered[1:], start=1):
+            previous = ordered[index - 1][0]
+            if manifest.retry.parent_run_id != previous.run_id:
+                raise ValueError(f"{record.manifest_path}: retry parent does not match preceding attempt")
+        if logical_identity[0] == "canonical" and logical_identity[4] == tuning_matrix.preflight_iterations:
+            continue
+        records.append(ordered[-1][1])
     return records
 
 
@@ -719,6 +752,66 @@ def _select_winner_action(args: argparse.Namespace) -> None:
     write_decision(args.output, chain["winner_decision"])
 
 
+def _stage_funnel(
+    chain: Mapping[str, Any], canonical: Sequence[TuningRecord], winner: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Build non-overlapping stage funnel counts with selection origins."""
+    wave1_names = {record.metrics.candidate for record in chain["wave1"]}
+    wave2_names = {record.metrics.candidate for record in chain["wave2"]}
+    stage2_selected = set(chain["stage2_decision"]["selected"])
+    wave2_promoted = len(stage2_selected & wave2_names)
+    wave1_promoted_to_stage2 = len(stage2_selected & wave1_names)
+
+    def failed(records: Sequence[TuningRecord]) -> int:
+        return sum(record.metrics.failure is not None for record in records)
+
+    return [
+        {
+            "stage": "baseline",
+            "attempted": len(chain["baseline"]),
+            "valid": len(chain["baseline"]) - failed(chain["baseline"]),
+            "rejected": failed(chain["baseline"]),
+            "promoted": 1,
+        },
+        {
+            "stage": "Wave 1",
+            "attempted": len(chain["wave1"]),
+            "valid": len(chain["wave1"]) - failed(chain["wave1"]),
+            "rejected": failed(chain["wave1"]),
+            "promoted": len(chain["wave2_decision"]["selected"]),
+        },
+        {
+            "stage": "Wave 2",
+            "attempted": len(chain["wave2"]),
+            "valid": len(chain["wave2"]) - failed(chain["wave2"]),
+            "rejected": failed(chain["wave2"]),
+            "promoted": wave2_promoted,
+            "selected_from_wave1": wave1_promoted_to_stage2,
+        },
+        {
+            "stage": "halve",
+            "attempted": len(chain["halve"]),
+            "valid": len(chain["halve"]) - failed(chain["halve"]),
+            "rejected": len(chain["finalists_decision"]["rejected"]),
+            "promoted": len(chain["finalists_decision"]["selected"]),
+        },
+        {
+            "stage": "final",
+            "attempted": len(chain["final"]),
+            "valid": len(chain["final"]) - failed(chain["final"]),
+            "rejected": len(winner["rejected"]),
+            "promoted": 1,
+        },
+        {
+            "stage": "canonical",
+            "attempted": len(canonical),
+            "valid": len(canonical) - failed(canonical),
+            "rejected": failed(canonical),
+            "promoted": 1,
+        },
+    ]
+
+
 def _report_action(args: argparse.Namespace) -> None:
     from .tuning_reporting import write_tuning_report
 
@@ -789,38 +882,7 @@ def _report_action(args: argparse.Namespace) -> None:
                 for record in canonical
             ],
         },
-        "funnel": [
-            {"stage": "baseline", "attempted": len(chain["baseline"]), "valid": 3, "rejected": 0, "promoted": 1},
-            {
-                "stage": "Wave 1",
-                "attempted": len(chain["wave1"]),
-                "valid": sum(item.metrics.failure is None for item in chain["wave1"]),
-                "rejected": len(chain["wave2_decision"]["rejected"]),
-                "promoted": len(chain["wave2_decision"]["selected"]),
-            },
-            {
-                "stage": "Wave 2",
-                "attempted": len(chain["wave2"]),
-                "valid": sum(item.metrics.failure is None for item in chain["wave2"]),
-                "rejected": 0,
-                "promoted": len(chain["stage2_decision"]["selected"]),
-            },
-            {
-                "stage": "halve",
-                "attempted": len(chain["halve"]),
-                "valid": sum(item.metrics.failure is None for item in chain["halve"]),
-                "rejected": len(chain["finalists_decision"]["rejected"]),
-                "promoted": len(chain["finalists_decision"]["selected"]),
-            },
-            {
-                "stage": "final",
-                "attempted": len(chain["final"]),
-                "valid": sum(item.metrics.failure is None for item in chain["final"]),
-                "rejected": len(winner["rejected"]),
-                "promoted": 1,
-            },
-            {"stage": "canonical", "attempted": len(canonical), "valid": len(canonical), "rejected": 0, "promoted": 1},
-        ],
+        "funnel": _stage_funnel(chain, canonical, winner),
         "runtime_rows": [
             {
                 "stage": record.metrics.stage,

@@ -19,7 +19,17 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
         "winner": "candidate",
         "winner_config": {"integrator": "euler"},
         "environment_count": 4096,
-        "funnel": [{"stage": "Wave 1", "attempted": 18, "valid": 17, "rejected": 1, "promoted": 6}],
+        "funnel": [
+            {"stage": "Wave 1", "attempted": 18, "valid": 17, "rejected": 1, "promoted": 6},
+            {
+                "stage": "Wave 2",
+                "attempted": 6,
+                "valid": 5,
+                "rejected": 1,
+                "promoted": 2,
+                "selected_from_wave1": 3,
+            },
+        ],
         "runtime_rows": [{"stage": "wave1", "candidate": "candidate", "mean": 0.1, "half_width": 0.0, "n": 1}],
         "final_rows": [
             {
@@ -71,6 +81,7 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
         "legacy MJWarp",
         "legacy PhysX",
         "FINAL-RENDERED-SENTINEL",
+        "originated in Wave 1",
     ):
         assert text in markdown
 

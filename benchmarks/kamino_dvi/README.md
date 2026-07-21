@@ -87,19 +87,27 @@ reduced counts, nonfinite data, and mismatched evidence provenance.
   --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
   --decision-root benchmark_artifacts/kamino_dvi/decisions \
   --output benchmark_artifacts/kamino_dvi/decisions/winner.json
-./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning report \
-  --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
-  --decision-root benchmark_artifacts/kamino_dvi/decisions \
-  --output-dir benchmarks/kamino_dvi/results/anymal_d_tuning
 ```
 
 Stage 2 derives an immutable view of iterations 1--100 from each validated
 300-iteration clean baseline, so its final-20 window is iterations 81--100.
-After committing the selected configuration to the preset, validate that
-committed preset without overrides:
+After winner selection, update the literal solver preset with the winner and
+commit that preset. Then validate the committed preset without overrides:
 
 ```bash
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
   --stage canonical --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning \
   --decision-root benchmark_artifacts/kamino_dvi/decisions --resume
 ```
+
+Only after the three-seed canonical validation passes, generate the report:
+
+```bash
+./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning report \
+  --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions \
+  --output-dir benchmarks/kamino_dvi/results/anymal_d_tuning
+```
+
+The report directory contains exactly `summary.json`, `runtime.png`,
+`learning.png`, `anymal_d_dvi_tuning.md`, and `anymal_d_dvi_tuning.pdf`.
