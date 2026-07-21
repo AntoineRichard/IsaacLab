@@ -57,6 +57,15 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
             "first 100 aligned iterations of clean 300-iteration baseline; final-20 is iterations 81--100"
         ),
         "legacy_limitations": "MJWarp/PhysX evidence is legacy and lacks current exact source/event provenance.",
+        "bundle_git_dirty": {
+            "count": 1,
+            "run_ids": ["dirty-run"],
+            "advisory": (
+                "Broad/advisory bundle flag from plain git status, which includes untracked paths; "
+                "the runner separately enforced tracked-only cleanliness before launch. A true flag "
+                "does not prove that only untracked paths differed."
+            ),
+        },
     }
     paths = write_tuning_report(report, tmp_path)
     assert {path.name for path in paths} == {
@@ -82,6 +91,9 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
         "legacy PhysX",
         "FINAL-RENDERED-SENTINEL",
         "originated in Wave 1",
+        "dirty-run",
+        "tracked-only cleanliness",
+        "does not prove that only untracked paths differed",
     ):
         assert text in markdown
 

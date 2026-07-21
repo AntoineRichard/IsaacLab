@@ -115,6 +115,8 @@ def _markdown(report: Mapping[str, Any]) -> str:
     lines.extend(f"- {reason}" for reason in report.get("rejections", []))
     if not report.get("rejections"):
         lines.append("- No terminal failures or rejected candidates.")
+    disclosure = report.get("bundle_git_dirty", {"count": 0, "run_ids": [], "advisory": ""})
+    dirty_run_ids = ", ".join(str(run_id) for run_id in disclosure.get("run_ids", [])) or "none"
     lines.extend(
         [
             "",
@@ -122,6 +124,8 @@ def _markdown(report: Mapping[str, Any]) -> str:
             "",
             f"- Environment and coverage: {report['seed_iteration_coverage']}",
             f"- Stage 2 baseline: {report['stage2_baseline_derivation']}",
+            f"- Broad bundle dirty flags: {int(disclosure.get('count', 0))}; run IDs: {dirty_run_ids}",
+            f"- Bundle dirty advisory: {disclosure.get('advisory', '')}",
             f"- Legacy comparison limitation: {report['legacy_limitations']}",
             "",
             "## Figures",

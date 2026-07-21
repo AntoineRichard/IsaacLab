@@ -69,10 +69,18 @@ campaign. Baseline and Wave 1 validation require no decision files:
 ```
 
 The command writes deterministic standard JSON to stdout with expected,
-terminal, valid, and rejected counts plus sorted run IDs and rejection
-reasons. It exits nonzero without success JSON when requested coverage or
-provenance is invalid. Adaptive stages additionally read their strict upstream
-decision from `--decision-root`.
+terminal, valid, and rejected counts plus sorted run IDs, rejection reasons,
+and the broad bundle-dirty count and run IDs. It exits nonzero without success
+JSON when requested coverage or provenance is invalid. Adaptive stages
+additionally read their strict upstream decision from `--decision-root`.
+
+The runner enforces launch cleanliness with tracked files only (`git status
+--porcelain --untracked-files=no`). The training bundle's
+`versions.git_dirty` uses plain `git status --porcelain`, so it is a broader,
+advisory flag that also includes untracked paths. Decisions, validation JSON,
+and reports disclose every `true` bundle flag and its run ID. A `true` value
+does not prove that only untracked paths differed; interpret it alongside the
+runner's separate tracked-only check.
 
 ```bash
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \

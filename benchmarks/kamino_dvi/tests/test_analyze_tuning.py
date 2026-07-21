@@ -152,6 +152,40 @@ def test_loader_rejects_mismatched_provenance(tmp_path, monkeypatch, field: str,
         load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
 
 
+def _set_bundle_git_dirty(artifact_root: Path, value) -> None:
+    """Set and re-hash the synthetic completed bundle dirty flag."""
+    run_dir = next(path for path in artifact_root.iterdir() if path.is_dir())
+    bundle_path = next(run_dir.glob("benchmark_training_*.json"))
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    bundle["versions"]["git_dirty"] = value
+    bundle_path.write_text(json.dumps(bundle, sort_keys=True), encoding="utf-8")
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_hashes"][bundle_path.name] = sha256_file(bundle_path)
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+
+@pytest.mark.parametrize("value", (False, True))
+def test_loader_preserves_boolean_bundle_git_dirty(tmp_path, monkeypatch, value):
+    """Both broad boolean bundle flags load and remain available for audit."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _set_bundle_git_dirty(artifact_root, value)
+
+    records = load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+    assert len(records) == 1
+    assert records[0].bundle_git_dirty is value
+
+
+def test_loader_rejects_nonboolean_bundle_git_dirty(tmp_path, monkeypatch):
+    """The broad bundle dirty flag remains a strictly typed JSON boolean."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _set_bundle_git_dirty(artifact_root, "false")
+
+    with pytest.raises(ValueError, match="git_dirty must be a boolean"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
 def test_loader_rejects_incomplete_expected_candidate_seed_set():
     """Coverage validation rejects a partial decision input before aggregation."""
     metric = TuningRunMetrics("integrator_euler", "wave1", 42, 4096, (1.0,) * 40, (1.0,) * 40, (1.0,) * 40, (1.0,) * 40)
@@ -165,13 +199,24 @@ def test_stage2_baseline_uses_first_hundred_aligned_points():
     metric = TuningRunMetrics(
         "baseline", "baseline", 42, 4096, tuple(range(300)), tuple(range(300)), tuple(range(300)), tuple(range(300))
     )
-    source = TuningRecord(metric, "run", Path("manifest.json"), "a" * 64, Path("event"), "b" * 64, "c" * 64, {})
+    source = TuningRecord(
+        metric,
+        "run",
+        Path("manifest.json"),
+        "a" * 64,
+        Path("event"),
+        "b" * 64,
+        "c" * 64,
+        {},
+        bundle_git_dirty=True,
+    )
     derived, provenance = derive_stage2_baseline([source], 100)
     assert derived[0].stage == "halve"
     assert derived[0].reward == tuple(range(100))
     assert derived[0].final_mean(derived[0].reward, 20) == pytest.approx(89.5)
     assert provenance[0]["derivation"] == "first 100 aligned iterations of clean 300-iteration baseline"
     assert provenance[0]["source_manifest_hash"] == "a" * 64
+    assert provenance[0]["source_bundle_git_dirty"] is True
 
 
 def test_resolve_wave2_writes_resolved_configs_and_canonical_hashes(tmp_path, monkeypatch):
@@ -202,6 +247,7 @@ def test_resolve_wave2_writes_resolved_configs_and_canonical_hashes(tmp_path, mo
                 resolved,
             )
         )
+    records[0] = dataclasses.replace(records[0], bundle_git_dirty=True)
     monkeypatch.setattr("benchmarks.kamino_dvi.analyze_tuning.load_tuning_records", lambda *_args, **_kwargs: records)
     output = tmp_path / "wave2.json"
     argv = ["resolve-wave2", "--artifact-root", str(tmp_path), "--logs-root", str(tmp_path), "--output", str(output)]
@@ -210,6 +256,13 @@ def test_resolve_wave2_writes_resolved_configs_and_canonical_hashes(tmp_path, mo
     assert decision["schema_version"] == "1.0"
     assert decision["action"] == "resolve-wave2"
     assert decision["source_stage"] == "wave1"
+    assert decision["bundle_git_dirty"]["count"] == 1
+    assert decision["bundle_git_dirty"]["run_ids"] == [records[0].run_id]
+    assert "tracked-only cleanliness" in decision["bundle_git_dirty"]["advisory"]
+    assert (
+        next(item for item in decision["source_manifests"] if item["run_id"] == records[0].run_id)["bundle_git_dirty"]
+        is True
+    )
     assert len(decision["resolved_candidates"]) == 6
     for item in decision["resolved_candidates"]:
         assert item["config_hash"] == config_hash(item["resolved_config"])
@@ -302,6 +355,11 @@ def test_strict_decision_parser_rejects_tampered_resolved_provenance(tmp_path):
                 "source_stage": "stage1",
                 "source_artifact_root": str(tmp_path),
                 "source_manifests": [],
+                "bundle_git_dirty": {
+                    "count": 0,
+                    "run_ids": [],
+                    "advisory": analysis_module.BUNDLE_GIT_DIRTY_ADVISORY,
+                },
                 "timestamp_utc": "2026-07-21T00:00:00+00:00",
                 "revisions": dataclasses.asdict(load_matrix(DEFAULT_MATRIX_PATH).revisions),
                 "selected": [candidate.name],
@@ -320,6 +378,76 @@ def test_strict_decision_parser_rejects_tampered_resolved_provenance(tmp_path):
     )
 
     with pytest.raises(ValueError, match="decision candidate provenance"):
+        load_decision(path, "promote-stage2", tuning, minimum_count=1, maximum_count=8)
+
+
+@pytest.mark.parametrize(
+    "tampering",
+    (
+        "missing_manifest_flag",
+        "missing_disclosure",
+        "nonboolean_manifest_flag",
+        "unsorted_run_ids",
+        "duplicate_run_ids",
+        "incorrect_count",
+        "altered_advisory",
+        "manifest_mismatch",
+    ),
+)
+def test_strict_decision_parser_rejects_tampered_bundle_dirty_disclosure(tmp_path, tampering):
+    """Persisted bundle dirty provenance must be complete and internally exact."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    candidate = tuning.wave1[0]
+    resolved = resolve_config(tuning, candidate)
+    data = {
+        "schema_version": "1.0",
+        "action": "promote-stage2",
+        "source_stage": "stage1",
+        "source_artifact_root": str(tmp_path),
+        "source_manifests": [
+            {"run_id": "run-a", "path": "a.json", "sha256": "a" * 64, "bundle_git_dirty": True},
+            {"run_id": "run-b", "path": "b.json", "sha256": "b" * 64, "bundle_git_dirty": True},
+            {"run_id": "run-c", "path": "c.json", "sha256": "c" * 64, "bundle_git_dirty": False},
+            {"run_id": "run-d", "path": "d.json", "sha256": "d" * 64, "bundle_git_dirty": None},
+        ],
+        "bundle_git_dirty": {
+            "count": 2,
+            "run_ids": ["run-a", "run-b"],
+            "advisory": analysis_module.BUNDLE_GIT_DIRTY_ADVISORY,
+        },
+        "timestamp_utc": "2026-07-21T00:00:00+00:00",
+        "revisions": dataclasses.asdict(load_matrix(DEFAULT_MATRIX_PATH).revisions),
+        "selected": [candidate.name],
+        "rejected": {},
+        "resolved_candidates": [
+            {
+                "name": candidate.name,
+                "overrides": candidate.overrides,
+                "resolved_config": resolved,
+                "config_hash": config_hash(resolved),
+            }
+        ],
+    }
+    if tampering == "missing_manifest_flag":
+        del data["source_manifests"][0]["bundle_git_dirty"]
+    elif tampering == "missing_disclosure":
+        del data["bundle_git_dirty"]
+    elif tampering == "nonboolean_manifest_flag":
+        data["source_manifests"][0]["bundle_git_dirty"] = 1
+    elif tampering == "unsorted_run_ids":
+        data["bundle_git_dirty"]["run_ids"] = ["run-b", "run-a"]
+    elif tampering == "duplicate_run_ids":
+        data["bundle_git_dirty"]["run_ids"] = ["run-a", "run-a"]
+    elif tampering == "incorrect_count":
+        data["bundle_git_dirty"]["count"] = 1
+    elif tampering == "altered_advisory":
+        data["bundle_git_dirty"]["advisory"] = "wrong"
+    elif tampering == "manifest_mismatch":
+        data["bundle_git_dirty"]["run_ids"] = ["run-a", "run-c"]
+    path = tmp_path / "decision.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="decision (source manifests|bundle dirty disclosure) (are|is) invalid"):
         load_decision(path, "promote-stage2", tuning, minimum_count=1, maximum_count=8)
 
 
@@ -627,6 +755,10 @@ def test_canonical_preflight_is_excluded_before_report_ci_gate(tmp_path, monkeyp
     )
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["canonical_comparison"]["qualified"] is True
+    assert summary["bundle_git_dirty"]["count"] == 0
+    assert summary["bundle_git_dirty"]["run_ids"] == []
+    assert "includes untracked paths" in summary["bundle_git_dirty"]["advisory"]
+    assert all(record["bundle_git_dirty"] is False for record in summary["canonical_provenance"]["records"])
 
 
 @pytest.mark.parametrize(("field", "value"), (("candidate", "wrong"), ("seed", 43)))
@@ -740,6 +872,11 @@ def test_validate_action_accepts_baseline_only_completed_artifacts(tmp_path, mon
             "rejected": 0,
             "run_ids": sorted(path.name for path in artifact_root.glob("baseline__*")),
             "rejection_reasons": [],
+            "bundle_git_dirty": {
+                "count": 0,
+                "run_ids": [],
+                "advisory": analysis_module.BUNDLE_GIT_DIRTY_ADVISORY,
+            },
         }
     ]
 
@@ -748,6 +885,7 @@ def test_validate_action_emits_deterministic_stage_order_and_counts(tmp_path, mo
     """Validate emits standard JSON with requested order, terminal counts, and sorted details."""
     tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
     baseline = [_validation_record("baseline", "baseline", seed) for seed in reversed(tuning.seeds)]
+    baseline[0] = dataclasses.replace(baseline[0], bundle_git_dirty=True)
     wave1 = [
         _validation_record(candidate.name, "wave1", 42, failure="numerical" if index == 0 else None)
         for index, candidate in enumerate(reversed(tuning.wave1))
@@ -772,6 +910,11 @@ def test_validate_action_emits_deterministic_stage_order_and_counts(tmp_path, mo
         "rejected": 0,
         "run_ids": sorted(record.run_id for record in baseline),
         "rejection_reasons": [],
+        "bundle_git_dirty": {
+            "count": 1,
+            "run_ids": [baseline[0].run_id],
+            "advisory": analysis_module.BUNDLE_GIT_DIRTY_ADVISORY,
+        },
     }
     assert output["stages"][1]["expected"] == 18
     assert output["stages"][1]["terminal"] == 18

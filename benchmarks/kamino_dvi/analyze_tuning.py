@@ -39,6 +39,12 @@ from .tuning import (
     select_winner,
 )
 
+BUNDLE_GIT_DIRTY_ADVISORY = (
+    "Broad/advisory bundle flag from plain `git status --porcelain`, which includes untracked paths; "
+    "the runner separately enforced tracked-only cleanliness before launch. A true flag does not prove "
+    "that only untracked paths differed."
+)
+
 
 @dataclass(frozen=True)
 class TuningRecord:
@@ -53,8 +59,14 @@ class TuningRecord:
     config_hash: str
     resolved_config: dict[str, str | int | float | bool]
     completed_at_utc: str | None = None
-
     source_head: str | None = None
+    bundle_git_dirty: bool | None = None
+
+
+def _bundle_git_dirty_disclosure(records: Sequence[TuningRecord]) -> dict[str, Any]:
+    """Summarize broad bundle dirty flags with their interpretation boundary."""
+    run_ids = sorted(record.run_id for record in records if record.bundle_git_dirty is True)
+    return {"count": len(run_ids), "run_ids": run_ids, "advisory": BUNDLE_GIT_DIRTY_ADVISORY}
 
 
 def _read_mapping(path: Path) -> dict[str, Any]:
@@ -255,8 +267,9 @@ def load_tuning_records(  # noqa: C901
             raise ValueError(f"{manifest_path}: requires exactly one hashed schema bundle")
         bundle_path = bundles[0]
         bundle = _read_mapping(bundle_path)
-        if _bundle_field(bundle, "versions", "git_dirty") is not False:
-            raise ValueError(f"{bundle_path}: source tree was dirty")
+        bundle_git_dirty = _bundle_field(bundle, "versions", "git_dirty")
+        if type(bundle_git_dirty) is not bool:
+            raise ValueError(f"{bundle_path}: versions.git_dirty must be a boolean")
         if _bundle_field(bundle, "versions", "git_commit") != manifest.isaaclab_head:
             raise ValueError(f"{manifest_path}: source HEAD does not match bundle provenance")
         actual_identity = (
@@ -312,6 +325,7 @@ def load_tuning_records(  # noqa: C901
             resolved,
             completed_at,
             source_head,
+            bundle_git_dirty,
         )
         attempts.setdefault(logical_identity, []).append((manifest, completed_record))
     records: list[TuningRecord] = []
@@ -376,6 +390,7 @@ def derive_stage2_baseline(
                 "source_event_path": str(record.event_path) if record.event_path else None,
                 "source_event_hash": record.event_hash,
                 "source_config_hash": record.config_hash,
+                "source_bundle_git_dirty": record.bundle_git_dirty,
                 "derivation": f"first {iterations} aligned iterations of clean 300-iteration baseline",
             }
         )
@@ -408,9 +423,15 @@ def _base_decision(source_stage: str, artifact_root: Path, records: Sequence[Tun
         "source_stage": source_stage,
         "source_artifact_root": str(artifact_root.resolve()),
         "source_manifests": [
-            {"run_id": record.run_id, "path": str(record.manifest_path), "sha256": record.manifest_hash}
+            {
+                "run_id": record.run_id,
+                "path": str(record.manifest_path),
+                "sha256": record.manifest_hash,
+                "bundle_git_dirty": record.bundle_git_dirty,
+            }
             for record in sorted(records, key=lambda item: item.run_id)
         ],
+        "bundle_git_dirty": _bundle_git_dirty_disclosure(records),
         "timestamp_utc": _timestamp(records),
         "schema_version": "1.0",
         "action": {
@@ -452,9 +473,26 @@ def load_decision(
         or not isinstance(item.get("run_id"), str)
         or not isinstance(item.get("path"), str)
         or not isinstance(item.get("sha256"), str)
+        or "bundle_git_dirty" not in item
+        or (item["bundle_git_dirty"] is not None and type(item["bundle_git_dirty"]) is not bool)
         for item in manifests
     ):
         raise ValueError(f"{path}: decision source manifests are invalid")
+    disclosure = data.get("bundle_git_dirty")
+    if not isinstance(disclosure, dict) or set(disclosure) != {"count", "run_ids", "advisory"}:
+        raise ValueError(f"{path}: decision bundle dirty disclosure is invalid")
+    count = disclosure["count"]
+    run_ids = disclosure["run_ids"]
+    if (
+        type(count) is not int
+        or not isinstance(run_ids, list)
+        or any(not isinstance(run_id, str) for run_id in run_ids)
+        or run_ids != sorted(set(run_ids))
+        or count != len(run_ids)
+        or disclosure["advisory"] != BUNDLE_GIT_DIRTY_ADVISORY
+        or run_ids != sorted(item["run_id"] for item in manifests if item["bundle_git_dirty"] is True)
+    ):
+        raise ValueError(f"{path}: decision bundle dirty disclosure is invalid")
     records = data.get("resolved_candidates")
     if not isinstance(records, list) or not minimum_count <= len(records) <= maximum_count:
         raise ValueError(f"{path}: decision candidate count must be between {minimum_count} and {maximum_count}")
@@ -871,6 +909,7 @@ def _report_action(args: argparse.Namespace) -> None:
         "environment_count": matrix.num_envs,
         "decisions": decisions,
         "canonical_comparison": canonical_comparison,
+        "bundle_git_dirty": _bundle_git_dirty_disclosure(all_records),
         "canonical_provenance": {
             "source_head": next(iter(canonical_heads)),
             "records": [
@@ -881,6 +920,7 @@ def _report_action(args: argparse.Namespace) -> None:
                     "event_path": str(record.event_path),
                     "event_hash": record.event_hash,
                     "config_hash": record.config_hash,
+                    "bundle_git_dirty": record.bundle_git_dirty,
                 }
                 for record in canonical
             ],
@@ -1043,6 +1083,7 @@ def _validate_action(args: argparse.Namespace) -> None:
                 "rejected": len(rejections),
                 "run_ids": sorted(record.run_id for record in records),
                 "rejection_reasons": rejections,
+                "bundle_git_dirty": _bundle_git_dirty_disclosure(records),
             }
         )
     print(json.dumps({"schema_version": "1.0", "stages": summaries}, allow_nan=False, sort_keys=True))
