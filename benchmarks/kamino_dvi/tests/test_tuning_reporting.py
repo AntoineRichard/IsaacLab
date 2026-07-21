@@ -7,9 +7,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from benchmarks.kamino_dvi.tuning_reporting import write_tuning_report
+from benchmarks.kamino_dvi.tuning_reporting import _paginate_text, write_tuning_report
 
 
 def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp_path: Path):
@@ -38,7 +39,9 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
             }
         ],
         "speedups": {"clean DVI": 1.2, "legacy MJWarp": 0.8, "legacy PhysX": 0.7},
-        "rejections": ["failed candidate: numerical"],
+        "rejections": ["failed candidate: numerical"]
+        + [f"audit rejection {index}" for index in range(180)]
+        + ["FINAL-RENDERED-SENTINEL"],
         "seed_iteration_coverage": "seeds 42--44; Wave 1 40, Stage 2 100, Stage 3 300 iterations",
         "stage2_baseline_derivation": (
             "first 100 aligned iterations of clean 300-iteration baseline; final-20 is iterations 81--100"
@@ -47,12 +50,36 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
     }
     paths = write_tuning_report(report, tmp_path)
     assert {path.name for path in paths} == {
-        "anymal_d_tuning_addendum.md",
-        "anymal_d_tuning_addendum.pdf",
-        "runtime_ranking.png",
-        "stage2_guardrails.png",
+        "anymal_d_dvi_tuning.md",
+        "anymal_d_dvi_tuning.pdf",
+        "runtime.png",
+        "learning.png",
+        "summary.json",
     }
     assert all(path.is_file() and path.stat().st_size > 0 for path in paths)
-    markdown = (tmp_path / "anymal_d_tuning_addendum.md").read_text(encoding="utf-8")
-    for text in ("95%", "4096", "seeds 42--44", "iterations 81--100", "numerical", "legacy MJWarp", "legacy PhysX"):
+    json.loads(
+        (tmp_path / "summary.json").read_text(encoding="utf-8"),
+        parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+    )
+    markdown = (tmp_path / "anymal_d_dvi_tuning.md").read_text(encoding="utf-8")
+    for text in (
+        "95%",
+        "4096",
+        "seeds 42--44",
+        "iterations 81--100",
+        "numerical",
+        "legacy MJWarp",
+        "legacy PhysX",
+        "FINAL-RENDERED-SENTINEL",
+    ):
         assert text in markdown
+
+
+def test_pdf_page_text_paginates_without_truncating_final_sentinel():
+    """Long audit text remains present on a later PDF page."""
+    text = "\n".join([f"audit line {index}" for index in range(180)] + ["FINAL-SENTINEL"])
+
+    pages = _paginate_text(text, lines_per_page=40)
+
+    assert len(pages) > 1
+    assert "FINAL-SENTINEL" in pages[-1]

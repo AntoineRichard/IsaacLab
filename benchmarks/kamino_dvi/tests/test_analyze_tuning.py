@@ -16,10 +16,14 @@ import pytest
 
 from benchmarks.kamino_dvi.analyze_tuning import (
     TuningRecord,
+    _canonical_comparison,
     _qualification_dict,
+    build_parser,
     derive_stage2_baseline,
+    load_decision,
     load_tuning_records,
     main,
+    reconcile_decision_candidates,
     validate_tuning_records,
 )
 from benchmarks.kamino_dvi.manifests import command_hash, sha256_file
@@ -197,6 +201,8 @@ def test_resolve_wave2_writes_resolved_configs_and_canonical_hashes(tmp_path, mo
     argv = ["resolve-wave2", "--artifact-root", str(tmp_path), "--logs-root", str(tmp_path), "--output", str(output)]
     assert main(argv) == 0
     decision = json.loads(output.read_text(encoding="utf-8"))
+    assert decision["schema_version"] == "1.0"
+    assert decision["action"] == "resolve-wave2"
     assert decision["source_stage"] == "wave1"
     assert len(decision["resolved_candidates"]) == 6
     for item in decision["resolved_candidates"]:
@@ -225,3 +231,152 @@ def test_loader_rejects_undeclared_artifact_directory(tmp_path):
 
     with pytest.raises(ValueError, match="undeclared tuning directory"):
         load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+@pytest.mark.parametrize(("field", "value"), (("seed", 42.0), ("attempt", False)))
+def test_loader_rejects_noninteger_identity_fields(tmp_path, monkeypatch, field, value):
+    """Identity integers reject float and bool values before semantic validation."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    manifest_path = next(artifact_root.glob("*/manifest.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"][field] = value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="typed identity"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_rejects_wrong_stage_iteration_count(tmp_path, monkeypatch):
+    """Stage protocol iterations are checked independently from trace lengths."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    manifest_path = next(artifact_root.glob("*/manifest.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"]["max_iterations"] = 41
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="wave1 requires exactly 40 iterations"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_rejects_retry_attempt_mismatch(tmp_path, monkeypatch):
+    """Retry lineage attempt must equal the immutable identity attempt."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    manifest_path = next(artifact_root.glob("*/manifest.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["retry"]["attempt"] = 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="retry attempt"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_rejects_run_directory_symlink_escape(tmp_path, monkeypatch):
+    """A tuning run directory must resolve beneath the declared artifact root."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    run_dir = next(path for path in artifact_root.iterdir() if path.is_dir())
+    escaped = tmp_path / "escaped"
+    run_dir.rename(escaped)
+    run_dir.symlink_to(escaped, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes artifact root"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_strict_decision_parser_rejects_tampered_resolved_provenance(tmp_path):
+    """Persisted decision candidates are never trusted without recomputation."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    candidate = tuning.wave1[0]
+    resolved = resolve_config(tuning, candidate)
+    path = tmp_path / "decision.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "action": "promote-stage2",
+                "source_stage": "stage1",
+                "source_artifact_root": str(tmp_path),
+                "source_manifests": [],
+                "timestamp_utc": "2026-07-21T00:00:00+00:00",
+                "revisions": dataclasses.asdict(load_matrix(DEFAULT_MATRIX_PATH).revisions),
+                "selected": [candidate.name],
+                "rejected": {},
+                "resolved_candidates": [
+                    {
+                        "name": candidate.name,
+                        "overrides": candidate.overrides,
+                        "resolved_config": {**resolved, "dvi_block_iterations": 999},
+                        "config_hash": config_hash(resolved),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="decision candidate provenance"):
+        load_decision(path, "promote-stage2", tuning, minimum_count=1, maximum_count=8)
+
+
+def test_decision_candidates_reconcile_with_downstream_manifests():
+    """A downstream manifest config must equal its persisted candidate decision."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    candidate = tuning.wave1[0]
+    resolved = resolve_config(tuning, candidate)
+    metric = TuningRunMetrics(candidate.name, "halve", 42, 4096, (1.0,) * 100, (1.0,) * 100, (1.0,) * 100, (1.0,) * 100)
+    record = TuningRecord(metric, "run", Path("manifest"), "a" * 64, Path("event"), "b" * 64, "c" * 64, resolved)
+    decision = {
+        "resolved_candidates": [
+            {
+                "name": candidate.name,
+                "overrides": candidate.overrides,
+                "resolved_config": resolved,
+                "config_hash": config_hash(resolved),
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="downstream manifest config"):
+        reconcile_decision_candidates(decision, [record])
+
+
+def _three_seed_metrics(candidate: str, stage: str, runtime: float, reward: float, success: float):
+    return tuple(
+        TuningRunMetrics(
+            candidate, stage, seed, 4096, (runtime,) * 300, (reward,) * 300, (success,) * 300, (100.0,) * 300
+        )
+        for seed in (42, 43, 44)
+    )
+
+
+def test_canonical_gate_requires_overlapping_runtime_reward_and_success(matrix=None):
+    """Canonical preset validation must reproduce the override-based winner intervals."""
+    del matrix
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    final = _three_seed_metrics("winner", "final", 0.1, 10.0, 0.8)
+    canonical = _three_seed_metrics("canonical_winner", "canonical", 0.1, 10.0, 0.8)
+
+    comparison = _canonical_comparison(tuning, final, canonical)
+    assert comparison["qualified"] is True
+
+    disjoint = _three_seed_metrics("canonical_winner", "canonical", 0.5, 1.0, 0.1)
+    with pytest.raises(ValueError, match="canonical.*runtime"):
+        _canonical_comparison(tuning, final, disjoint)
+
+
+def test_report_parser_exposes_tuning_matrix_for_raw_chain_recomputation(tmp_path):
+    """The report command accepts the matrix needed to recompute every decision."""
+    matrix_path = tmp_path / "tuning.yaml"
+
+    args = build_parser().parse_args(
+        [
+            "report",
+            "--artifact-root",
+            str(tmp_path),
+            "--decision-root",
+            str(tmp_path),
+            "--tuning-matrix",
+            str(matrix_path),
+        ]
+    )
+
+    assert args.tuning_matrix == matrix_path

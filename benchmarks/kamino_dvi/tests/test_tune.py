@@ -74,6 +74,8 @@ def write_winner_decision(tmp_path: Path, candidate) -> dict:
     tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
     resolved = resolve_config(tuning, candidate)
     winner = {
+        "schema_version": "1.0",
+        "action": "select-winner",
         "candidate": candidate.name,
         "resolved_config": resolved,
         "config_hash": config_hash(resolved),
@@ -225,7 +227,15 @@ def write_candidates_decision(path: Path, candidates) -> None:
                 "config_hash": config_hash(resolved),
             }
         )
-    write_json_atomic(path, {"resolved_candidates": records})
+    actions = {
+        "wave2.json": "resolve-wave2",
+        "stage2.json": "promote-stage2",
+        "finalists.json": "promote-finalists",
+    }
+    write_json_atomic(
+        path,
+        {"schema_version": "1.0", "action": actions[path.name], "resolved_candidates": records},
+    )
 
 
 def prepare_decisions(tmp_path: Path) -> None:
@@ -797,3 +807,51 @@ def test_post_running_exceptions_always_persist_failed_manifest(tmp_path, monkey
     assert state is TerminalState.FAILED
     assert manifest.state is TerminalState.FAILED
     assert manifest.failure_category is category
+
+
+@pytest.mark.parametrize(
+    ("filename", "stage", "count", "seeds"),
+    (
+        ("stage2.json", "halve", 2, 2),
+        ("finalists.json", "final", 1, 3),
+    ),
+)
+def test_adaptive_stage_schedules_accept_fewer_survivors(tmp_path, filename, stage, count, seeds):
+    """Adaptive schedules accept every nonempty survivor set up to its cap."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    write_candidates_decision(tmp_path / filename, tuning.wave1[:count])
+    args = build_parser().parse_args(["--stage", stage, "--decision-root", str(tmp_path), "--measured-only"])
+
+    assert len(select_tuning_identities(tuning, args)) == count * seeds
+
+
+@pytest.mark.parametrize(
+    ("filename", "stage", "count"),
+    (
+        ("stage2.json", "halve", 0),
+        ("stage2.json", "halve", 9),
+        ("finalists.json", "final", 0),
+        ("finalists.json", "final", 4),
+    ),
+)
+def test_adaptive_stage_schedules_reject_empty_or_above_cap(tmp_path, filename, stage, count):
+    """Adaptive decisions cannot schedule zero candidates or exceed their cap."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    write_candidates_decision(tmp_path / filename, tuning.wave1[:count])
+    args = build_parser().parse_args(["--stage", stage, "--decision-root", str(tmp_path), "--measured-only"])
+
+    with pytest.raises(ValueError, match="between 1 and"):
+        select_tuning_identities(tuning, args)
+
+
+def test_runner_rejects_wrong_decision_schema_or_action(tmp_path):
+    """Adaptive schedules never trust a candidate file for the wrong action."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    write_candidates_decision(tmp_path / "stage2.json", tuning.wave1[:2])
+    data = json.loads((tmp_path / "stage2.json").read_text(encoding="utf-8"))
+    data["action"] = "promote-finalists"
+    write_json_atomic(tmp_path / "stage2.json", data)
+    args = build_parser().parse_args(["--stage", "halve", "--decision-root", str(tmp_path), "--measured-only"])
+
+    with pytest.raises(ValueError, match="schema/action"):
+        select_tuning_identities(tuning, args)

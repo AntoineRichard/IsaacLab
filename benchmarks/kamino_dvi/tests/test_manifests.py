@@ -173,3 +173,13 @@ def test_resume_requires_exact_completed_manifest(manifest):
         schema_version="1.1",
         isaaclab_head="0" * 40,
     )
+
+
+def test_atomic_json_rejects_nonfinite_values(tmp_path):
+    """Canonical JSON persistence refuses NaN and infinity."""
+    path = tmp_path / "invalid.json"
+
+    with pytest.raises(ValueError, match="JSON"):
+        write_json_atomic(path, {"value": float("nan")})
+
+    assert not path.exists()

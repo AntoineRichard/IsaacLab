@@ -20,6 +20,8 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
+from .manifests import write_json_atomic
+
 
 def _estimate(value: Any) -> str:
     if isinstance(value, Mapping):
@@ -36,7 +38,7 @@ def _runtime_plot(rows: Sequence[Mapping[str, Any]], path: Path) -> None:
     axis.barh(labels, values, xerr=errors, color="#4978a8")
     axis.invert_yaxis()
     axis.set_xlabel("Steady iteration time after iterations 1-10 [s]")
-    axis.set_title("Wave 1/2 runtime ranking (95% CIs where n=3)")
+    axis.set_title("Wave 1/2 runtime ranking (single-seed observations; no confidence interval)")
     figure.tight_layout()
     figure.savefig(path, dpi=160)
     plt.close(figure)
@@ -52,7 +54,7 @@ def _guardrail_plot(traces: Sequence[Mapping[str, Any]], path: Path) -> None:
     axes[-1].set_xlabel("Training iteration")
     if traces:
         axes[0].legend(fontsize=7)
-    figure.suptitle("Stage 2 learning guardrails")
+    figure.suptitle("Stage 2 learning guardrails (including derived clean baseline)")
     figure.tight_layout()
     figure.savefig(path, dpi=160)
     plt.close(figure)
@@ -60,17 +62,19 @@ def _guardrail_plot(traces: Sequence[Mapping[str, Any]], path: Path) -> None:
 
 def _markdown(report: Mapping[str, Any]) -> str:
     lines = [
-        "# ANYmal-D Kamino DVI Tuning Addendum",
+        "# ANYmal-D Kamino DVI Tuning",
         "",
-        "All uncertainty intervals are two-sided 95% Student-t confidence intervals. "
-        "Runtime is the steady mean after iterations 1--10; reward, TensorBoard "
-        "`Metrics/success_rate`, and episode length use the final 20 iterations.",
+        "Final/canonical uncertainty intervals are two-sided 95% Student-t confidence intervals. "
+        "Wave 1/2 rankings are single-seed observations without confidence intervals. Runtime "
+        "excludes iterations 1--10; reward, TensorBoard `Metrics/success_rate`, and episode length "
+        "use the final 20 iterations.",
         "",
-        "## Winner",
+        "## Winner and canonical gate",
         "",
         f"- Candidate: `{report['winner']}`",
         f"- Environments: {report['environment_count']}",
         f"- Resolved configuration: `{json.dumps(report['winner_config'], sort_keys=True)}`",
+        f"- Canonical comparison: `{json.dumps(report.get('canonical_comparison', {}), sort_keys=True)}`",
         "",
         "## Stage funnel",
         "",
@@ -84,7 +88,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Final runtime and learning (95% CIs)",
+            "## Final and canonical metrics (95% CIs)",
             "",
             "| Candidate | Runtime [s] | Reward | Success | Episode length |",
             "|---|---:|---:|---:|---:|",
@@ -113,26 +117,34 @@ def _markdown(report: Mapping[str, Any]) -> str:
             "",
             "## Figures",
             "",
-            "![Runtime ranking](runtime_ranking.png)",
+            "![Runtime ranking](runtime.png)",
             "",
-            "![Stage 2 guardrails](stage2_guardrails.png)",
+            "![Learning guardrails](learning.png)",
         ]
     )
     return "\n".join(lines) + "\n"
 
 
+def _paginate_text(text: str, *, lines_per_page: int = 58) -> tuple[str, ...]:
+    """Wrap and paginate every report line without truncation."""
+    lines: list[str] = []
+    for paragraph in text.splitlines():
+        lines.extend(textwrap.wrap(paragraph, 145) if paragraph.strip() else [""])
+    return tuple(
+        "\n".join(lines[index : index + lines_per_page]) for index in range(0, len(lines), lines_per_page)
+    ) or ("",)
+
+
 def _pdf(markdown: str, images: Sequence[Path], path: Path) -> None:
     with PdfPages(path) as pdf:
-        figure = plt.figure(figsize=(11.69, 8.27))
-        figure.text(0.04, 0.96, "ANYmal-D Kamino DVI Tuning Addendum", fontsize=16, fontweight="bold", va="top")
         body = markdown.replace("#", "").replace("|", " ").replace("`", "")
-        lines: list[str] = []
-        for paragraph in body.splitlines():
-            if paragraph.strip():
-                lines.extend(textwrap.wrap(paragraph, 145))
-        figure.text(0.04, 0.92, "\n".join(lines[:58]), fontsize=6.2, va="top", linespacing=1.3)
-        pdf.savefig(figure)
-        plt.close(figure)
+        for page_index, page in enumerate(_paginate_text(body)):
+            figure = plt.figure(figsize=(11.69, 8.27))
+            title = "ANYmal-D Kamino DVI Tuning" if page_index == 0 else "Audit details (continued)"
+            figure.text(0.04, 0.96, title, fontsize=16, fontweight="bold", va="top")
+            figure.text(0.04, 0.92, page, fontsize=6.2, va="top", linespacing=1.3)
+            pdf.savefig(figure)
+            plt.close(figure)
         for image_path in images:
             image = mpimg.imread(image_path)
             figure, axis = plt.subplots(figsize=(11.69, 8.27))
@@ -143,15 +155,17 @@ def _pdf(markdown: str, images: Sequence[Path], path: Path) -> None:
 
 
 def write_tuning_report(report: Mapping[str, Any], output_dir: Path) -> tuple[Path, ...]:
-    """Write the auditable tuning addendum and its two required plots."""
+    """Write deterministic JSON, figures, Markdown, and paginated PDF output."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    runtime_path = output_dir / "runtime_ranking.png"
-    guardrail_path = output_dir / "stage2_guardrails.png"
-    markdown_path = output_dir / "anymal_d_tuning_addendum.md"
-    pdf_path = output_dir / "anymal_d_tuning_addendum.pdf"
+    summary_path = output_dir / "summary.json"
+    runtime_path = output_dir / "runtime.png"
+    learning_path = output_dir / "learning.png"
+    markdown_path = output_dir / "anymal_d_dvi_tuning.md"
+    pdf_path = output_dir / "anymal_d_dvi_tuning.pdf"
     _runtime_plot(report.get("runtime_rows", []), runtime_path)
-    _guardrail_plot(report.get("learning_traces", []), guardrail_path)
+    _guardrail_plot(report.get("learning_traces", []), learning_path)
     markdown = _markdown(report)
     markdown_path.write_text(markdown, encoding="utf-8")
-    _pdf(markdown, (runtime_path, guardrail_path), pdf_path)
-    return markdown_path, pdf_path, runtime_path, guardrail_path
+    write_json_atomic(summary_path, report)
+    _pdf(markdown, (runtime_path, learning_path), pdf_path)
+    return summary_path, runtime_path, learning_path, markdown_path, pdf_path

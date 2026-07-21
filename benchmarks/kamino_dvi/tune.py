@@ -257,10 +257,27 @@ def write_tuning_manifest(path: Path, manifest: TuningManifest) -> None:
 
 
 def read_tuning_manifest(path: Path) -> TuningManifest:
-    """Read a typed tuning manifest from canonical JSON."""
+    """Read a tuning manifest without coercing identity or retry types."""
     data = json.loads(path.read_text(encoding="utf-8"))
-    identity = TuningIdentity(**data["identity"])
-    retry = RetryLineage(**data["retry"])
+    identity_data = data["identity"]
+    retry_data = data["retry"]
+    if not isinstance(identity_data, dict):
+        raise ValueError("typed identity must be a mapping")
+    if not isinstance(identity_data.get("stage"), str) or not isinstance(identity_data.get("candidate"), str):
+        raise ValueError("typed identity stage and candidate must be strings")
+    for field_name in ("seed", "num_envs", "max_iterations", "attempt"):
+        value = identity_data.get(field_name)
+        if type(value) is not int:
+            raise ValueError(f"typed identity {field_name} must be an integer")
+    identity = TuningIdentity(**identity_data)
+    if not isinstance(retry_data, dict) or type(retry_data.get("attempt")) is not int:
+        raise ValueError("retry attempt must be an integer")
+    parent_run_id = retry_data.get("parent_run_id")
+    if parent_run_id is not None and not isinstance(parent_run_id, str):
+        raise ValueError("retry parent_run_id must be a string or null")
+    retry = RetryLineage(attempt=retry_data["attempt"], parent_run_id=parent_run_id)
+    if retry.attempt != identity.attempt:
+        raise ValueError("retry attempt does not match identity attempt")
     return TuningManifest(
         run_id=data["run_id"],
         identity=identity,
@@ -577,12 +594,18 @@ def execute_tuning_identity(
 
 
 def _load_resolved_candidates(
-    tuning_matrix: TuningMatrix, path: Path, expected_count: int
+    tuning_matrix: TuningMatrix,
+    path: Path,
+    expected_action: str,
+    minimum_count: int,
+    maximum_count: int,
 ) -> tuple[ResolvedTuningCandidate, ...]:
     data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("schema_version") != "1.0" or data.get("action") != expected_action:
+        raise ValueError(f"{path.name} decision schema/action mismatch")
     records = data.get("resolved_candidates")
-    if not isinstance(records, list) or len(records) != expected_count:
-        raise ValueError(f"{path.name} must contain exactly {expected_count} candidates")
+    if not isinstance(records, list) or not minimum_count <= len(records) <= maximum_count:
+        raise ValueError(f"{path.name} must contain between {minimum_count} and {maximum_count} candidates")
     candidates: list[ResolvedTuningCandidate] = []
     for record in records:
         if not isinstance(record, dict):
@@ -604,6 +627,8 @@ def _load_resolved_candidates(
 
 def _canonical_candidate(tuning_matrix: TuningMatrix, decision_root: Path) -> ResolvedTuningCandidate:
     winner = json.loads((decision_root / "winner.json").read_text(encoding="utf-8"))
+    if winner.get("schema_version") != "1.0" or winner.get("action") != "select-winner":
+        raise ValueError("winner decision schema/action mismatch")
     resolved = dict(winner["resolved_config"])
     digest = config_hash(resolved)
     if winner["config_hash"] != digest or set(resolved) != set(tuning_matrix.baseline):
@@ -621,11 +646,11 @@ def stage_candidates(
     if stage == "wave1":
         return tuple(_resolved_candidate(tuning_matrix, candidate) for candidate in tuning_matrix.wave1)
     if stage == "wave2":
-        return _load_resolved_candidates(tuning_matrix, decision_root / "wave2.json", 6)
+        return _load_resolved_candidates(tuning_matrix, decision_root / "wave2.json", "resolve-wave2", 6, 6)
     if stage == "halve":
-        return _load_resolved_candidates(tuning_matrix, decision_root / "stage2.json", 8)
+        return _load_resolved_candidates(tuning_matrix, decision_root / "stage2.json", "promote-stage2", 1, 8)
     if stage == "final":
-        return _load_resolved_candidates(tuning_matrix, decision_root / "finalists.json", 3)
+        return _load_resolved_candidates(tuning_matrix, decision_root / "finalists.json", "promote-finalists", 1, 3)
     if stage == "canonical":
         return (_canonical_candidate(tuning_matrix, decision_root),)
     raise ValueError(f"unsupported tuning stage: {stage}")
