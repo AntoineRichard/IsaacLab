@@ -20,7 +20,7 @@ structured disclosure:
   "bundle_git_dirty": {
     "count": 1,
     "run_ids": ["sorted-run-id"],
-    "advisory": "..."
+    "advisory": "Broad/advisory bundle flag from plain git status; see methodology."
   }
 }
 ```
