@@ -430,12 +430,13 @@ def load_decision(
     *,
     minimum_count: int,
     maximum_count: int,
+    matrix_path: Path = DEFAULT_MATRIX_PATH,
 ) -> dict[str, Any]:
     """Strictly parse and recompute every persisted decision candidate."""
     data = _read_mapping(path)
     if data.get("schema_version") != "1.0" or data.get("action") != expected_action:
         raise ValueError(f"{path}: decision schema/action mismatch")
-    if data.get("revisions") != dataclasses.asdict(load_matrix(DEFAULT_MATRIX_PATH).revisions):
+    if data.get("revisions") != dataclasses.asdict(load_matrix(matrix_path).revisions):
         raise ValueError(f"{path}: decision revisions mismatch")
     if not isinstance(data.get("source_artifact_root"), str):
         raise ValueError(f"{path}: decision artifact root is invalid")
@@ -981,6 +982,72 @@ def _report_action(args: argparse.Namespace) -> None:
     write_tuning_report(report, args.output_dir)
 
 
+def _validation_stage(
+    args: argparse.Namespace, matrix: TuningMatrix, stage: str
+) -> tuple[tuple[tuple[str, int], ...], Mapping[str, Any] | None]:
+    """Resolve exact validation identities and optional upstream decision."""
+    if stage == "baseline":
+        return tuple(("baseline", seed) for seed in matrix.seeds), None
+    if stage == "wave1":
+        return tuple((candidate.name, 42) for candidate in matrix.wave1), None
+    if stage == "canonical":
+        return tuple(("canonical_winner", seed) for seed in matrix.seeds), None
+    decision_specs = {
+        "wave2": ("wave2.json", "resolve-wave2", 6, 6, (42,)),
+        "halve": ("stage2.json", "promote-stage2", 1, 8, (42, 43)),
+        "final": ("finalists.json", "promote-finalists", 1, 3, matrix.seeds),
+    }
+    filename, action, minimum, maximum, seeds = decision_specs[stage]
+    decision = load_decision(
+        args.decision_root / filename,
+        action,
+        matrix,
+        minimum_count=minimum,
+        maximum_count=maximum,
+        matrix_path=args.matrix,
+    )
+    expected = tuple((candidate["name"], seed) for candidate in decision["resolved_candidates"] for seed in seeds)
+    return expected, decision
+
+
+def _validate_action(args: argparse.Namespace) -> None:
+    """Validate exact terminal coverage and emit a deterministic JSON summary."""
+    matrix = load_tuning_matrix(args.tuning_matrix)
+    summaries: list[dict[str, Any]] = []
+    for stage in args.stages:
+        expected, decision = _validation_stage(args, matrix, stage)
+        records = load_tuning_records(
+            args.artifact_root,
+            args.logs_root,
+            expected_stage=stage,
+            matrix_path=args.matrix,
+            tuning_matrix_path=args.tuning_matrix,
+        )
+        validate_tuning_records(records, expected)
+        if decision is not None:
+            reconcile_decision_candidates(decision, records)
+        rejections = sorted(
+            (
+                {"run_id": record.run_id, "reason": record.metrics.failure}
+                for record in records
+                if record.metrics.failure is not None
+            ),
+            key=lambda item: (item["run_id"], item["reason"]),
+        )
+        summaries.append(
+            {
+                "stage": stage,
+                "expected": len(expected),
+                "terminal": len(records),
+                "valid": len(records) - len(rejections),
+                "rejected": len(rejections),
+                "run_ids": sorted(record.run_id for record in records),
+                "rejection_reasons": rejections,
+            }
+        )
+    print(json.dumps({"schema_version": "1.0", "stages": summaries}, allow_nan=False, sort_keys=True))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the staged tuning analysis parser."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -997,6 +1064,18 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--decision-root", type=Path, default=Path("benchmark_artifacts/kamino_dvi/decisions"))
         subparser.add_argument("--tuning-matrix", type=Path, default=DEFAULT_TUNING_MATRIX_PATH)
         subparser.add_argument("--output", type=Path, default=Path(default_name))
+    validate = subparsers.add_parser("validate")
+    validate.add_argument(
+        "--stages",
+        nargs="+",
+        required=True,
+        choices=("baseline", "wave1", "wave2", "halve", "final", "canonical"),
+    )
+    validate.add_argument("--artifact-root", type=Path, required=True)
+    validate.add_argument("--logs-root", type=Path, default=Path("logs"))
+    validate.add_argument("--decision-root", type=Path, default=Path("benchmark_artifacts/kamino_dvi/decisions"))
+    validate.add_argument("--matrix", type=Path, default=DEFAULT_MATRIX_PATH)
+    validate.add_argument("--tuning-matrix", type=Path, default=DEFAULT_TUNING_MATRIX_PATH)
     report = subparsers.add_parser("report")
     report.add_argument("--artifact-root", type=Path, required=True)
     report.add_argument("--logs-root", type=Path, default=Path("logs"))
@@ -1020,6 +1099,7 @@ def main(argv: list[str] | None = None) -> int:
         "promote-finalists": _promote_finalists_action,
         "select-winner": _select_winner_action,
         "report": _report_action,
+        "validate": _validate_action,
     }
     actions[args.action](args)
     return 0

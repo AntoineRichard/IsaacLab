@@ -644,3 +644,191 @@ def test_loader_rejects_malformed_five_iteration_canonical_identity(tmp_path, mo
 
     with pytest.raises(ValueError, match="invalid canonical preflight identity"):
         load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="canonical")
+
+
+def _validation_record(name: str, stage: str, seed: int, *, failure: str | None = None) -> TuningRecord:
+    """Build one terminal record for validate-action summary tests."""
+    values = () if failure else (1.0,)
+    metrics = TuningRunMetrics(name, stage, seed, 4096, values, values, values, values, failure)
+    return TuningRecord(
+        metrics,
+        f"{stage}__{name}__seed{seed}",
+        Path(f"{stage}-{name}-{seed}.json"),
+        "a" * 64,
+        None,
+        None,
+        "b" * 64,
+        {},
+    )
+
+
+def _add_baseline_artifact(source_dir: Path, identity: TuningIdentity) -> Path:
+    """Copy a fixture into one provenance-consistent baseline artifact."""
+    import shutil
+
+    artifact_root = source_dir.parent
+    run_dir = artifact_root / identity.run_id
+    shutil.copytree(source_dir, run_dir)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    resolved = dict(tuning.baseline)
+    candidate = ResolvedTuningCandidate("baseline", {}, resolved, config_hash(resolved))
+    repo_root = Path(__file__).resolve().parents[3]
+    command = tuple(_command_for_candidate(matrix, tuning, candidate, identity, repo_root, run_dir))
+    bundle_path = next(run_dir.glob("benchmark_training_*.json"))
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    bundle["run"].update(seed=identity.seed, max_iterations=identity.max_iterations)
+    bundle["runtime"]["iterations_completed"] = identity.max_iterations
+    bundle_path.write_text(json.dumps(bundle, sort_keys=True), encoding="utf-8")
+    manifest.update(
+        run_id=identity.run_id,
+        identity=dataclasses.asdict(identity),
+        config_hash=config_hash(resolved),
+        resolved_config=resolved,
+        command=command,
+        command_hash=command_hash(command),
+        artifact_root=str(run_dir),
+        artifact_hashes={name: sha256_file(run_dir / name) for name in ("stdout.log", "stderr.log", bundle_path.name)},
+        state="completed",
+        failure_category=None,
+        retry={"attempt": 0, "parent_run_id": None},
+    )
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    return run_dir
+
+
+def test_validate_action_accepts_baseline_only_completed_artifacts(tmp_path, monkeypatch, capsys):
+    """The exact Task 5 baseline-only command succeeds through the strict loader."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    source_dir = next(path for path in artifact_root.iterdir() if path.is_dir())
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    for seed in tuning.seeds:
+        identity = TuningIdentity("baseline", "baseline", seed, tuning.num_envs, tuning.final_iterations)
+        _add_baseline_artifact(source_dir, identity)
+
+    def parse(bundle_path: Path, _event_path: Path) -> TrainingTrace:
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        run = bundle["run"]
+        identity = TuningIdentity("baseline", "baseline", run["seed"], run["num_envs"], run["max_iterations"])
+        return _trace(identity)
+
+    monkeypatch.setattr(analysis_module, "parse_training_trace", parse)
+
+    assert (
+        main(
+            [
+                "validate",
+                "--stages",
+                "baseline",
+                "--artifact-root",
+                str(artifact_root),
+                "--logs-root",
+                str(tmp_path / "logs"),
+            ]
+        )
+        == 0
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert output["stages"] == [
+        {
+            "stage": "baseline",
+            "expected": 3,
+            "terminal": 3,
+            "valid": 3,
+            "rejected": 0,
+            "run_ids": sorted(path.name for path in artifact_root.glob("baseline__*")),
+            "rejection_reasons": [],
+        }
+    ]
+
+
+def test_validate_action_emits_deterministic_stage_order_and_counts(tmp_path, monkeypatch, capsys):
+    """Validate emits standard JSON with requested order, terminal counts, and sorted details."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    baseline = [_validation_record("baseline", "baseline", seed) for seed in reversed(tuning.seeds)]
+    wave1 = [
+        _validation_record(candidate.name, "wave1", 42, failure="numerical" if index == 0 else None)
+        for index, candidate in enumerate(reversed(tuning.wave1))
+    ]
+    by_stage = {"baseline": baseline, "wave1": wave1}
+    monkeypatch.setattr(
+        analysis_module,
+        "load_tuning_records",
+        lambda _artifacts, _logs, expected_stage, **_kwargs: by_stage[expected_stage],
+    )
+
+    assert main(["validate", "--stages", "baseline", "wave1", "--artifact-root", str(tmp_path)]) == 0
+
+    output = json.loads(capsys.readouterr().out, parse_constant=lambda value: pytest.fail(value))
+    assert output["schema_version"] == "1.0"
+    assert [item["stage"] for item in output["stages"]] == ["baseline", "wave1"]
+    assert output["stages"][0] == {
+        "stage": "baseline",
+        "expected": 3,
+        "terminal": 3,
+        "valid": 3,
+        "rejected": 0,
+        "run_ids": sorted(record.run_id for record in baseline),
+        "rejection_reasons": [],
+    }
+    assert output["stages"][1]["expected"] == 18
+    assert output["stages"][1]["terminal"] == 18
+    assert output["stages"][1]["valid"] == 17
+    assert output["stages"][1]["rejected"] == 1
+    assert output["stages"][1]["run_ids"] == sorted(record.run_id for record in wave1)
+    assert output["stages"][1]["rejection_reasons"] == [{"run_id": wave1[0].run_id, "reason": "numerical"}]
+
+
+@pytest.mark.parametrize(
+    ("stage", "candidate_names", "seeds"),
+    (
+        ("wave2", ("w2_a", "w2_b"), (42,)),
+        ("halve", ("halve_a", "halve_b"), (42, 43)),
+        ("final", ("final_a",), (42, 43, 44)),
+    ),
+)
+def test_validate_action_resolves_adaptive_identities_from_strict_decision(
+    tmp_path, monkeypatch, stage, candidate_names, seeds
+):
+    """Adaptive validation derives exact identities from its strict upstream decision."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    decision = {
+        "resolved_candidates": [
+            {"name": name, "resolved_config": dict(tuning.baseline), "config_hash": config_hash(tuning.baseline)}
+            for name in candidate_names
+        ]
+    }
+    calls = []
+
+    def load(*args, **kwargs):
+        calls.append((args, kwargs))
+        return decision
+
+    monkeypatch.setattr(analysis_module, "load_decision", load)
+    args = build_parser().parse_args(
+        ["validate", "--stages", stage, "--artifact-root", str(tmp_path), "--decision-root", str(tmp_path)]
+    )
+
+    expected, resolved_decision = analysis_module._validation_stage(args, tuning, stage)
+
+    assert expected == tuple((name, seed) for name in candidate_names for seed in seeds)
+    assert resolved_decision is decision
+    assert calls[0][0][0].parent == tmp_path
+    assert calls[0][1]["matrix_path"] == DEFAULT_MATRIX_PATH
+
+
+def test_validate_action_fails_when_requested_wave1_is_missing(tmp_path, monkeypatch, capsys):
+    """Baseline plus missing Wave 1 fails exact coverage without requiring decisions."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    baseline = [_validation_record("baseline", "baseline", seed) for seed in tuning.seeds]
+    monkeypatch.setattr(
+        analysis_module,
+        "load_tuning_records",
+        lambda _artifacts, _logs, expected_stage, **_kwargs: baseline if expected_stage == "baseline" else [],
+    )
+
+    with pytest.raises(ValueError, match="missing tuning record"):
+        main(["validate", "--stages", "baseline", "wave1", "--artifact-root", str(tmp_path)])
+    assert capsys.readouterr().out == ""

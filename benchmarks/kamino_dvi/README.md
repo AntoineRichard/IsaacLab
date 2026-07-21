@@ -58,6 +58,22 @@ after its candidate preflights, and create the named decision before starting
 the next adaptive stage. The analyzer rejects incomplete identity coverage,
 reduced counts, nonfinite data, and mismatched evidence provenance.
 
+Validate any completed stages without mutating evidence before advancing the
+campaign. Baseline and Wave 1 validation require no decision files:
+
+```bash
+./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning validate \
+  --stages baseline wave1 \
+  --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning \
+  --logs-root logs
+```
+
+The command writes deterministic standard JSON to stdout with expected,
+terminal, valid, and rejected counts plus sorted run IDs and rejection
+reasons. It exits nonzero without success JSON when requested coverage or
+provenance is invalid. Adaptive stages additionally read their strict upstream
+decision from `--decision-root`.
+
 ```bash
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
   --stage baseline --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --resume
