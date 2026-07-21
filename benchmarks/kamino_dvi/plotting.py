@@ -50,6 +50,9 @@ def plot_learning(summaries: list[VariantSummary], output_path: Path) -> None:
             means = [estimate.mean if estimate is not None else 0.0 for estimate in estimates]
             errors = [estimate.half_width if estimate is not None else 0.0 for estimate in estimates]
             axis.bar(labels, means, yerr=errors, capsize=4, color=colors, edgecolor="white")
+            for index, estimate in enumerate(estimates):
+                if estimate is None:
+                    axis.text(index, 0.0, "N/A", ha="center", va="bottom", fontweight="bold")
             axis.set_title(f"{task}\n{ylabel}")
             axis.set_ylabel(ylabel)
             axis.tick_params(axis="x", rotation=30)

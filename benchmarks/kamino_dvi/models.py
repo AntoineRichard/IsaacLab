@@ -17,6 +17,7 @@ class TaskName(StrEnum):
     CARTPOLE = "Isaac-Cartpole-Direct"
     ANT = "Isaac-Ant-Direct"
     ANYMAL_D = "Isaac-Velocity-Flat-AnymalD"
+    DR_LEGS_WALK = "IsaacContrib-DrLegs-Walk"
     DR_LEGS = "Isaac-DrLegs-Walk-v0"
     FOURBAR_POLE = "Isaac-Fourbar-Pole-Swingup"
 

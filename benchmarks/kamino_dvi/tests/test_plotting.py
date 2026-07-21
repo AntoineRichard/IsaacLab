@@ -32,3 +32,15 @@ def test_plot_learning_writes_nonempty_three_metric_png(tmp_path: Path):
     plot_learning([summary], output)
 
     assert output.stat().st_size > 1000
+
+
+def test_plot_learning_writes_png_when_success_is_unavailable(tmp_path: Path):
+    """A missing task success metric remains a valid N/A learning plot."""
+    estimate = Estimate(1.0, 0.1, 3)
+    summary = VariantSummary("DR Legs", "kamino_pr_dvi", 4096, estimate, estimate, estimate, estimate, None)
+    output = tmp_path / "learning-missing-success.png"
+
+    plot_learning([summary], output)
+
+    assert output.is_file()
+    assert output.stat().st_size > 1000

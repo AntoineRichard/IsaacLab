@@ -34,7 +34,7 @@ class TrainingTrace:
     total_fps: tuple[float, ...]
     reward: tuple[float, ...]
     ep_length: tuple[float, ...]
-    success_rate: tuple[float, ...]
+    success_rate: tuple[float, ...] | None
     success_schema_mismatch: bool
     resources: dict[str, Any]
     success_schema_mismatch_points: int = 0
@@ -53,7 +53,10 @@ def _series(data: dict[str, Any], path: str, iterations: int) -> tuple[float, ..
     value = _field(data, path)
     if not isinstance(value, list) or len(value) != iterations:
         raise MissingBenchmarkFieldError(f"{path} must contain {iterations} values")
-    values = tuple(float(item) for item in value)
+    try:
+        values = tuple(float(item) for item in value)
+    except (TypeError, ValueError) as error:
+        raise MissingBenchmarkFieldError(f"{path} must contain numeric values") from error
     if not all(math.isfinite(item) for item in values):
         raise MissingBenchmarkFieldError(f"{path} contains non-finite values")
     return values
@@ -121,11 +124,20 @@ def parse_training_trace(bundle_path: Path, event_path: Path) -> TrainingTrace:
 
     reward = _series(data, "learning.reward.series_per_iter", iterations)
     ep_length = _series(data, "learning.ep_length.series_per_iter", iterations)
-    schema_success = _series(data, "learning.success_rate.series_per_iter", iterations)
-    success = _tb_series(accumulator, "Metrics/success_rate", iterations)
-    mismatch_points = sum(
-        not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-7) for left, right in zip(schema_success, success)
-    )
+    learning = _field(data, "learning")
+    schema_success_value = learning.get("success_rate") if isinstance(learning, dict) else None
+    schema_success_present = schema_success_value is not None
+    success_tag = "Metrics/success_rate"
+    tensorboard_success_present = success_tag in accumulator.Tags().get("scalars", [])
+    if not schema_success_present and not tensorboard_success_present:
+        success = None
+        mismatch_points = 0
+    else:
+        schema_success = _series(data, "learning.success_rate.series_per_iter", iterations)
+        success = _tb_series(accumulator, success_tag, iterations)
+        mismatch_points = sum(
+            not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-7) for left, right in zip(schema_success, success)
+        )
     return TrainingTrace(
         task=str(_field(data, "run.task")),
         seed=int(_field(data, "run.seed")),

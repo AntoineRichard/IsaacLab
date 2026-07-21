@@ -60,3 +60,13 @@ def test_pdf_summary_table_includes_all_learning_metrics():
     assert headers == ["Task", "Variant", "Envs", "Iteration [s]", "Total FPS", "Reward", "Episode length", "Success"]
     assert len(rows) == 1
     assert len(rows[0]) == len(headers) == 8
+
+
+def test_pdf_summary_table_reports_missing_success_as_na():
+    """Tasks without a success definition retain their row with an explicit N/A value."""
+    estimate = Estimate(1.0, 0.1, 3)
+    summaries = [VariantSummary("DR Legs", "kamino_pr_dvi", 4096, estimate, estimate, estimate, estimate, None)]
+
+    _, rows = reporting._pdf_summary_table(summaries)
+
+    assert rows[0][-1] == "N/A"

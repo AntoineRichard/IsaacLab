@@ -24,15 +24,25 @@ def quality_issues(records, summaries: list[VariantSummary], artifact_root: Path
     records_by_task: dict[str, list[RunMetrics]] = {}
     for record in records:
         records_by_task.setdefault(record.task, []).append(record)
+    missing_success = False
     for task, task_records in sorted(records_by_task.items()):
-        mismatch_runs = sum(record.success_schema_mismatch for record in task_records)
-        mismatch_points = sum(record.success_schema_mismatch_points for record in task_records)
-        total_points = sum(len(record.success_rate or ()) for record in task_records)
-        issues.append(
-            f"{task}: schema v1.1 success differs from TensorBoard in {mismatch_runs}/{len(task_records)} runs "
-            f"and {mismatch_points}/{total_points} points; report uses TensorBoard success."
-        )
-    if records:
+        present_records = [record for record in task_records if record.success_rate is not None]
+        missing_records = len(task_records) - len(present_records)
+        if missing_records:
+            missing_success = True
+            issues.append(
+                f"{task}: learning.success_rate.series_per_iter and TensorBoard Metrics/success_rate are absent in "
+                f"{missing_records}/{len(task_records)} runs; this is a benchmark/task-stack bug. Report shows N/A."
+            )
+        if present_records:
+            mismatch_runs = sum(record.success_schema_mismatch for record in present_records)
+            mismatch_points = sum(record.success_schema_mismatch_points for record in present_records)
+            total_points = sum(len(record.success_rate or ()) for record in present_records)
+            issues.append(
+                f"{task}: schema v1.1 success differs from TensorBoard in {mismatch_runs}/{len(present_records)} runs "
+                f"and {mismatch_points}/{total_points} points; report uses TensorBoard success."
+            )
+    if records and not missing_success:
         issues.append(
             "Schema validation confirms every required reward, episode-length, and success field exists; "
             "this is a value mismatch, not missing data."
@@ -50,35 +60,44 @@ def quality_issues(records, summaries: list[VariantSummary], artifact_root: Path
         (path, json.loads(path.read_text(encoding="utf-8")))
         for path in sorted(artifact_root.glob("full__*/manifest.json"))
     ]
-    legacy_manifests = [
-        (path, manifest)
-        for path, manifest in full_manifests
-        if manifest.get("state") == "completed" and not manifest.get("isaaclab_head")
+    completed_full_manifests = [
+        (path, manifest) for path, manifest in full_manifests if manifest.get("state") == "completed"
     ]
-    if legacy_manifests:
-        bundle_commits: set[str] = set()
-        dirty_bundles = 0
-        bundles_with_provenance = 0
-        for manifest_path, _ in legacy_manifests:
-            bundles = tuple(manifest_path.parent.glob("benchmark_training_*.json"))
-            if len(bundles) != 1:
-                continue
-            bundle = json.loads(bundles[0].read_text(encoding="utf-8"))
-            commit = bundle.get("versions", {}).get("git_commit")
-            dirty = bundle.get("versions", {}).get("git_dirty")
-            if isinstance(commit, str) and isinstance(dirty, bool):
-                bundle_commits.add(commit)
-                dirty_bundles += dirty
-                bundles_with_provenance += 1
+    legacy_manifests = [
+        (path, manifest) for path, manifest in completed_full_manifests if not manifest.get("isaaclab_head")
+    ]
+    legacy_paths = {path for path, _ in legacy_manifests}
+    legacy_bundle_commits: set[str] = set()
+    dirty_bundles = 0
+    bundles_with_dirty_status = 0
+    for manifest_path, _ in completed_full_manifests:
+        bundles = tuple(manifest_path.parent.glob("benchmark_training_*.json"))
+        if len(bundles) != 1:
+            continue
+        bundle = json.loads(bundles[0].read_text(encoding="utf-8"))
+        versions = bundle.get("versions", {})
+        commit = versions.get("git_commit")
+        dirty = versions.get("git_dirty")
+        if isinstance(dirty, bool):
+            dirty_bundles += dirty
+            bundles_with_dirty_status += 1
+        if manifest_path in legacy_paths and isinstance(commit, str):
+            legacy_bundle_commits.add(commit)
+    if bundles_with_dirty_status:
         issues.append(
-            f"Legacy campaign source provenance: bundles record {len(bundle_commits)} distinct commits; "
-            f"{dirty_bundles}/{bundles_with_provenance} full runs report versions.git_dirty=true. Runner manifests "
-            "did not capture exact HEAD, and these runs did not pass the current clean-source check."
+            f"Bundle workspace status: {dirty_bundles}/{len(completed_full_manifests)} completed full runs report "
+            f"versions.git_dirty=true; {bundles_with_dirty_status}/{len(completed_full_manifests)} expose a boolean "
+            "status. This field includes untracked paths and is broader than the runner's tracked-source check; "
+            "true does not by itself contradict exact-HEAD validation in current manifests."
         )
-    completed_full_manifests = [manifest for _, manifest in full_manifests if manifest.get("state") == "completed"]
+    if legacy_manifests:
+        issues.append(
+            f"Legacy campaign source provenance: legacy bundles record {len(legacy_bundle_commits)} distinct commits. "
+            "Runner manifests did not capture exact HEAD, and these runs did not pass the current clean-source check."
+        )
     unhashed_events = sum(
         not manifest.get("tensorboard_event_path") or not manifest.get("tensorboard_event_hash")
-        for manifest in completed_full_manifests
+        for _, manifest in completed_full_manifests
     )
     if unhashed_events:
         issues.append(

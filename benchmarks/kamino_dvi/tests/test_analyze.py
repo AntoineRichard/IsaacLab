@@ -47,6 +47,30 @@ def test_quality_issues_quantifies_schema_mismatches_per_task(tmp_path):
     assert any("value mismatch, not missing data" in issue for issue in issues)
 
 
+def test_quality_issues_identifies_task_without_success_as_stack_bug(tmp_path):
+    """A task with no success definition is reported explicitly instead of silently becoming zero."""
+    estimate = Estimate(1.0, 0.1, 3)
+    summaries = [VariantSummary("DR Legs", "kamino_pr_dvi", 4096, estimate, estimate, estimate, estimate, None)]
+    records = [
+        SimpleNamespace(
+            task="DR Legs", success_schema_mismatch=False, success_schema_mismatch_points=0, success_rate=None
+        )
+        for _ in range(3)
+    ]
+
+    issues = quality_issues(records, summaries, tmp_path)
+
+    assert any(
+        "DR Legs" in issue
+        and "learning.success_rate.series_per_iter" in issue
+        and "TensorBoard Metrics/success_rate" in issue
+        and "benchmark/task-stack bug" in issue
+        and "N/A" in issue
+        for issue in issues
+    )
+    assert not any("every required reward, episode-length, and success field exists" in issue for issue in issues)
+
+
 def test_quality_issues_discloses_legacy_source_and_event_provenance(tmp_path):
     """Campaign warnings distinguish bundle evidence from current clean-run enforcement."""
     for index, (commit, dirty) in enumerate((("a" * 40, True), ("b" * 40, False))):
@@ -67,11 +91,43 @@ def test_quality_issues_discloses_legacy_source_and_event_provenance(tmp_path):
 
     issues = quality_issues([], [], tmp_path)
 
-    assert any("2 distinct commits" in issue and "1/2" in issue and "git_dirty=true" in issue for issue in issues)
+    assert any("1/2 completed full runs" in issue and "git_dirty=true" in issue for issue in issues)
+    assert any("2 distinct commits" in issue for issue in issues)
+    assert sum("git_dirty=true" in issue for issue in issues) == 1
     assert any("did not pass the current clean-source check" in issue for issue in issues)
     assert any(
         "TensorBoard event files" in issue and "2/2" in issue and "not retained or hashed" in issue for issue in issues
     )
+
+
+def test_quality_issues_counts_bundle_git_dirty_across_current_and_legacy_runs(tmp_path):
+    """Bundle workspace status covers every completed full run without duplicating the legacy warning."""
+    for name, head, dirty in (
+        ("legacy", None, False),
+        ("current", "c" * 40, True),
+    ):
+        run_dir = tmp_path / f"full__{name}"
+        run_dir.mkdir()
+        manifest = {
+            "state": "completed",
+            "tensorboard_event_path": f"/logs/events.out.tfevents.{name}",
+            "tensorboard_event_hash": "a" * 64,
+        }
+        if head is not None:
+            manifest["isaaclab_head"] = head
+        (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (run_dir / f"benchmark_training_{name}.json").write_text(
+            json.dumps({"versions": {"git_commit": "b" * 40, "git_dirty": dirty}}), encoding="utf-8"
+        )
+
+    issues = quality_issues([], [], tmp_path)
+
+    dirty_issues = [issue for issue in issues if "versions.git_dirty=true" in issue]
+    assert len(dirty_issues) == 1
+    assert "1/2 completed full runs" in dirty_issues[0]
+    assert "includes untracked paths" in dirty_issues[0]
+    legacy_issue = next(issue for issue in issues if issue.startswith("Legacy campaign source provenance:"))
+    assert "versions.git_dirty" not in legacy_issue
 
 
 def test_quality_issues_reports_seed_sensitive_learning_for_any_variant(tmp_path):

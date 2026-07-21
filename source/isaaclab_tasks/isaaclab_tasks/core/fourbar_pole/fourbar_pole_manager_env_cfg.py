@@ -63,6 +63,31 @@ class FourbarPolePhysicsCfg(PresetCfg):
         use_cuda_graph=True,
     )
 
+    newton_kamino_dvi: NewtonCfg = NewtonCfg(
+        solver_cfg=KaminoSolverCfg(
+            integrator="moreau",
+            dynamics_solver="dvi",
+            use_fk_solver=True,
+            sparse_jacobian=True,
+            sparse_dynamics=True,
+            constraints_alpha=0.1,
+            dynamics_preconditioning=False,
+            dynamics_linear_solver_type="CR",
+            dynamics_linear_solver_max_iterations=9,
+            dvi_omega=0.3,
+            dvi_block_iterations=16,
+            dvi_contact_iterations=2,
+            dvi_bilateral_solve_period=2,
+            dvi_contact_jacobi_omega=0.45,
+            dvi_contact_jacobi_relaxation=0.9,
+            dvi_contact_block_preconditioner=False,
+            dvi_warmstart_mode="containers",
+        ),
+        num_substeps=1,
+        debug_mode=False,
+        use_cuda_graph=True,
+    )
+
     def __post_init__(self):
         if not isinstance(self.default, NewtonCfg):
             self.default = copy.deepcopy(self.newton_kamino)

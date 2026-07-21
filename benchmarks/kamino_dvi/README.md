@@ -1,8 +1,9 @@
 # Kamino DVI runtime benchmark
 
-This package runs the approved RSL-RL Cartpole, Ant, and ANYmal-D comparison across current Kamino, Newton PR 3570 P-ADMM and
-DVI, MJWarp, and PhysX. The matrix uses 300 training iterations and seeds 42–44. It starts at 4096 environments and
-only moves down the declared capacity ladder after an explicit capacity failure.
+This package runs the approved RSL-RL Cartpole, Ant, and ANYmal-D comparison across current Kamino, Newton PR 3570
+P-ADMM and DVI, MJWarp, and PhysX. Fourbar Pole and DR Legs add closed-loop coverage across the three Kamino variants
+only. The 21-cell matrix uses 300 training iterations and seeds 42–44. It starts at 4096 environments and only moves
+down the declared capacity ladder after an explicit capacity failure.
 
 ## Locked environments
 

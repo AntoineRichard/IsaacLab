@@ -74,12 +74,44 @@ def _kamino_newton_cfg() -> NewtonCfg:
     )
 
 
+def _kamino_dvi_newton_cfg() -> NewtonCfg:
+    """Tuned Kamino DVI preset for DR Legs closed-loop dynamics."""
+    return NewtonCfg(
+        solver_cfg=KaminoSolverCfg(
+            integrator="moreau",
+            dynamics_solver="dvi",
+            sparse_jacobian=True,
+            sparse_dynamics=True,
+            use_collision_detector=False,
+            collision_detector_pipeline="unified",
+            collision_detector_max_contacts_per_pair=8,
+            use_fk_solver=True,
+            constraints_alpha=0.1,
+            max_contacts_per_world=32,
+            dynamics_preconditioning=False,
+            dynamics_linear_solver_type="CR",
+            dynamics_linear_solver_max_iterations=9,
+            dvi_omega=0.3,
+            dvi_block_iterations=16,
+            dvi_contact_iterations=2,
+            dvi_bilateral_solve_period=2,
+            dvi_contact_jacobi_omega=0.45,
+            dvi_contact_jacobi_relaxation=0.9,
+            dvi_contact_block_preconditioner=False,
+            dvi_warmstart_mode="containers",
+        ),
+        use_cuda_graph=True,
+        default_shape_cfg=NewtonShapeCfg(margin=0.0, gap=0.001),
+    )
+
+
 @configclass
 class DrLegsPhysicsCfg(PresetCfg):
     """Physics backend preset (DR Legs runs only under the Kamino solver)."""
 
     default: NewtonCfg = _kamino_newton_cfg()
     newton_kamino: NewtonCfg = _kamino_newton_cfg()
+    newton_kamino_dvi: NewtonCfg = _kamino_dvi_newton_cfg()
 
 
 ##

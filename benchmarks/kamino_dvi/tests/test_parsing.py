@@ -103,17 +103,69 @@ def test_parse_training_trace_requires_schema_success_series(tmp_path: Path):
         parse_training_trace(bundle, events)
 
 
+@pytest.mark.parametrize("schema_value", (pytest.param(None, id="null"), pytest.param("missing", id="missing")))
+def test_parse_training_trace_allows_success_absent_from_both_sources(tmp_path: Path, schema_value):
+    """Tasks without any success definition retain required learning metrics and report success as unavailable."""
+    bundle = tmp_path / "bundle.json"
+    events = tmp_path / "events"
+    _write_bundle(bundle)
+    data = json.loads(bundle.read_text(encoding="utf-8"))
+    if schema_value == "missing":
+        del data["learning"]["success_rate"]
+    else:
+        data["learning"]["success_rate"] = None
+    bundle.write_text(json.dumps(data), encoding="utf-8")
+    _write_events(events, success_values=None)
+
+    trace = parse_training_trace(bundle, events)
+
+    assert trace.reward == (1.0, 2.0, 3.0)
+    assert trace.ep_length == (10.0, 20.0, 30.0)
+    assert trace.success_rate is None
+    assert trace.success_schema_mismatch is False
+    assert trace.success_schema_mismatch_points == 0
+
+
+def test_parse_training_trace_rejects_tensorboard_success_without_schema_success(tmp_path: Path):
+    """One success source is incomplete benchmark data, not an unavailable task metric."""
+    bundle = tmp_path / "bundle.json"
+    events = tmp_path / "events"
+    _write_bundle(bundle)
+    data = json.loads(bundle.read_text(encoding="utf-8"))
+    del data["learning"]["success_rate"]
+    bundle.write_text(json.dumps(data), encoding="utf-8")
+    _write_events(events)
+
+    with pytest.raises(MissingBenchmarkFieldError, match="learning.success_rate.series_per_iter"):
+        parse_training_trace(bundle, events)
+
+
 def test_parse_training_trace_rejects_non_finite_schema_success(tmp_path: Path):
     """Non-finite schema success data must not enter aggregation."""
     bundle = tmp_path / "bundle.json"
     events = tmp_path / "events"
     _write_bundle(bundle)
+
     data = json.loads(bundle.read_text(encoding="utf-8"))
     data["learning"]["success_rate"]["series_per_iter"] = [1.0, float("nan"), 0.0]
     bundle.write_text(json.dumps(data), encoding="utf-8")
     _write_events(events)
 
     with pytest.raises(MissingBenchmarkFieldError, match="learning.success_rate.series_per_iter.*non-finite"):
+        parse_training_trace(bundle, events)
+
+
+def test_parse_training_trace_rejects_malformed_schema_success(tmp_path: Path):
+    """Non-numeric schema success values remain a missing-field validation error."""
+    bundle = tmp_path / "bundle.json"
+    events = tmp_path / "events"
+    _write_bundle(bundle)
+    data = json.loads(bundle.read_text(encoding="utf-8"))
+    data["learning"]["success_rate"]["series_per_iter"] = [1.0, "invalid", 0.0]
+    bundle.write_text(json.dumps(data), encoding="utf-8")
+    _write_events(events)
+
+    with pytest.raises(MissingBenchmarkFieldError, match="learning.success_rate.series_per_iter.*numeric"):
         parse_training_trace(bundle, events)
 
 

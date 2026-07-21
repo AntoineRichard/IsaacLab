@@ -43,3 +43,7 @@ tasks:
     variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
   - name: Isaac-Velocity-Flat-AnymalD
     variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi, mjwarp, physx]
+  - name: Isaac-Fourbar-Pole-Swingup
+    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi]
+  - name: IsaacContrib-DrLegs-Walk
+    variants: [kamino_current, kamino_pr_padmm, kamino_pr_dvi]

@@ -23,6 +23,8 @@ EXPECTED_TASKS = (
     TaskName.CARTPOLE,
     TaskName.ANT,
     TaskName.ANYMAL_D,
+    TaskName.FOURBAR_POLE,
+    TaskName.DR_LEGS_WALK,
 )
 ALL_VARIANTS = (
     Variant.KAMINO_CURRENT,
@@ -30,6 +32,11 @@ ALL_VARIANTS = (
     Variant.KAMINO_PR_DVI,
     Variant.MJWARP,
     Variant.PHYSX,
+)
+KAMINO_VARIANTS = (
+    Variant.KAMINO_CURRENT,
+    Variant.KAMINO_PR_PADMM,
+    Variant.KAMINO_PR_DVI,
 )
 
 
@@ -56,14 +63,14 @@ def test_matrix_has_exact_revisions_seeds_counts_and_tasks(matrix):
     assert matrix.revisions.newton_pr == "7906676b2e5061273db96af179d7081fc6cbbba0"
 
 
-def test_matrix_expands_to_15_cells_and_45_unique_full_runs(matrix):
+def test_matrix_expands_to_21_cells_and_63_unique_full_runs(matrix):
     """Every applicable task/variant/seed identity must appear exactly once."""
     cells = expand_cells(matrix)
     full_runs = expand_full_runs(matrix)
 
-    assert len(cells) == 15
-    assert len(full_runs) == 45
-    assert len(set(full_runs)) == 45
+    assert len(cells) == 21
+    assert len(full_runs) == 63
+    assert len(set(full_runs)) == 63
     assert all(run.phase is Phase.FULL for run in full_runs)
     assert all(run.max_iterations == 300 for run in full_runs)
     assert all(run.num_envs == 4096 for run in full_runs)
@@ -73,8 +80,8 @@ def test_preflights_cover_every_cell_at_seed_42_for_five_iterations(matrix):
     """Capacity selection must preflight each cell under one common protocol."""
     preflights = expand_preflights(matrix)
 
-    assert len(preflights) == 15
-    assert len(set(preflights)) == 15
+    assert len(preflights) == 21
+    assert len(set(preflights)) == 21
     assert all(run.phase is Phase.PREFLIGHT for run in preflights)
     assert all(run.seed == 42 for run in preflights)
     assert all(run.max_iterations == 5 for run in preflights)
@@ -83,11 +90,26 @@ def test_preflights_cover_every_cell_at_seed_42_for_five_iterations(matrix):
     assert ant_order == tuple(reversed(ALL_VARIANTS))
 
 
-@pytest.mark.parametrize("task", EXPECTED_TASKS)
+@pytest.mark.parametrize("task", EXPECTED_TASKS[:3])
 def test_common_tasks_use_all_variants(matrix, task):
     """Cartpole, Ant, and ANYmal-D must include Kamino, MJWarp, and PhysX."""
     task_spec = matrix.task(task)
     assert task_spec.variants == ALL_VARIANTS
+
+
+@pytest.mark.parametrize("task", EXPECTED_TASKS[3:])
+def test_closed_loop_tasks_use_only_kamino_variants(matrix, task):
+    """Closed-loop tasks must compare only the three supported Kamino variants."""
+    task_spec = matrix.task(task)
+    assert task_spec.variants == KAMINO_VARIANTS
+
+
+def test_dr_legs_matrix_uses_canonical_task_identifier(matrix):
+    """DR Legs runs must use the canonical task ID rather than its deprecated alias."""
+    assert hasattr(TaskName, "DR_LEGS_WALK")
+    assert TaskName.DR_LEGS_WALK.value == "IsaacContrib-DrLegs-Walk"
+    assert matrix.task(TaskName.DR_LEGS_WALK).name.value == "IsaacContrib-DrLegs-Walk"
+    assert TaskName.DR_LEGS.value == "Isaac-DrLegs-Walk-v0"
 
 
 def test_variants_select_the_approved_locked_environment(matrix):

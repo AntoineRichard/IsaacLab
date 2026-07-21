@@ -1,8 +1,8 @@
 Added
 ^^^^^
 
-* Added tuned Kamino DVI physics presets for Cartpole Direct and ANYmal-D Flat
-  benchmarks.
+* Added tuned Kamino DVI physics presets for Cartpole Direct, ANYmal-D Flat,
+  Fourbar Pole, and DR Legs benchmarks.
 
 Fixed
 ^^^^^
