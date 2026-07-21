@@ -23,3 +23,6 @@ Fixed
 * Fixed Kamino benchmark execution to require observed package provenance and
   validate it against the launched checkout, and fixed report funnels so
   qualified tie-break finalists are not counted as learning rejections.
+* Fixed generic benchmark resume to preserve unreadable or
+  provenance-incompatible manifests and logs, requiring a new artifact root
+  instead of overwriting existing evidence.

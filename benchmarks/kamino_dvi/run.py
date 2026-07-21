@@ -249,19 +249,32 @@ def execute_identity(
     if resume and manifest_path.exists():
         try:
             existing = read_manifest(manifest_path)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            existing = None
-        if (
-            existing is not None
-            and existing.retry == retry
-            and resume_matches(
-                existing,
-                identity=identity,
-                command=command,
-                revisions=matrix.revisions,
-                schema_version=SCHEMA_VERSION,
-                isaaclab_head=isaaclab_head,
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                f"{manifest_path}: existing resume manifest is unreadable; use a new artifact root"
+            ) from error
+        expected_command = tuple(command)
+        provenance_matches = (
+            existing.run_id == stable_run_id(identity)
+            and existing.identity == identity
+            and existing.command == expected_command
+            and existing.command_hash == command_hash(expected_command)
+            and existing.revisions == matrix.revisions
+            and existing.schema_version == SCHEMA_VERSION
+            and existing.artifact_root == str(output_path)
+            and existing.isaaclab_head == isaaclab_head
+        )
+        if not provenance_matches:
+            raise RuntimeError(
+                f"{manifest_path}: existing resume evidence is provenance-incompatible; use a new artifact root"
             )
+        if existing.retry == retry and resume_matches(
+            existing,
+            identity=identity,
+            command=command,
+            revisions=matrix.revisions,
+            schema_version=SCHEMA_VERSION,
+            isaaclab_head=isaaclab_head,
         ):
             return TerminalState.COMPLETED
 

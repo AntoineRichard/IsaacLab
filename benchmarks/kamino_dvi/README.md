@@ -36,6 +36,12 @@ Run five-iteration construction preflights first:
 Then execute the full single-GPU matrix. Output is streamed to ignored per-run directories under
 `benchmark_artifacts/kamino_dvi/runs`; atomic manifests make the command safe to resume.
 
+When `--resume` finds an existing generic-run manifest, the runner preserves it
+and its logs unless the identity, command, locked revisions, schema, artifact
+location, and IsaacLab HEAD are compatible. Unreadable or incompatible
+manifests—including manifests from the earlier child-`PYTHONPATH` command—raise
+an error before execution and require a new artifact root.
+
 ```bash
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.run --full-only --resume
 ```

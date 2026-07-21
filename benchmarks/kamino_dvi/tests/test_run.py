@@ -284,6 +284,108 @@ def test_execute_identity_writes_terminal_manifest_and_resumes(tmp_path: Path, m
     assert calls == 2
 
 
+def test_resume_rejects_command_migration_without_mutating_evidence(tmp_path: Path):
+    """A changed child environment command requires a new root and preserves old evidence."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    repo_root = Path("/repo")
+    identity = select_identities(
+        matrix,
+        build_parser().parse_args(
+            ["--full-only", "--task", TaskName.CARTPOLE.value, "--variant", Variant.MJWARP.value, "--seed", "42"]
+        ),
+    )[0]
+    output_path = run_directory(tmp_path, identity)
+    output_path.mkdir(parents=True)
+    current_command = build_training_command(matrix, identity, repo_root, output_path)
+    legacy_command = list(current_command)
+    pythonpath_index = next(index for index, value in enumerate(legacy_command) if value.startswith("PYTHONPATH="))
+    legacy_command[pythonpath_index] = "PYTHONPATH=/legacy/source/isaaclab_tasks"
+    manifest_path = output_path / "manifest.json"
+    write_manifest(
+        manifest_path,
+        RunManifest(
+            run_id=stable_run_id(identity),
+            identity=identity,
+            command=tuple(legacy_command),
+            command_hash=command_hash(legacy_command),
+            revisions=matrix.revisions,
+            schema_version="1.1",
+            artifact_root=str(output_path),
+            isaaclab_head="f" * 40,
+            state=TerminalState.COMPLETED,
+        ),
+    )
+    stdout_path = output_path / "stdout.log"
+    stderr_path = output_path / "stderr.log"
+    stdout_path.write_bytes(b"legacy stdout\n")
+    stderr_path.write_bytes(b"legacy stderr\n")
+    before = {path: path.read_bytes() for path in (manifest_path, stdout_path, stderr_path)}
+    calls = 0
+
+    def executor(command, stdout_path, stderr_path, *, timeout_s):
+        nonlocal calls
+        del command, timeout_s
+        calls += 1
+        stdout_path.write_text("new stdout\n", encoding="utf-8")
+        stderr_path.write_text("new stderr\n", encoding="utf-8")
+        return ProcessOutcome(returncode=1, timed_out=False)
+
+    with pytest.raises(RuntimeError, match="new artifact root"):
+        execute_identity(
+            matrix,
+            identity,
+            repo_root,
+            tmp_path,
+            resume=True,
+            executor=executor,
+            isaaclab_head="f" * 40,
+        )
+
+    assert calls == 0
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_resume_rejects_unreadable_manifest_without_mutating_evidence(tmp_path: Path):
+    """Unreadable resume evidence requires a new root before logs can be opened."""
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    identity = select_identities(
+        matrix,
+        build_parser().parse_args(
+            ["--full-only", "--task", TaskName.CARTPOLE.value, "--variant", Variant.MJWARP.value, "--seed", "42"]
+        ),
+    )[0]
+    output_path = run_directory(tmp_path, identity)
+    output_path.mkdir(parents=True)
+    manifest_path = output_path / "manifest.json"
+    stdout_path = output_path / "stdout.log"
+    stderr_path = output_path / "stderr.log"
+    manifest_path.write_bytes(b"{unreadable")
+    stdout_path.write_bytes(b"legacy stdout\n")
+    stderr_path.write_bytes(b"legacy stderr\n")
+    before = {path: path.read_bytes() for path in (manifest_path, stdout_path, stderr_path)}
+    calls = 0
+
+    def executor(*args, **kwargs):
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        return ProcessOutcome(returncode=1, timed_out=False)
+
+    with pytest.raises(RuntimeError, match="new artifact root"):
+        execute_identity(
+            matrix,
+            identity,
+            Path("/repo"),
+            tmp_path,
+            resume=True,
+            executor=executor,
+            isaaclab_head="f" * 40,
+        )
+
+    assert calls == 0
+    assert {path: path.read_bytes() for path in before} == before
+
+
 def test_capacity_preflight_retries_task_at_one_lower_common_count(tmp_path: Path, monkeypatch):
     """A capacity preflight must replace pending task runs with one lower-count schedule."""
     calls = []
