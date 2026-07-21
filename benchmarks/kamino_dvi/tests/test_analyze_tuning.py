@@ -132,6 +132,126 @@ def _write_completed_artifact(tmp_path: Path, monkeypatch, candidate_name: str =
     return artifact_root
 
 
+def _add_preflight_artifact(
+    artifact_root: Path,
+    monkeypatch,
+    *,
+    state: str,
+    failure_category: str | None,
+    keep_measured: bool,
+) -> Path:
+    """Transform or copy the synthetic measured artifact into an exact preflight."""
+    import shutil
+
+    measured_dir = next(path for path in artifact_root.iterdir() if path.name.startswith("wave1__"))
+    manifest = json.loads((measured_dir / "manifest.json").read_text(encoding="utf-8"))
+    measured_identity = TuningIdentity(**manifest["identity"])
+    identity = dataclasses.replace(measured_identity, stage="preflight", max_iterations=5)
+    preflight_dir = artifact_root / identity.run_id
+    if keep_measured:
+        shutil.copytree(measured_dir, preflight_dir)
+    else:
+        measured_dir.rename(preflight_dir)
+    manifest_path = preflight_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    candidate = tuning.candidate(identity.candidate)
+    resolved = resolve_config(tuning, candidate)
+    command = tuple(
+        build_tuning_command(matrix, tuning, candidate, identity, Path(__file__).resolve().parents[3], preflight_dir)
+    )
+    manifest.update(
+        run_id=identity.run_id,
+        identity=dataclasses.asdict(identity),
+        artifact_root=str(preflight_dir),
+        command=command,
+        command_hash=command_hash(command),
+        config_hash=config_hash(resolved),
+        resolved_config=resolved,
+        state=state,
+        failure_category=failure_category,
+    )
+    bundle_path = preflight_dir / "benchmark_training_test.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    bundle["run"]["max_iterations"] = 5
+    bundle["runtime"]["iterations_completed"] = 5
+    bundle_path.write_text(json.dumps(bundle, sort_keys=True), encoding="utf-8")
+    manifest["artifact_hashes"][bundle_path.name] = sha256_file(bundle_path)
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    def parse(bundle_file: Path, _event_file: Path) -> TrainingTrace:
+        parsed = json.loads(bundle_file.read_text(encoding="utf-8"))
+        run = parsed["run"]
+        stage = bundle_file.parent.name.split("__", maxsplit=1)[0]
+        parsed_identity = TuningIdentity(stage, identity.candidate, run["seed"], run["num_envs"], run["max_iterations"])
+        return _trace(parsed_identity)
+
+    monkeypatch.setattr("benchmarks.kamino_dvi.analyze_tuning.parse_training_trace", parse)
+    return preflight_dir
+
+
+def test_loader_derives_failed_preflight_for_missing_wave1_measurement(tmp_path, monkeypatch):
+    """An exact failed preflight is the immutable rejection for its withheld measured run."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    preflight_dir = _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="numerical",
+        keep_measured=False,
+    )
+
+    records = load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.run_id == preflight_dir.name
+    assert record.metrics.stage == "wave1"
+    assert record.metrics.seed == 42
+    assert record.metrics.failure == "preflight:numerical"
+    assert record.metrics.iteration_time_s == record.metrics.reward == ()
+    assert record.derived_from_preflight is True
+    assert record.preflight_identity == TuningIdentity("preflight", "integrator_euler", 42, 4096, 5)
+    assert record.bundle_git_dirty is None
+
+
+def test_completed_preflight_without_measurement_remains_missing(tmp_path, monkeypatch):
+    """A successful preflight never substitutes for absent measured evidence."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="completed",
+        failure_category=None,
+        keep_measured=False,
+    )
+
+    records = load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+    with pytest.raises(ValueError, match="missing tuning record"):
+        validate_tuning_records(records, (("integrator_euler", 42),))
+
+
+def test_measured_record_supersedes_completed_preflight(tmp_path, monkeypatch):
+    """Measured evidence remains authoritative when its exact preflight also exists."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="completed",
+        failure_category=None,
+        keep_measured=True,
+    )
+
+    records = load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+    assert len(records) == 1
+    assert records[0].metrics.stage == "wave1"
+    assert records[0].derived_from_preflight is False
+    assert records[0].preflight_identity is None
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (
@@ -248,6 +368,29 @@ def test_resolve_wave2_writes_resolved_configs_and_canonical_hashes(tmp_path, mo
             )
         )
     records[0] = dataclasses.replace(records[0], bundle_git_dirty=True)
+    derived_identity = TuningIdentity("preflight", records[1].metrics.candidate, 42, 4096, 5)
+    records[1] = dataclasses.replace(
+        records[1],
+        metrics=TuningRunMetrics(
+            records[1].metrics.candidate,
+            "wave1",
+            42,
+            4096,
+            (),
+            (),
+            (),
+            (),
+            "preflight:numerical",
+        ),
+        run_id=derived_identity.run_id,
+        manifest_path=Path(derived_identity.run_id) / "manifest.json",
+        event_path=None,
+        event_hash=None,
+        source_head="d" * 40,
+        bundle_git_dirty=None,
+        derived_from_preflight=True,
+        preflight_identity=derived_identity,
+    )
     monkeypatch.setattr("benchmarks.kamino_dvi.analyze_tuning.load_tuning_records", lambda *_args, **_kwargs: records)
     output = tmp_path / "wave2.json"
     argv = ["resolve-wave2", "--artifact-root", str(tmp_path), "--logs-root", str(tmp_path), "--output", str(output)]
@@ -263,6 +406,15 @@ def test_resolve_wave2_writes_resolved_configs_and_canonical_hashes(tmp_path, mo
         next(item for item in decision["source_manifests"] if item["run_id"] == records[0].run_id)["bundle_git_dirty"]
         is True
     )
+    disclosure = decision["derived_preflight_rejections"]
+    assert disclosure["count"] == 1
+    assert disclosure["records"][0]["run_id"] == derived_identity.run_id
+    assert disclosure["records"][0]["failure"] == "preflight:numerical"
+    assert disclosure["records"][0]["derived_from_preflight"] is True
+    assert disclosure["records"][0]["preflight_identity"] == dataclasses.asdict(derived_identity)
+    derived_source = next(item for item in decision["source_manifests"] if item["run_id"] == derived_identity.run_id)
+    assert derived_source["config_hash"] == records[1].config_hash
+    assert derived_source["source_head"] == "d" * 40
     assert len(decision["resolved_candidates"]) == 6
     for item in decision["resolved_candidates"]:
         assert item["config_hash"] == config_hash(item["resolved_config"])
@@ -360,6 +512,7 @@ def test_strict_decision_parser_rejects_tampered_resolved_provenance(tmp_path):
                     "run_ids": [],
                     "advisory": analysis_module.BUNDLE_GIT_DIRTY_ADVISORY,
                 },
+                "derived_preflight_rejections": {"count": 0, "records": []},
                 "timestamp_utc": "2026-07-21T00:00:00+00:00",
                 "revisions": dataclasses.asdict(load_matrix(DEFAULT_MATRIX_PATH).revisions),
                 "selected": [candidate.name],
@@ -448,6 +601,80 @@ def test_strict_decision_parser_rejects_tampered_bundle_dirty_disclosure(tmp_pat
     path.write_text(json.dumps(data), encoding="utf-8")
 
     with pytest.raises(ValueError, match="decision (source manifests|bundle dirty disclosure) (are|is) invalid"):
+        load_decision(path, "promote-stage2", tuning, minimum_count=1, maximum_count=8)
+
+
+@pytest.mark.parametrize(
+    "tampering",
+    (
+        "missing_derived_flag",
+        "nonboolean_derived_flag",
+        "missing_preflight_identity",
+        "mismatched_preflight_identity",
+        "measured_with_preflight_identity",
+        "disclosure_mismatch",
+    ),
+)
+def test_strict_decision_parser_rejects_tampered_preflight_provenance(tmp_path, tampering):
+    """Persisted derived rejection provenance must exactly match its source manifest."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    candidate = tuning.wave1[0]
+    resolved = resolve_config(tuning, candidate)
+    identity = TuningIdentity("preflight", candidate.name, 42, tuning.num_envs, tuning.preflight_iterations)
+    source = {
+        "run_id": identity.run_id,
+        "path": str(tmp_path / identity.run_id / "manifest.json"),
+        "sha256": "a" * 64,
+        "config_hash": config_hash(resolved),
+        "source_head": "b" * 40,
+        "event_path": None,
+        "event_hash": None,
+        "bundle_git_dirty": None,
+        "derived_from_preflight": True,
+        "preflight_identity": dataclasses.asdict(identity),
+        "failure": "preflight:numerical",
+    }
+    data = {
+        "schema_version": "1.0",
+        "action": "promote-stage2",
+        "source_stage": "stage1",
+        "source_artifact_root": str(tmp_path),
+        "source_manifests": [source],
+        "bundle_git_dirty": {
+            "count": 0,
+            "run_ids": [],
+            "advisory": analysis_module.BUNDLE_GIT_DIRTY_ADVISORY,
+        },
+        "derived_preflight_rejections": {"count": 1, "records": [dict(source)]},
+        "timestamp_utc": "2026-07-21T00:00:00+00:00",
+        "revisions": dataclasses.asdict(load_matrix(DEFAULT_MATRIX_PATH).revisions),
+        "selected": [candidate.name],
+        "rejected": {candidate.name: "preflight:numerical"},
+        "resolved_candidates": [
+            {
+                "name": candidate.name,
+                "overrides": candidate.overrides,
+                "resolved_config": resolved,
+                "config_hash": config_hash(resolved),
+            }
+        ],
+    }
+    if tampering == "missing_derived_flag":
+        del source["derived_from_preflight"]
+    elif tampering == "nonboolean_derived_flag":
+        source["derived_from_preflight"] = 1
+    elif tampering == "missing_preflight_identity":
+        source["preflight_identity"] = None
+    elif tampering == "mismatched_preflight_identity":
+        source["preflight_identity"]["candidate"] = "wrong"
+    elif tampering == "measured_with_preflight_identity":
+        source["derived_from_preflight"] = False
+    elif tampering == "disclosure_mismatch":
+        data["derived_preflight_rejections"]["count"] = 0
+    path = tmp_path / "decision.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="decision preflight provenance is invalid"):
         load_decision(path, "promote-stage2", tuning, minimum_count=1, maximum_count=8)
 
 
@@ -542,6 +769,184 @@ def _copy_retry_attempt(artifact_root: Path, attempt: int, parent_run_id: str) -
     return retry_dir
 
 
+def test_loader_uses_latest_failed_preflight_retry(tmp_path, monkeypatch):
+    """The highest contiguous failed preflight attempt supplies the rejection evidence."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    attempt0_dir = _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="numerical",
+        keep_measured=False,
+    )
+    attempt1_dir = _copy_retry_attempt(artifact_root, 1, attempt0_dir.name)
+    manifest_path = attempt1_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["state"] = "failed"
+    manifest["failure_category"] = "crash"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    records = load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+    assert len(records) == 1
+    assert records[0].run_id == attempt1_dir.name
+    assert records[0].metrics.failure == "preflight:crash"
+    assert records[0].preflight_identity.attempt == 1
+
+
+def test_loader_rejects_preflight_config_mismatch(tmp_path, monkeypatch):
+    """A stale preflight configuration cannot reject the current candidate."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    preflight_dir = _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="numerical",
+        keep_measured=False,
+    )
+    manifest_path = preflight_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["resolved_config"]["dvi_block_iterations"] = 999
+    manifest["config_hash"] = config_hash(manifest["resolved_config"])
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="preflight config"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_rejects_nonterminal_preflight(tmp_path, monkeypatch):
+    """A planned preflight is neither success nor immutable rejection evidence."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    preflight_dir = _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="numerical",
+        keep_measured=False,
+    )
+    manifest_path = preflight_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["state"] = "planned"
+    manifest["failure_category"] = None
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="manifest is incomplete"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_rejects_preflight_without_hashed_standard_logs(tmp_path, monkeypatch):
+    """A failed preflight must retain hashes for both standard output streams."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    preflight_dir = _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="numerical",
+        keep_measured=False,
+    )
+    manifest_path = preflight_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["artifact_hashes"]["stdout.log"]
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="hashed stdout.log and stderr.log"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_rejects_preflight_source_head_mismatch_with_measurement(tmp_path, monkeypatch):
+    """Measured evidence cannot silently hide a stale preflight source revision."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    preflight_dir = _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="numerical",
+        keep_measured=True,
+    )
+    manifest_path = preflight_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["isaaclab_head"] = "0" * 40
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="one exact source HEAD"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_rejects_noncontiguous_preflight_retry(tmp_path, monkeypatch):
+    """Preflight retry attempts must advance contiguously."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    attempt0_dir = _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="numerical",
+        keep_measured=False,
+    )
+    _copy_retry_attempt(artifact_root, 2, attempt0_dir.name)
+
+    with pytest.raises(ValueError, match="contiguous"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_rejects_preflight_retry_with_wrong_parent(tmp_path, monkeypatch):
+    """Preflight retry lineage must name the immediately preceding attempt."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="numerical",
+        keep_measured=False,
+    )
+    _copy_retry_attempt(artifact_root, 1, "wrong-parent")
+
+    with pytest.raises(ValueError, match="retry parent"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
+def test_loader_derives_failed_wave2_preflight_for_seed42(tmp_path, monkeypatch):
+    """Adaptive Wave 2 uses the decision-resolved config for seed-42 preflight rejection."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="crash",
+        keep_measured=False,
+    )
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    resolved = resolve_config(tuning, tuning.candidate("integrator_euler"))
+
+    records = load_tuning_records(
+        artifact_root,
+        tmp_path / "logs",
+        expected_stage="wave2",
+        expected_candidate_configs={"integrator_euler": resolved},
+    )
+
+    assert [(record.metrics.stage, record.metrics.seed, record.metrics.failure) for record in records] == [
+        ("wave2", 42, "preflight:crash")
+    ]
+
+
+def test_loader_never_derives_later_stage_seeds_from_preflight(tmp_path, monkeypatch):
+    """One seed-42 preflight failure cannot fabricate multi-seed final evidence."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    _add_preflight_artifact(
+        artifact_root,
+        monkeypatch,
+        state="failed",
+        failure_category="crash",
+        keep_measured=False,
+    )
+
+    records = load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="final")
+
+    assert records == []
+    with pytest.raises(ValueError, match="missing tuning record"):
+        validate_tuning_records(records, (("integrator_euler", seed) for seed in (42, 43, 44)))
+
+
 def test_loader_selects_only_highest_terminal_retry_attempt(tmp_path, monkeypatch):
     """A failed attempt followed by a completed retry yields one completed record."""
     artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
@@ -603,7 +1008,14 @@ def test_stage_funnel_separates_wave1_and_wave2_origins():
         for row in analysis_module._stage_funnel(chain, [record("canonical_winner", "canonical")], winner)
     }
 
-    assert rows["Wave 1"] == {"stage": "Wave 1", "attempted": 2, "valid": 1, "rejected": 1, "promoted": 6}
+    assert rows["Wave 1"] == {
+        "stage": "Wave 1",
+        "attempted": 2,
+        "valid": 1,
+        "rejected": 1,
+        "derived_preflight": 0,
+        "promoted": 6,
+    }
     assert rows["Wave 2"]["rejected"] == 1
     assert rows["Wave 2"]["promoted"] == 1
     assert rows["Wave 2"]["selected_from_wave1"] == 1
@@ -877,6 +1289,7 @@ def test_validate_action_accepts_baseline_only_completed_artifacts(tmp_path, mon
                 "run_ids": [],
                 "advisory": analysis_module.BUNDLE_GIT_DIRTY_ADVISORY,
             },
+            "derived_preflight_rejections": {"count": 0, "records": []},
         }
     ]
 
@@ -890,6 +1303,16 @@ def test_validate_action_emits_deterministic_stage_order_and_counts(tmp_path, mo
         _validation_record(candidate.name, "wave1", 42, failure="numerical" if index == 0 else None)
         for index, candidate in enumerate(reversed(tuning.wave1))
     ]
+    preflight_identity = TuningIdentity("preflight", wave1[0].metrics.candidate, 42, 4096, 5)
+    wave1[0] = dataclasses.replace(
+        wave1[0],
+        metrics=dataclasses.replace(wave1[0].metrics, failure="preflight:numerical"),
+        run_id=preflight_identity.run_id,
+        manifest_path=Path(preflight_identity.run_id) / "manifest.json",
+        source_head="d" * 40,
+        derived_from_preflight=True,
+        preflight_identity=preflight_identity,
+    )
     by_stage = {"baseline": baseline, "wave1": wave1}
     monkeypatch.setattr(
         analysis_module,
@@ -915,13 +1338,50 @@ def test_validate_action_emits_deterministic_stage_order_and_counts(tmp_path, mo
             "run_ids": [baseline[0].run_id],
             "advisory": analysis_module.BUNDLE_GIT_DIRTY_ADVISORY,
         },
+        "derived_preflight_rejections": {"count": 0, "records": []},
     }
     assert output["stages"][1]["expected"] == 18
     assert output["stages"][1]["terminal"] == 18
     assert output["stages"][1]["valid"] == 17
     assert output["stages"][1]["rejected"] == 1
     assert output["stages"][1]["run_ids"] == sorted(record.run_id for record in wave1)
-    assert output["stages"][1]["rejection_reasons"] == [{"run_id": wave1[0].run_id, "reason": "numerical"}]
+    assert output["stages"][1]["rejection_reasons"] == [{"run_id": wave1[0].run_id, "reason": "preflight:numerical"}]
+    disclosure = output["stages"][1]["derived_preflight_rejections"]
+    assert disclosure["count"] == 1
+    assert disclosure["records"][0]["run_id"] == preflight_identity.run_id
+    assert disclosure["records"][0]["sha256"] == wave1[0].manifest_hash
+
+
+def test_validate_action_passes_wave2_configs_to_preflight_loader(tmp_path, monkeypatch, capsys):
+    """Adaptive validation supplies exact decision configs for failed preflight reconciliation."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    candidate = tuning.wave1[0]
+    resolved = resolve_config(tuning, candidate)
+    decision = {
+        "resolved_candidates": [
+            {"name": candidate.name, "resolved_config": resolved, "config_hash": config_hash(resolved)}
+        ]
+    }
+    record = dataclasses.replace(
+        _validation_record(candidate.name, "wave2", 42, failure="preflight:numerical"),
+        config_hash=config_hash(resolved),
+        resolved_config=resolved,
+        derived_from_preflight=True,
+        preflight_identity=TuningIdentity("preflight", candidate.name, 42, 4096, 5),
+    )
+    captured = {}
+
+    def load(_artifacts, _logs, expected_stage, **kwargs):
+        captured.update(kwargs)
+        assert expected_stage == "wave2"
+        return [record]
+
+    monkeypatch.setattr(analysis_module, "_validation_stage", lambda *_args: (((candidate.name, 42),), decision))
+    monkeypatch.setattr(analysis_module, "load_tuning_records", load)
+
+    assert main(["validate", "--stages", "wave2", "--artifact-root", str(tmp_path)]) == 0
+    capsys.readouterr()
+    assert captured["expected_candidate_configs"] == {candidate.name: resolved}
 
 
 @pytest.mark.parametrize(

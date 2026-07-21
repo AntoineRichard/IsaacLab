@@ -58,6 +58,16 @@ after its candidate preflights, and create the named decision before starting
 the next adaptive stage. The analyzer rejects incomplete identity coverage,
 reduced counts, nonfinite data, and mismatched evidence provenance.
 
+For Wave 1 and Wave 2 seed 42, the analyzer also validates the exact
+five-iteration screening preflight for each expected candidate. When the
+latest contiguous preflight attempt failed and no measured record exists, the
+analyzer projects that immutable failure in memory as a rejected tuning record
+using the actual preflight run ID and a `preflight:<category>` reason. It does
+not write or backfill artifacts. A completed preflight does not substitute for
+a missing measurement, measured evidence always wins, and preflights never
+synthesize seed 43/44 or later-stage evidence. Decisions, validation output,
+summary JSON, Markdown, and PDF reports disclose these derived rejection sources.
+
 Validate any completed stages without mutating evidence before advancing the
 campaign. Baseline and Wave 1 validation require no decision files:
 

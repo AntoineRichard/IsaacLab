@@ -20,12 +20,20 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
         "winner_config": {"integrator": "euler"},
         "environment_count": 4096,
         "funnel": [
-            {"stage": "Wave 1", "attempted": 18, "valid": 17, "rejected": 1, "promoted": 6},
+            {
+                "stage": "Wave 1",
+                "attempted": 18,
+                "valid": 15,
+                "rejected": 3,
+                "derived_preflight": 3,
+                "promoted": 6,
+            },
             {
                 "stage": "Wave 2",
                 "attempted": 6,
                 "valid": 5,
                 "rejected": 1,
+                "derived_preflight": 0,
                 "promoted": 2,
                 "selected_from_wave1": 3,
             },
@@ -66,6 +74,17 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
                 "does not prove that only untracked paths differed."
             ),
         },
+        "derived_preflight_rejections": {
+            "count": 1,
+            "records": [
+                {
+                    "run_id": "preflight__failed_candidate__seed42__env4096__iter5__attempt0",
+                    "failure": "preflight:numerical",
+                    "source_head": "d" * 40,
+                    "config_hash": "c" * 64,
+                }
+            ],
+        },
     }
     paths = write_tuning_report(report, tmp_path)
     assert {path.name for path in paths} == {
@@ -94,6 +113,9 @@ def test_report_contains_required_methodology_tables_disclosures_and_figures(tmp
         "dirty-run",
         "tracked-only cleanliness",
         "does not prove that only untracked paths differed",
+        "Derived preflight",
+        "preflight__failed_candidate__seed42__env4096__iter5__attempt0",
+        "projected in memory",
     ):
         assert text in markdown
 

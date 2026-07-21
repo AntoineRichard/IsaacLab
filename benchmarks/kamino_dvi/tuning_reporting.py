@@ -78,12 +78,13 @@ def _markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Stage funnel",
         "",
-        "| Stage | Attempted | Valid | Rejected | Promoted |",
-        "|---|---:|---:|---:|---:|",
+        "| Stage | Attempted | Valid | Rejected | Derived preflight | Promoted |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for row in report.get("funnel", []):
         lines.append(
-            f"| {row['stage']} | {row['attempted']} | {row['valid']} | {row['rejected']} | {row['promoted']} |"
+            f"| {row['stage']} | {row['attempted']} | {row['valid']} | {row['rejected']} | "
+            f"{int(row.get('derived_preflight', 0))} | {row['promoted']} |"
         )
     selected_from_wave1 = sum(int(row.get("selected_from_wave1", 0)) for row in report.get("funnel", []))
     if selected_from_wave1:
@@ -117,6 +118,14 @@ def _markdown(report: Mapping[str, Any]) -> str:
         lines.append("- No terminal failures or rejected candidates.")
     disclosure = report.get("bundle_git_dirty", {"count": 0, "run_ids": [], "advisory": ""})
     dirty_run_ids = ", ".join(str(run_id) for run_id in disclosure.get("run_ids", [])) or "none"
+    preflight_disclosure = report.get("derived_preflight_rejections", {"count": 0, "records": []})
+    preflight_sources = (
+        ", ".join(
+            f"{record['run_id']} ({record.get('failure', 'unknown')})"
+            for record in preflight_disclosure.get("records", [])
+        )
+        or "none"
+    )
     lines.extend(
         [
             "",
@@ -126,6 +135,10 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- Stage 2 baseline: {report['stage2_baseline_derivation']}",
             f"- Broad bundle dirty flags: {int(disclosure.get('count', 0))}; run IDs: {dirty_run_ids}",
             f"- Bundle dirty advisory: {disclosure.get('advisory', '')}",
+            f"- Derived preflight rejections: {int(preflight_disclosure.get('count', 0))}; "
+            f"sources: {preflight_sources}",
+            "- Failed exact seed-42 screening preflights are projected in memory as rejected Wave 1/2 "
+            "records only when measured evidence is absent; measured evidence always wins.",
             f"- Legacy comparison limitation: {report['legacy_limitations']}",
             "",
             "## Figures",

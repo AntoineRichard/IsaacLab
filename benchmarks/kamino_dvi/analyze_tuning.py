@@ -61,12 +61,43 @@ class TuningRecord:
     completed_at_utc: str | None = None
     source_head: str | None = None
     bundle_git_dirty: bool | None = None
+    derived_from_preflight: bool = False
+    preflight_identity: TuningIdentity | None = None
 
 
 def _bundle_git_dirty_disclosure(records: Sequence[TuningRecord]) -> dict[str, Any]:
     """Summarize broad bundle dirty flags with their interpretation boundary."""
     run_ids = sorted(record.run_id for record in records if record.bundle_git_dirty is True)
     return {"count": len(run_ids), "run_ids": run_ids, "advisory": BUNDLE_GIT_DIRTY_ADVISORY}
+
+
+def _record_provenance(record: TuningRecord) -> dict[str, Any]:
+    """Serialize one immutable record source for decisions and reports."""
+    return {
+        "run_id": record.run_id,
+        "path": str(record.manifest_path),
+        "sha256": record.manifest_hash,
+        "config_hash": record.config_hash,
+        "source_head": record.source_head,
+        "event_path": str(record.event_path) if record.event_path is not None else None,
+        "event_hash": record.event_hash,
+        "bundle_git_dirty": record.bundle_git_dirty,
+        "derived_from_preflight": record.derived_from_preflight,
+        "preflight_identity": (
+            dataclasses.asdict(record.preflight_identity) if record.preflight_identity is not None else None
+        ),
+        "failure": record.metrics.failure,
+    }
+
+
+def _derived_preflight_disclosure(records: Sequence[TuningRecord]) -> dict[str, Any]:
+    """Return sorted source evidence for in-memory preflight rejections."""
+    sources = [
+        _record_provenance(record)
+        for record in sorted(records, key=lambda item: item.run_id)
+        if record.derived_from_preflight
+    ]
+    return {"count": len(sources), "records": sources}
 
 
 def _read_mapping(path: Path) -> dict[str, Any]:
@@ -142,6 +173,7 @@ def load_tuning_records(  # noqa: C901
     logs_root: Path,
     expected_stage: str | None = None,
     *,
+    expected_candidate_configs: Mapping[str, Mapping[str, Any]] | None = None,
     matrix_path: Path = DEFAULT_MATRIX_PATH,
     tuning_matrix_path: Path = DEFAULT_TUNING_MATRIX_PATH,
 ) -> list[TuningRecord]:
@@ -151,6 +183,7 @@ def load_tuning_records(  # noqa: C901
         artifact_root: Root containing immutable tuning attempt directories.
         logs_root: Root containing retained TensorBoard event files.
         expected_stage: Optional measured stage to select.
+        expected_candidate_configs: Exact expected configurations for adaptive screening candidates.
         matrix_path: Locked benchmark matrix path.
         tuning_matrix_path: Locked tuning matrix path.
 
@@ -162,6 +195,16 @@ def load_tuning_records(  # noqa: C901
     """
     benchmark_matrix = load_matrix(matrix_path)
     tuning_matrix = load_tuning_matrix(tuning_matrix_path)
+    if expected_stage == "wave1":
+        expected_preflight_configs = {
+            candidate.name: resolve_config(tuning_matrix, candidate) for candidate in tuning_matrix.wave1
+        }
+    elif expected_stage == "wave2":
+        expected_preflight_configs = {
+            name: dict(resolved) for name, resolved in (expected_candidate_configs or {}).items()
+        }
+    else:
+        expected_preflight_configs = {}
     attempts: dict[tuple[str, str, int, int, int], list[tuple[Any, TuningRecord]]] = {}
     resolved_artifact_root = artifact_root.resolve()
     seen: set[tuple[str, str, int, int, int, int]] = set()
@@ -182,9 +225,11 @@ def load_tuning_records(  # noqa: C901
         components = run_dir.name.split("__")
         if len(components) != 6 or components[0] not in {*stage_protocol, "preflight"}:
             raise ValueError(f"undeclared tuning directory: {run_dir}")
-        if components[0] == "preflight":
-            continue
-        if expected_stage is not None and components[0] != expected_stage:
+        is_preflight_dir = components[0] == "preflight"
+        if is_preflight_dir:
+            if components[1] not in expected_preflight_configs:
+                continue
+        elif expected_stage is not None and components[0] != expected_stage:
             continue
         manifest_path = run_dir / "manifest.json"
         if not manifest_path.is_file():
@@ -205,22 +250,28 @@ def load_tuning_records(  # noqa: C901
         if key in seen:
             raise ValueError(f"duplicate tuning record: {key}")
         seen.add(key)
-        if expected_stage is not None and identity.stage != expected_stage:
-            raise ValueError(f"{manifest_path}: expected stage {expected_stage}")
-        if identity.stage not in stage_protocol:
-            raise ValueError(f"{manifest_path}: unsupported measured stage {identity.stage}")
-        is_canonical_preflight = (
-            identity.stage == "canonical" and identity.max_iterations == tuning_matrix.preflight_iterations
-        )
-        if is_canonical_preflight:
-            if identity.candidate != "canonical_winner" or identity.seed != 42:
-                raise ValueError(f"{manifest_path}: invalid canonical preflight identity")
+        if is_preflight_dir:
+            if identity.stage != "preflight":
+                raise ValueError(f"{manifest_path}: expected preflight stage")
+            if identity.seed != 42 or identity.max_iterations != tuning_matrix.preflight_iterations:
+                raise ValueError(f"{manifest_path}: preflight requires seed 42 and exactly 5 iterations")
         else:
-            allowed_seeds, required_iterations = stage_protocol[identity.stage]
-            if identity.seed not in allowed_seeds:
-                raise ValueError(f"{identity.stage} uses an invalid seed {identity.seed}")
-            if identity.max_iterations != required_iterations:
-                raise ValueError(f"{identity.stage} requires exactly {required_iterations} iterations")
+            if expected_stage is not None and identity.stage != expected_stage:
+                raise ValueError(f"{manifest_path}: expected stage {expected_stage}")
+            if identity.stage not in stage_protocol:
+                raise ValueError(f"{manifest_path}: unsupported measured stage {identity.stage}")
+            is_canonical_preflight = (
+                identity.stage == "canonical" and identity.max_iterations == tuning_matrix.preflight_iterations
+            )
+            if is_canonical_preflight:
+                if identity.candidate != "canonical_winner" or identity.seed != 42:
+                    raise ValueError(f"{manifest_path}: invalid canonical preflight identity")
+            else:
+                allowed_seeds, required_iterations = stage_protocol[identity.stage]
+                if identity.seed not in allowed_seeds:
+                    raise ValueError(f"{identity.stage} uses an invalid seed {identity.seed}")
+                if identity.max_iterations != required_iterations:
+                    raise ValueError(f"{identity.stage} requires exactly {required_iterations} iterations")
         if manifest.run_id != identity.run_id or run_dir.name != identity.run_id:
             raise ValueError(f"{manifest_path}: run identity does not match its directory")
         if Path(manifest.artifact_root).resolve() != run_dir.resolve():
@@ -233,6 +284,8 @@ def load_tuning_records(  # noqa: C901
         if manifest.config_hash != config_hash(resolved):
             raise ValueError(f"{manifest_path}: config hash mismatch")
         candidate = _candidate_for_manifest(tuning_matrix, identity, resolved)
+        if is_preflight_dir and resolved != expected_preflight_configs[identity.candidate]:
+            raise ValueError(f"{manifest_path}: preflight config does not match expected candidate")
         if manifest.command_hash != command_hash(manifest.command):
             raise ValueError(f"{manifest_path}: command hash mismatch")
         repo_root = _repo_root(manifest.command, manifest_path)
@@ -241,6 +294,9 @@ def load_tuning_records(  # noqa: C901
         )
         if manifest.command != expected_command:
             raise ValueError(f"{manifest_path}: command does not match exact reconstruction")
+        required_logs = {"stdout.log", "stderr.log"}
+        if not required_logs.issubset(manifest.artifact_hashes):
+            raise ValueError(f"{manifest_path}: requires hashed stdout.log and stderr.log")
         for name, expected_hash in manifest.artifact_hashes.items():
             artifact = run_dir / name
             try:
@@ -329,6 +385,7 @@ def load_tuning_records(  # noqa: C901
         )
         attempts.setdefault(logical_identity, []).append((manifest, completed_record))
     records: list[TuningRecord] = []
+    preflights: dict[str, tuple[Any, TuningRecord]] = {}
     for logical_identity, logical_attempts in sorted(attempts.items()):
         ordered = sorted(logical_attempts, key=lambda item: item[0].identity.attempt)
         if ordered[0][0].identity.attempt != 0 or ordered[0][0].retry.parent_run_id is not None:
@@ -339,9 +396,43 @@ def load_tuning_records(  # noqa: C901
                 raise ValueError(f"{record.manifest_path}: retry attempts must be contiguous")
             if manifest.retry.parent_run_id != previous.run_id:
                 raise ValueError(f"{record.manifest_path}: retry parent does not match preceding attempt")
+        terminal_manifest, terminal_record = ordered[-1]
+        if logical_identity[0] == "preflight":
+            preflights[terminal_record.metrics.candidate] = (terminal_manifest, terminal_record)
+            continue
         if logical_identity[0] == "canonical" and logical_identity[4] == tuning_matrix.preflight_iterations:
             continue
-        records.append(ordered[-1][1])
+        records.append(terminal_record)
+    if expected_stage is not None:
+        evidence_records = [*records, *(record for _, record in preflights.values())]
+        source_heads = {record.source_head for record in evidence_records}
+        if evidence_records and (None in source_heads or len(source_heads) != 1):
+            raise ValueError("selected tuning evidence requires one exact source HEAD")
+    if expected_stage in {"wave1", "wave2"}:
+        measured_candidates = {record.metrics.candidate for record in records}
+        for candidate_name, (manifest, record) in sorted(preflights.items()):
+            if candidate_name in measured_candidates or record.metrics.failure is None:
+                continue
+            metrics = TuningRunMetrics(
+                candidate_name,
+                expected_stage,
+                42,
+                tuning_matrix.num_envs,
+                (),
+                (),
+                (),
+                (),
+                f"preflight:{record.metrics.failure}",
+            )
+            records.append(
+                dataclasses.replace(
+                    record,
+                    metrics=metrics,
+                    bundle_git_dirty=None,
+                    derived_from_preflight=True,
+                    preflight_identity=manifest.identity,
+                )
+            )
     return records
 
 
@@ -422,16 +513,9 @@ def _base_decision(source_stage: str, artifact_root: Path, records: Sequence[Tun
     return {
         "source_stage": source_stage,
         "source_artifact_root": str(artifact_root.resolve()),
-        "source_manifests": [
-            {
-                "run_id": record.run_id,
-                "path": str(record.manifest_path),
-                "sha256": record.manifest_hash,
-                "bundle_git_dirty": record.bundle_git_dirty,
-            }
-            for record in sorted(records, key=lambda item: item.run_id)
-        ],
+        "source_manifests": [_record_provenance(record) for record in sorted(records, key=lambda item: item.run_id)],
         "bundle_git_dirty": _bundle_git_dirty_disclosure(records),
+        "derived_preflight_rejections": _derived_preflight_disclosure(records),
         "timestamp_utc": _timestamp(records),
         "schema_version": "1.0",
         "action": {
@@ -442,6 +526,80 @@ def _base_decision(source_stage: str, artifact_root: Path, records: Sequence[Tun
         }[source_stage],
         "revisions": dataclasses.asdict(matrix.revisions),
     }
+
+
+def _decision_preflight_provenance_is_valid(
+    data: Mapping[str, Any], manifests: Sequence[Mapping[str, Any]], matrix: TuningMatrix
+) -> bool:
+    """Return whether persisted source records exactly disclose preflight projections."""
+    keys = {
+        "run_id",
+        "path",
+        "sha256",
+        "config_hash",
+        "source_head",
+        "event_path",
+        "event_hash",
+        "bundle_git_dirty",
+        "derived_from_preflight",
+        "preflight_identity",
+        "failure",
+    }
+    derived: list[Mapping[str, Any]] = []
+    for item in manifests:
+        if set(item) != keys or type(item.get("derived_from_preflight")) is not bool:
+            return False
+        if not isinstance(item.get("config_hash"), str):
+            return False
+        if item.get("source_head") is not None and not isinstance(item["source_head"], str):
+            return False
+        if item.get("event_path") is not None and not isinstance(item["event_path"], str):
+            return False
+        if item.get("event_hash") is not None and not isinstance(item["event_hash"], str):
+            return False
+        if item.get("failure") is not None and not isinstance(item["failure"], str):
+            return False
+        identity_data = item.get("preflight_identity")
+        if not item["derived_from_preflight"]:
+            if identity_data is not None:
+                return False
+            continue
+        if not isinstance(identity_data, dict) or set(identity_data) != {
+            "stage",
+            "candidate",
+            "seed",
+            "num_envs",
+            "max_iterations",
+            "attempt",
+        }:
+            return False
+        if not isinstance(identity_data.get("stage"), str) or not isinstance(identity_data.get("candidate"), str):
+            return False
+        if any(type(identity_data.get(name)) is not int for name in ("seed", "num_envs", "max_iterations", "attempt")):
+            return False
+        identity = TuningIdentity(**identity_data)
+        if (
+            identity.stage != "preflight"
+            or identity.seed != 42
+            or identity.num_envs != matrix.num_envs
+            or identity.max_iterations != matrix.preflight_iterations
+            or identity.run_id != item["run_id"]
+            or item["bundle_git_dirty"] is not None
+            or not isinstance(item["source_head"], str)
+            or not isinstance(item["failure"], str)
+            or not item["failure"].startswith("preflight:")
+        ):
+            return False
+        derived.append(item)
+    disclosure = data.get("derived_preflight_rejections")
+    expected = sorted(derived, key=lambda item: item["run_id"])
+    return (
+        isinstance(disclosure, dict)
+        and set(disclosure) == {"count", "records"}
+        and type(disclosure.get("count")) is int
+        and disclosure["count"] == len(expected)
+        and disclosure.get("records") == expected
+    )
 
 
 def load_decision(
@@ -493,6 +651,8 @@ def load_decision(
         or run_ids != sorted(item["run_id"] for item in manifests if item["bundle_git_dirty"] is True)
     ):
         raise ValueError(f"{path}: decision bundle dirty disclosure is invalid")
+    if not _decision_preflight_provenance_is_valid(data, manifests, matrix):
+        raise ValueError(f"{path}: decision preflight provenance is invalid")
     records = data.get("resolved_candidates")
     if not isinstance(records, list) or not minimum_count <= len(records) <= maximum_count:
         raise ValueError(f"{path}: decision candidate count must be between {minimum_count} and {maximum_count}")
@@ -573,8 +733,20 @@ def _load_candidates(path: Path) -> list[dict[str, Any]]:
     return [dict(record) for record in records]
 
 
-def _records(args: argparse.Namespace, stage: str) -> list[TuningRecord]:
-    return load_tuning_records(args.artifact_root, args.logs_root, expected_stage=stage)
+def _records(args: argparse.Namespace, stage: str, decision: Mapping[str, Any] | None = None) -> list[TuningRecord]:
+    expected_configs = (
+        {item["name"]: item["resolved_config"] for item in decision["resolved_candidates"]}
+        if decision is not None and stage == "wave2"
+        else None
+    )
+    return load_tuning_records(
+        args.artifact_root,
+        args.logs_root,
+        expected_stage=stage,
+        expected_candidate_configs=expected_configs,
+        matrix_path=getattr(args, "matrix", DEFAULT_MATRIX_PATH),
+        tuning_matrix_path=args.tuning_matrix,
+    )
 
 
 def _compute_wave2(matrix: TuningMatrix, artifact_root: Path, wave1: Sequence[TuningRecord]) -> dict[str, Any]:
@@ -727,7 +899,7 @@ def _recompute_chain(args: argparse.Namespace, through: str) -> dict[str, Any]:
     wave2_decision = _require_persisted(
         args.decision_root / "wave2.json", "resolve-wave2", matrix, wave2_expected, 6, 6
     )
-    wave2 = _records(args, "wave2")
+    wave2 = _records(args, "wave2", wave2_decision)
     stage2_expected = _compute_stage2(matrix, args.artifact_root, wave1, wave2, wave2_decision)
     if through == "stage2":
         return {
@@ -812,6 +984,7 @@ def _stage_funnel(
             "attempted": len(chain["baseline"]),
             "valid": len(chain["baseline"]) - failed(chain["baseline"]),
             "rejected": failed(chain["baseline"]),
+            "derived_preflight": sum(record.derived_from_preflight for record in chain["baseline"]),
             "promoted": 1,
         },
         {
@@ -819,6 +992,7 @@ def _stage_funnel(
             "attempted": len(chain["wave1"]),
             "valid": len(chain["wave1"]) - failed(chain["wave1"]),
             "rejected": failed(chain["wave1"]),
+            "derived_preflight": sum(record.derived_from_preflight for record in chain["wave1"]),
             "promoted": len(chain["wave2_decision"]["selected"]),
         },
         {
@@ -826,6 +1000,7 @@ def _stage_funnel(
             "attempted": len(chain["wave2"]),
             "valid": len(chain["wave2"]) - failed(chain["wave2"]),
             "rejected": failed(chain["wave2"]),
+            "derived_preflight": sum(record.derived_from_preflight for record in chain["wave2"]),
             "promoted": wave2_promoted,
             "selected_from_wave1": wave1_promoted_to_stage2,
         },
@@ -834,6 +1009,7 @@ def _stage_funnel(
             "attempted": len(chain["halve"]),
             "valid": len(chain["halve"]) - failed(chain["halve"]),
             "rejected": len(chain["finalists_decision"]["rejected"]),
+            "derived_preflight": sum(record.derived_from_preflight for record in chain["halve"]),
             "promoted": len(chain["finalists_decision"]["selected"]),
         },
         {
@@ -841,6 +1017,7 @@ def _stage_funnel(
             "attempted": len(chain["final"]),
             "valid": len(chain["final"]) - failed(chain["final"]),
             "rejected": len(winner["rejected"]),
+            "derived_preflight": sum(record.derived_from_preflight for record in chain["final"]),
             "promoted": 1,
         },
         {
@@ -848,6 +1025,7 @@ def _stage_funnel(
             "attempted": len(canonical),
             "valid": len(canonical) - failed(canonical),
             "rejected": failed(canonical),
+            "derived_preflight": sum(record.derived_from_preflight for record in canonical),
             "promoted": 1,
         },
     ]
@@ -910,6 +1088,7 @@ def _report_action(args: argparse.Namespace) -> None:
         "decisions": decisions,
         "canonical_comparison": canonical_comparison,
         "bundle_git_dirty": _bundle_git_dirty_disclosure(all_records),
+        "derived_preflight_rejections": _derived_preflight_disclosure(all_records),
         "canonical_provenance": {
             "source_head": next(iter(canonical_heads)),
             "records": [
@@ -989,6 +1168,7 @@ def _report_action(args: argparse.Namespace) -> None:
                     "seed": record.metrics.seed,
                     "iterations": len(record.metrics.reward),
                     "num_envs": record.metrics.num_envs,
+                    "source": _record_provenance(record),
                 }
                 for record in records
             ]
@@ -1001,10 +1181,7 @@ def _report_action(args: argparse.Namespace) -> None:
                 ("canonical", canonical),
             )
         },
-        "source_hashes": [
-            {"run_id": record.run_id, "manifest_hash": record.manifest_hash, "event_hash": record.event_hash}
-            for record in sorted(all_records, key=lambda item: item.run_id)
-        ],
+        "source_hashes": [_record_provenance(record) for record in sorted(all_records, key=lambda item: item.run_id)],
         "legacy_comparison": legacy_rows,
         "seed_iteration_coverage": (
             "4096 environments; baseline/final/canonical seeds 42--44 at 300 iterations; "
@@ -1060,6 +1237,11 @@ def _validate_action(args: argparse.Namespace) -> None:
             args.artifact_root,
             args.logs_root,
             expected_stage=stage,
+            expected_candidate_configs=(
+                {item["name"]: item["resolved_config"] for item in decision["resolved_candidates"]}
+                if decision is not None and stage == "wave2"
+                else None
+            ),
             matrix_path=args.matrix,
             tuning_matrix_path=args.tuning_matrix,
         )
@@ -1084,6 +1266,7 @@ def _validate_action(args: argparse.Namespace) -> None:
                 "run_ids": sorted(record.run_id for record in records),
                 "rejection_reasons": rejections,
                 "bundle_git_dirty": _bundle_git_dirty_disclosure(records),
+                "derived_preflight_rejections": _derived_preflight_disclosure(records),
             }
         )
     print(json.dumps({"schema_version": "1.0", "stages": summaries}, allow_nan=False, sort_keys=True))
