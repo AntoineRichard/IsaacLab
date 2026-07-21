@@ -164,3 +164,23 @@ def test_locate_rsl_rl_events_matches_task_and_utc_creation_time(tmp_path: Path)
     event.touch()
 
     assert locate_rsl_rl_events(bundle, tmp_path / "logs") == event
+
+
+def test_locate_rsl_rl_events_rejects_ambiguous_plausible_matches(tmp_path: Path):
+    """Two same-task event runs inside the time window are not exact provenance."""
+    bundle = tmp_path / "bundle.json"
+    _write_bundle(bundle)
+    data = json.loads(bundle.read_text(encoding="utf-8"))
+    data["run"]["start_time_utc"] = "2026-07-20T10:52:22+00:00"
+    bundle.write_text(json.dumps(data), encoding="utf-8")
+    for index, created_at in enumerate(("2026-07-20T10:52:22.100000+00:00", "2026-07-20T10:52:23.900000+00:00")):
+        run = tmp_path / "logs" / "rsl_rl" / "cartpole" / f"run-{index}"
+        run.mkdir(parents=True)
+        (run / "run.json").write_text(
+            json.dumps({"created_at": created_at, "task": "Isaac-Cartpole-Direct"}),
+            encoding="utf-8",
+        )
+        (run / f"events.out.tfevents.{index}").touch()
+
+    with pytest.raises(MissingBenchmarkFieldError, match="ambiguous"):
+        locate_rsl_rl_events(bundle, tmp_path / "logs")

@@ -6,17 +6,19 @@
 """Tests for the resumable ANYmal-D DVI tuning runner."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from benchmarks.kamino_dvi.manifests import command_hash, write_json_atomic
 from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
-from benchmarks.kamino_dvi.models import FailureCategory, RetryLineage, TerminalState
-from benchmarks.kamino_dvi.parsing import MissingBenchmarkFieldError
+from benchmarks.kamino_dvi.models import FailureCategory, RetryLineage, TaskName, TerminalState
+from benchmarks.kamino_dvi.parsing import MissingBenchmarkFieldError, TrainingTrace
 from benchmarks.kamino_dvi.run import ProcessOutcome
 from benchmarks.kamino_dvi.tune import (
     SCHEMA_VERSION,
+    ResolvedTuningCandidate,
     TuningIdentity,
     TuningManifest,
     build_canonical_command,
@@ -29,6 +31,7 @@ from benchmarks.kamino_dvi.tune import (
     select_tuning_identities,
     tuning_resume_matches,
     validate_tuning_command,
+    write_tuning_manifest,
 )
 from benchmarks.kamino_dvi.tuning import (
     DEFAULT_TUNING_MATRIX_PATH,
@@ -121,6 +124,70 @@ def test_canonical_command_uses_winner_identity_without_hydra_overrides(tmp_path
     assert not any(value.startswith("env.sim.physics.solver_cfg.") for value in command)
 
 
+@pytest.mark.parametrize(
+    ("filename", "count", "stage"),
+    (("wave2.json", 6, "wave2"), ("stage2.json", 8, "halve"), ("finalists.json", 3, "final")),
+)
+def test_adaptive_decisions_reject_reserved_canonical_candidate(tmp_path, filename, count, stage):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    candidates = list(tuning.wave1[:count])
+    write_candidates_decision(tmp_path / filename, candidates)
+    data = json.loads((tmp_path / filename).read_text(encoding="utf-8"))
+    data["resolved_candidates"][0]["name"] = "canonical_winner"
+    write_json_atomic(tmp_path / filename, data)
+    args = build_parser().parse_args(["--stage", stage, "--decision-root", str(tmp_path), "--measured-only"])
+
+    with pytest.raises(ValueError, match="reserved"):
+        select_tuning_identities(tuning, args)
+
+
+def test_noncanonical_execution_rejects_reserved_candidate_instead_of_suppressing_overrides(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    declared = tuning.candidate("cr_iterations_3")
+    resolved = resolve_config(tuning, declared)
+    spoofed = ResolvedTuningCandidate(
+        "canonical_winner",
+        declared.overrides,
+        resolved,
+        config_hash(resolved),
+    )
+    identity = TuningIdentity("wave2", "canonical_winner", 42, 4096, 40)
+
+    with pytest.raises(ValueError, match="reserved"):
+        execute_tuning_identity(
+            locked,
+            tuning,
+            spoofed,
+            identity,
+            tmp_path,
+            tmp_path / "artifacts",
+            isaaclab_head="f" * 40,
+            resume=False,
+            executor=successful_executor,
+        )
+
+
+def test_canonical_execution_rejects_noncanonical_candidate(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("canonical", candidate.name, 42, 4096, 300)
+
+    with pytest.raises(ValueError, match="canonical stage"):
+        execute_tuning_identity(
+            locked,
+            tuning,
+            candidate,
+            identity,
+            tmp_path,
+            tmp_path / "artifacts",
+            isaaclab_head="f" * 40,
+            resume=False,
+            executor=successful_executor,
+        )
+
+
 def test_tuning_command_validator_rejects_any_grammar_change(tmp_path):
     tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
     locked = load_matrix(DEFAULT_MATRIX_PATH)
@@ -190,7 +257,8 @@ def test_preflight_schedules_run_once_per_candidate(tmp_path):
         args = build_parser().parse_args(["--stage", stage, "--decision-root", str(tmp_path), "--preflight-only"])
         identities = select_tuning_identities(tuning, args)
         assert len(identities) == count
-        assert all(identity.stage == "preflight" for identity in identities)
+        expected_stage = "canonical" if stage == "canonical" else "preflight"
+        assert all(identity.stage == expected_stage for identity in identities)
         assert all(identity.seed == 42 and identity.max_iterations == 5 for identity in identities)
 
 
@@ -221,6 +289,24 @@ def successful_executor(command, stdout_path, stderr_path, *, timeout_s):
     return ProcessOutcome(returncode=0, timed_out=False)
 
 
+def matching_trace(identity: TuningIdentity) -> TrainingTrace:
+    """Build a trace whose identity exactly matches one tuning run."""
+    return TrainingTrace(
+        task=TaskName.ANYMAL_D.value,
+        seed=identity.seed,
+        num_envs=identity.num_envs,
+        iterations=identity.max_iterations,
+        iteration_time_s=(),
+        collection_fps=(),
+        total_fps=(),
+        reward=(),
+        ep_length=(),
+        success_rate=(),
+        success_schema_mismatch=False,
+        resources={},
+    )
+
+
 def test_execute_tuning_identity_requires_trace_and_hashes_all_evidence(tmp_path, monkeypatch):
     tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
     locked = load_matrix(DEFAULT_MATRIX_PATH)
@@ -230,7 +316,9 @@ def test_execute_tuning_identity_requires_trace_and_hashes_all_evidence(tmp_path
     event_path.parent.mkdir()
     event_path.write_bytes(b"event-data")
     monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
-    monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: object())
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: matching_trace(identity)
+    )
 
     state = execute_tuning_identity(
         locked,
@@ -254,6 +342,38 @@ def test_execute_tuning_identity_requires_trace_and_hashes_all_evidence(tmp_path
         "stderr.log",
         "benchmark_training_task.json",
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("task", TaskName.ANT.value), ("seed", 43), ("num_envs", 2048), ("iterations", 39)),
+)
+def test_execute_rejects_trace_identity_mismatch(tmp_path, monkeypatch, field, value):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    event_path = tmp_path / "events.out.tfevents.test"
+    event_path.write_bytes(b"event-data")
+    trace = replace(matching_trace(identity), **{field: value})
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: trace)
+
+    state = execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        tmp_path / "artifacts",
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=successful_executor,
+    )
+
+    manifest = read_tuning_manifest(tmp_path / "artifacts" / identity.run_id / "manifest.json")
+    assert state is TerminalState.FAILED
+    assert manifest.failure_category is FailureCategory.ARTIFACT
 
 
 def test_execute_tuning_identity_rejects_missing_metric_as_artifact(tmp_path, monkeypatch):
@@ -330,7 +450,9 @@ def test_resume_skips_exact_evidence_but_tampered_event_creates_retry(tmp_path, 
     event_path = tmp_path / "events.out.tfevents.test"
     event_path.write_bytes(b"original")
     monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
-    monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: object())
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: matching_trace(identity)
+    )
     calls = 0
 
     def executor(*args, **kwargs):
@@ -383,7 +505,9 @@ def test_preflight_gate_requires_exact_config_and_source_head(tmp_path, monkeypa
     event_path = tmp_path / "events.out.tfevents.test"
     event_path.write_bytes(b"event")
     monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
-    monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: object())
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: matching_trace(identity)
+    )
     assert not preflight_completed(locked, tuning, candidate, tmp_path, tmp_path / "artifacts", "f" * 40)
     execute_tuning_identity(
         locked,
@@ -449,3 +573,227 @@ def test_unreadable_attempt_directory_is_never_overwritten(tmp_path):
     retry = TuningIdentity("wave1", candidate.name, 42, 4096, 40, 1)
     assert (raw_path / "partial.log").read_text(encoding="utf-8") == "raw evidence"
     assert (artifact_root / retry.run_id / "manifest.json").is_file()
+
+
+def _patch_successful_trace(monkeypatch, tmp_path: Path, identity: TuningIdentity) -> Path:
+    event_path = tmp_path / "events.out.tfevents.test"
+    event_path.write_bytes(b"event")
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: matching_trace(identity)
+    )
+    return event_path
+
+
+def _crashing_executor(command, stdout_path, stderr_path, *, timeout_s):
+    del command, timeout_s
+    stdout_path.write_text("", encoding="utf-8")
+    stderr_path.write_text("RuntimeError: crash\n", encoding="utf-8")
+    return ProcessOutcome(returncode=1, timed_out=False)
+
+
+def test_resume_does_not_accept_older_completion_after_latest_failure(tmp_path, monkeypatch):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    _patch_successful_trace(monkeypatch, tmp_path, identity)
+    artifact_root = tmp_path / "artifacts"
+    execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        artifact_root,
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=successful_executor,
+    )
+    execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        artifact_root,
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=_crashing_executor,
+    )
+    calls = 0
+
+    def executor(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return successful_executor(*args, **kwargs)
+
+    assert (
+        execute_tuning_identity(
+            locked,
+            tuning,
+            candidate,
+            identity,
+            tmp_path,
+            artifact_root,
+            isaaclab_head="f" * 40,
+            resume=True,
+            executor=executor,
+        )
+        is TerminalState.COMPLETED
+    )
+    assert calls == 1
+    assert (artifact_root / replace(identity, attempt=2).run_id / "manifest.json").is_file()
+
+
+@pytest.mark.parametrize("mutation", ("artifact_root", "missing_hash"))
+def test_resume_rejects_copied_root_and_incomplete_hash_set(tmp_path, monkeypatch, mutation):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    _patch_successful_trace(monkeypatch, tmp_path, identity)
+    artifact_root = tmp_path / "artifacts"
+    execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        artifact_root,
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=successful_executor,
+    )
+    original_path = artifact_root / identity.run_id / "manifest.json"
+    original = read_tuning_manifest(original_path)
+    if mutation == "artifact_root":
+        copied_identity = replace(identity, attempt=1)
+        copied_path = artifact_root / copied_identity.run_id / "manifest.json"
+        copied_path.parent.mkdir()
+        write_tuning_manifest(
+            copied_path,
+            replace(
+                original,
+                run_id=copied_identity.run_id,
+                identity=copied_identity,
+                retry=RetryLineage(attempt=1, parent_run_id=original.run_id),
+            ),
+        )
+        expected_attempt = 2
+    else:
+        hashes = dict(original.artifact_hashes)
+        hashes.pop("stderr.log")
+        write_tuning_manifest(original_path, replace(original, artifact_hashes=hashes))
+        expected_attempt = 1
+    calls = 0
+
+    def executor(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return successful_executor(*args, **kwargs)
+
+    execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        artifact_root,
+        isaaclab_head="f" * 40,
+        resume=True,
+        executor=executor,
+    )
+    assert calls == 1
+    assert (artifact_root / replace(identity, attempt=expected_attempt).run_id / "manifest.json").is_file()
+
+
+def test_new_attempt_is_above_highest_occupied_and_uses_latest_valid_parent(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    artifact_root = tmp_path / "artifacts"
+    execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        artifact_root,
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=_crashing_executor,
+    )
+    (artifact_root / replace(identity, attempt=2).run_id).mkdir()
+
+    execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        artifact_root,
+        isaaclab_head="f" * 40,
+        resume=True,
+        executor=_crashing_executor,
+    )
+
+    latest = read_tuning_manifest(artifact_root / replace(identity, attempt=3).run_id / "manifest.json")
+    assert latest.retry == RetryLineage(attempt=3, parent_run_id=identity.run_id)
+
+
+@pytest.mark.parametrize(
+    ("failure_point", "category"),
+    (
+        ("execute", FailureCategory.CRASH),
+        ("bundle", FailureCategory.ARTIFACT),
+        ("locate", FailureCategory.ARTIFACT),
+        ("parse", FailureCategory.ARTIFACT),
+        ("hash", FailureCategory.ARTIFACT),
+    ),
+)
+def test_post_running_exceptions_always_persist_failed_manifest(tmp_path, monkeypatch, failure_point, category):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    event_path = tmp_path / "events.out.tfevents.test"
+    event_path.write_bytes(b"event")
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: matching_trace(identity)
+    )
+    executor = successful_executor
+
+    def raise_error(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError(f"{failure_point} failed")
+
+    if failure_point == "execute":
+        executor = raise_error
+    elif failure_point == "bundle":
+        monkeypatch.setattr("benchmarks.kamino_dvi.tune.inspect_bundle", raise_error)
+    elif failure_point == "locate":
+        monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", raise_error)
+    elif failure_point == "parse":
+        monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", raise_error)
+    else:
+        monkeypatch.setattr("benchmarks.kamino_dvi.tune.sha256_file", raise_error)
+
+    state = execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        tmp_path / "artifacts",
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=executor,
+    )
+
+    manifest = read_tuning_manifest(tmp_path / "artifacts" / identity.run_id / "manifest.json")
+    assert state is TerminalState.FAILED
+    assert manifest.state is TerminalState.FAILED
+    assert manifest.failure_category is category

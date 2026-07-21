@@ -31,8 +31,8 @@ from .models import (
     TerminalState,
     Variant,
 )
-from .parsing import MissingBenchmarkFieldError, locate_rsl_rl_events, parse_training_trace
-from .run import ProcessOutcome, execute_command, inspect_bundle
+from .parsing import locate_rsl_rl_events, parse_training_trace
+from .run import BundleStatus, ProcessOutcome, execute_command, inspect_bundle
 from .tuning import (
     DEFAULT_TUNING_MATRIX_PATH,
     SolverValue,
@@ -45,11 +45,21 @@ from .tuning import (
 )
 
 SCHEMA_VERSION = "1.1"
+_CANONICAL_CANDIDATE = "canonical_winner"
 
 
 @dataclass(frozen=True)
 class TuningIdentity:
-    """One immutable tuning-stage training-run identity."""
+    """One immutable tuning-stage training-run identity.
+
+    Attributes:
+        stage: Campaign stage that determines command semantics.
+        candidate: Candidate configuration name.
+        seed: Training random seed.
+        num_envs: Number of parallel simulation environments.
+        max_iterations: Number of training iterations.
+        attempt: Monotonic raw-evidence attempt number.
+    """
 
     stage: str
     candidate: str
@@ -69,7 +79,26 @@ class TuningIdentity:
 
 @dataclass(frozen=True)
 class TuningManifest:
-    """Persistent state and provenance for one tuning attempt."""
+    """Persistent state and provenance for one tuning attempt.
+
+    Attributes:
+        run_id: Stable identifier for this exact attempt.
+        identity: Immutable tuning identity.
+        config_hash: SHA-256 of :attr:`resolved_config`.
+        resolved_config: Literal complete solver configuration.
+        command: Exact subprocess argument tuple.
+        command_hash: SHA-256 of :attr:`command`.
+        revisions: Locked Isaac Lab, schema, and Newton revisions.
+        schema_version: Required benchmark bundle schema version.
+        isaaclab_head: Exact source HEAD used by the run.
+        artifact_root: Absolute attempt artifact directory.
+        tensorboard_event_path: Matched RSL-RL event path, if available.
+        tensorboard_event_hash: SHA-256 of the matched event, if available.
+        artifact_hashes: SHA-256 values for stdout, stderr, and bundle artifacts.
+        state: Persisted attempt lifecycle state.
+        failure_category: Terminal failure classification, if failed.
+        retry: Attempt number and readable parent lineage.
+    """
 
     run_id: str
     identity: TuningIdentity
@@ -91,7 +120,14 @@ class TuningManifest:
 
 @dataclass(frozen=True)
 class ResolvedTuningCandidate:
-    """A named tuning candidate with literal resolved configuration provenance."""
+    """A named candidate with literal resolved configuration provenance.
+
+    Attributes:
+        name: Candidate name.
+        overrides: Declared solver overrides.
+        resolved_config: Complete solver configuration after applying overrides.
+        config_hash: SHA-256 of :attr:`resolved_config`.
+    """
 
     name: str
     overrides: dict[str, SolverValue]
@@ -119,7 +155,28 @@ def build_tuning_command(
     repo_root: Path,
     output_path: Path,
 ) -> list[str]:
-    """Build the locked PR3570 DVI command plus declared tuning overrides."""
+    """Build the locked PR3570 DVI command plus declared tuning overrides.
+
+    Args:
+        matrix: Locked five-variant comparison matrix.
+        tuning_matrix: Validated ANYmal-D tuning protocol.
+        candidate: Declared non-canonical tuning candidate.
+        identity: Exact stage, seed, environment count, iterations, and attempt.
+        repo_root: Isaac Lab repository root.
+        output_path: Attempt artifact directory.
+
+    Returns:
+        Shell-free subprocess argument vector.
+
+    Raises:
+        ValueError: If the candidate is reserved, the stage is canonical, or
+            the candidate/environment count does not match the identity and
+            locked protocol.
+    """
+    if candidate.name == _CANONICAL_CANDIDATE:
+        raise ValueError("canonical_winner is reserved for the canonical stage")
+    if identity.stage == "canonical":
+        raise ValueError("canonical stage commands must use the committed preset")
     if identity.candidate != candidate.name:
         raise ValueError("tuning identity candidate does not match command candidate")
     if identity.num_envs != tuning_matrix.num_envs:
@@ -183,7 +240,7 @@ def build_canonical_command(
     if winner["config_hash"] != expected_hash:
         raise ValueError("winner resolved configuration hash mismatch")
     candidate = ResolvedTuningCandidate(
-        name="canonical_winner",
+        name=_CANONICAL_CANDIDATE,
         overrides={},
         resolved_config=resolved_config,
         config_hash=expected_hash,
@@ -230,7 +287,7 @@ def _candidate_provenance(
     if isinstance(candidate, ResolvedTuningCandidate):
         if candidate.config_hash != config_hash(candidate.resolved_config):
             raise ValueError(f"candidate {candidate.name} has mismatched configuration hash")
-        if candidate.name != "canonical_winner":
+        if candidate.name != _CANONICAL_CANDIDATE:
             declared = TuningCandidate(candidate.name, candidate.overrides)
             if candidate.resolved_config != resolve_config(tuning_matrix, declared):
                 raise ValueError(f"candidate {candidate.name} has mismatched resolved configuration")
@@ -246,10 +303,14 @@ def _command_for_candidate(
     repo_root: Path,
     output_path: Path,
 ) -> list[str]:
-    if candidate.name == "canonical_winner":
-        if identity.candidate != candidate.name:
-            raise ValueError("tuning identity candidate does not match command candidate")
+    if identity.candidate != candidate.name:
+        raise ValueError("tuning identity candidate does not match command candidate")
+    if identity.stage == "canonical":
+        if candidate.name != _CANONICAL_CANDIDATE:
+            raise ValueError("canonical stage requires the reserved canonical_winner candidate")
         return build_training_command(matrix, _run_identity(identity), repo_root, output_path)
+    if candidate.name == _CANONICAL_CANDIDATE:
+        raise ValueError("canonical_winner is reserved for the canonical stage")
     declared = TuningCandidate(candidate.name, candidate.overrides)
     command = build_tuning_command(matrix, tuning_matrix, declared, identity, repo_root, output_path)
     validate_tuning_command(matrix, tuning_matrix, declared, identity, repo_root, output_path, command)
@@ -272,6 +333,21 @@ def _same_base_identity(left: TuningIdentity, right: TuningIdentity) -> bool:
     )
 
 
+def _occupied_attempts(artifact_root: Path, identity: TuningIdentity) -> tuple[int, ...]:
+    prefix = (
+        f"{identity.stage}__{identity.candidate}__seed{identity.seed}__env{identity.num_envs}"
+        f"__iter{identity.max_iterations}__attempt"
+    )
+    attempts: list[int] = []
+    for path in artifact_root.glob(f"{prefix}*"):
+        if not path.is_dir():
+            continue
+        suffix = path.name.removeprefix(prefix)
+        if suffix.isdigit():
+            attempts.append(int(suffix))
+    return tuple(sorted(attempts))
+
+
 def _existing_attempts(artifact_root: Path, identity: TuningIdentity) -> list[TuningManifest]:
     manifests: list[TuningManifest] = []
     pattern = (
@@ -287,6 +363,7 @@ def _existing_attempts(artifact_root: Path, identity: TuningIdentity) -> list[Tu
             _same_base_identity(manifest.identity, identity)
             and manifest.run_id == manifest.identity.run_id
             and path.parent.name == manifest.run_id
+            and Path(manifest.artifact_root).resolve() == path.parent.resolve()
         ):
             manifests.append(manifest)
     return sorted(manifests, key=lambda manifest: manifest.identity.attempt)
@@ -297,10 +374,31 @@ def _recorded_artifacts_intact(manifest: TuningManifest) -> bool:
     if event_path is None or not event_path.is_file() or sha256_file(event_path) != manifest.tensorboard_event_hash:
         return False
     output_path = Path(manifest.artifact_root)
-    return bool(manifest.artifact_hashes) and all(
+    bundle_keys = tuple(
+        name for name in manifest.artifact_hashes if name.startswith("benchmark_training_") and name.endswith(".json")
+    )
+    mandatory = {"stdout.log", "stderr.log"}
+    if not mandatory.issubset(manifest.artifact_hashes) or len(bundle_keys) != 1:
+        return False
+    return all(
         (output_path / name).is_file() and sha256_file(output_path / name) == digest
         for name, digest in manifest.artifact_hashes.items()
     )
+
+
+def _append_exception(path: Path, error: Exception) -> None:
+    try:
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(f"{type(error).__name__}: {error}\n")
+    except OSError:
+        pass
+
+
+def _read_log(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def execute_tuning_identity(
@@ -315,42 +413,61 @@ def execute_tuning_identity(
     resume: bool,
     executor: Callable[..., ProcessOutcome] | None = None,
 ) -> TerminalState:
-    """Execute one tuning identity without overwriting any prior attempt."""
+    """Execute one tuning identity without overwriting any prior attempt.
+
+    Args:
+        matrix: Locked five-variant comparison matrix.
+        tuning_matrix: Validated ANYmal-D tuning protocol.
+        candidate: Candidate with declared or resolved configuration provenance.
+        identity: Requested tuning run identity.
+        repo_root: Isaac Lab repository root.
+        artifact_root: Root containing immutable attempt directories.
+        isaaclab_head: Exact source HEAD used for provenance and resume matching.
+        resume: Whether an exact latest completed attempt may be skipped.
+        executor: Optional subprocess executor used by tests.
+
+    Returns:
+        Completed or failed terminal state.
+
+    Raises:
+        ValueError: If candidate provenance, reserved naming, or stage semantics
+            do not match the requested identity.
+    """
     if executor is None:
         executor = execute_command
     resolved_candidate = _candidate_provenance(tuning_matrix, candidate)
+    if identity.stage == "canonical" and resolved_candidate.name != _CANONICAL_CANDIDATE:
+        raise ValueError("canonical stage requires the reserved canonical_winner candidate")
+    if identity.stage != "canonical" and resolved_candidate.name == _CANONICAL_CANDIDATE:
+        raise ValueError("canonical_winner is reserved for the canonical stage")
     if resolved_candidate.name != identity.candidate:
         raise ValueError("tuning identity candidate does not match resolved candidate")
+    occupied = _occupied_attempts(artifact_root, identity)
     attempts = _existing_attempts(artifact_root, identity)
-    if resume:
-        for existing in reversed(attempts):
-            output_path = Path(existing.artifact_root)
-            expected_command = _command_for_candidate(
-                matrix, tuning_matrix, resolved_candidate, existing.identity, repo_root, output_path
-            )
-            if (
-                existing.revisions == matrix.revisions
-                and existing.schema_version == SCHEMA_VERSION
-                and existing.resolved_config == resolved_candidate.resolved_config
-                and tuning_resume_matches(
-                    existing,
-                    existing.identity,
-                    expected_command,
-                    resolved_candidate.config_hash,
-                    isaaclab_head,
-                )
-                and _recorded_artifacts_intact(existing)
-            ):
-                return TerminalState.COMPLETED
-
     previous = attempts[-1] if attempts else None
-    attempt = previous.identity.attempt + 1 if previous is not None else identity.attempt
+    if resume and previous is not None and occupied and previous.identity.attempt == occupied[-1]:
+        output_path = Path(previous.artifact_root)
+        expected_command = _command_for_candidate(
+            matrix, tuning_matrix, resolved_candidate, previous.identity, repo_root, output_path
+        )
+        if (
+            previous.revisions == matrix.revisions
+            and previous.schema_version == SCHEMA_VERSION
+            and previous.resolved_config == resolved_candidate.resolved_config
+            and tuning_resume_matches(
+                previous,
+                previous.identity,
+                expected_command,
+                resolved_candidate.config_hash,
+                isaaclab_head,
+            )
+            and _recorded_artifacts_intact(previous)
+        ):
+            return TerminalState.COMPLETED
+
+    attempt = occupied[-1] + 1 if occupied else identity.attempt
     current_identity = replace(identity, attempt=attempt)
     output_path = artifact_root / current_identity.run_id
-    while output_path.exists():
-        attempt += 1
-        current_identity = replace(identity, attempt=attempt)
-        output_path = artifact_root / current_identity.run_id
     output_path.mkdir(parents=True, exist_ok=False)
     command = _command_for_candidate(
         matrix, tuning_matrix, resolved_candidate, current_identity, repo_root, output_path
@@ -377,43 +494,83 @@ def execute_tuning_identity(
     stdout_path = output_path / "stdout.log"
     stderr_path = output_path / "stderr.log"
     timeout_s = matrix.preflight_timeout_s if current_identity.max_iterations == 5 else matrix.full_timeout_s
-    outcome = executor(command, stdout_path, stderr_path, timeout_s=timeout_s)
-    bundle = inspect_bundle(output_path, current_identity.max_iterations)
-    process_succeeded = outcome.returncode == 0 and not outcome.timed_out and bundle.complete
+    outcome = ProcessOutcome(returncode=1, timed_out=False)
+    bundle = BundleStatus(path=None, schema_version=None, completed_iterations=0, complete=False)
     event_path: Path | None = None
+    event_hash: str | None = None
     trace_valid = False
-    if process_succeeded and bundle.path is not None:
+    forced_failure: FailureCategory | None = None
+
+    try:
+        outcome = executor(command, stdout_path, stderr_path, timeout_s=timeout_s)
+    except Exception as error:
+        forced_failure = FailureCategory.CRASH
+        _append_exception(stderr_path, error)
+
+    if forced_failure is None:
+        try:
+            bundle = inspect_bundle(output_path, current_identity.max_iterations)
+        except Exception as error:
+            forced_failure = FailureCategory.ARTIFACT
+            _append_exception(stderr_path, error)
+
+    process_succeeded = outcome.returncode == 0 and not outcome.timed_out and bundle.complete
+    if forced_failure is None and process_succeeded and bundle.path is not None:
         try:
             event_path = locate_rsl_rl_events(bundle.path, repo_root / "logs")
-            parse_training_trace(bundle.path, event_path)
-            trace_valid = True
-        except (MissingBenchmarkFieldError, OSError, RuntimeError, ValueError):
-            trace_valid = False
+            trace = parse_training_trace(bundle.path, event_path)
+            trace_valid = (
+                trace.task == TaskName.ANYMAL_D.value
+                and trace.seed == current_identity.seed
+                and trace.num_envs == current_identity.num_envs
+                and trace.iterations == current_identity.max_iterations
+            )
+            if not trace_valid:
+                forced_failure = FailureCategory.ARTIFACT
+        except Exception as error:
+            forced_failure = FailureCategory.ARTIFACT
+            _append_exception(stderr_path, error)
 
     artifacts = (stdout_path, stderr_path, bundle.path)
-    artifact_hashes = {path.name: sha256_file(path) for path in artifacts if path is not None and path.is_file()}
-    success = process_succeeded and trace_valid
+    artifact_hashes: dict[str, str] = {}
+    for path in artifacts:
+        if path is None or not path.is_file():
+            continue
+        try:
+            artifact_hashes[path.name] = sha256_file(path)
+        except Exception as error:
+            forced_failure = FailureCategory.ARTIFACT
+            _append_exception(stderr_path, error)
+    if event_path is not None and event_path.is_file():
+        try:
+            event_hash = sha256_file(event_path)
+        except Exception as error:
+            forced_failure = FailureCategory.ARTIFACT
+            _append_exception(stderr_path, error)
+
+    success = forced_failure is None and process_succeeded and trace_valid
     if success:
         manifest = replace(manifest, state=TerminalState.COMPLETED)
     else:
-        stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
-        stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
-        failure = classify_failure(
-            returncode=outcome.returncode,
-            timed_out=outcome.timed_out,
-            completed_iterations=bundle.completed_iterations,
-            expected_iterations=current_identity.max_iterations,
-            artifact_present=bundle.path is not None and trace_valid,
-            stdout=stdout,
-            stderr=stderr,
-            retry=retry,
-        )
-        manifest = replace(manifest, state=TerminalState.FAILED, failure_category=failure.category)
+        failure_category = forced_failure
+        if failure_category is None:
+            failure = classify_failure(
+                returncode=outcome.returncode,
+                timed_out=outcome.timed_out,
+                completed_iterations=bundle.completed_iterations,
+                expected_iterations=current_identity.max_iterations,
+                artifact_present=bundle.path is not None and trace_valid,
+                stdout=_read_log(stdout_path),
+                stderr=_read_log(stderr_path),
+                retry=retry,
+            )
+            failure_category = failure.category
+        manifest = replace(manifest, state=TerminalState.FAILED, failure_category=failure_category)
     manifest = replace(
         manifest,
         artifact_hashes=artifact_hashes,
         tensorboard_event_path=str(event_path.resolve()) if event_path is not None else None,
-        tensorboard_event_hash=sha256_file(event_path) if event_path is not None and event_path.is_file() else None,
+        tensorboard_event_hash=event_hash,
     )
     write_tuning_manifest(manifest_path, manifest)
     return manifest.state
@@ -431,6 +588,8 @@ def _load_resolved_candidates(
         if not isinstance(record, dict):
             raise ValueError(f"{path.name} candidate records must be mappings")
         declared = TuningCandidate(str(record["name"]), dict(record["overrides"]))
+        if declared.name == _CANONICAL_CANDIDATE:
+            raise ValueError("canonical_winner is a reserved candidate name")
         resolved = resolve_config(tuning_matrix, declared)
         literal = dict(record["resolved_config"])
         digest = config_hash(literal)
@@ -449,7 +608,7 @@ def _canonical_candidate(tuning_matrix: TuningMatrix, decision_root: Path) -> Re
     digest = config_hash(resolved)
     if winner["config_hash"] != digest or set(resolved) != set(tuning_matrix.baseline):
         raise ValueError("winner decision has mismatched configuration provenance")
-    return ResolvedTuningCandidate("canonical_winner", {}, resolved, digest)
+    return ResolvedTuningCandidate(_CANONICAL_CANDIDATE, {}, resolved, digest)
 
 
 def stage_candidates(
@@ -510,14 +669,31 @@ def _measured_identities(
 
 
 def select_tuning_identities(tuning_matrix: TuningMatrix, args: argparse.Namespace) -> tuple[TuningIdentity, ...]:
-    """Expand and filter exact preflight and measured tuning identities."""
+    """Expand and filter exact preflight and measured tuning identities.
+
+    Args:
+        tuning_matrix: Validated ANYmal-D tuning protocol.
+        args: Parsed stage, candidate, seed, and phase filters.
+
+    Returns:
+        Ordered immutable identities selected for execution.
+
+    Raises:
+        ValueError: If the requested candidate does not belong to the stage.
+    """
     candidates = stage_candidates(tuning_matrix, args.stage, args.decision_root)
     if args.candidate is not None:
         candidates = tuple(candidate for candidate in candidates if candidate.name == args.candidate)
         if not candidates:
             raise ValueError(f"candidate {args.candidate!r} is not part of stage {args.stage}")
     preflights = tuple(
-        TuningIdentity("preflight", candidate.name, 42, tuning_matrix.num_envs, tuning_matrix.preflight_iterations)
+        TuningIdentity(
+            "canonical" if args.stage == "canonical" else "preflight",
+            candidate.name,
+            42,
+            tuning_matrix.num_envs,
+            tuning_matrix.preflight_iterations,
+        )
         for candidate in candidates
     )
     measured = _measured_identities(tuning_matrix, args.stage, candidates)
@@ -543,7 +719,7 @@ def preflight_completed(
     """Return whether exact intact preflight evidence already exists."""
     resolved_candidate = _candidate_provenance(tuning_matrix, candidate)
     identity = TuningIdentity(
-        "preflight",
+        "canonical" if resolved_candidate.name == _CANONICAL_CANDIDATE else "preflight",
         resolved_candidate.name,
         42,
         tuning_matrix.num_envs,
@@ -631,9 +807,10 @@ def main(argv: list[str] | None = None) -> int:
             args.artifact_root,
             isaaclab_head,
         )
-        if identity.stage == "preflight" and has_preflight:
+        is_preflight = identity.max_iterations == tuning_matrix.preflight_iterations
+        if is_preflight and has_preflight:
             continue
-        if identity.stage != "preflight" and not has_preflight:
+        if not is_preflight and not has_preflight:
             message = (
                 f"candidate {candidate.name} requires a completed exact preflight "
                 f"for config {candidate.config_hash} and source HEAD {isaaclab_head}"

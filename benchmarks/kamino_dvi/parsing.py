@@ -90,9 +90,13 @@ def locate_rsl_rl_events(bundle_path: Path, logs_root: Path) -> Path:
                 matches.append((delta, events[0]))
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
-    if not matches or min(matches)[0] > 2.0:
+    plausible = tuple(match for match in matches if match[0] <= 2.0)
+    if not plausible:
         raise MissingBenchmarkFieldError(f"TensorBoard events for {task} at {started.isoformat()}")
-    return min(matches)[1]
+    if len(plausible) > 1:
+        paths = tuple(str(path) for _, path in sorted(plausible))
+        raise MissingBenchmarkFieldError(f"ambiguous TensorBoard events for {task}: {paths}")
+    return plausible[0][1]
 
 
 def parse_training_trace(bundle_path: Path, event_path: Path) -> TrainingTrace:
