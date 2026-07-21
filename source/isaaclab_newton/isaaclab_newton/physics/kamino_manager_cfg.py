@@ -232,8 +232,11 @@ class KaminoSolverCfg(NewtonSolverCfg):
     dvi_contact_block_preconditioner: bool = False
     """Whether to use a full 3-by-3 contact diagonal block preconditioner."""
 
-    dvi_warmstart_mode: str = "containers"
-    """DVI warm-start mode. Can be "none", "internal", or "containers"."""
+    dvi_warmstart_mode: str | None = "containers"
+    """DVI warm-start mode. Can be ``"none"``, ``"internal"``, or ``"containers"``.
+
+    When ``None``, the DVI solver receives the ``"none"`` warm-start mode.
+    """
 
     dvi_contact_warmstart_method: str = "key_and_position_with_net_force_backup"
     """Contact matching method used for DVI container warm-starting."""
@@ -285,7 +288,7 @@ class KaminoSolverCfg(NewtonSolverCfg):
                 contact_jacobi_omega=self.dvi_contact_jacobi_omega,
                 contact_jacobi_relaxation=self.dvi_contact_jacobi_relaxation,
                 contact_block_preconditioner=self.dvi_contact_block_preconditioner,
-                warmstart_mode=self.dvi_warmstart_mode,
+                warmstart_mode="none" if self.dvi_warmstart_mode is None else self.dvi_warmstart_mode,
                 contact_warmstart_method=self.dvi_contact_warmstart_method,
             )
 

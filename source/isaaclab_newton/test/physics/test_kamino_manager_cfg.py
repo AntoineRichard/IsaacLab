@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import newton._src.solvers.kamino.config as kamino_config
 import newton.solvers
+import pytest
 from isaaclab_newton.physics import KaminoSolverCfg
 
 
@@ -70,3 +71,17 @@ def test_dvi_config_passes_sparse_linear_solver_and_dvi_settings(monkeypatch):
     assert captured["dynamics"].linear_solver_kwargs == {"maxiter": 9}
     assert captured["dvi"].block_iterations == 16
     assert captured["dvi"].contact_iterations == 2
+
+
+@pytest.mark.parametrize(
+    ("configured_mode", "expected_mode"),
+    [(None, "none"), ("none", "none"), ("internal", "internal"), ("containers", "containers")],
+)
+def test_dvi_config_normalizes_none_warmstart_mode(monkeypatch, configured_mode, expected_mode):
+    """A null DVI warm-start mode must reach Newton as the literal ``"none"`` mode."""
+    captured = _capture_solver_config(monkeypatch)
+    monkeypatch.setattr(kamino_config, "DVISolverConfig", lambda **kwargs: SimpleNamespace(**kwargs), raising=False)
+
+    KaminoSolverCfg(dynamics_solver="dvi", dvi_warmstart_mode=configured_mode).to_solver_config()
+
+    assert captured["dvi"].warmstart_mode == expected_mode

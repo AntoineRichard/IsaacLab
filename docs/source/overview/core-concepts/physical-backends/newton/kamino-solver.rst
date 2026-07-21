@@ -235,7 +235,7 @@ Newton revision that provides the DVI solver.
     * - ``dvi_contact_block_preconditioner``
       - Default: ``False``. Enables the full 3-by-3 contact diagonal block preconditioner.
     * - ``dvi_warmstart_mode``
-      - Default: ``"containers"``. DVI warm-start source.
+      - Default: ``"containers"``. DVI warm-start source. Valid strings are ``"none"``, ``"internal"``, and ``"containers"``. Python ``None`` is normalized to the solver mode ``"none"``, which supports Hydra overrides that parse bare ``none`` as null.
     * - ``dvi_contact_warmstart_method``
       - Default: ``"key_and_position_with_net_force_backup"``. Contact matching method for container warm-starting.
 
