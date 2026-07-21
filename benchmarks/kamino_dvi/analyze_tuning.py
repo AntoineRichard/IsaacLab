@@ -321,6 +321,8 @@ def load_tuning_records(  # noqa: C901
             raise ValueError(f"{ordered[0][1].manifest_path}: retry attempt 0 must have no parent")
         for index, (manifest, record) in enumerate(ordered[1:], start=1):
             previous = ordered[index - 1][0]
+            if manifest.identity.attempt != previous.identity.attempt + 1:
+                raise ValueError(f"{record.manifest_path}: retry attempts must be contiguous")
             if manifest.retry.parent_run_id != previous.run_id:
                 raise ValueError(f"{record.manifest_path}: retry parent does not match preceding attempt")
         if logical_identity[0] == "canonical" and logical_identity[4] == tuning_matrix.preflight_iterations:

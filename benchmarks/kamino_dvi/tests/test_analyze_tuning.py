@@ -432,6 +432,16 @@ def test_loader_selects_only_highest_terminal_retry_attempt(tmp_path, monkeypatc
     assert records[0].metrics.failure is None
 
 
+def test_loader_rejects_noncontiguous_retry_attempt(tmp_path, monkeypatch):
+    """Attempt numbers must advance contiguously even when the parent is correct."""
+    artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
+    attempt0_dir = next(path for path in artifact_root.iterdir() if path.is_dir())
+    _copy_retry_attempt(artifact_root, 2, attempt0_dir.name)
+
+    with pytest.raises(ValueError, match="contiguous"):
+        load_tuning_records(artifact_root, tmp_path / "logs", expected_stage="wave1")
+
+
 def test_loader_rejects_retry_with_wrong_parent(tmp_path, monkeypatch):
     """Every later readable attempt must name the preceding attempt as parent."""
     artifact_root = _write_completed_artifact(tmp_path, monkeypatch)
