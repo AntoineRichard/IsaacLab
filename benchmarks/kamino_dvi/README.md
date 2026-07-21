@@ -50,3 +50,56 @@ Runtime summaries exclude iterations 1–10. Reward, episode length, and success
 iterations. Confidence intervals use the two-sided three-seed Student-t critical value. Reward and episode length are
 read from schema v1.1; success is read from the matching TensorBoard trace because the original v1.1 generator stored
 live step averages instead of the logged per-iteration values. That generator bug is fixed separately in PR 6624.
+
+## ANYmal-D task-specific tuning
+
+The tuning campaign always uses 4096 environments. Run each measured stage only
+after its candidate preflights, and create the named decision before starting
+the next adaptive stage. The analyzer rejects incomplete identity coverage,
+reduced counts, nonfinite data, and mismatched evidence provenance.
+
+```bash
+./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
+  --stage baseline --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --resume
+./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
+  --stage wave1 --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --resume
+./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning resolve-wave2 \
+  --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
+  --output benchmark_artifacts/kamino_dvi/decisions/wave2.json
+./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
+  --stage wave2 --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions --resume
+./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning promote-stage2 \
+  --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions \
+  --output benchmark_artifacts/kamino_dvi/decisions/stage2.json
+./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
+  --stage halve --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions --resume
+./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning promote-finalists \
+  --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions \
+  --output benchmark_artifacts/kamino_dvi/decisions/finalists.json
+./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
+  --stage final --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions --resume
+./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning select-winner \
+  --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions \
+  --output benchmark_artifacts/kamino_dvi/decisions/winner.json
+./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning report \
+  --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions \
+  --output-dir benchmarks/kamino_dvi/results/anymal_d_tuning
+```
+
+Stage 2 derives an immutable view of iterations 1--100 from each validated
+300-iteration clean baseline, so its final-20 window is iterations 81--100.
+After committing the selected configuration to the preset, validate that
+committed preset without overrides:
+
+```bash
+./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
+  --stage canonical --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning \
+  --decision-root benchmark_artifacts/kamino_dvi/decisions --resume
+```

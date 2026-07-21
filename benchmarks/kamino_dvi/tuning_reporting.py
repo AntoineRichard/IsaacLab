@@ -1,0 +1,157 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Compact Markdown, plot, and PDF output for ANYmal-D DVI tuning."""
+
+from __future__ import annotations
+
+import json
+import textwrap
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.image as mpimg
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+
+
+def _estimate(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return f"{float(value['mean']):.3f} ± {float(value['half_width']):.3f} (95% CI, n={int(value['n'])})"
+    return str(value)
+
+
+def _runtime_plot(rows: Sequence[Mapping[str, Any]], path: Path) -> None:
+    ordered = sorted(rows, key=lambda row: (float(row["mean"]), str(row["candidate"])))
+    figure, axis = plt.subplots(figsize=(9, max(3, 0.28 * len(ordered))))
+    labels = [f"{row.get('stage', '')}: {row['candidate']}" for row in ordered]
+    values = [float(row["mean"]) for row in ordered]
+    errors = [float(row.get("half_width", 0.0)) for row in ordered]
+    axis.barh(labels, values, xerr=errors, color="#4978a8")
+    axis.invert_yaxis()
+    axis.set_xlabel("Steady iteration time after iterations 1-10 [s]")
+    axis.set_title("Wave 1/2 runtime ranking (95% CIs where n=3)")
+    figure.tight_layout()
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+
+
+def _guardrail_plot(traces: Sequence[Mapping[str, Any]], path: Path) -> None:
+    figure, axes = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+    for trace in traces:
+        label = str(trace["candidate"])
+        for axis, key in zip(axes, ("reward", "success", "episode_length")):
+            axis.plot(range(1, len(trace[key]) + 1), trace[key], label=label)
+            axis.set_ylabel(key.replace("_", " ").title())
+    axes[-1].set_xlabel("Training iteration")
+    if traces:
+        axes[0].legend(fontsize=7)
+    figure.suptitle("Stage 2 learning guardrails")
+    figure.tight_layout()
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+
+
+def _markdown(report: Mapping[str, Any]) -> str:
+    lines = [
+        "# ANYmal-D Kamino DVI Tuning Addendum",
+        "",
+        "All uncertainty intervals are two-sided 95% Student-t confidence intervals. "
+        "Runtime is the steady mean after iterations 1--10; reward, TensorBoard "
+        "`Metrics/success_rate`, and episode length use the final 20 iterations.",
+        "",
+        "## Winner",
+        "",
+        f"- Candidate: `{report['winner']}`",
+        f"- Environments: {report['environment_count']}",
+        f"- Resolved configuration: `{json.dumps(report['winner_config'], sort_keys=True)}`",
+        "",
+        "## Stage funnel",
+        "",
+        "| Stage | Attempted | Valid | Rejected | Promoted |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for row in report.get("funnel", []):
+        lines.append(
+            f"| {row['stage']} | {row['attempted']} | {row['valid']} | {row['rejected']} | {row['promoted']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Final runtime and learning (95% CIs)",
+            "",
+            "| Candidate | Runtime [s] | Reward | Success | Episode length |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
+    for row in report.get("final_rows", []):
+        lines.append(
+            f"| {row['candidate']} | {_estimate(row['runtime'])} | {_estimate(row['reward'])} | "
+            f"{_estimate(row['success'])} | {_estimate(row['episode_length'])} |"
+        )
+    lines.extend(["", "## Speedups", ""])
+    for label, value in sorted(report.get("speedups", {}).items()):
+        lines.append(f"- {label}: {float(value):.3f}×")
+    lines.extend(["", "## Stability, failures, and rejections", ""])
+    lines.extend(f"- {reason}" for reason in report.get("rejections", []))
+    if not report.get("rejections"):
+        lines.append("- No terminal failures or rejected candidates.")
+    lines.extend(
+        [
+            "",
+            "## Methodology and provenance",
+            "",
+            f"- Environment and coverage: {report['seed_iteration_coverage']}",
+            f"- Stage 2 baseline: {report['stage2_baseline_derivation']}",
+            f"- Legacy comparison limitation: {report['legacy_limitations']}",
+            "",
+            "## Figures",
+            "",
+            "![Runtime ranking](runtime_ranking.png)",
+            "",
+            "![Stage 2 guardrails](stage2_guardrails.png)",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _pdf(markdown: str, images: Sequence[Path], path: Path) -> None:
+    with PdfPages(path) as pdf:
+        figure = plt.figure(figsize=(11.69, 8.27))
+        figure.text(0.04, 0.96, "ANYmal-D Kamino DVI Tuning Addendum", fontsize=16, fontweight="bold", va="top")
+        body = markdown.replace("#", "").replace("|", " ").replace("`", "")
+        lines: list[str] = []
+        for paragraph in body.splitlines():
+            if paragraph.strip():
+                lines.extend(textwrap.wrap(paragraph, 145))
+        figure.text(0.04, 0.92, "\n".join(lines[:58]), fontsize=6.2, va="top", linespacing=1.3)
+        pdf.savefig(figure)
+        plt.close(figure)
+        for image_path in images:
+            image = mpimg.imread(image_path)
+            figure, axis = plt.subplots(figsize=(11.69, 8.27))
+            axis.imshow(image)
+            axis.axis("off")
+            pdf.savefig(figure, bbox_inches="tight")
+            plt.close(figure)
+
+
+def write_tuning_report(report: Mapping[str, Any], output_dir: Path) -> tuple[Path, ...]:
+    """Write the auditable tuning addendum and its two required plots."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    runtime_path = output_dir / "runtime_ranking.png"
+    guardrail_path = output_dir / "stage2_guardrails.png"
+    markdown_path = output_dir / "anymal_d_tuning_addendum.md"
+    pdf_path = output_dir / "anymal_d_tuning_addendum.pdf"
+    _runtime_plot(report.get("runtime_rows", []), runtime_path)
+    _guardrail_plot(report.get("learning_traces", []), guardrail_path)
+    markdown = _markdown(report)
+    markdown_path.write_text(markdown, encoding="utf-8")
+    _pdf(markdown, (runtime_path, guardrail_path), pdf_path)
+    return markdown_path, pdf_path, runtime_path, guardrail_path

@@ -598,6 +598,14 @@ def test_resolve_wave2_writes_canonical_decision(tmp_path, wave1_records):
 
 Each decision JSON includes the source artifact root, source manifest hashes, selected/rejected candidates and reasons, resolved candidate configs/hashes, timestamp in UTC, and exact IsaacLab/Newton revisions. `write_json_atomic()` writes it.
 
+For `promote-finalists`, derive the Stage 2 baseline comparator from each
+validated 300-iteration clean baseline trace by slicing exactly its first 100
+aligned samples (so the final-20 guardrail window is iterations 81--100). This
+derived `stage="halve"` record exists only as input to `promote_finalists()`;
+never mutate or relabel the raw manifest or trace. Record the originating run
+ID, manifest path/hash, event path/hash, and config hash in `stage2.json`, and
+disclose this prefix derivation in the Markdown/PDF methodology.
+
 - [ ] **Step 4: Implement report generation**
 
 The Markdown/PDF addendum contains:
