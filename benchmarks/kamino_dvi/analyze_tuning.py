@@ -1298,7 +1298,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparser = subparsers.add_parser(action)
         subparser.add_argument("--artifact-root", type=Path, required=True)
         subparser.add_argument("--logs-root", type=Path, default=Path("logs"))
-        subparser.add_argument("--decision-root", type=Path, default=Path("benchmark_artifacts/kamino_dvi/decisions"))
+        subparser.add_argument("--decision-root", type=Path)
         subparser.add_argument("--tuning-matrix", type=Path, default=DEFAULT_TUNING_MATRIX_PATH)
         subparser.add_argument("--output", type=Path, default=Path(default_name))
     validate = subparsers.add_parser("validate")
@@ -1330,6 +1330,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Execute one deterministic analysis or report action."""
     args = build_parser().parse_args(argv)
+    if args.action in {"resolve-wave2", "promote-stage2", "promote-finalists", "select-winner"}:
+        args.decision_root = args.decision_root or args.output.parent
     actions = {
         "resolve-wave2": _resolve_wave2_action,
         "promote-stage2": _promote_stage2_action,

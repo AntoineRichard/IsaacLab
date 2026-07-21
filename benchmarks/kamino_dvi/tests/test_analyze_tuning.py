@@ -467,6 +467,43 @@ def test_validate_ignores_only_configured_decision_directory(tmp_path, monkeypat
         main(argv)
 
 
+def test_promote_stage2_derives_decision_root_from_output(tmp_path, monkeypatch):
+    """The documented staged command treats the output parent as its decision directory."""
+    artifact_root = tmp_path / "artifacts"
+    decision_root = artifact_root / "decisions"
+    decision_root.mkdir(parents=True)
+    output = decision_root / "stage2.json"
+
+    def recompute(args, through):
+        assert through == "stage2"
+        assert (
+            load_tuning_records(
+                args.artifact_root,
+                args.logs_root,
+                expected_stage="wave1",
+                decision_root=args.decision_root,
+            )
+            == []
+        )
+        return {"stage2_decision": {"action": "promote-stage2"}}
+
+    monkeypatch.setattr(analysis_module, "_recompute_chain", recompute)
+    argv = [
+        "promote-stage2",
+        "--artifact-root",
+        str(artifact_root),
+        "--output",
+        str(output),
+    ]
+
+    assert main(argv) == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == {"action": "promote-stage2"}
+
+    (artifact_root / "mystery").mkdir()
+    with pytest.raises(ValueError, match=r"undeclared tuning directory: .*mystery"):
+        main(argv)
+
+
 @pytest.mark.parametrize(("field", "value"), (("seed", 42.0), ("attempt", False)))
 def test_loader_rejects_noninteger_identity_fields(tmp_path, monkeypatch, field, value):
     """Identity integers reject float and bool values before semantic validation."""

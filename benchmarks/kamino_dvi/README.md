@@ -81,8 +81,9 @@ campaign. Baseline and Wave 1 validation require no decision files:
 The command writes deterministic standard JSON to stdout with expected,
 terminal, valid, and rejected counts plus sorted run IDs, rejection reasons,
 and the broad bundle-dirty count and run IDs. It exits nonzero without success
-JSON when requested coverage or provenance is invalid. Adaptive stages
-additionally read their strict upstream decision from `--decision-root`.
+JSON when requested coverage or provenance is invalid. Adaptive stages read
+their strict upstream decisions from `--decision-root` when supplied; otherwise
+all staged analysis actions derive the shared directory from `--output`.
 
 The runner enforces launch cleanliness with tracked files only (`git status
 --porcelain --untracked-files=no`). The training bundle's
@@ -105,21 +106,18 @@ runner's separate tracked-only check.
   --decision-root benchmark_artifacts/kamino_dvi/decisions --resume
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning promote-stage2 \
   --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
-  --decision-root benchmark_artifacts/kamino_dvi/decisions \
   --output benchmark_artifacts/kamino_dvi/decisions/stage2.json
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
   --stage halve --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning \
   --decision-root benchmark_artifacts/kamino_dvi/decisions --resume
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning promote-finalists \
   --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
-  --decision-root benchmark_artifacts/kamino_dvi/decisions \
   --output benchmark_artifacts/kamino_dvi/decisions/finalists.json
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.tune \
   --stage final --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning \
   --decision-root benchmark_artifacts/kamino_dvi/decisions --resume
 ./isaaclab.sh -p -m benchmarks.kamino_dvi.analyze_tuning select-winner \
   --artifact-root benchmark_artifacts/kamino_dvi/anymal_tuning --logs-root logs \
-  --decision-root benchmark_artifacts/kamino_dvi/decisions \
   --output benchmark_artifacts/kamino_dvi/decisions/winner.json
 ```
 
