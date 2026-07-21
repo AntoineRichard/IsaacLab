@@ -439,8 +439,8 @@ def execute_tuning_identity(
     artifact_root: Path,
     *,
     isaaclab_head: str,
+    isaaclab_newton: PackageLocation,
     resume: bool,
-    isaaclab_newton: PackageLocation | None = None,
     executor: Callable[..., ProcessOutcome] | None = None,
 ) -> TerminalState:
     """Execute one tuning identity without overwriting any prior attempt.
@@ -466,13 +466,6 @@ def execute_tuning_identity(
     """
     if executor is None:
         executor = execute_command
-    if isaaclab_newton is None:
-        source_root = (repo_root / "source" / "isaaclab_newton").resolve()
-        isaaclab_newton = PackageLocation(
-            module_path=str(source_root / "isaaclab_newton" / "__init__.py"),
-            distribution_path=str(source_root),
-            direct_url={"url": source_root.as_uri(), "dir_info": {"editable": True}},
-        )
     resolved_candidate = _candidate_provenance(tuning_matrix, candidate)
     if identity.stage == "canonical" and resolved_candidate.name != _CANONICAL_CANDIDATE:
         raise ValueError("canonical stage requires the reserved canonical_winner candidate")

@@ -44,6 +44,16 @@ from benchmarks.kamino_dvi.tuning import (
 )
 
 
+def observed_package_location(repo_root: Path) -> PackageLocation:
+    """Build checkout-consistent package provenance for executor tests."""
+    source_root = (repo_root / "source" / "isaaclab_newton").resolve()
+    return PackageLocation(
+        module_path=str(source_root / "isaaclab_newton" / "__init__.py"),
+        distribution_path=str(source_root),
+        direct_url={"url": source_root.as_uri(), "dir_info": {"editable": True}},
+    )
+
+
 def completed_tuning_manifest(tmp_path: Path) -> TuningManifest:
     """Build one completed tuning manifest with full provenance."""
     tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
@@ -172,6 +182,27 @@ def test_adaptive_decisions_reject_reserved_canonical_candidate(tmp_path, filena
         select_tuning_identities(tuning, args)
 
 
+def test_execute_tuning_identity_requires_observed_package_location(tmp_path):
+    """A schema 1.2 manifest cannot fabricate package evidence for an unobserved environment."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+
+    with pytest.raises(TypeError, match="isaaclab_newton"):
+        execute_tuning_identity(
+            locked,
+            tuning,
+            candidate,
+            identity,
+            tmp_path,
+            tmp_path / "artifacts",
+            isaaclab_head="f" * 40,
+            resume=False,
+            executor=successful_executor,
+        )
+
+
 def test_noncanonical_execution_rejects_reserved_candidate_instead_of_suppressing_overrides(tmp_path):
     tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
     locked = load_matrix(DEFAULT_MATRIX_PATH)
@@ -194,6 +225,7 @@ def test_noncanonical_execution_rejects_reserved_candidate_instead_of_suppressin
             tmp_path,
             tmp_path / "artifacts",
             isaaclab_head="f" * 40,
+            isaaclab_newton=observed_package_location(tmp_path),
             resume=False,
             executor=successful_executor,
         )
@@ -214,6 +246,7 @@ def test_canonical_execution_rejects_noncanonical_candidate(tmp_path):
             tmp_path,
             tmp_path / "artifacts",
             isaaclab_head="f" * 40,
+            isaaclab_newton=observed_package_location(tmp_path),
             resume=False,
             executor=successful_executor,
         )
@@ -367,6 +400,7 @@ def test_execute_tuning_identity_requires_trace_and_hashes_all_evidence(tmp_path
         tmp_path,
         tmp_path / "artifacts",
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=successful_executor,
     )
@@ -406,6 +440,7 @@ def test_execute_rejects_trace_identity_mismatch(tmp_path, monkeypatch, field, v
         tmp_path,
         tmp_path / "artifacts",
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=successful_executor,
     )
@@ -436,6 +471,7 @@ def test_execute_tuning_identity_rejects_missing_metric_as_artifact(tmp_path, mo
         tmp_path,
         tmp_path / "artifacts",
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=successful_executor,
     )
@@ -467,6 +503,7 @@ def test_failed_attempt_is_preserved_and_retry_links_to_parent(tmp_path):
                 tmp_path,
                 tmp_path / "artifacts",
                 isaaclab_head="f" * 40,
+                isaaclab_newton=observed_package_location(tmp_path),
                 resume=resume,
                 executor=crash,
             )
@@ -509,6 +546,7 @@ def test_resume_skips_exact_evidence_but_tampered_event_creates_retry(tmp_path, 
                 tmp_path,
                 tmp_path / "artifacts",
                 isaaclab_head="f" * 40,
+                isaaclab_newton=observed_package_location(tmp_path),
                 resume=resume,
                 executor=executor,
             )
@@ -526,6 +564,7 @@ def test_resume_skips_exact_evidence_but_tampered_event_creates_retry(tmp_path, 
             tmp_path,
             tmp_path / "artifacts",
             isaaclab_head="f" * 40,
+            isaaclab_newton=observed_package_location(tmp_path),
             resume=True,
             executor=executor,
         )
@@ -556,6 +595,7 @@ def test_preflight_gate_requires_exact_config_and_source_head(tmp_path, monkeypa
         tmp_path,
         tmp_path / "artifacts",
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=successful_executor,
     )
@@ -612,6 +652,7 @@ def test_unreadable_attempt_directory_is_never_overwritten(tmp_path):
             tmp_path,
             artifact_root,
             isaaclab_head="f" * 40,
+            isaaclab_newton=observed_package_location(tmp_path),
             resume=True,
             executor=crash,
         )
@@ -654,6 +695,7 @@ def test_resume_does_not_accept_older_completion_after_latest_failure(tmp_path, 
         tmp_path,
         artifact_root,
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=successful_executor,
     )
@@ -665,6 +707,7 @@ def test_resume_does_not_accept_older_completion_after_latest_failure(tmp_path, 
         tmp_path,
         artifact_root,
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=_crashing_executor,
     )
@@ -684,6 +727,7 @@ def test_resume_does_not_accept_older_completion_after_latest_failure(tmp_path, 
             tmp_path,
             artifact_root,
             isaaclab_head="f" * 40,
+            isaaclab_newton=observed_package_location(tmp_path),
             resume=True,
             executor=executor,
         )
@@ -709,6 +753,7 @@ def test_resume_rejects_copied_root_and_incomplete_hash_set(tmp_path, monkeypatc
         tmp_path,
         artifact_root,
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=successful_executor,
     )
@@ -748,6 +793,7 @@ def test_resume_rejects_copied_root_and_incomplete_hash_set(tmp_path, monkeypatc
         tmp_path,
         artifact_root,
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=True,
         executor=executor,
     )
@@ -769,6 +815,7 @@ def test_new_attempt_is_above_highest_occupied_and_uses_latest_valid_parent(tmp_
         tmp_path,
         artifact_root,
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=_crashing_executor,
     )
@@ -782,6 +829,7 @@ def test_new_attempt_is_above_highest_occupied_and_uses_latest_valid_parent(tmp_
         tmp_path,
         artifact_root,
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=True,
         executor=_crashing_executor,
     )
@@ -836,6 +884,7 @@ def test_post_running_exceptions_always_persist_failed_manifest(tmp_path, monkey
         tmp_path,
         tmp_path / "artifacts",
         isaaclab_head="f" * 40,
+        isaaclab_newton=observed_package_location(tmp_path),
         resume=False,
         executor=executor,
     )

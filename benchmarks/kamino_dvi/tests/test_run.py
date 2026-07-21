@@ -9,10 +9,12 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import create_autospec
 
 import pytest
 
 from benchmarks.kamino_dvi.commands import build_training_command
+from benchmarks.kamino_dvi.environment import validate_environment as validate_environment_signature
 from benchmarks.kamino_dvi.manifests import (
     command_hash,
     read_manifest,
@@ -142,6 +144,33 @@ def test_cli_filters_select_exact_preflight_identity():
     assert identities[0].task is TaskName.ANT
     assert identities[0].variant is Variant.KAMINO_PR_DVI
     assert identities[0].phase.value == "preflight"
+
+
+def test_main_passes_repo_root_to_environment_validation(tmp_path: Path, monkeypatch):
+    """The shared runner must validate package provenance against its launched checkout."""
+    validation = create_autospec(validate_environment_signature, return_value=None)
+    monkeypatch.setattr(
+        "benchmarks.kamino_dvi.run.probe_environment",
+        lambda *args: SimpleNamespace(isaaclab=SimpleNamespace(head="f" * 40)),
+    )
+    monkeypatch.setattr("benchmarks.kamino_dvi.run.validate_environment", validation)
+
+    result = main(
+        [
+            "--dry-run",
+            "--resume",
+            "--preflight-only",
+            "--task",
+            TaskName.CARTPOLE.value,
+            "--artifact-root",
+            str(tmp_path),
+        ]
+    )
+
+    repo_root = Path(__file__).resolve().parents[3]
+    assert result == 0
+    assert validation.call_count > 0
+    assert all(call.args[3] == repo_root for call in validation.call_args_list)
 
 
 def test_cli_full_seed_filter_keeps_all_applicable_task_variants():

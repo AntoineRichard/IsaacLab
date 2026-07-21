@@ -424,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     labels = {matrix.variant(variant).environment for task in selected_tasks for variant in matrix.task(task).variants}
     provenances = {label: probe_environment(python_executable(repo_root, label), repo_root) for label in labels}
     for label, provenance in provenances.items():
-        validate_environment(matrix, label, provenance)
+        validate_environment(matrix, label, provenance, repo_root)
     isaaclab_heads = {provenance.isaaclab.head for provenance in provenances.values()}
     if len(isaaclab_heads) != 1:
         raise ValueError("benchmark environments observed different IsaacLab revisions")

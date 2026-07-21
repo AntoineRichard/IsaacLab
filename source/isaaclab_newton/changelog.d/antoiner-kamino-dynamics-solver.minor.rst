@@ -20,3 +20,6 @@ Fixed
 
 * Fixed :attr:`~isaaclab_newton.physics.KaminoSolverCfg.dvi_warmstart_mode`
   to interpret Python ``None`` as the solver mode ``"none"``.
+* Fixed Kamino benchmark execution to require observed package provenance and
+  validate it against the launched checkout, and fixed report funnels so
+  qualified tie-break finalists are not counted as learning rejections.

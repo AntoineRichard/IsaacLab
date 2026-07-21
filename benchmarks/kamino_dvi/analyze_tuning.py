@@ -1127,7 +1127,9 @@ def _stage_funnel(
             "attempted_runs": len(chain["final"]),
             "valid_runs": len(chain["final"]) - failed(chain["final"]),
             "terminal_rejected_runs": failed(chain["final"]),
-            "learning_rejected_candidates": learning_rejected(winner, chain["final"]),
+            "learning_rejected_candidates": sum(
+                qualification.get("qualified") is False for qualification in winner.get("qualifications", {}).values()
+            ),
             "promoted_candidates": int(bool(winner.get("candidate"))),
         },
         {

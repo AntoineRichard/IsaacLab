@@ -1159,7 +1159,7 @@ def test_stage_funnel_separates_wave1_and_wave2_origins():
             record("w2_bad", "wave2", "timeout"),
         ],
         "halve": [record("w1_good", "halve"), record("w2_good", "halve")],
-        "final": [record("w2_good", "final")],
+        "final": [record("winner", "final"), record("qualified_loser", "final"), record("rejected", "final")],
         "wave2_decision": {"selected": [f"derived_{index}" for index in range(6)]},
         "stage2_decision": {
             "selected": ["w1_good", "w2_good"],
@@ -1167,7 +1167,15 @@ def test_stage_funnel_separates_wave1_and_wave2_origins():
         },
         "finalists_decision": {"selected": ["w2_good"], "rejected": {"w1_good": "slower"}},
     }
-    winner = {"rejected": {}}
+    winner = {
+        "candidate": "winner",
+        "rejected": {"qualified_loser": "tie-break", "rejected": "learning threshold"},
+        "qualifications": {
+            "winner": {"qualified": True},
+            "qualified_loser": {"qualified": True},
+            "rejected": {"qualified": False},
+        },
+    }
 
     rows = {
         row["stage"]: row
@@ -1185,6 +1193,7 @@ def test_stage_funnel_separates_wave1_and_wave2_origins():
     assert rows["Wave 2"]["terminal_rejected_runs"] == 1
     assert rows["Wave 2"]["learning_rejected_candidates"] == 1
     assert rows["Wave 2"]["promoted_candidates"] == 1
+    assert rows["final"]["learning_rejected_candidates"] == 1
     assert rows["Wave 2"]["selected_from_wave1"] == 1
 
 
