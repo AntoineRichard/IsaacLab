@@ -19,6 +19,7 @@ from benchmarks.kamino_dvi.manifests import (
     sha256_file,
     stable_run_id,
     transition,
+    write_json_atomic,
     write_manifest,
 )
 from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
@@ -79,6 +80,14 @@ def test_manifest_round_trip_is_atomic_and_typed(tmp_path: Path, manifest):
     assert read_manifest(path) == manifest
     assert not list(tmp_path.glob("*.tmp"))
     assert path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_write_json_atomic_replaces_complete_document(tmp_path):
+    path = tmp_path / "decision.json"
+    write_json_atomic(path, {"state": "old"})
+    write_json_atomic(path, {"state": "new", "values": [1, 2]})
+    assert json.loads(path.read_text()) == {"state": "new", "values": [1, 2]}
+    assert not tuple(tmp_path.glob("*.tmp"))
 
 
 def test_manifest_reads_legacy_artifact_without_exact_isaaclab_head(tmp_path: Path, manifest):

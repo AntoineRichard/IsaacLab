@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -63,8 +64,8 @@ def _manifest_data(manifest: RunManifest) -> dict[str, Any]:
     return asdict(manifest)
 
 
-def write_manifest(path: Path, manifest: RunManifest) -> None:
-    """Atomically write a manifest after flushing it to stable storage."""
+def write_json_atomic(path: Path, data: Mapping[str, Any]) -> None:
+    """Atomically write a JSON document after flushing it to stable storage."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -77,7 +78,7 @@ def write_manifest(path: Path, manifest: RunManifest) -> None:
             delete=False,
         ) as stream:
             temporary_path = Path(stream.name)
-            json.dump(_manifest_data(manifest), stream, indent=2, sort_keys=True)
+            json.dump(data, stream, indent=2, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -85,6 +86,11 @@ def write_manifest(path: Path, manifest: RunManifest) -> None:
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
+
+
+def write_manifest(path: Path, manifest: RunManifest) -> None:
+    """Atomically write a manifest after flushing it to stable storage."""
+    write_json_atomic(path, _manifest_data(manifest))
 
 
 def read_manifest(path: Path) -> RunManifest:

@@ -1,0 +1,451 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Tests for the resumable ANYmal-D DVI tuning runner."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from benchmarks.kamino_dvi.manifests import command_hash, write_json_atomic
+from benchmarks.kamino_dvi.matrix import DEFAULT_MATRIX_PATH, load_matrix
+from benchmarks.kamino_dvi.models import FailureCategory, RetryLineage, TerminalState
+from benchmarks.kamino_dvi.parsing import MissingBenchmarkFieldError
+from benchmarks.kamino_dvi.run import ProcessOutcome
+from benchmarks.kamino_dvi.tune import (
+    SCHEMA_VERSION,
+    TuningIdentity,
+    TuningManifest,
+    build_canonical_command,
+    build_parser,
+    build_tuning_command,
+    execute_tuning_identity,
+    main,
+    preflight_completed,
+    read_tuning_manifest,
+    select_tuning_identities,
+    tuning_resume_matches,
+    validate_tuning_command,
+)
+from benchmarks.kamino_dvi.tuning import (
+    DEFAULT_TUNING_MATRIX_PATH,
+    config_hash,
+    load_tuning_matrix,
+    resolve_config,
+)
+
+
+def completed_tuning_manifest(tmp_path: Path) -> TuningManifest:
+    """Build one completed tuning manifest with full provenance."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40, 0)
+    command = tuple(build_tuning_command(locked, tuning, candidate, identity, tmp_path, tmp_path / "run"))
+    resolved = resolve_config(tuning, candidate)
+    return TuningManifest(
+        run_id=identity.run_id,
+        identity=identity,
+        config_hash=config_hash(resolved),
+        resolved_config=resolved,
+        command=command,
+        command_hash=command_hash(command),
+        revisions=locked.revisions,
+        schema_version=SCHEMA_VERSION,
+        isaaclab_head="f" * 40,
+        artifact_root=str(tmp_path / "run"),
+        tensorboard_event_path=str(tmp_path / "events.out.tfevents.test"),
+        tensorboard_event_hash="e" * 64,
+        artifact_hashes={"stdout.log": "a" * 64, "stderr.log": "b" * 64, "bundle.json": "c" * 64},
+        state=TerminalState.COMPLETED,
+        failure_category=None,
+        retry=RetryLineage(),
+    )
+
+
+def write_winner_decision(tmp_path: Path, candidate) -> dict:
+    """Write the canonical winner decision consumed by the runner."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    resolved = resolve_config(tuning, candidate)
+    winner = {
+        "candidate": candidate.name,
+        "resolved_config": resolved,
+        "config_hash": config_hash(resolved),
+    }
+    write_json_atomic(tmp_path / "winner.json", winner)
+    return winner
+
+
+def test_tuning_command_appends_only_declared_candidate_overrides(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40, 0)
+    command = build_tuning_command(locked, tuning, candidate, identity, tmp_path, tmp_path / "run")
+    assert command[-1] == "env.sim.physics.solver_cfg.dynamics_linear_solver_max_iterations=3"
+    assert command.count("presets=newton_kamino_dvi") == 1
+    assert not any("dynamics_solver=dvi" in value for value in command)
+
+
+def test_resume_requires_exact_head_command_config_and_event_hash(tmp_path):
+    manifest = completed_tuning_manifest(tmp_path)
+    assert tuning_resume_matches(manifest, manifest.identity, manifest.command, manifest.config_hash, "f" * 40)
+    assert not tuning_resume_matches(manifest, manifest.identity, manifest.command, "0" * 64, "f" * 40)
+    assert not tuning_resume_matches(manifest, manifest.identity, manifest.command, manifest.config_hash, "0" * 40)
+
+
+def test_resume_rejects_changed_command_or_missing_event_integrity(tmp_path):
+    manifest = completed_tuning_manifest(tmp_path)
+    assert not tuning_resume_matches(
+        manifest, manifest.identity, manifest.command + ("--extra",), manifest.config_hash, "f" * 40
+    )
+    assert not tuning_resume_matches(
+        TuningManifest(**{**manifest.__dict__, "tensorboard_event_hash": None}),
+        manifest.identity,
+        manifest.command,
+        manifest.config_hash,
+        "f" * 40,
+    )
+
+
+def test_canonical_command_uses_winner_identity_without_hydra_overrides(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    winner = write_winner_decision(tmp_path, tuning.candidate("cr_iterations_3"))
+    identity, candidate, command = build_canonical_command(locked, tuning, winner, tmp_path)
+    assert identity.candidate == "canonical_winner"
+    assert candidate.config_hash == winner["config_hash"]
+    assert not any(value.startswith("env.sim.physics.solver_cfg.") for value in command)
+
+
+def test_tuning_command_validator_rejects_any_grammar_change(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    output_path = tmp_path / "run"
+    command = build_tuning_command(locked, tuning, candidate, identity, tmp_path, output_path)
+
+    validate_tuning_command(locked, tuning, candidate, identity, tmp_path, output_path, command)
+    for changed in (
+        command + ["--extra"],
+        command[:-1],
+        command[:-2] + command[-1:] + command[-2:-1],
+        command[:-1] + ["env.sim.physics.solver_cfg.dynamics_linear_solver_max_iterations=5"],
+    ):
+        try:
+            validate_tuning_command(locked, tuning, candidate, identity, tmp_path, output_path, changed)
+        except ValueError as error:
+            assert "exactly match" in str(error)
+        else:
+            raise AssertionError("changed tuning command was accepted")
+
+
+def write_candidates_decision(path: Path, candidates) -> None:
+    """Write resolved candidate records for one adaptive stage."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    records = []
+    for candidate in candidates:
+        resolved = resolve_config(tuning, candidate)
+        records.append(
+            {
+                "name": candidate.name,
+                "overrides": candidate.overrides,
+                "resolved_config": resolved,
+                "config_hash": config_hash(resolved),
+            }
+        )
+    write_json_atomic(path, {"resolved_candidates": records})
+
+
+def prepare_decisions(tmp_path: Path) -> None:
+    """Write exact-cardinality adaptive decisions for schedule tests."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    write_candidates_decision(tmp_path / "wave2.json", tuning.wave1[:6])
+    write_candidates_decision(tmp_path / "stage2.json", tuning.wave1[:8])
+    write_candidates_decision(tmp_path / "finalists.json", tuning.wave1[:3])
+    write_winner_decision(tmp_path, tuning.wave1[0])
+
+
+def test_measured_stage_schedules_have_exact_cardinalities(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    prepare_decisions(tmp_path)
+    expected = {"baseline": 3, "wave1": 18, "wave2": 6, "halve": 16, "final": 9, "canonical": 3}
+    for stage, count in expected.items():
+        args = build_parser().parse_args(["--stage", stage, "--decision-root", str(tmp_path), "--measured-only"])
+        identities = select_tuning_identities(tuning, args)
+        assert len(identities) == count
+        assert all(identity.stage == stage for identity in identities)
+        assert all(identity.num_envs == 4096 for identity in identities)
+
+
+def test_preflight_schedules_run_once_per_candidate(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    prepare_decisions(tmp_path)
+    expected = {"baseline": 1, "wave1": 18, "wave2": 6, "halve": 8, "final": 3, "canonical": 1}
+    for stage, count in expected.items():
+        args = build_parser().parse_args(["--stage", stage, "--decision-root", str(tmp_path), "--preflight-only"])
+        identities = select_tuning_identities(tuning, args)
+        assert len(identities) == count
+        assert all(identity.stage == "preflight" for identity in identities)
+        assert all(identity.seed == 42 and identity.max_iterations == 5 for identity in identities)
+
+
+def test_candidate_filter_keeps_one_candidate_seed_schedule(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    args = build_parser().parse_args(["--stage", "wave1", "--candidate", "cr_iterations_3", "--measured-only"])
+
+    assert select_tuning_identities(tuning, args) == (TuningIdentity("wave1", "cr_iterations_3", 42, 4096, 40),)
+
+
+def successful_executor(command, stdout_path, stderr_path, *, timeout_s):
+    """Write a complete synthetic schema bundle without launching training."""
+    del timeout_s
+    output_path = Path(command[command.index("--output_path") + 1])
+    output_path.mkdir(parents=True, exist_ok=True)
+    (output_path / "benchmark_training_task.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.1",
+                "run": {"status": "completed"},
+                "runtime": {"iterations_completed": int(command[command.index("--max_iterations") + 1])},
+            }
+        ),
+        encoding="utf-8",
+    )
+    stdout_path.write_text("complete\n", encoding="utf-8")
+    stderr_path.write_text("", encoding="utf-8")
+    return ProcessOutcome(returncode=0, timed_out=False)
+
+
+def test_execute_tuning_identity_requires_trace_and_hashes_all_evidence(tmp_path, monkeypatch):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    event_path = tmp_path / "logs" / "events.out.tfevents.test"
+    event_path.parent.mkdir()
+    event_path.write_bytes(b"event-data")
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: object())
+
+    state = execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        tmp_path / "artifacts",
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=successful_executor,
+    )
+
+    manifest = read_tuning_manifest(tmp_path / "artifacts" / identity.run_id / "manifest.json")
+    assert state is TerminalState.COMPLETED
+    assert manifest.state is TerminalState.COMPLETED
+    assert manifest.tensorboard_event_path == str(event_path.resolve())
+    assert manifest.tensorboard_event_hash is not None
+    assert set(manifest.artifact_hashes) == {
+        "stdout.log",
+        "stderr.log",
+        "benchmark_training_task.json",
+    }
+
+
+def test_execute_tuning_identity_rejects_missing_metric_as_artifact(tmp_path, monkeypatch):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    event_path = tmp_path / "events.out.tfevents.test"
+    event_path.write_bytes(b"event-data")
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
+
+    def reject_trace(bundle, event):
+        raise MissingBenchmarkFieldError("TensorBoard:Perf/total_fps")
+
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", reject_trace)
+    state = execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        tmp_path / "artifacts",
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=successful_executor,
+    )
+
+    manifest = read_tuning_manifest(tmp_path / "artifacts" / identity.run_id / "manifest.json")
+    assert state is TerminalState.FAILED
+    assert manifest.failure_category is FailureCategory.ARTIFACT
+
+
+def test_failed_attempt_is_preserved_and_retry_links_to_parent(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+
+    def crash(command, stdout_path, stderr_path, *, timeout_s):
+        del command, timeout_s
+        stdout_path.write_text("", encoding="utf-8")
+        stderr_path.write_text("RuntimeError: crash\n", encoding="utf-8")
+        return ProcessOutcome(returncode=1, timed_out=False)
+
+    for resume in (False, True):
+        assert (
+            execute_tuning_identity(
+                locked,
+                tuning,
+                candidate,
+                identity,
+                tmp_path,
+                tmp_path / "artifacts",
+                isaaclab_head="f" * 40,
+                resume=resume,
+                executor=crash,
+            )
+            is TerminalState.FAILED
+        )
+
+    first = read_tuning_manifest(tmp_path / "artifacts" / identity.run_id / "manifest.json")
+    retry_identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40, 1)
+    second = read_tuning_manifest(tmp_path / "artifacts" / retry_identity.run_id / "manifest.json")
+    assert first.failure_category is FailureCategory.CRASH
+    assert second.retry == RetryLineage(attempt=1, parent_run_id=first.run_id)
+    assert first.run_id != second.run_id
+
+
+def test_resume_skips_exact_evidence_but_tampered_event_creates_retry(tmp_path, monkeypatch):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    event_path = tmp_path / "events.out.tfevents.test"
+    event_path.write_bytes(b"original")
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: object())
+    calls = 0
+
+    def executor(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return successful_executor(*args, **kwargs)
+
+    for resume in (False, True):
+        assert (
+            execute_tuning_identity(
+                locked,
+                tuning,
+                candidate,
+                identity,
+                tmp_path,
+                tmp_path / "artifacts",
+                isaaclab_head="f" * 40,
+                resume=resume,
+                executor=executor,
+            )
+            is TerminalState.COMPLETED
+        )
+    assert calls == 1
+
+    event_path.write_bytes(b"tampered")
+    assert (
+        execute_tuning_identity(
+            locked,
+            tuning,
+            candidate,
+            identity,
+            tmp_path,
+            tmp_path / "artifacts",
+            isaaclab_head="f" * 40,
+            resume=True,
+            executor=executor,
+        )
+        is TerminalState.COMPLETED
+    )
+    assert calls == 2
+    retry = TuningIdentity("wave1", candidate.name, 42, 4096, 40, 1)
+    assert (tmp_path / "artifacts" / retry.run_id / "manifest.json").is_file()
+
+
+def test_preflight_gate_requires_exact_config_and_source_head(tmp_path, monkeypatch):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("preflight", candidate.name, 42, 4096, 5)
+    event_path = tmp_path / "events.out.tfevents.test"
+    event_path.write_bytes(b"event")
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.locate_rsl_rl_events", lambda bundle, logs: event_path)
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune.parse_training_trace", lambda bundle, event: object())
+    assert not preflight_completed(locked, tuning, candidate, tmp_path, tmp_path / "artifacts", "f" * 40)
+    execute_tuning_identity(
+        locked,
+        tuning,
+        candidate,
+        identity,
+        tmp_path,
+        tmp_path / "artifacts",
+        isaaclab_head="f" * 40,
+        resume=False,
+        executor=successful_executor,
+    )
+    assert preflight_completed(locked, tuning, candidate, tmp_path, tmp_path / "artifacts", "f" * 40)
+    assert not preflight_completed(locked, tuning, candidate, tmp_path, tmp_path / "artifacts", "0" * 40)
+
+
+def test_measured_only_cli_refuses_absent_preflight(tmp_path, monkeypatch):
+    monkeypatch.setattr("benchmarks.kamino_dvi.tune._validated_source_head", lambda matrix, root: "f" * 40)
+    with pytest.raises(RuntimeError, match="completed exact preflight"):
+        main(
+            [
+                "--stage",
+                "wave1",
+                "--candidate",
+                "cr_iterations_3",
+                "--measured-only",
+                "--artifact-root",
+                str(tmp_path / "artifacts"),
+            ]
+        )
+
+
+def test_unreadable_attempt_directory_is_never_overwritten(tmp_path):
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    locked = load_matrix(DEFAULT_MATRIX_PATH)
+    candidate = tuning.candidate("cr_iterations_3")
+    identity = TuningIdentity("wave1", candidate.name, 42, 4096, 40)
+    artifact_root = tmp_path / "artifacts"
+    raw_path = artifact_root / identity.run_id
+    raw_path.mkdir(parents=True)
+    (raw_path / "partial.log").write_text("raw evidence", encoding="utf-8")
+
+    def crash(command, stdout_path, stderr_path, *, timeout_s):
+        del command, timeout_s
+        stdout_path.write_text("", encoding="utf-8")
+        stderr_path.write_text("RuntimeError: crash\n", encoding="utf-8")
+        return ProcessOutcome(returncode=1, timed_out=False)
+
+    assert (
+        execute_tuning_identity(
+            locked,
+            tuning,
+            candidate,
+            identity,
+            tmp_path,
+            artifact_root,
+            isaaclab_head="f" * 40,
+            resume=True,
+            executor=crash,
+        )
+        is TerminalState.FAILED
+    )
+    retry = TuningIdentity("wave1", candidate.name, 42, 4096, 40, 1)
+    assert (raw_path / "partial.log").read_text(encoding="utf-8") == "raw evidence"
+    assert (artifact_root / retry.run_id / "manifest.json").is_file()

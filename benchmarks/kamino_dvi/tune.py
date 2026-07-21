@@ -1,0 +1,662 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Run provenance-safe ANYmal-D Kamino DVI tuning stages."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shlex
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
+from typing import Any
+
+from .commands import build_training_command
+from .environment import probe_environment, python_executable, validate_environment
+from .failures import classify_failure
+from .manifests import command_hash, sha256_file, write_json_atomic
+from .matrix import DEFAULT_MATRIX_PATH, load_matrix
+from .models import (
+    BenchmarkMatrix,
+    FailureCategory,
+    Phase,
+    RetryLineage,
+    Revisions,
+    RunIdentity,
+    TaskName,
+    TerminalState,
+    Variant,
+)
+from .parsing import MissingBenchmarkFieldError, locate_rsl_rl_events, parse_training_trace
+from .run import ProcessOutcome, execute_command, inspect_bundle
+from .tuning import (
+    DEFAULT_TUNING_MATRIX_PATH,
+    SolverValue,
+    TuningCandidate,
+    TuningMatrix,
+    config_hash,
+    hydra_overrides,
+    load_tuning_matrix,
+    resolve_config,
+)
+
+SCHEMA_VERSION = "1.1"
+
+
+@dataclass(frozen=True)
+class TuningIdentity:
+    """One immutable tuning-stage training-run identity."""
+
+    stage: str
+    candidate: str
+    seed: int
+    num_envs: int
+    max_iterations: int
+    attempt: int = 0
+
+    @property
+    def run_id(self) -> str:
+        """Return the stable filesystem-safe run identifier."""
+        return (
+            f"{self.stage}__{self.candidate}__seed{self.seed}__env{self.num_envs}"
+            f"__iter{self.max_iterations}__attempt{self.attempt}"
+        )
+
+
+@dataclass(frozen=True)
+class TuningManifest:
+    """Persistent state and provenance for one tuning attempt."""
+
+    run_id: str
+    identity: TuningIdentity
+    config_hash: str
+    resolved_config: dict[str, SolverValue]
+    command: tuple[str, ...]
+    command_hash: str
+    revisions: Revisions
+    schema_version: str
+    isaaclab_head: str
+    artifact_root: str
+    tensorboard_event_path: str | None = None
+    tensorboard_event_hash: str | None = None
+    artifact_hashes: dict[str, str] = field(default_factory=dict)
+    state: TerminalState = TerminalState.PLANNED
+    failure_category: FailureCategory | None = None
+    retry: RetryLineage = field(default_factory=RetryLineage)
+
+
+@dataclass(frozen=True)
+class ResolvedTuningCandidate:
+    """A named tuning candidate with literal resolved configuration provenance."""
+
+    name: str
+    overrides: dict[str, SolverValue]
+    resolved_config: dict[str, SolverValue]
+    config_hash: str
+
+
+def _run_identity(identity: TuningIdentity) -> RunIdentity:
+    phase = Phase.PREFLIGHT if identity.max_iterations == 5 else Phase.FULL
+    return RunIdentity(
+        task=TaskName.ANYMAL_D,
+        variant=Variant.KAMINO_PR_DVI,
+        seed=identity.seed,
+        phase=phase,
+        num_envs=identity.num_envs,
+        max_iterations=identity.max_iterations,
+    )
+
+
+def build_tuning_command(
+    matrix: BenchmarkMatrix,
+    tuning_matrix: TuningMatrix,
+    candidate: TuningCandidate,
+    identity: TuningIdentity,
+    repo_root: Path,
+    output_path: Path,
+) -> list[str]:
+    """Build the locked PR3570 DVI command plus declared tuning overrides."""
+    if identity.candidate != candidate.name:
+        raise ValueError("tuning identity candidate does not match command candidate")
+    if identity.num_envs != tuning_matrix.num_envs:
+        raise ValueError(f"tuning commands require {tuning_matrix.num_envs} environments")
+    command = build_training_command(matrix, _run_identity(identity), repo_root, output_path)
+    command.extend(hydra_overrides(tuning_matrix, candidate))
+    return command
+
+
+def validate_tuning_command(
+    matrix: BenchmarkMatrix,
+    tuning_matrix: TuningMatrix,
+    candidate: TuningCandidate,
+    identity: TuningIdentity,
+    repo_root: Path,
+    output_path: Path,
+    command: tuple[str, ...] | list[str],
+) -> None:
+    """Require an exact base command and declared override sequence."""
+    expected = tuple(build_tuning_command(matrix, tuning_matrix, candidate, identity, repo_root, output_path))
+    if tuple(command) != expected:
+        raise ValueError("tuning command must exactly match the reconstructed command")
+
+
+def tuning_resume_matches(
+    manifest: TuningManifest,
+    identity: TuningIdentity,
+    command: tuple[str, ...] | list[str],
+    expected_config_hash: str,
+    isaaclab_head: str,
+) -> bool:
+    """Return whether a completed tuning manifest exactly matches provenance."""
+    expected_command = tuple(command)
+    return (
+        manifest.state is TerminalState.COMPLETED
+        and manifest.identity == identity
+        and manifest.run_id == identity.run_id
+        and manifest.command == expected_command
+        and manifest.command_hash == command_hash(expected_command)
+        and manifest.config_hash == expected_config_hash
+        and manifest.isaaclab_head == isaaclab_head
+        and manifest.tensorboard_event_path is not None
+        and manifest.tensorboard_event_hash is not None
+    )
+
+
+def _resolved_candidate(tuning_matrix: TuningMatrix, candidate: TuningCandidate) -> ResolvedTuningCandidate:
+    resolved = resolve_config(tuning_matrix, candidate)
+    return ResolvedTuningCandidate(candidate.name, dict(candidate.overrides), resolved, config_hash(resolved))
+
+
+def build_canonical_command(
+    matrix: BenchmarkMatrix,
+    tuning_matrix: TuningMatrix,
+    winner: dict[str, Any],
+    repo_root: Path,
+) -> tuple[TuningIdentity, ResolvedTuningCandidate, list[str]]:
+    """Build a committed-preset command while retaining literal winner provenance."""
+    resolved_config = dict(winner["resolved_config"])
+    expected_hash = config_hash(resolved_config)
+    if winner["config_hash"] != expected_hash:
+        raise ValueError("winner resolved configuration hash mismatch")
+    candidate = ResolvedTuningCandidate(
+        name="canonical_winner",
+        overrides={},
+        resolved_config=resolved_config,
+        config_hash=expected_hash,
+    )
+    identity = TuningIdentity("canonical", candidate.name, 42, tuning_matrix.num_envs, tuning_matrix.final_iterations)
+    output_path = repo_root / identity.run_id
+    command = build_training_command(matrix, _run_identity(identity), repo_root, output_path)
+    return identity, candidate, command
+
+
+def write_tuning_manifest(path: Path, manifest: TuningManifest) -> None:
+    """Atomically persist a tuning manifest."""
+    write_json_atomic(path, asdict(manifest))
+
+
+def read_tuning_manifest(path: Path) -> TuningManifest:
+    """Read a typed tuning manifest from canonical JSON."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    identity = TuningIdentity(**data["identity"])
+    retry = RetryLineage(**data["retry"])
+    return TuningManifest(
+        run_id=data["run_id"],
+        identity=identity,
+        config_hash=data["config_hash"],
+        resolved_config=dict(data["resolved_config"]),
+        command=tuple(data["command"]),
+        command_hash=data["command_hash"],
+        revisions=Revisions(**data["revisions"]),
+        schema_version=data["schema_version"],
+        isaaclab_head=data["isaaclab_head"],
+        artifact_root=data["artifact_root"],
+        tensorboard_event_path=data.get("tensorboard_event_path"),
+        tensorboard_event_hash=data.get("tensorboard_event_hash"),
+        artifact_hashes=dict(data["artifact_hashes"]),
+        state=TerminalState(data["state"]),
+        failure_category=(FailureCategory(data["failure_category"]) if data["failure_category"] else None),
+        retry=retry,
+    )
+
+
+def _candidate_provenance(
+    tuning_matrix: TuningMatrix, candidate: TuningCandidate | ResolvedTuningCandidate
+) -> ResolvedTuningCandidate:
+    if isinstance(candidate, ResolvedTuningCandidate):
+        if candidate.config_hash != config_hash(candidate.resolved_config):
+            raise ValueError(f"candidate {candidate.name} has mismatched configuration hash")
+        if candidate.name != "canonical_winner":
+            declared = TuningCandidate(candidate.name, candidate.overrides)
+            if candidate.resolved_config != resolve_config(tuning_matrix, declared):
+                raise ValueError(f"candidate {candidate.name} has mismatched resolved configuration")
+        return candidate
+    return _resolved_candidate(tuning_matrix, candidate)
+
+
+def _command_for_candidate(
+    matrix: BenchmarkMatrix,
+    tuning_matrix: TuningMatrix,
+    candidate: ResolvedTuningCandidate,
+    identity: TuningIdentity,
+    repo_root: Path,
+    output_path: Path,
+) -> list[str]:
+    if candidate.name == "canonical_winner":
+        if identity.candidate != candidate.name:
+            raise ValueError("tuning identity candidate does not match command candidate")
+        return build_training_command(matrix, _run_identity(identity), repo_root, output_path)
+    declared = TuningCandidate(candidate.name, candidate.overrides)
+    command = build_tuning_command(matrix, tuning_matrix, declared, identity, repo_root, output_path)
+    validate_tuning_command(matrix, tuning_matrix, declared, identity, repo_root, output_path, command)
+    return command
+
+
+def _same_base_identity(left: TuningIdentity, right: TuningIdentity) -> bool:
+    return (
+        left.stage,
+        left.candidate,
+        left.seed,
+        left.num_envs,
+        left.max_iterations,
+    ) == (
+        right.stage,
+        right.candidate,
+        right.seed,
+        right.num_envs,
+        right.max_iterations,
+    )
+
+
+def _existing_attempts(artifact_root: Path, identity: TuningIdentity) -> list[TuningManifest]:
+    manifests: list[TuningManifest] = []
+    pattern = (
+        f"{identity.stage}__{identity.candidate}__seed{identity.seed}__env{identity.num_envs}"
+        f"__iter{identity.max_iterations}__attempt*/manifest.json"
+    )
+    for path in artifact_root.glob(pattern):
+        try:
+            manifest = read_tuning_manifest(path)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if (
+            _same_base_identity(manifest.identity, identity)
+            and manifest.run_id == manifest.identity.run_id
+            and path.parent.name == manifest.run_id
+        ):
+            manifests.append(manifest)
+    return sorted(manifests, key=lambda manifest: manifest.identity.attempt)
+
+
+def _recorded_artifacts_intact(manifest: TuningManifest) -> bool:
+    event_path = Path(manifest.tensorboard_event_path) if manifest.tensorboard_event_path is not None else None
+    if event_path is None or not event_path.is_file() or sha256_file(event_path) != manifest.tensorboard_event_hash:
+        return False
+    output_path = Path(manifest.artifact_root)
+    return bool(manifest.artifact_hashes) and all(
+        (output_path / name).is_file() and sha256_file(output_path / name) == digest
+        for name, digest in manifest.artifact_hashes.items()
+    )
+
+
+def execute_tuning_identity(
+    matrix: BenchmarkMatrix,
+    tuning_matrix: TuningMatrix,
+    candidate: TuningCandidate | ResolvedTuningCandidate,
+    identity: TuningIdentity,
+    repo_root: Path,
+    artifact_root: Path,
+    *,
+    isaaclab_head: str,
+    resume: bool,
+    executor: Callable[..., ProcessOutcome] | None = None,
+) -> TerminalState:
+    """Execute one tuning identity without overwriting any prior attempt."""
+    if executor is None:
+        executor = execute_command
+    resolved_candidate = _candidate_provenance(tuning_matrix, candidate)
+    if resolved_candidate.name != identity.candidate:
+        raise ValueError("tuning identity candidate does not match resolved candidate")
+    attempts = _existing_attempts(artifact_root, identity)
+    if resume:
+        for existing in reversed(attempts):
+            output_path = Path(existing.artifact_root)
+            expected_command = _command_for_candidate(
+                matrix, tuning_matrix, resolved_candidate, existing.identity, repo_root, output_path
+            )
+            if (
+                existing.revisions == matrix.revisions
+                and existing.schema_version == SCHEMA_VERSION
+                and existing.resolved_config == resolved_candidate.resolved_config
+                and tuning_resume_matches(
+                    existing,
+                    existing.identity,
+                    expected_command,
+                    resolved_candidate.config_hash,
+                    isaaclab_head,
+                )
+                and _recorded_artifacts_intact(existing)
+            ):
+                return TerminalState.COMPLETED
+
+    previous = attempts[-1] if attempts else None
+    attempt = previous.identity.attempt + 1 if previous is not None else identity.attempt
+    current_identity = replace(identity, attempt=attempt)
+    output_path = artifact_root / current_identity.run_id
+    while output_path.exists():
+        attempt += 1
+        current_identity = replace(identity, attempt=attempt)
+        output_path = artifact_root / current_identity.run_id
+    output_path.mkdir(parents=True, exist_ok=False)
+    command = _command_for_candidate(
+        matrix, tuning_matrix, resolved_candidate, current_identity, repo_root, output_path
+    )
+    retry = RetryLineage(attempt=attempt, parent_run_id=previous.run_id if previous is not None else None)
+    manifest = TuningManifest(
+        run_id=current_identity.run_id,
+        identity=current_identity,
+        config_hash=resolved_candidate.config_hash,
+        resolved_config=resolved_candidate.resolved_config,
+        command=tuple(command),
+        command_hash=command_hash(command),
+        revisions=matrix.revisions,
+        schema_version=SCHEMA_VERSION,
+        isaaclab_head=isaaclab_head,
+        artifact_root=str(output_path.resolve()),
+        retry=retry,
+    )
+    manifest_path = output_path / "manifest.json"
+    write_tuning_manifest(manifest_path, manifest)
+    manifest = replace(manifest, state=TerminalState.RUNNING)
+    write_tuning_manifest(manifest_path, manifest)
+
+    stdout_path = output_path / "stdout.log"
+    stderr_path = output_path / "stderr.log"
+    timeout_s = matrix.preflight_timeout_s if current_identity.max_iterations == 5 else matrix.full_timeout_s
+    outcome = executor(command, stdout_path, stderr_path, timeout_s=timeout_s)
+    bundle = inspect_bundle(output_path, current_identity.max_iterations)
+    process_succeeded = outcome.returncode == 0 and not outcome.timed_out and bundle.complete
+    event_path: Path | None = None
+    trace_valid = False
+    if process_succeeded and bundle.path is not None:
+        try:
+            event_path = locate_rsl_rl_events(bundle.path, repo_root / "logs")
+            parse_training_trace(bundle.path, event_path)
+            trace_valid = True
+        except (MissingBenchmarkFieldError, OSError, RuntimeError, ValueError):
+            trace_valid = False
+
+    artifacts = (stdout_path, stderr_path, bundle.path)
+    artifact_hashes = {path.name: sha256_file(path) for path in artifacts if path is not None and path.is_file()}
+    success = process_succeeded and trace_valid
+    if success:
+        manifest = replace(manifest, state=TerminalState.COMPLETED)
+    else:
+        stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
+        stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+        failure = classify_failure(
+            returncode=outcome.returncode,
+            timed_out=outcome.timed_out,
+            completed_iterations=bundle.completed_iterations,
+            expected_iterations=current_identity.max_iterations,
+            artifact_present=bundle.path is not None and trace_valid,
+            stdout=stdout,
+            stderr=stderr,
+            retry=retry,
+        )
+        manifest = replace(manifest, state=TerminalState.FAILED, failure_category=failure.category)
+    manifest = replace(
+        manifest,
+        artifact_hashes=artifact_hashes,
+        tensorboard_event_path=str(event_path.resolve()) if event_path is not None else None,
+        tensorboard_event_hash=sha256_file(event_path) if event_path is not None and event_path.is_file() else None,
+    )
+    write_tuning_manifest(manifest_path, manifest)
+    return manifest.state
+
+
+def _load_resolved_candidates(
+    tuning_matrix: TuningMatrix, path: Path, expected_count: int
+) -> tuple[ResolvedTuningCandidate, ...]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    records = data.get("resolved_candidates")
+    if not isinstance(records, list) or len(records) != expected_count:
+        raise ValueError(f"{path.name} must contain exactly {expected_count} candidates")
+    candidates: list[ResolvedTuningCandidate] = []
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError(f"{path.name} candidate records must be mappings")
+        declared = TuningCandidate(str(record["name"]), dict(record["overrides"]))
+        resolved = resolve_config(tuning_matrix, declared)
+        literal = dict(record["resolved_config"])
+        digest = config_hash(literal)
+        if literal != resolved or record["config_hash"] != digest:
+            raise ValueError(f"{path.name} candidate {declared.name} has mismatched configuration provenance")
+        candidates.append(ResolvedTuningCandidate(declared.name, declared.overrides, literal, digest))
+    names = [candidate.name for candidate in candidates]
+    if len(names) != len(set(names)):
+        raise ValueError(f"{path.name} contains duplicate candidate names")
+    return tuple(candidates)
+
+
+def _canonical_candidate(tuning_matrix: TuningMatrix, decision_root: Path) -> ResolvedTuningCandidate:
+    winner = json.loads((decision_root / "winner.json").read_text(encoding="utf-8"))
+    resolved = dict(winner["resolved_config"])
+    digest = config_hash(resolved)
+    if winner["config_hash"] != digest or set(resolved) != set(tuning_matrix.baseline):
+        raise ValueError("winner decision has mismatched configuration provenance")
+    return ResolvedTuningCandidate("canonical_winner", {}, resolved, digest)
+
+
+def stage_candidates(
+    tuning_matrix: TuningMatrix, stage: str, decision_root: Path
+) -> tuple[ResolvedTuningCandidate, ...]:
+    """Load and validate the exact candidate set for a tuning stage."""
+    if stage == "baseline":
+        baseline = TuningCandidate("baseline", {})
+        return (_resolved_candidate(tuning_matrix, baseline),)
+    if stage == "wave1":
+        return tuple(_resolved_candidate(tuning_matrix, candidate) for candidate in tuning_matrix.wave1)
+    if stage == "wave2":
+        return _load_resolved_candidates(tuning_matrix, decision_root / "wave2.json", 6)
+    if stage == "halve":
+        return _load_resolved_candidates(tuning_matrix, decision_root / "stage2.json", 8)
+    if stage == "final":
+        return _load_resolved_candidates(tuning_matrix, decision_root / "finalists.json", 3)
+    if stage == "canonical":
+        return (_canonical_candidate(tuning_matrix, decision_root),)
+    raise ValueError(f"unsupported tuning stage: {stage}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the tuning-stage command-line parser."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stage", required=True, choices=("baseline", "wave1", "wave2", "halve", "final", "canonical"))
+    parser.add_argument("--candidate")
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--artifact-root", type=Path, default=Path("benchmark_artifacts/kamino_dvi/tuning"))
+    parser.add_argument("--decision-root", type=Path, default=Path("benchmark_artifacts/kamino_dvi/decisions"))
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--preflight-only", action="store_true")
+    modes.add_argument("--measured-only", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def _measured_identities(
+    tuning_matrix: TuningMatrix, stage: str, candidates: tuple[ResolvedTuningCandidate, ...]
+) -> tuple[TuningIdentity, ...]:
+    if stage in {"baseline", "final", "canonical"}:
+        seeds = tuning_matrix.seeds
+        iterations = tuning_matrix.final_iterations
+    elif stage in {"wave1", "wave2"}:
+        seeds = (42,)
+        iterations = tuning_matrix.screen_iterations
+    elif stage == "halve":
+        seeds = (42, 43)
+        iterations = tuning_matrix.halve_iterations
+    else:
+        raise ValueError(f"unsupported tuning stage: {stage}")
+    return tuple(
+        TuningIdentity(stage, candidate.name, seed, tuning_matrix.num_envs, iterations)
+        for candidate in candidates
+        for seed in seeds
+    )
+
+
+def select_tuning_identities(tuning_matrix: TuningMatrix, args: argparse.Namespace) -> tuple[TuningIdentity, ...]:
+    """Expand and filter exact preflight and measured tuning identities."""
+    candidates = stage_candidates(tuning_matrix, args.stage, args.decision_root)
+    if args.candidate is not None:
+        candidates = tuple(candidate for candidate in candidates if candidate.name == args.candidate)
+        if not candidates:
+            raise ValueError(f"candidate {args.candidate!r} is not part of stage {args.stage}")
+    preflights = tuple(
+        TuningIdentity("preflight", candidate.name, 42, tuning_matrix.num_envs, tuning_matrix.preflight_iterations)
+        for candidate in candidates
+    )
+    measured = _measured_identities(tuning_matrix, args.stage, candidates)
+    if args.preflight_only:
+        identities = preflights
+    elif args.measured_only:
+        identities = measured
+    else:
+        identities = preflights + measured
+    if args.seed is not None:
+        identities = tuple(identity for identity in identities if identity.seed == args.seed)
+    return identities
+
+
+def preflight_completed(
+    matrix: BenchmarkMatrix,
+    tuning_matrix: TuningMatrix,
+    candidate: TuningCandidate | ResolvedTuningCandidate,
+    repo_root: Path,
+    artifact_root: Path,
+    isaaclab_head: str,
+) -> bool:
+    """Return whether exact intact preflight evidence already exists."""
+    resolved_candidate = _candidate_provenance(tuning_matrix, candidate)
+    identity = TuningIdentity(
+        "preflight",
+        resolved_candidate.name,
+        42,
+        tuning_matrix.num_envs,
+        tuning_matrix.preflight_iterations,
+    )
+    for manifest in reversed(_existing_attempts(artifact_root, identity)):
+        output_path = Path(manifest.artifact_root)
+        command = _command_for_candidate(
+            matrix,
+            tuning_matrix,
+            resolved_candidate,
+            manifest.identity,
+            repo_root,
+            output_path,
+        )
+        if (
+            manifest.revisions == matrix.revisions
+            and manifest.schema_version == SCHEMA_VERSION
+            and manifest.resolved_config == resolved_candidate.resolved_config
+            and tuning_resume_matches(
+                manifest,
+                manifest.identity,
+                command,
+                resolved_candidate.config_hash,
+                isaaclab_head,
+            )
+            and _recorded_artifacts_intact(manifest)
+        ):
+            return True
+    return False
+
+
+def _validated_source_head(matrix: BenchmarkMatrix, repo_root: Path) -> str:
+    label = matrix.variant(Variant.KAMINO_PR_DVI).environment
+    provenance = probe_environment(python_executable(repo_root, label), repo_root)
+    validate_environment(matrix, label, provenance)
+    return provenance.isaaclab.head
+
+
+def _selected_candidates(tuning_matrix: TuningMatrix, args: argparse.Namespace) -> tuple[ResolvedTuningCandidate, ...]:
+    candidates = stage_candidates(tuning_matrix, args.stage, args.decision_root)
+    if args.candidate is not None:
+        candidates = tuple(candidate for candidate in candidates if candidate.name == args.candidate)
+        if not candidates:
+            raise ValueError(f"candidate {args.candidate!r} is not part of stage {args.stage}")
+    return candidates
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Validate provenance and execute the selected tuning stage sequentially."""
+    args = build_parser().parse_args(argv)
+    repo_root = Path(__file__).resolve().parents[2]
+    matrix = load_matrix(DEFAULT_MATRIX_PATH)
+    tuning_matrix = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    args.artifact_root = args.artifact_root if args.artifact_root.is_absolute() else repo_root / args.artifact_root
+    args.decision_root = args.decision_root if args.decision_root.is_absolute() else repo_root / args.decision_root
+    candidates = _selected_candidates(tuning_matrix, args)
+    candidates_by_name = {candidate.name: candidate for candidate in candidates}
+    identities = select_tuning_identities(tuning_matrix, args)
+
+    if args.dry_run:
+        for identity in identities:
+            candidate = candidates_by_name[identity.candidate]
+            output_path = args.artifact_root / identity.run_id
+            command = _command_for_candidate(
+                matrix,
+                tuning_matrix,
+                candidate,
+                identity,
+                repo_root,
+                output_path,
+            )
+            print(shlex.join(command))
+        return 0
+
+    isaaclab_head = _validated_source_head(matrix, repo_root)
+    failures = 0
+    for identity in identities:
+        candidate = candidates_by_name[identity.candidate]
+        has_preflight = preflight_completed(
+            matrix,
+            tuning_matrix,
+            candidate,
+            repo_root,
+            args.artifact_root,
+            isaaclab_head,
+        )
+        if identity.stage == "preflight" and has_preflight:
+            continue
+        if identity.stage != "preflight" and not has_preflight:
+            message = (
+                f"candidate {candidate.name} requires a completed exact preflight "
+                f"for config {candidate.config_hash} and source HEAD {isaaclab_head}"
+            )
+            if args.measured_only:
+                raise RuntimeError(message)
+            print(f"REJECTED: {message}")
+            failures += 1
+            continue
+        state = execute_tuning_identity(
+            matrix,
+            tuning_matrix,
+            candidate,
+            identity,
+            repo_root,
+            args.artifact_root,
+            isaaclab_head=isaaclab_head,
+            resume=args.resume,
+        )
+        if state is not TerminalState.COMPLETED:
+            failures += 1
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
