@@ -1,0 +1,48 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+task: Isaac-Velocity-Flat-AnymalD
+variant: kamino_pr_dvi
+preset: newton_kamino_dvi
+num_envs: 4096
+seeds: [42, 43, 44]
+iterations:
+  preflight: 5
+  screen: 40
+  halve: 100
+  final: 300
+warmup_iterations: 10
+learning_window: 20
+baseline:
+  integrator: moreau
+  dynamics_linear_solver_max_iterations: 9
+  dvi_block_iterations: 16
+  dvi_contact_iterations: 2
+  dvi_bilateral_solve_period: 2
+  dvi_omega: 0.3
+  dvi_contact_jacobi_omega: 0.45
+  dvi_contact_jacobi_relaxation: 0.9
+  dynamics_preconditioning: false
+  dvi_contact_block_preconditioner: false
+  dvi_warmstart_mode: containers
+wave1:
+  - {name: integrator_euler, overrides: {integrator: euler}}
+  - {name: cr_iterations_3, overrides: {dynamics_linear_solver_max_iterations: 3}}
+  - {name: cr_iterations_5, overrides: {dynamics_linear_solver_max_iterations: 5}}
+  - {name: cr_iterations_7, overrides: {dynamics_linear_solver_max_iterations: 7}}
+  - {name: block_iterations_4, overrides: {dvi_block_iterations: 4}}
+  - {name: block_iterations_8, overrides: {dvi_block_iterations: 8}}
+  - {name: block_iterations_12, overrides: {dvi_block_iterations: 12}}
+  - {name: contact_iterations_1, overrides: {dvi_contact_iterations: 1}}
+  - {name: bilateral_period_4, overrides: {dvi_bilateral_solve_period: 4}}
+  - {name: dvi_omega_0_5, overrides: {dvi_omega: 0.5}}
+  - {name: jacobi_omega_0_3, overrides: {dvi_contact_jacobi_omega: 0.3}}
+  - {name: jacobi_omega_0_6, overrides: {dvi_contact_jacobi_omega: 0.6}}
+  - {name: jacobi_relaxation_0_7, overrides: {dvi_contact_jacobi_relaxation: 0.7}}
+  - {name: jacobi_relaxation_1_0, overrides: {dvi_contact_jacobi_relaxation: 1.0}}
+  - {name: dynamics_preconditioning_true, overrides: {dynamics_preconditioning: true}}
+  - {name: contact_block_preconditioner_true, overrides: {dvi_contact_block_preconditioner: true}}
+  - {name: warmstart_internal, overrides: {dvi_warmstart_mode: internal}}
+  - {name: warmstart_none, overrides: {dvi_warmstart_mode: none}}
