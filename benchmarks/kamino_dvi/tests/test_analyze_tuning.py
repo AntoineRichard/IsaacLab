@@ -18,6 +18,7 @@ from benchmarks.kamino_dvi import analyze_tuning as analysis_module
 from benchmarks.kamino_dvi.analyze_tuning import (
     TuningRecord,
     _canonical_comparison,
+    _compute_finalists,
     _qualification_dict,
     build_parser,
     derive_stage2_baseline,
@@ -36,6 +37,7 @@ from benchmarks.kamino_dvi.tune import (
     TuningIdentity,
     _command_for_candidate,
     build_tuning_command,
+    stage_candidates,
 )
 from benchmarks.kamino_dvi.tuning import (
     DEFAULT_TUNING_MATRIX_PATH,
@@ -63,6 +65,43 @@ def _trace(identity: TuningIdentity, *, offset: float = 0.0) -> TrainingTrace:
         success_rate=tuple(0.5 + value / 1000 for value in values),
         success_schema_mismatch=False,
         resources={},
+    )
+
+
+def _synthetic_record(
+    candidate: str,
+    stage: str,
+    seed: int,
+    iterations: int,
+    resolved_config: dict,
+    *,
+    reward: float = 10.0,
+    success: float = 0.9,
+    episode_length: float = 100.0,
+    runtime: float = 0.1,
+) -> TuningRecord:
+    """Build one finite record for decision and report unit tests."""
+    metrics = TuningRunMetrics(
+        candidate,
+        stage,
+        seed,
+        4096,
+        (runtime,) * iterations,
+        (reward,) * iterations,
+        (success,) * iterations,
+        (episode_length,) * iterations,
+    )
+    return TuningRecord(
+        metrics,
+        f"{stage}-{candidate}-{seed}",
+        Path(f"{stage}-{candidate}-{seed}.json"),
+        "a" * 64,
+        Path(f"events-{stage}-{candidate}-{seed}"),
+        "b" * 64,
+        config_hash(resolved_config),
+        resolved_config,
+        source_head="c" * 40,
+        bundle_git_dirty=False,
     )
 
 
@@ -1257,6 +1296,7 @@ def test_canonical_preflight_is_excluded_before_report_ci_gate(tmp_path, monkeyp
         == 0
     )
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["terminal_status"] == "completed"
     assert summary["canonical_comparison"]["qualified"] is True
     assert summary["bundle_git_dirty"]["count"] == 0
     assert summary["bundle_git_dirty"]["run_ids"] == []
@@ -1526,3 +1566,160 @@ def test_validate_action_fails_when_requested_wave1_is_missing(tmp_path, monkeyp
     with pytest.raises(ValueError, match="missing tuning record"):
         main(["validate", "--stages", "baseline", "wave1", "--artifact-root", str(tmp_path)])
     assert capsys.readouterr().out == ""
+
+
+def test_promote_finalists_persists_terminal_zero_survivor_decision(tmp_path):
+    """All Stage-2 guardrail rejections remain auditable in finalists.json."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    baseline = [
+        _synthetic_record("baseline", "baseline", seed, tuning.final_iterations, dict(tuning.baseline))
+        for seed in tuning.seeds
+    ]
+    candidates = list(tuning.wave1[:8])
+    stage2 = {
+        "resolved_candidates": [
+            {
+                "name": candidate.name,
+                "overrides": candidate.overrides,
+                "resolved_config": resolve_config(tuning, candidate),
+                "config_hash": config_hash(resolve_config(tuning, candidate)),
+            }
+            for candidate in candidates
+        ]
+    }
+    halve = [
+        _synthetic_record(
+            candidate.name,
+            "halve",
+            seed,
+            tuning.halve_iterations,
+            resolve_config(tuning, candidate),
+            reward=7.0,
+        )
+        for candidate in candidates
+        for seed in (42, 43)
+    ]
+
+    decision = _compute_finalists(tuning, tmp_path, baseline, halve, stage2)
+
+    assert decision["selected"] == []
+    assert decision["resolved_candidates"] == []
+    assert decision["terminal_status"] == "stopped_no_safe_finalist"
+    assert decision["stop_reason"] == "No Stage-2 candidate satisfied every per-seed learning guardrail."
+    assert decision["rejected"] == {candidate.name: "seed 42: reward below 80% of baseline" for candidate in candidates}
+    assert len(decision["baseline_prefix_provenance"]) == 3
+
+
+def test_final_runner_rejects_terminal_zero_survivor_decision(tmp_path):
+    """A scientific early stop cannot schedule a zero-candidate final stage."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    (tmp_path / "finalists.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "action": "promote-finalists",
+                "terminal_status": "stopped_no_safe_finalist",
+                "stop_reason": "No Stage-2 candidate satisfied every per-seed learning guardrail.",
+                "selected": [],
+                "resolved_candidates": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="between 1 and 3 candidates"):
+        stage_candidates(tuning, "final", tmp_path)
+
+
+def test_select_winner_refuses_terminal_zero_survivor_without_writing(tmp_path, monkeypatch):
+    """Winner selection explains the early stop and leaves winner.json absent."""
+    output = tmp_path / "winner.json"
+    chain = {
+        "finalists_decision": {
+            "selected": [],
+            "resolved_candidates": [],
+            "terminal_status": "stopped_no_safe_finalist",
+        }
+    }
+    monkeypatch.setattr(analysis_module, "_recompute_chain", lambda *_args: chain)
+
+    with pytest.raises(ValueError, match="no safe finalists survived Stage 2"):
+        main(["select-winner", "--artifact-root", str(tmp_path / "artifacts"), "--output", str(output)])
+
+    assert not output.exists()
+
+
+def test_report_writes_exact_early_stop_outputs_without_final_or_canonical(tmp_path, monkeypatch):
+    """Zero-survivor evidence produces the complete five-file terminal report."""
+    tuning = load_tuning_matrix(DEFAULT_TUNING_MATRIX_PATH)
+    baseline = [
+        _synthetic_record("baseline", "baseline", seed, tuning.final_iterations, dict(tuning.baseline))
+        for seed in tuning.seeds
+    ]
+    candidate = tuning.wave1[0]
+    resolved = resolve_config(tuning, candidate)
+    halve = [
+        _synthetic_record(candidate.name, "halve", seed, tuning.halve_iterations, resolved, reward=7.0)
+        for seed in (42, 43)
+    ]
+    finalists = {
+        "selected": [],
+        "resolved_candidates": [],
+        "rejected": {candidate.name: "seed 42: reward below 80% of baseline"},
+        "terminal_status": "stopped_no_safe_finalist",
+        "stop_reason": "No Stage-2 candidate satisfied every per-seed learning guardrail.",
+    }
+    chain = {
+        "matrix": tuning,
+        "baseline": baseline,
+        "wave1": [],
+        "wave2": [],
+        "halve": halve,
+        "wave2_decision": {"selected": [], "rejected": {}},
+        "stage2_decision": {"selected": [candidate.name], "rejected": {}},
+        "finalists_decision": finalists,
+    }
+    monkeypatch.setattr(analysis_module, "_recompute_chain", lambda *_args: chain)
+    monkeypatch.setattr(analysis_module, "_require_persisted", lambda *_args: finalists)
+    comparison = tmp_path / "comparison.json"
+    comparison.write_text(
+        json.dumps(
+            [
+                {"task": tuning.task, "variant": "mjwarp", "iteration_time_s": {"mean": 0.2}},
+                {"task": tuning.task, "variant": "physx", "iteration_time_s": {"mean": 0.3}},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "report"
+
+    assert (
+        main(
+            [
+                "report",
+                "--artifact-root",
+                str(tmp_path / "artifacts"),
+                "--decision-root",
+                str(tmp_path),
+                "--comparison-summary",
+                str(comparison),
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    assert {path.name for path in output.iterdir()} == {
+        "summary.json",
+        "runtime.png",
+        "learning.png",
+        "anymal_d_dvi_tuning.md",
+        "anymal_d_dvi_tuning.pdf",
+    }
+    summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+    assert summary["terminal_status"] == "stopped_no_safe_finalist"
+    assert summary["winner"] is None
+    assert summary["winner_config"] is None
+    assert summary["coverage"]["final"] == []
+    assert summary["coverage"]["canonical"] == []

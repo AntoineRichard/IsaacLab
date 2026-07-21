@@ -121,6 +121,19 @@ runner's separate tracked-only check.
   --output benchmark_artifacts/kamino_dvi/decisions/winner.json
 ```
 
+If every Stage-2 candidate violates a per-seed learning guardrail,
+`promote-finalists` writes a terminal `finalists.json` with no selected
+candidates, every rejection reason, and status `stopped_no_safe_finalist`.
+This is a valid scientific early stop: do not run `final`, select a winner,
+modify the preset, or run `canonical`. The `final` runner and `select-winner`
+both refuse that empty decision.
+
+Run the `report` command directly after the early stop. It validates all
+available evidence and emits the same exact five files. The report labels
+Wave 1/2 as single-seed observations, gives two-sided 95% Student-t intervals
+for the seed-42/43 Stage-2 metrics, and treats legacy MJWarp/PhysX runtimes as
+context only; it does not attribute a speedup to a winner.
+
 Stage 2 derives an immutable view of iterations 1--100 from each validated
 300-iteration clean baseline, so its final-20 window is iterations 81--100.
 After winner selection, update the literal solver preset with the winner and

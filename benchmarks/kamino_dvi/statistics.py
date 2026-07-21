@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 T_975_DF2 = 4.302652729696142
+T_975_DF1 = 12.706204736432095
 
 
 @dataclass(frozen=True)
@@ -25,12 +26,13 @@ class Estimate:
 
 
 def mean_ci95(values: Sequence[float]) -> Estimate:
-    """Return the approved three-seed Student-t mean and interval."""
+    """Return a two- or three-seed two-sided Student-t mean interval."""
     samples = tuple(float(value) for value in values)
-    if len(samples) != 3:
-        raise ValueError("95% benchmark intervals require exactly three seeds")
+    critical = {2: T_975_DF1, 3: T_975_DF2}.get(len(samples))
+    if critical is None:
+        raise ValueError("95% benchmark intervals require exactly two or three seeds")
     mean = statistics.mean(samples)
-    half_width = T_975_DF2 * statistics.stdev(samples) / math.sqrt(len(samples))
+    half_width = critical * statistics.stdev(samples) / math.sqrt(len(samples))
     return Estimate(mean=mean, half_width=half_width, n=len(samples))
 
 

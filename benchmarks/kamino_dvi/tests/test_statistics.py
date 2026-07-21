@@ -19,6 +19,15 @@ def test_mean_ci95_uses_approved_three_seed_student_t_interval():
     assert estimate.n == 3
 
 
+def test_mean_ci95_uses_student_t_interval_for_two_stage2_seeds():
+    """Stage-2 seed-42/43 summaries use t(0.975, 1)."""
+    estimate = mean_ci95([1.0, 2.0])
+
+    assert estimate.mean == 1.5
+    assert estimate.half_width == pytest.approx(6.353102, rel=1e-6)
+    assert estimate.n == 2
+
+
 def test_final_window_and_rolling_means_preserve_iteration_meaning():
     """Learning summaries use the final 20 iterations and exact rolling windows."""
     series = tuple(float(value) for value in range(1, 31))

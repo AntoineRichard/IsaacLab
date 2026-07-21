@@ -45,6 +45,9 @@ BUNDLE_GIT_DIRTY_ADVISORY = (
     "that only untracked paths differed."
 )
 
+NO_SAFE_FINALIST_STATUS = "stopped_no_safe_finalist"
+NO_SAFE_FINALIST_REASON = "No Stage-2 candidate satisfied every per-seed learning guardrail."
+
 
 @dataclass(frozen=True)
 class TuningRecord:
@@ -682,6 +685,11 @@ def load_decision(
         raise ValueError(f"{path}: decision selected candidates mismatch")
     if not isinstance(data.get("rejected"), dict):
         raise ValueError(f"{path}: decision rejection mapping is invalid")
+    if expected_action == "promote-finalists":
+        expected_status = "completed" if records else NO_SAFE_FINALIST_STATUS
+        expected_reason = None if records else NO_SAFE_FINALIST_REASON
+        if data.get("terminal_status") != expected_status or data.get("stop_reason") != expected_reason:
+            raise ValueError(f"{path}: finalist terminal status/stop reason is invalid")
     return data
 
 
@@ -822,8 +830,6 @@ def _compute_finalists(
         [record for record in derived if record.seed in (42, 43)],
         [record.metrics for record in halve],
     )
-    if not value.selected:
-        raise ValueError("final stage requires at least one valid survivor")
     selected = set(value.selected)
     candidates = [
         TuningCandidate(item["name"], dict(item["overrides"]))
@@ -836,6 +842,8 @@ def _compute_finalists(
         rejected=value.rejected,
         resolved_candidates=_resolved_records(matrix, candidates),
         baseline_prefix_provenance=provenance,
+        terminal_status="completed" if value.selected else NO_SAFE_FINALIST_STATUS,
+        stop_reason=None if value.selected else NO_SAFE_FINALIST_REASON,
         methodology=(
             "Stage 2 uses the first 100 aligned samples of each clean 300-iteration "
             "baseline; its final-20 window is iterations 81-100."
@@ -939,8 +947,10 @@ def _recompute_chain(args: argparse.Namespace, through: str) -> dict[str, Any]:
             "finalists_decision": finalists_expected,
         }
     finalists_decision = _require_persisted(
-        args.decision_root / "finalists.json", "promote-finalists", matrix, finalists_expected, 1, 3
+        args.decision_root / "finalists.json", "promote-finalists", matrix, finalists_expected, 0, 3
     )
+    if not finalists_decision["selected"]:
+        raise ValueError("no safe finalists survived Stage 2; winner selection is unavailable")
     final = _records(args, "final")
     winner_expected = _compute_winner(matrix, args.artifact_root, baseline, final, finalists_decision)
     return {
@@ -974,6 +984,8 @@ def _promote_finalists_action(args: argparse.Namespace) -> None:
 
 def _select_winner_action(args: argparse.Namespace) -> None:
     chain = _recompute_chain(args, "winner")
+    if not chain["finalists_decision"]["selected"]:
+        raise ValueError("no safe finalists survived Stage 2; winner selection is unavailable")
     write_decision(args.output, chain["winner_decision"])
 
 
@@ -1030,7 +1042,7 @@ def _stage_funnel(
             "valid": len(chain["final"]) - failed(chain["final"]),
             "rejected": len(winner["rejected"]),
             "derived_preflight": sum(record.derived_from_preflight for record in chain["final"]),
-            "promoted": 1,
+            "promoted": int(bool(winner.get("candidate"))),
         },
         {
             "stage": "canonical",
@@ -1038,13 +1050,166 @@ def _stage_funnel(
             "valid": len(canonical) - failed(canonical),
             "rejected": failed(canonical),
             "derived_preflight": sum(record.derived_from_preflight for record in canonical),
-            "promoted": 1,
+            "promoted": int(bool(winner.get("candidate")) and bool(canonical)),
         },
     ]
 
 
+def _early_stop_report(args: argparse.Namespace, chain: Mapping[str, Any], finalists: Mapping[str, Any]) -> None:
+    """Write the complete report for a scientifically valid zero-survivor stop."""
+    from .tuning_reporting import write_tuning_report
+
+    matrix: TuningMatrix = chain["matrix"]
+    comparisons = json.loads(args.comparison_summary.read_text(encoding="utf-8"))
+    legacy_rows = [
+        row for row in comparisons if row.get("task") == matrix.task and row.get("variant") in {"mjwarp", "physx"}
+    ]
+    all_records = [*chain["baseline"], *chain["wave1"], *chain["wave2"], *chain["halve"]]
+    grouped: dict[str, list[TuningRunMetrics]] = {}
+    for record in chain["halve"]:
+        if record.metrics.failure is None:
+            grouped.setdefault(record.metrics.candidate, []).append(record.metrics)
+    stage2_rows = []
+    for name, records in sorted(grouped.items()):
+        estimates = _metric_estimates(matrix, records)
+        stage2_rows.append(
+            {
+                "candidate": name,
+                "runtime": dataclasses.asdict(estimates["runtime"]),
+                "reward": dataclasses.asdict(estimates["reward"]),
+                "success": dataclasses.asdict(estimates["success"]),
+                "episode_length": dataclasses.asdict(estimates["episode_length"]),
+            }
+        )
+    rejection_map = dict(finalists["rejected"])
+    for decision in (chain["wave2_decision"], chain["stage2_decision"]):
+        rejection_map.update(decision.get("rejected", {}))
+    for record in all_records:
+        if record.metrics.failure:
+            rejection_map[record.run_id] = record.metrics.failure
+    derived_baseline, _ = derive_stage2_baseline(chain["baseline"], matrix.halve_iterations)
+    empty_winner = {"candidate": None, "rejected": {}}
+    funnel_chain = {**chain, "final": []}
+    decisions = {
+        "wave2": chain["wave2_decision"],
+        "stage2": chain["stage2_decision"],
+        "finalists": finalists,
+        "winner": None,
+    }
+    report = {
+        "schema_version": "1.1",
+        "terminal_status": NO_SAFE_FINALIST_STATUS,
+        "stop_reason": finalists["stop_reason"],
+        "winner": None,
+        "winner_config": None,
+        "winner_config_hash": None,
+        "preset_modified": False,
+        "environment_count": matrix.num_envs,
+        "decisions": decisions,
+        "canonical_comparison": None,
+        "canonical_provenance": None,
+        "bundle_git_dirty": _bundle_git_dirty_disclosure(all_records),
+        "derived_preflight_rejections": _derived_preflight_disclosure(all_records),
+        "funnel": _stage_funnel(funnel_chain, [], empty_winner),
+        "runtime_rows": [
+            {
+                "stage": "halve (95% CI)",
+                "candidate": row["candidate"],
+                "mean": row["runtime"]["mean"],
+                "half_width": row["runtime"]["half_width"],
+                "n": row["runtime"]["n"],
+            }
+            for row in stage2_rows
+        ]
+        + [
+            {
+                "stage": record.metrics.stage,
+                "candidate": record.metrics.candidate,
+                "mean": record.metrics.steady_time(matrix.warmup_iterations),
+                "half_width": 0.0,
+                "n": 1,
+            }
+            for record in [*chain["wave1"], *chain["wave2"]]
+            if record.metrics.failure is None
+        ],
+        "final_rows": stage2_rows,
+        "learning_traces": [
+            {
+                "candidate": f"derived baseline seed {record.seed}",
+                "reward": record.reward,
+                "success": record.success_rate,
+                "episode_length": record.ep_length,
+            }
+            for record in derived_baseline
+            if record.seed in (42, 43)
+        ]
+        + [
+            {
+                "candidate": f"{record.metrics.candidate} seed {record.metrics.seed}",
+                "reward": record.metrics.reward,
+                "success": record.metrics.success_rate,
+                "episode_length": record.metrics.ep_length,
+            }
+            for record in chain["halve"]
+            if record.metrics.failure is None
+        ],
+        "speedups": {},
+        "rejections": [f"{name}: {reason}" for name, reason in sorted(rejection_map.items())],
+        "coverage": {
+            stage: [
+                {
+                    "candidate": record.metrics.candidate,
+                    "seed": record.metrics.seed,
+                    "iterations": len(record.metrics.reward),
+                    "num_envs": record.metrics.num_envs,
+                    "source": _record_provenance(record),
+                }
+                for record in records
+            ]
+            for stage, records in (
+                ("baseline", chain["baseline"]),
+                ("wave1", chain["wave1"]),
+                ("wave2", chain["wave2"]),
+                ("halve", chain["halve"]),
+                ("final", []),
+                ("canonical", []),
+            )
+        },
+        "source_hashes": [_record_provenance(record) for record in sorted(all_records, key=lambda item: item.run_id)],
+        "legacy_comparison": legacy_rows,
+        "seed_iteration_coverage": (
+            "4096 environments; baseline seeds 42--44 at 300 iterations; Wave 1/2 seed 42 at 40; "
+            "halve seeds 42--43 at 100; final and canonical skipped (zero attempts)"
+        ),
+        "stage2_baseline_derivation": (
+            "first 100 aligned iterations of clean 300-iteration baseline; final-20 is iterations 81--100; "
+            "source manifest/event/config hashes are retained in finalists.json"
+        ),
+        "legacy_limitations": (
+            "MJWarp/PhysX values come from the existing five-variant campaign whose manifests lack current exact "
+            "source-HEAD and retained TensorBoard-event hashes; values are contextual only and no winner speedup "
+            "is claimed."
+        ),
+    }
+    write_tuning_report(report, args.output_dir)
+
+
 def _report_action(args: argparse.Namespace) -> None:
     from .tuning_reporting import write_tuning_report
+
+    finalist_chain = _recompute_chain(args, "finalists")
+    finalist_matrix: TuningMatrix = finalist_chain["matrix"]
+    finalists = _require_persisted(
+        args.decision_root / "finalists.json",
+        "promote-finalists",
+        finalist_matrix,
+        finalist_chain["finalists_decision"],
+        0,
+        3,
+    )
+    if not finalist_chain["finalists_decision"]["selected"]:
+        _early_stop_report(args, finalist_chain, finalists)
+        return
 
     chain = _recompute_chain(args, "winner")
     matrix: TuningMatrix = chain["matrix"]
@@ -1092,7 +1257,9 @@ def _report_action(args: argparse.Namespace) -> None:
     derived_baseline, _ = derive_stage2_baseline(chain["baseline"], matrix.halve_iterations)
     canonical_estimates = canonical_comparison["canonical"]
     report = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
+        "terminal_status": "completed",
+        "stop_reason": None,
         "winner": winner["candidate"],
         "winner_config": winner["resolved_config"],
         "winner_config_hash": winner["config_hash"],

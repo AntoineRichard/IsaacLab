@@ -13,3 +13,6 @@ Fixed
 * Fixed tuning artifact validation to accept the configured decision directory,
   derive it from staged output paths when omitted, and continue to reject
   undeclared artifact directories.
+* Fixed the Kamino DVI tuning report to preserve and explain a terminal
+  zero-survivor result without scheduling final or canonical runs or claiming
+  a winner speedup.

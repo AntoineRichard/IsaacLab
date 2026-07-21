@@ -38,7 +38,7 @@ def _runtime_plot(rows: Sequence[Mapping[str, Any]], path: Path) -> None:
     axis.barh(labels, values, xerr=errors, color="#4978a8")
     axis.invert_yaxis()
     axis.set_xlabel("Steady iteration time after iterations 1-10 [s]")
-    axis.set_title("Wave 1/2 runtime ranking (single-seed observations; no confidence interval)")
+    axis.set_title("Screening runtimes (single seed) and Stage-2 runtimes (95% CI)")
     figure.tight_layout()
     figure.savefig(path, dpi=160)
     plt.close(figure)
@@ -61,20 +61,29 @@ def _guardrail_plot(traces: Sequence[Mapping[str, Any]], path: Path) -> None:
 
 
 def _markdown(report: Mapping[str, Any]) -> str:
+    stopped = report.get("terminal_status") == "stopped_no_safe_finalist"
     lines = [
         "# ANYmal-D Kamino DVI Tuning",
         "",
-        "Final/canonical uncertainty intervals are two-sided 95% Student-t confidence intervals. "
+        (
+            f"**Outcome: stopped with no safe finalist.** {report['stop_reason']} The ANYmal-D preset was not "
+            "modified; final and canonical runs were skipped. No winner or winner speedup is reported."
+            if stopped
+            else "**Outcome: completed with a canonical winner.**"
+        ),
+        "Stage-2 uncertainty intervals are two-sided 95% Student-t confidence intervals. "
         "Wave 1/2 rankings are single-seed observations without confidence intervals. Runtime "
         "excludes iterations 1--10; reward, TensorBoard `Metrics/success_rate`, and episode length "
         "use the final 20 iterations.",
         "",
-        "## Winner and canonical gate",
+        "## Early-stop decision" if stopped else "## Winner and canonical gate",
         "",
         f"- Candidate: `{report['winner']}`",
         f"- Environments: {report['environment_count']}",
         f"- Resolved configuration: `{json.dumps(report['winner_config'], sort_keys=True)}`",
         f"- Canonical comparison: `{json.dumps(report.get('canonical_comparison', {}), sort_keys=True)}`",
+        f"- Terminal status: `{report.get('terminal_status', 'completed')}`",
+        f"- Stop reason: {report.get('stop_reason') or 'not applicable'}",
         "",
         "## Stage funnel",
         "",
@@ -98,7 +107,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Final and canonical metrics (95% CIs)",
+            "## Stage-2 metrics (95% CIs)" if stopped else "## Final and canonical metrics (95% CIs)",
             "",
             "| Candidate | Runtime [s] | Reward | Success | Episode length |",
             "|---|---:|---:|---:|---:|",
@@ -109,9 +118,23 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"| {row['candidate']} | {_estimate(row['runtime'])} | {_estimate(row['reward'])} | "
             f"{_estimate(row['success'])} | {_estimate(row['episode_length'])} |"
         )
-    lines.extend(["", "## Speedups", ""])
-    for label, value in sorted(report.get("speedups", {}).items()):
-        lines.append(f"- {label}: {float(value):.3f}×")
+    if stopped:
+        lines.extend(
+            [
+                "",
+                "## Contextual legacy runtimes",
+                "",
+                "| Backend | Runtime [s] | Comparison status |",
+                "|---|---:|---|",
+            ]
+        )
+        for row in report.get("legacy_comparison", []):
+            lines.append(f"| {row['variant']} | {float(row['iteration_time_s']['mean']):.6f} | contextual only |")
+        lines.extend(["", "No apples-to-apples winner speedup is available because no candidate passed Stage 2."])
+    else:
+        lines.extend(["", "## Speedups", ""])
+        for label, value in sorted(report.get("speedups", {}).items()):
+            lines.append(f"- {label}: {float(value):.3f}×")
     lines.extend(["", "## Stability, failures, and rejections", ""])
     lines.extend(f"- {reason}" for reason in report.get("rejections", []))
     if not report.get("rejections"):
