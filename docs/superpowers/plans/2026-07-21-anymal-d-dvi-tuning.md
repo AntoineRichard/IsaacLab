@@ -321,7 +321,7 @@ class FinalQualification:
 
 - [ ] **Step 4: Implement deterministic Wave 2 resolution**
 
-`resolve_wave2()` must require one terminal seed-42 result for each of the 18 Wave 1 candidates, exclude failed candidates, require at least seven valid one-field changes, sort valid changes by `(steady_time, candidate_name)`, and create cumulative prefixes of the fastest two through seven changes. Because Wave 1 changes exactly one distinct field, combining a prefix cannot contain two values for one field. Persisted decision JSON contains each resolved override map and `config_hash(resolve_config(...))`.
+`resolve_wave2()` must require one terminal seed-42 result for each of the 18 Wave 1 candidates, exclude failed candidates, require at least seven valid one-field changes, and sort valid changes by `(steady_time, candidate_name)`. Because multiple Wave 1 candidates may change the same field, scan that ordering greedily and retain only the fastest candidate for each previously unused field. Require at least seven retained distinct fields, then create cumulative prefixes of retained changes two through seven. Persisted decision JSON contains each resolved override map and `config_hash(resolve_config(...))`.
 
 ```python
 def resolve_wave2(matrix: TuningMatrix, results: Sequence[TuningRunMetrics]) -> tuple[TuningCandidate, ...]:
@@ -336,13 +336,19 @@ def resolve_wave2(matrix: TuningMatrix, results: Sequence[TuningRunMetrics]) -> 
         (candidate for candidate in matrix.wave1 if candidate.name in by_name),
         key=lambda candidate: (by_name[candidate.name].steady_time(matrix.warmup_iterations), candidate.name),
     )
+    compatible: list[TuningCandidate] = []
+    selected_fields: set[str] = set()
+    for candidate in ordered:
+        field = next(iter(candidate.overrides))
+        if field not in selected_fields:
+            compatible.append(candidate)
+            selected_fields.add(field)
+    if len(compatible) < 7:
+        raise ValueError("Wave 2 requires seven distinct valid one-field changes")
     resolved: list[TuningCandidate] = []
     for count in range(2, 8):
         overrides: dict[str, SolverValue] = {}
-        for candidate in ordered[:count]:
-            overlap = overrides.keys() & candidate.overrides.keys()
-            if overlap:
-                raise ValueError(f"incompatible Wave 1 changes: {sorted(overlap)}")
+        for candidate in compatible[:count]:
             overrides.update(candidate.overrides)
         resolved.append(TuningCandidate(f"combined_top_{count:02d}", overrides))
     return tuple(resolved)
