@@ -34,6 +34,204 @@ _ADAPTERS = tuple(
 )
 
 
+_NEW_ADAPTERS = (
+    (train_rl_games, "rl_games", "train"),
+    (play_rl_games, "rl_games", "play"),
+    (train_sb3, "sb3", "train"),
+    (play_sb3, "sb3", "play"),
+    (train_skrl, "skrl", "train"),
+    (play_skrl, "skrl", "play"),
+)
+
+
+class _TrackedClose:
+    """Minimal closeable used to verify adapter cleanup on failure."""
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _TrackedEnv(_TrackedClose):
+    """Minimal environment returned immediately before the injected failure."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.unwrapped = SimpleNamespace(num_envs=1)
+
+
+def _agent_cfg(library: str) -> dict:
+    """Return the minimal framework config consumed before environment creation."""
+    if library == "rl_games":
+        return {
+            "params": {
+                "seed": 1,
+                "config": {
+                    "name": "cleanup-test",
+                    "device": "cpu",
+                    "horizon_length": 1,
+                    "minibatch_size": 1,
+                    "max_epochs": 1,
+                },
+                "env": {},
+            }
+        }
+    if library == "sb3":
+        return {"seed": 1, "n_steps": 1, "n_timesteps": 1, "policy": "MlpPolicy"}
+    return {
+        "seed": 1,
+        "agent": {"rollouts": 1, "experiment": {"directory": "cleanup-test", "experiment_name": ""}},
+        "trainer": {"timesteps": 1},
+    }
+
+
+def _install_post_creation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    adapter,
+    library: str,
+    action: str,
+    tmp_path: Path,
+) -> tuple[_TrackedEnv, _TrackedClose]:
+    """Prepare an adapter run that raises while wrapping a newly created environment."""
+    import gymnasium as gym
+
+    from scripts.benchmarks import early_stop  # noqa: F401
+
+    args = SimpleNamespace(
+        task=_TASK,
+        agent=None if library == "skrl" else f"{library}_cfg_entry_point",
+        num_envs=1,
+        num_frames=1,
+        seed=1,
+        checkpoint=str(tmp_path / "checkpoint"),
+        output_path=str(tmp_path),
+        benchmark_formatter="schema",
+        max_iterations=1,
+        video=False,
+        keep_all_info=False,
+        ema_alpha=0.1,
+        no_series=False,
+        success_threshold=None,
+        success_window=None,
+        check_success=False,
+        distributed=False,
+        device=None,
+        algorithm="PPO",
+        ml_framework="torch",
+    )
+    env_cfg = SimpleNamespace(
+        scene=SimpleNamespace(num_envs=1),
+        sim=SimpleNamespace(device="cpu"),
+        seed=1,
+        log_dir=None,
+    )
+    env = _TrackedEnv()
+    simulation_app = _TrackedClose()
+    monkeypatch.setattr(adapter, "_parse_args", lambda _argv: (args, []))
+    monkeypatch.setattr(adapter, "launch_app", lambda _args: SimpleNamespace(app=simulation_app))
+    monkeypatch.setattr(adapter, "resolve_task_config", lambda *_args: (env_cfg, _agent_cfg(library)))
+    monkeypatch.setattr(_compat, "write_run_manifest", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(_compat, "resolve_play_checkpoint", lambda *_args: args.checkpoint)
+
+    benchmark_module = types.ModuleType("isaaclab.test.benchmark")
+    benchmark_module.BaseIsaacLabBenchmark = lambda **_kwargs: SimpleNamespace()
+    benchmark_module.BenchmarkMonitor = object
+    benchmark_module.builders = SimpleNamespace()
+    benchmark_module.capture = SimpleNamespace(
+        run_config_from_presets=lambda *_args, **_kwargs: SimpleNamespace(presets=(), physics_backend="physx")
+    )
+    benchmark_module.stepping = SimpleNamespace()
+    metrics_module = types.ModuleType("isaaclab.test.benchmark.metrics")
+    metrics_module.RL_LIBRARY_DESCRIPTORS = {}
+    metrics_module.parse_tf_logs = lambda *_args: {}
+    schema_module = types.ModuleType("isaaclab.test.benchmark.schema")
+    schema_module.StartupTime = object
+    monkeypatch.setitem(sys.modules, "isaaclab.test.benchmark", benchmark_module)
+    monkeypatch.setitem(sys.modules, "isaaclab.test.benchmark.metrics", metrics_module)
+    monkeypatch.setitem(sys.modules, "isaaclab.test.benchmark.schema", schema_module)
+    monkeypatch.setitem(sys.modules, "isaaclab_tasks", types.ModuleType("isaaclab_tasks"))
+    monkeypatch.setitem(sys.modules, "isaaclab_tasks_experimental", types.ModuleType("isaaclab_tasks_experimental"))
+
+    framework_module = types.ModuleType(f"isaaclab_rl.{library}")
+    wrapper_name = {"rl_games": "RlGamesVecEnvWrapper", "sb3": "Sb3VecEnvWrapper", "skrl": "SkrlVecEnvWrapper"}[library]
+
+    def raise_after_creation(*_args, **_kwargs):
+        raise RuntimeError("injected post-creation failure")
+
+    setattr(framework_module, wrapper_name, raise_after_creation)
+    if library == "rl_games":
+        framework_module.RlGamesGpuEnv = object
+    elif library == "sb3":
+        framework_module.process_sb3_cfg = lambda config, _num_envs: config
+    monkeypatch.setitem(sys.modules, f"isaaclab_rl.{library}", framework_module)
+
+    if action == "train":
+        monkeypatch.setattr(_compat, "create_isaaclab_env", lambda *_args, **_kwargs: env)
+        monkeypatch.setattr(_compat, "wrap_record_video", raise_after_creation)
+    else:
+        monkeypatch.setattr(gym, "make", lambda *_args, **_kwargs: env)
+
+    return env, simulation_app
+
+
+@pytest.mark.parametrize(
+    ("adapter", "library", "action"),
+    _NEW_ADAPTERS,
+    ids=[f"{library}-{action}" for _, library, action in _NEW_ADAPTERS],
+)
+def test_new_adapter_closes_environment_and_app_on_post_creation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    adapter,
+    library: str,
+    action: str,
+):
+    """An exception after environment creation closes both lifecycle resources exactly once."""
+    env, simulation_app = _install_post_creation_failure(monkeypatch, adapter, library, action, tmp_path)
+
+    with pytest.raises(RuntimeError, match="injected post-creation failure"):
+        adapter.run([])
+
+    assert env.close_calls == 1
+    assert simulation_app.close_calls == 1
+
+
+def test_latest_checkpoint_prefers_explicit_sb3_final_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Latest selection prefers SB3's final model without weakening run provenance."""
+    monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB2_SHA", "2" * 40)
+    monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB3_SHA", "3" * 40)
+    monkeypatch.setattr(_compat, "_git_sha", lambda _path: None)
+    run_dir = tmp_path / "2026-01-01_00-00-00"
+    _compat.write_run_manifest(run_dir, library="sb3", task=_TASK, metadata={"agent": "sb3_cfg_entry_point"})
+    intermediate = run_dir / "model_1000_steps.zip"
+    final = run_dir / "model.zip"
+    intermediate.write_bytes(b"intermediate")
+    final.write_bytes(b"final")
+
+    preferred = _compat.resolve_checkpoint_selector(
+        str(tmp_path),
+        "latest",
+        library="sb3",
+        task=_TASK,
+        checkpoint_pattern=play_sb3._CHECKPOINT_PATTERN,
+        preferred_checkpoint_pattern=r"model\.zip",
+        metadata={"agent": "sb3_cfg_entry_point"},
+    )
+    ordinary = _compat.resolve_checkpoint_selector(
+        str(tmp_path),
+        "latest",
+        library="sb3",
+        task=_TASK,
+        checkpoint_pattern=play_sb3._CHECKPOINT_PATTERN,
+        metadata={"agent": "sb3_cfg_entry_point"},
+    )
+
+    assert preferred == str(final.resolve())
+    assert ordinary == str(intermediate.resolve())
+
+
 @pytest.mark.parametrize("library", ["rl_games", "rsl_rl", "sb3", "skrl"])
 def test_training_dispatches_libraries_to_library_named_adapters(library: str):
     """The training dispatcher uses the library-named benchmark adapter."""

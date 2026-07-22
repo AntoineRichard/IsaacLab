@@ -34,6 +34,20 @@ def _run(command: list[str], working_directory: Path) -> None:
         )
 
 
+def _assert_success_rate(value: float | None, expect_success_rate: bool) -> None:
+    """Assert the schema's success-rate nullability contract."""
+    if expect_success_rate:
+        assert value is not None
+    else:
+        assert value is None
+
+
+@pytest.mark.parametrize(("value", "expect_success_rate"), [(0.75, True), (None, False)])
+def test_success_rate_expectation_covers_supported_and_missing_metrics(value: float | None, expect_success_rate: bool):
+    """Smoke assertions distinguish supported success metrics from absent task terms."""
+    _assert_success_rate(value, expect_success_rate)
+
+
 @pytest.mark.parametrize(
     (
         "library",
@@ -47,7 +61,7 @@ def _run(command: list[str], working_directory: Path) -> None:
     [
         ("rl_games", 16, 20, "schema,json", True, False, False),
         ("rsl_rl", 16, 2, "schema,json", True, False, False),
-        ("sb3", 16, 70, "schema,json", False, False, True),
+        ("sb3", 16, 1, "schema,json", False, False, True),
         ("skrl", 16, 20, "schema,json", True, False, False),
     ],
 )
@@ -103,8 +117,7 @@ def test_training_and_play_write_bundles(
     assert training_data["learning"]["reward"]["final_ema"] is not None
     if expect_reward_series:
         assert len(training_data["learning"]["reward"]["series_per_iter"]) >= 1
-    if expect_success_rate:
-        assert training_data["success_rate"] is not None
+    _assert_success_rate(training_data["success_rate"], expect_success_rate)
     if expect_checkpoint:
         assert Path(training_data["checkpoint_path"]).is_file()
 

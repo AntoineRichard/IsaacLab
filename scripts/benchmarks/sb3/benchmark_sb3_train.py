@@ -245,141 +245,147 @@ def run(argv: list[str]) -> None:
         policy_arch = agent_cfg.pop("policy")
         n_timesteps = agent_cfg.pop("n_timesteps")
 
-        env_t0 = time.perf_counter_ns()
-        env = _common.create_isaaclab_env(args_cli.task, env_cfg, args_cli, convert_marl_to_single_agent=True)
-        env = _common.wrap_record_video(env, log_dir, args_cli)
-        env_t1 = time.perf_counter_ns()
-        success_kwargs = build_success_kwargs(args_cli)
-        success_context = SuccessRateTrackerWrapper(
-            env,
-            success_kwargs["threshold"],
-            success_kwargs["window"],
-            num_steps_per_env=n_steps_cfg,
-        )
-
-        env = Sb3VecEnvWrapper(env, fast_variant=not args_cli.keep_all_info)
-
-        norm_keys = {"normalize_input", "normalize_value", "clip_obs"}
-        norm_args = {}
-        for key in norm_keys:
-            if key in agent_cfg:
-                norm_args[key] = agent_cfg.pop(key)
-
-        if norm_args and norm_args.get("normalize_input"):
-            env = VecNormalize(
+        env = None
+        try:
+            env_t0 = time.perf_counter_ns()
+            env = _common.create_isaaclab_env(args_cli.task, env_cfg, args_cli, convert_marl_to_single_agent=True)
+            env = _common.wrap_record_video(env, log_dir, args_cli)
+            env_t1 = time.perf_counter_ns()
+            success_kwargs = build_success_kwargs(args_cli)
+            success_context = SuccessRateTrackerWrapper(
                 env,
-                training=True,
-                norm_obs=norm_args["normalize_input"],
-                norm_reward=norm_args.get("normalize_value", False),
-                clip_obs=norm_args.get("clip_obs", 100.0),
-                gamma=agent_cfg["gamma"],
-                clip_reward=np.inf,
+                success_kwargs["threshold"],
+                success_kwargs["window"],
+                num_steps_per_env=n_steps_cfg,
             )
 
-        agent = PPO(policy_arch, env, verbose=1, tensorboard_log=log_dir, **agent_cfg)
+            env = Sb3VecEnvWrapper(env, fast_variant=not args_cli.keep_all_info)
 
-        if args_cli.checkpoint is not None:
-            agent = agent.load(args_cli.checkpoint, env, print_system_info=True)
+            norm_keys = {"normalize_input", "normalize_value", "clip_obs"}
+            norm_args = {}
+            for key in norm_keys:
+                if key in agent_cfg:
+                    norm_args[key] = agent_cfg.pop(key)
 
-        BenchmarkCallback = _build_benchmark_callback_class()
-        cb = BenchmarkCallback()
-        checkpoint_callback = CheckpointCallback(save_freq=1000, save_path=log_dir, name_prefix="model", verbose=2)
+            if norm_args and norm_args.get("normalize_input"):
+                env = VecNormalize(
+                    env,
+                    training=True,
+                    norm_obs=norm_args["normalize_input"],
+                    norm_reward=norm_args.get("normalize_value", False),
+                    clip_obs=norm_args.get("clip_obs", 100.0),
+                    gamma=agent_cfg["gamma"],
+                    clip_reward=np.inf,
+                )
 
-        with contextlib.suppress(KeyboardInterrupt), success_context, BenchmarkMonitor(benchmark, interval=1.0):
-            agent.learn(
-                total_timesteps=n_timesteps,
-                callback=[checkpoint_callback, cb],
-                progress_bar=False,
-                log_interval=None,
+            agent = PPO(policy_arch, env, verbose=1, tensorboard_log=log_dir, **agent_cfg)
+
+            if args_cli.checkpoint is not None:
+                agent = agent.load(args_cli.checkpoint, env, print_system_info=True)
+
+            BenchmarkCallback = _build_benchmark_callback_class()
+            cb = BenchmarkCallback()
+            checkpoint_callback = CheckpointCallback(save_freq=1000, save_path=log_dir, name_prefix="model", verbose=2)
+
+            with contextlib.suppress(KeyboardInterrupt), success_context, BenchmarkMonitor(benchmark, interval=1.0):
+                agent.learn(
+                    total_timesteps=n_timesteps,
+                    callback=[checkpoint_callback, cb],
+                    progress_bar=False,
+                    log_interval=None,
+                )
+            agent.save(os.path.join(log_dir, "model"))
+
+            benchmark.update_manual_recorders()
+
+            collection_times_s = cb.collection_times_s
+            iteration_times_s = cb.iter_times_s
+            collection_fps = [steps_per_iteration / t for t in collection_times_s if t > 0]
+            total_fps = [steps_per_iteration / t for t in iteration_times_s if t > 0]
+
+            # Filter out NaN entries from rollouts where no episode finished.
+            reward_series = [v for v in cb.ep_rew_mean if v == v]  # NaN != NaN
+            ep_len_series = [v for v in cb.ep_len_mean if v == v]
+            if not reward_series and iteration_times_s:
+                print(
+                    "[WARNING] sb3: no episodes completed during the benchmarked rollouts;"
+                    " reward/episode-length curves are empty.",
+                    file=sys.stderr,
+                )
+
+            startup = StartupTime(
+                app_launch=(app_t1 - app_t0) / 1e9,
+                env_creation=(env_t1 - env_t0) / 1e9,
+                first_step=(iteration_times_s[0] if iteration_times_s else 0.0),
+                python_imports=(imports_t1 - imports_t0) / 1e9,
+                task_config=(config_t1 - config_t0) / 1e9,
             )
-        agent.save(os.path.join(log_dir, "model"))
 
-        benchmark.update_manual_recorders()
-
-        collection_times_s = cb.collection_times_s
-        iteration_times_s = cb.iter_times_s
-        collection_fps = [steps_per_iteration / t for t in collection_times_s if t > 0]
-        total_fps = [steps_per_iteration / t for t in iteration_times_s if t > 0]
-
-        # Filter out NaN entries from rollouts where no episode finished.
-        reward_series = [v for v in cb.ep_rew_mean if v == v]  # NaN != NaN
-        ep_len_series = [v for v in cb.ep_len_mean if v == v]
-        if not reward_series and iteration_times_s:
-            print(
-                "[WARNING] sb3: no episodes completed during the benchmarked rollouts;"
-                " reward/episode-length curves are empty.",
-                file=sys.stderr,
+            runtime = builders.build_runtime(
+                startup_time_s=startup,
+                iteration_times_s=iteration_times_s,
+                collection_fps=collection_fps,
+                total_fps=total_fps,
+                steps_per_iteration=steps_per_iteration,
             )
 
-        startup = StartupTime(
-            app_launch=(app_t1 - app_t0) / 1e9,
-            env_creation=(env_t1 - env_t0) / 1e9,
-            first_step=(iteration_times_s[0] if iteration_times_s else 0.0),
-            python_imports=(imports_t1 - imports_t0) / 1e9,
-            task_config=(config_t1 - config_t0) / 1e9,
-        )
+            learning = builders.build_learning(
+                reward_series=reward_series,
+                ep_length_series=ep_len_series,
+                ema_alpha=args_cli.ema_alpha,
+                keep_series=not args_cli.no_series,
+            )
 
-        runtime = builders.build_runtime(
-            startup_time_s=startup,
-            iteration_times_s=iteration_times_s,
-            collection_fps=collection_fps,
-            total_fps=total_fps,
-            steps_per_iteration=steps_per_iteration,
-        )
+            desc = RL_LIBRARY_DESCRIPTORS["sb3"]
+            log_data = parse_tf_logs(log_dir, desc.tfevents_pattern)
+            success_tracker = get_success_tracker(args_cli, success_context.tracker, log_data)
+            success_rate = (
+                round(success_tracker.tail_mean, 4) if (success_tracker and success_tracker.history) else None
+            )
 
-        learning = builders.build_learning(
-            reward_series=reward_series,
-            ep_length_series=ep_len_series,
-            ema_alpha=args_cli.ema_alpha,
-            keep_series=not args_cli.no_series,
-        )
+            versions = capture.capture_versions(benchmark)
+            hardware = capture.capture_hardware(benchmark)
+            resources = capture.capture_resources(benchmark)
 
-        desc = RL_LIBRARY_DESCRIPTORS["sb3"]
-        log_data = parse_tf_logs(log_dir, desc.tfevents_pattern)
-        success_tracker = get_success_tracker(args_cli, success_context.tracker, log_data)
-        success_rate = round(success_tracker.tail_mean, 4) if (success_tracker and success_tracker.history) else None
+            end_utc = capture.now_utc_iso()
+            stamp = end_utc.translate(str.maketrans("", "", ":-"))[:15]
+            seed = env_cfg.seed if env_cfg.seed is not None else 0
 
-        versions = capture.capture_versions(benchmark)
-        hardware = capture.capture_hardware(benchmark)
-        resources = capture.capture_resources(benchmark)
+            run_identity = builders.build_run_identity(
+                run_id=capture.synth_run_id("sb3", cfg.physics_backend, args_cli.task, seed, stamp),
+                framework="sb3",
+                config=cfg,
+                task=args_cli.task,
+                seed=seed,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                num_envs=env.unwrapped.num_envs,
+                max_iterations=resolved_max_iterations,
+            )
 
-        end_utc = capture.now_utc_iso()
-        stamp = end_utc.translate(str.maketrans("", "", ":-"))[:15]
-        seed = env_cfg.seed if env_cfg.seed is not None else 0
+            checkpoint_path = os.path.join(log_dir, "model.zip")
+            video_path = os.path.join(log_dir, "videos") if getattr(args_cli, "video", False) else None
 
-        run_identity = builders.build_run_identity(
-            run_id=capture.synth_run_id("sb3", cfg.physics_backend, args_cli.task, seed, stamp),
-            framework="sb3",
-            config=cfg,
-            task=args_cli.task,
-            seed=seed,
-            start_utc=start_utc,
-            end_utc=end_utc,
-            num_envs=env.unwrapped.num_envs,
-            max_iterations=resolved_max_iterations,
-        )
+            bundle = builders.build_training_bundle(
+                run=run_identity,
+                versions=versions,
+                hardware=hardware,
+                runtime=runtime,
+                resources=resources,
+                learning=learning,
+                success_rate=success_rate,
+                checkpoint_path=checkpoint_path,
+                video_path=video_path,
+            )
 
-        checkpoint_path = os.path.join(log_dir, "model.zip")
-        video_path = os.path.join(log_dir, "videos") if getattr(args_cli, "video", False) else None
+            benchmark.attach_bundle(bundle)
+            benchmark.add_measurement("train", success_measurements(success_tracker))
 
-        bundle = builders.build_training_bundle(
-            run=run_identity,
-            versions=versions,
-            hardware=hardware,
-            runtime=runtime,
-            resources=resources,
-            learning=learning,
-            success_rate=success_rate,
-            checkpoint_path=checkpoint_path,
-            video_path=video_path,
-        )
+            benchmark._finalize_impl()
 
-        benchmark.attach_bundle(bundle)
-        benchmark.add_measurement("train", success_measurements(success_tracker))
-
-        benchmark._finalize_impl()
-
-        env.close()
+        finally:
+            if env is not None:
+                env.close()
     finally:
         simulation_app.close()
 

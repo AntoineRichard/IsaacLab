@@ -303,119 +303,125 @@ def run(argv: list[str]) -> None:
 
         env_cfg.log_dir = log_dir
 
-        env_t0 = time.perf_counter_ns()
-        env = _common.create_isaaclab_env(
-            args_cli.task, env_cfg, args_cli, convert_marl_to_single_agent=algorithm == "ppo"
-        )
-        env = _common.wrap_record_video(env, log_dir, args_cli)
-        env_t1 = time.perf_counter_ns()
-        success_kwargs = build_success_kwargs(args_cli)
-        success_context = SuccessRateTrackerWrapper(
-            env,
-            success_kwargs["threshold"],
-            success_kwargs["window"],
-            num_steps_per_env=rollouts,
-        )
+        env = None
+        try:
+            env_t0 = time.perf_counter_ns()
+            env = _common.create_isaaclab_env(
+                args_cli.task, env_cfg, args_cli, convert_marl_to_single_agent=algorithm == "ppo"
+            )
+            env = _common.wrap_record_video(env, log_dir, args_cli)
+            env_t1 = time.perf_counter_ns()
+            success_kwargs = build_success_kwargs(args_cli)
+            success_context = SuccessRateTrackerWrapper(
+                env,
+                success_kwargs["threshold"],
+                success_kwargs["window"],
+                num_steps_per_env=rollouts,
+            )
 
-        env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
+            env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
 
-        from skrl.utils.runner.torch import Runner
+            from skrl.utils.runner.torch import Runner
 
-        BenchmarkTrainer = _build_benchmark_trainer_class()
+            BenchmarkTrainer = _build_benchmark_trainer_class()
 
-        class _BenchmarkRunner(Runner):
-            """Runner that installs ``BenchmarkTrainer`` during initialization."""
+            class _BenchmarkRunner(Runner):
+                """Runner that installs ``BenchmarkTrainer`` during initialization."""
 
-            def _generate_trainer(self, env, cfg, agent):
-                from skrl.trainers.torch import SequentialTrainerCfg
+                def _generate_trainer(self, env, cfg, agent):
+                    from skrl.trainers.torch import SequentialTrainerCfg
 
-                trainer_cfg = SequentialTrainerCfg(**self._process_cfg(cfg["trainer"]))
-                return BenchmarkTrainer(env=env, agents=agent, cfg=trainer_cfg)
+                    trainer_cfg = SequentialTrainerCfg(**self._process_cfg(cfg["trainer"]))
+                    return BenchmarkTrainer(env=env, agents=agent, cfg=trainer_cfg)
 
-        runner = _BenchmarkRunner(env, agent_cfg)
-        bt = runner._trainer
+            runner = _BenchmarkRunner(env, agent_cfg)
+            bt = runner._trainer
 
-        with success_context, BenchmarkMonitor(benchmark, interval=1.0):
-            runner.run()
+            with success_context, BenchmarkMonitor(benchmark, interval=1.0):
+                runner.run()
 
-        benchmark.update_manual_recorders()
+            benchmark.update_manual_recorders()
 
-        collection_times_s = list(bt.collection_times_s)
-        iter_times_s = list(bt.iter_times_s)
-        reward_series = [value for value in bt.iter_rewards if value == value]
-        ep_len_series = [value for value in bt.iter_ep_lengths if value == value]
+            collection_times_s = list(bt.collection_times_s)
+            iter_times_s = list(bt.iter_times_s)
+            reward_series = [value for value in bt.iter_rewards if value == value]
+            ep_len_series = [value for value in bt.iter_ep_lengths if value == value]
 
-        num_envs = env.unwrapped.num_envs
-        steps_per_iteration = num_envs * rollouts
-        collection_fps = [steps_per_iteration / value for value in collection_times_s if value > 0]
-        total_fps = [steps_per_iteration / value for value in iter_times_s if value > 0]
+            num_envs = env.unwrapped.num_envs
+            steps_per_iteration = num_envs * rollouts
+            collection_fps = [steps_per_iteration / value for value in collection_times_s if value > 0]
+            total_fps = [steps_per_iteration / value for value in iter_times_s if value > 0]
 
-        startup = StartupTime(
-            app_launch=(app_t1 - app_t0) / 1e9,
-            env_creation=(env_t1 - env_t0) / 1e9,
-            first_step=(iter_times_s[0] if iter_times_s else 0.0),
-            python_imports=(imports_t1 - imports_t0) / 1e9,
-            task_config=(config_t1 - config_t0) / 1e9,
-        )
+            startup = StartupTime(
+                app_launch=(app_t1 - app_t0) / 1e9,
+                env_creation=(env_t1 - env_t0) / 1e9,
+                first_step=(iter_times_s[0] if iter_times_s else 0.0),
+                python_imports=(imports_t1 - imports_t0) / 1e9,
+                task_config=(config_t1 - config_t0) / 1e9,
+            )
 
-        runtime = builders.build_runtime(
-            startup_time_s=startup,
-            iteration_times_s=iter_times_s,
-            collection_fps=collection_fps,
-            total_fps=total_fps,
-            steps_per_iteration=steps_per_iteration,
-        )
+            runtime = builders.build_runtime(
+                startup_time_s=startup,
+                iteration_times_s=iter_times_s,
+                collection_fps=collection_fps,
+                total_fps=total_fps,
+                steps_per_iteration=steps_per_iteration,
+            )
 
-        learning = builders.build_learning(
-            reward_series=reward_series,
-            ep_length_series=ep_len_series,
-            ema_alpha=args_cli.ema_alpha,
-            keep_series=not args_cli.no_series,
-        )
+            learning = builders.build_learning(
+                reward_series=reward_series,
+                ep_length_series=ep_len_series,
+                ema_alpha=args_cli.ema_alpha,
+                keep_series=not args_cli.no_series,
+            )
 
-        desc = RL_LIBRARY_DESCRIPTORS["skrl"]
-        log_data = parse_tf_logs(log_dir, desc.tfevents_pattern)
-        success_tracker = get_success_tracker(args_cli, success_context.tracker, log_data)
-        success_rate = round(success_tracker.tail_mean, 4) if (success_tracker and success_tracker.history) else None
+            desc = RL_LIBRARY_DESCRIPTORS["skrl"]
+            log_data = parse_tf_logs(log_dir, desc.tfevents_pattern)
+            success_tracker = get_success_tracker(args_cli, success_context.tracker, log_data)
+            success_rate = (
+                round(success_tracker.tail_mean, 4) if (success_tracker and success_tracker.history) else None
+            )
 
-        versions = capture.capture_versions(benchmark)
-        hardware = capture.capture_hardware(benchmark)
-        resources = capture.capture_resources(benchmark)
+            versions = capture.capture_versions(benchmark)
+            hardware = capture.capture_hardware(benchmark)
+            resources = capture.capture_resources(benchmark)
 
-        end_utc = capture.now_utc_iso()
-        stamp = end_utc.translate(str.maketrans("", "", ":-"))[:15]
-        seed = agent_cfg["seed"] if agent_cfg.get("seed") is not None else 0
+            end_utc = capture.now_utc_iso()
+            stamp = end_utc.translate(str.maketrans("", "", ":-"))[:15]
+            seed = agent_cfg["seed"] if agent_cfg.get("seed") is not None else 0
 
-        run_identity = builders.build_run_identity(
-            run_id=capture.synth_run_id("skrl", cfg.physics_backend, args_cli.task, seed, stamp),
-            framework="skrl",
-            config=cfg,
-            task=args_cli.task,
-            seed=seed,
-            start_utc=start_utc,
-            end_utc=end_utc,
-            num_envs=num_envs,
-            max_iterations=resolved_max_iterations,
-        )
+            run_identity = builders.build_run_identity(
+                run_id=capture.synth_run_id("skrl", cfg.physics_backend, args_cli.task, seed, stamp),
+                framework="skrl",
+                config=cfg,
+                task=args_cli.task,
+                seed=seed,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                num_envs=num_envs,
+                max_iterations=resolved_max_iterations,
+            )
 
-        bundle = builders.build_training_bundle(
-            run=run_identity,
-            versions=versions,
-            hardware=hardware,
-            runtime=runtime,
-            resources=resources,
-            learning=learning,
-            success_rate=success_rate,
-            checkpoint_path=None,
-            video_path=os.path.join(log_dir, "videos") if args_cli.video else None,
-        )
+            bundle = builders.build_training_bundle(
+                run=run_identity,
+                versions=versions,
+                hardware=hardware,
+                runtime=runtime,
+                resources=resources,
+                learning=learning,
+                success_rate=success_rate,
+                checkpoint_path=None,
+                video_path=os.path.join(log_dir, "videos") if args_cli.video else None,
+            )
 
-        benchmark.attach_bundle(bundle)
-        benchmark.add_measurement("train", success_measurements(success_tracker))
+            benchmark.attach_bundle(bundle)
+            benchmark.add_measurement("train", success_measurements(success_tracker))
 
-        benchmark._finalize_impl()
+            benchmark._finalize_impl()
 
-        env.close()
+        finally:
+            if env is not None:
+                env.close()
     finally:
         simulation_app.close()
 

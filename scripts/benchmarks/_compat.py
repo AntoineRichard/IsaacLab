@@ -340,7 +340,7 @@ def resolve_checkpoint_selector(
     metadata: dict[str, str] | None = None,
     expected_git_shas: dict[str, str] | None = None,
 ) -> str:
-    """Resolve ``latest`` or ``best`` from compatible manifested runs."""
+    """Resolve ``latest`` or ``best`` from compatible manifested runs, honoring a preferred checkpoint."""
     if selector not in CHECKPOINT_SELECTORS:
         raise ValueError(f"Unknown checkpoint selector {selector!r}. Expected one of: {sorted(CHECKPOINT_SELECTORS)}.")
 
@@ -387,7 +387,7 @@ def resolve_checkpoint_selector(
         ]
         if not checkpoints:
             continue
-        if selector == "best" and preferred_checkpoint_pattern is not None:
+        if preferred_checkpoint_pattern is not None:
             preferred = [path for path in checkpoints if re.fullmatch(preferred_checkpoint_pattern, path.name)]
             if preferred:
                 checkpoints = preferred

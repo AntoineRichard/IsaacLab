@@ -154,107 +154,111 @@ def run(argv: list[str]) -> None:
             },
         )
 
-        env_t0 = time.perf_counter_ns()
-        env = gym.make(args_cli.task, cfg=env_cfg)
-        env_t1 = time.perf_counter_ns()
+        env = None
+        try:
+            env_t0 = time.perf_counter_ns()
+            env = gym.make(args_cli.task, cfg=env_cfg)
+            env_t1 = time.perf_counter_ns()
 
-        # Post-process agent configuration the same way isaaclab_rl.entrypoints.backends.play_sb3 does.
-        agent_cfg = process_sb3_cfg(agent_cfg, env.unwrapped.num_envs)
+            # Post-process agent configuration the same way isaaclab_rl.entrypoints.backends.play_sb3 does.
+            agent_cfg = process_sb3_cfg(agent_cfg, env.unwrapped.num_envs)
 
-        num_envs = env.unwrapped.num_envs
+            num_envs = env.unwrapped.num_envs
 
-        # Wrap for stable-baselines3.
-        env = Sb3VecEnvWrapper(env, fast_variant=not args_cli.keep_all_info)
+            # Wrap for stable-baselines3.
+            env = Sb3VecEnvWrapper(env, fast_variant=not args_cli.keep_all_info)
 
-        # Load VecNormalize statistics when they were saved next to the checkpoint.
-        vec_norm_path = Path(resume_path.replace("/model", "/model_vecnormalize").replace(".zip", ".pkl"))
-        if vec_norm_path.exists():
-            env = VecNormalize.load(vec_norm_path, env)
-            env.training = False
-            env.norm_reward = False
-        elif "normalize_input" in agent_cfg:
-            env = VecNormalize(
-                env,
-                training=True,
-                norm_obs="normalize_input" in agent_cfg and agent_cfg.pop("normalize_input"),
-                clip_obs="clip_obs" in agent_cfg and agent_cfg.pop("clip_obs"),
+            # Load VecNormalize statistics when they were saved next to the checkpoint.
+            vec_norm_path = Path(resume_path.replace("/model", "/model_vecnormalize").replace(".zip", ".pkl"))
+            if vec_norm_path.exists():
+                env = VecNormalize.load(vec_norm_path, env)
+                env.training = False
+                env.norm_reward = False
+            elif "normalize_input" in agent_cfg:
+                env = VecNormalize(
+                    env,
+                    training=True,
+                    norm_obs="normalize_input" in agent_cfg and agent_cfg.pop("normalize_input"),
+                    clip_obs="clip_obs" in agent_cfg and agent_cfg.pop("clip_obs"),
+                )
+
+            # Load the trained policy.
+            agent = PPO.load(resume_path, env, print_system_info=True)
+
+            def policy(obs):
+                """Map an observation batch to a deterministic action batch via the sb3 agent.
+
+                Mirrors the inference path in ``isaaclab_rl.entrypoints.backends.play_sb3``:
+                the sb3-wrapped env returns NumPy observations, which ``agent.predict`` consumes
+                directly, returning NumPy actions for ``env.step``.
+
+                Args:
+                    obs: NumPy observation returned by the sb3-wrapped env.
+
+                Returns:
+                    The NumPy action array to feed ``env.step``.
+                """
+                actions, _ = agent.predict(obs, deterministic=True)
+                return actions
+
+            with BenchmarkMonitor(benchmark, interval=1.0):
+                step_times, reward, ep_length, success_rate = stepping.run_play_loop(env, policy, args_cli.num_frames)
+
+            benchmark.update_manual_recorders()
+
+            startup = StartupTime(
+                app_launch=(app_t1 - app_t0) / 1e9,
+                env_creation=(env_t1 - env_t0) / 1e9,
+                first_step=(step_times[0] if step_times else 0.0),
             )
 
-        # Load the trained policy.
-        agent = PPO.load(resume_path, env, print_system_info=True)
+            fps = [num_envs / t for t in step_times if t > 0]
+            runtime = builders.build_runtime(
+                startup_time_s=startup,
+                iteration_times_s=step_times,
+                collection_fps=fps,
+                total_fps=fps,
+                steps_per_iteration=num_envs,
+            )
 
-        def policy(obs):
-            """Map an observation batch to a deterministic action batch via the sb3 agent.
+            versions = capture.capture_versions(benchmark)
+            hardware = capture.capture_hardware(benchmark)
+            resources = capture.capture_resources(benchmark)
 
-            Mirrors the inference path in ``isaaclab_rl.entrypoints.backends.play_sb3``:
-            the sb3-wrapped env returns NumPy observations, which ``agent.predict`` consumes
-            directly, returning NumPy actions for ``env.step``.
+            end_utc = capture.now_utc_iso()
+            stamp = end_utc.translate(str.maketrans("", "", ":-"))[:15]
+            seed = env_cfg.seed if env_cfg.seed is not None else 0
 
-            Args:
-                obs: NumPy observation returned by the sb3-wrapped env.
+            run_identity = builders.build_run_identity(
+                run_id=capture.synth_run_id("sb3", cfg.physics_backend, args_cli.task, seed, stamp),
+                framework="sb3",
+                config=cfg,
+                task=args_cli.task,
+                seed=seed,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                num_envs=num_envs,
+            )
 
-            Returns:
-                The NumPy action array to feed ``env.step``.
-            """
-            actions, _ = agent.predict(obs, deterministic=True)
-            return actions
+            bundle = builders.build_play_bundle(
+                run=run_identity,
+                versions=versions,
+                hardware=hardware,
+                runtime=runtime,
+                resources=resources,
+                success_rate=success_rate,
+                reward=reward,
+                ep_length=ep_length,
+                checkpoint_path=resume_path,
+            )
 
-        with BenchmarkMonitor(benchmark, interval=1.0):
-            step_times, reward, ep_length, success_rate = stepping.run_play_loop(env, policy, args_cli.num_frames)
+            benchmark.attach_bundle(bundle)
 
-        benchmark.update_manual_recorders()
+            benchmark._finalize_impl()
 
-        startup = StartupTime(
-            app_launch=(app_t1 - app_t0) / 1e9,
-            env_creation=(env_t1 - env_t0) / 1e9,
-            first_step=(step_times[0] if step_times else 0.0),
-        )
-
-        fps = [num_envs / t for t in step_times if t > 0]
-        runtime = builders.build_runtime(
-            startup_time_s=startup,
-            iteration_times_s=step_times,
-            collection_fps=fps,
-            total_fps=fps,
-            steps_per_iteration=num_envs,
-        )
-
-        versions = capture.capture_versions(benchmark)
-        hardware = capture.capture_hardware(benchmark)
-        resources = capture.capture_resources(benchmark)
-
-        end_utc = capture.now_utc_iso()
-        stamp = end_utc.translate(str.maketrans("", "", ":-"))[:15]
-        seed = env_cfg.seed if env_cfg.seed is not None else 0
-
-        run_identity = builders.build_run_identity(
-            run_id=capture.synth_run_id("sb3", cfg.physics_backend, args_cli.task, seed, stamp),
-            framework="sb3",
-            config=cfg,
-            task=args_cli.task,
-            seed=seed,
-            start_utc=start_utc,
-            end_utc=end_utc,
-            num_envs=num_envs,
-        )
-
-        bundle = builders.build_play_bundle(
-            run=run_identity,
-            versions=versions,
-            hardware=hardware,
-            runtime=runtime,
-            resources=resources,
-            success_rate=success_rate,
-            reward=reward,
-            ep_length=ep_length,
-            checkpoint_path=resume_path,
-        )
-
-        benchmark.attach_bundle(bundle)
-
-        benchmark._finalize_impl()
-
-        env.close()
+        finally:
+            if env is not None:
+                env.close()
     finally:
         simulation_app.close()
 
