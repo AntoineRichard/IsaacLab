@@ -91,6 +91,7 @@ def _kamino_dvi_newton_cfg() -> NewtonCfg:
             dynamics_preconditioning=False,
             dynamics_linear_solver_type="CR",
             dynamics_linear_solver_max_iterations=9,
+            dvi_regularization=1.0e-4,
             dvi_omega=0.3,
             dvi_block_iterations=16,
             dvi_contact_iterations=2,
@@ -100,7 +101,7 @@ def _kamino_dvi_newton_cfg() -> NewtonCfg:
             dvi_contact_block_preconditioner=False,
             dvi_warmstart_mode="containers",
         ),
-        num_substeps=4,
+        num_substeps=1,
         use_cuda_graph=True,
         default_shape_cfg=NewtonShapeCfg(margin=0.0, gap=0.001),
     )
