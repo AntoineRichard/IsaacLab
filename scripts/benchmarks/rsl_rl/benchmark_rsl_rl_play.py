@@ -103,6 +103,7 @@ def run(argv: list[str]) -> None:
 
         log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
         if args.checkpoint in _common.CHECKPOINT_SELECTORS:
+            expected_git_shas = _common.resolve_benchmark_git_shas()
             resume_path = _common.resolve_checkpoint_selector(
                 log_root_path,
                 args.checkpoint,
@@ -110,6 +111,7 @@ def run(argv: list[str]) -> None:
                 task=args.task,
                 checkpoint_pattern=r"model_.*\.pt",
                 metadata={"agent": args.agent},
+                expected_git_shas=expected_git_shas,
             )
         else:
             resume_path = _common.resolve_play_checkpoint(args.checkpoint, "rsl_rl", args.task)

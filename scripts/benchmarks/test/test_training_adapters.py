@@ -149,10 +149,11 @@ def test_rsl_rl_post_launch_work_is_guarded_by_app_cleanup(script_name: str):
     )
 
 
-def test_rsl_rl_latest_checkpoint_uses_matching_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """The latest selector ignores unmanifested and differently configured runs."""
+def test_rsl_rl_latest_checkpoint_ignores_newer_mismatched_provenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The latest selector ignores newer runs from different checkout SHAs."""
     monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB2_SHA", "2" * 40)
     monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB3_SHA", "3" * 40)
+    monkeypatch.setattr(_compat, "_git_sha", lambda _path: None)
     older = tmp_path / "2026-01-01_00-00-00"
     newer = tmp_path / "2026-01-02_00-00-00"
     wrong_agent = tmp_path / "2026-01-03_00-00-00"
@@ -165,6 +166,7 @@ def test_rsl_rl_latest_checkpoint_uses_matching_manifest(tmp_path: Path, monkeyp
     older_manifest["created_at"] = "2026-01-01T00:00:00+00:00"
     newer_manifest["created_at"] = "2026-01-02T00:00:00+00:00"
     wrong_manifest["created_at"] = "2026-01-03T00:00:00+00:00"
+    newer_manifest["git_shas"] = {"lab2": "4" * 40, "lab3": "3" * 40}
     older.joinpath("run.json").write_text(json.dumps(older_manifest))
     newer.joinpath("run.json").write_text(json.dumps(newer_manifest))
     wrong_agent.joinpath("run.json").write_text(json.dumps(wrong_manifest))
@@ -178,8 +180,30 @@ def test_rsl_rl_latest_checkpoint_uses_matching_manifest(tmp_path: Path, monkeyp
         metadata={"agent": "agent"},
     )
 
-    assert checkpoint == str((newer / "model_1.pt").resolve())
-    assert json.loads((newer / "run.json").read_text())["git_shas"] == {
+    assert checkpoint == str((older / "model_1.pt").resolve())
+    assert json.loads((older / "run.json").read_text())["git_shas"] == {
         "lab2": "2" * 40,
         "lab3": "3" * 40,
     }
+
+
+def test_rsl_rl_play_passes_expected_provenance_to_checkpoint_selector():
+    """Play resolves current checkout identity before selecting a manifested run."""
+    tree = ast.parse((ROOT / "scripts" / "benchmarks" / "rsl_rl" / "benchmark_rsl_rl_play.py").read_text())
+    assignments = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    selector_call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "resolve_checkpoint_selector"
+    )
+
+    assert "expected_git_shas" in assignments
+    assert any(keyword.arg == "expected_git_shas" for keyword in selector_call.keywords)

@@ -114,6 +114,7 @@ def test_run_manifest_records_both_checkout_shas(tmp_path, monkeypatch):
     """Run manifests pin both sides of the cross-version comparison."""
     monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB2_SHA", "2" * 40)
     monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB3_SHA", "3" * 40)
+    monkeypatch.setattr(_compat, "_git_sha", lambda _path: None)
 
     _compat.write_run_manifest(str(tmp_path), library="rsl_rl", task=_TASK)
 
@@ -128,6 +129,30 @@ def test_run_manifest_rejects_missing_checkout_shas(tmp_path, monkeypatch):
     monkeypatch.setattr(_compat, "_git_sha", lambda _path: None)
 
     with pytest.raises(RuntimeError, match="ISAACLAB_BENCHMARK_LAB2_SHA.*ISAACLAB_BENCHMARK_LAB3_SHA"):
+        _compat.write_run_manifest(str(tmp_path), library="rsl_rl", task=_TASK)
+
+
+def test_run_manifest_rejects_environment_sha_that_disagrees_with_checkout(tmp_path, monkeypatch):
+    """An environment override cannot misidentify an available checkout."""
+    monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB2_SHA", "4" * 40)
+    monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB3_SHA", "3" * 40)
+    monkeypatch.setattr(
+        _compat,
+        "_git_sha",
+        lambda path: "3" * 40 if path.name == "lab3-develop" else "2" * 40,
+    )
+
+    with pytest.raises(RuntimeError, match=r"ISAACLAB_BENCHMARK_LAB2_SHA.*does not match.*checkout"):
+        _compat.write_run_manifest(str(tmp_path), library="rsl_rl", task=_TASK)
+
+
+def test_run_manifest_rejects_abbreviated_sha_identity(tmp_path, monkeypatch):
+    """A run manifest requires two full 40-character Git SHAs."""
+    monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB2_SHA", "2" * 10)
+    monkeypatch.setenv("ISAACLAB_BENCHMARK_LAB3_SHA", "3" * 40)
+    monkeypatch.setattr(_compat, "_git_sha", lambda _path: None)
+
+    with pytest.raises(RuntimeError, match=r"full 40-character Git SHA"):
         _compat.write_run_manifest(str(tmp_path), library="rsl_rl", task=_TASK)
 
 

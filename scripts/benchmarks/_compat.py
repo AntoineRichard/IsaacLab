@@ -248,6 +248,42 @@ def dispatch_library_entrypoint(
     return 0
 
 
+def resolve_benchmark_git_shas() -> dict[str, str]:
+    """Resolve the validated full-SHA identity for both benchmark checkouts."""
+    repo_root = Path(__file__).resolve().parents[2]
+    sources = (
+        ("lab2", "Lab 2", _LAB2_SHA_ENV, repo_root),
+        ("lab3", "Lab 3", _LAB3_SHA_ENV, repo_root.parent / "lab3-develop"),
+    )
+
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for key, label, environment_name, checkout_path in sources:
+        override_sha = os.environ.get(environment_name)
+        checkout_sha = _git_sha(checkout_path)
+        if override_sha is not None:
+            override_sha = _validate_git_sha(override_sha, f"Environment variable {environment_name}")
+        if checkout_sha is not None:
+            checkout_sha = _validate_git_sha(checkout_sha, f"{label} checkout at {str(checkout_path)!r}")
+        if override_sha is not None and checkout_sha is not None and override_sha != checkout_sha:
+            raise RuntimeError(
+                f"{environment_name}={override_sha!r} does not match the {label} checkout at "
+                f"{str(checkout_path)!r} ({checkout_sha}). Unset the override or set it to the checkout SHA."
+            )
+        resolved_sha = override_sha or checkout_sha
+        if resolved_sha is None:
+            missing.append(environment_name)
+        else:
+            resolved[key] = resolved_sha
+
+    if missing:
+        raise RuntimeError(
+            "Unable to resolve both benchmark checkout Git SHAs. Set "
+            f"{_LAB2_SHA_ENV} and {_LAB3_SHA_ENV} when the checkouts are not available to git."
+        )
+    return _validate_git_sha_pair(resolved, "Resolved benchmark provenance")
+
+
 def write_run_manifest(
     log_dir: str,
     *,
@@ -258,24 +294,14 @@ def write_run_manifest(
     """Write checkpoint-discovery metadata including both comparison SHAs."""
     run_dir = Path(log_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    repo_root = Path(__file__).resolve().parents[2]
-    lab2_sha = os.environ.get(_LAB2_SHA_ENV) or _git_sha(repo_root)
-    lab3_sha = os.environ.get(_LAB3_SHA_ENV) or _git_sha(repo_root.parent / "lab3-develop")
-    if not lab2_sha or not lab3_sha:
-        raise RuntimeError(
-            "Unable to resolve both benchmark checkout Git SHAs. Set "
-            f"{_LAB2_SHA_ENV} and {_LAB3_SHA_ENV} when the checkouts are not available to git."
-        )
+    git_shas = resolve_benchmark_git_shas()
     manifest = {
         "version": RUN_MANIFEST_VERSION,
         "library": library,
         "task": _normalize_task_name(task),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "metadata": metadata or {},
-        "git_shas": {
-            "lab2": lab2_sha,
-            "lab3": lab3_sha,
-        },
+        "git_shas": git_shas,
     }
     manifest_path = run_dir / RUN_MANIFEST_FILENAME
     temporary_path = run_dir / f".{RUN_MANIFEST_FILENAME}.{os.getpid()}.tmp"
@@ -312,10 +338,15 @@ def resolve_checkpoint_selector(
     other_dirs: list[str] | None = None,
     preferred_checkpoint_pattern: str | None = None,
     metadata: dict[str, str] | None = None,
+    expected_git_shas: dict[str, str] | None = None,
 ) -> str:
     """Resolve ``latest`` or ``best`` from compatible manifested runs."""
     if selector not in CHECKPOINT_SELECTORS:
         raise ValueError(f"Unknown checkpoint selector {selector!r}. Expected one of: {sorted(CHECKPOINT_SELECTORS)}.")
+
+    if expected_git_shas is None:
+        expected_git_shas = resolve_benchmark_git_shas()
+    expected_git_shas = _validate_git_sha_pair(expected_git_shas, "Expected checkpoint provenance")
 
     log_root = Path(log_root_path)
     expected_task = _normalize_task_name(task)
@@ -335,6 +366,12 @@ def resolve_checkpoint_selector(
             if manifest.get("library") != library or manifest.get("task") != expected_task:
                 continue
             manifest_metadata = manifest.get("metadata", {})
+            try:
+                manifest_git_shas = _validate_git_sha_pair(manifest.get("git_shas"), f"Manifest in {run_dir}")
+            except RuntimeError:
+                continue
+            if manifest_git_shas != expected_git_shas:
+                continue
             if not isinstance(manifest_metadata, dict):
                 continue
             if any(manifest_metadata.get(key) != value for key, value in expected_metadata.items()):
@@ -397,6 +434,24 @@ def _import_local_module(module_name: str, module_path: Path) -> ModuleType:
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _validate_git_sha(value: object, source: str) -> str:
+    """Validate and normalize one full Git SHA."""
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{40}", value) is None:
+        raise RuntimeError(f"{source} must contain a full 40-character Git SHA; got {value!r}.")
+    return value.lower()
+
+
+def _validate_git_sha_pair(git_shas: object, source: str) -> dict[str, str]:
+    """Validate and normalize a Lab 2/Lab 3 full-SHA identity pair."""
+    if not isinstance(git_shas, dict) or set(git_shas) != {"lab2", "lab3"}:
+        raise RuntimeError(f"{source} must contain exactly the 'lab2' and 'lab3' Git SHAs.")
+
+    normalized: dict[str, str] = {}
+    for checkout in ("lab2", "lab3"):
+        normalized[checkout] = _validate_git_sha(git_shas[checkout], f"{source} entry {checkout!r}")
+    return normalized
 
 
 def _git_sha(path: Path) -> str | None:
