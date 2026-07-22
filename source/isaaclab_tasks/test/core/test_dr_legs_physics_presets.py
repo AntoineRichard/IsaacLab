@@ -48,7 +48,7 @@ def test_dr_legs_exposes_closed_loop_kamino_dvi_preset() -> None:
     assert solver.dvi_contact_block_preconditioner is False
     assert solver.dvi_warmstart_mode == "containers"
     assert physics.newton_kamino_dvi.use_cuda_graph is True
-    assert physics.newton_kamino_dvi.num_substeps == 2
+    assert physics.newton_kamino_dvi.num_substeps == 4
     assert physics.newton_kamino_dvi.default_shape_cfg == physics.newton_kamino.default_shape_cfg
 
 
