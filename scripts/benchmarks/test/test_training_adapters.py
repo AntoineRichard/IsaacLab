@@ -8,46 +8,103 @@
 import argparse
 import ast
 import json
+import re
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from scripts.benchmarks import _compat, play, training
+from scripts.benchmarks.rl_games import benchmark_rl_games_play as play_rl_games
+from scripts.benchmarks.rl_games import benchmark_rl_games_train as train_rl_games
 from scripts.benchmarks.rsl_rl import benchmark_rsl_rl_play as play_rsl_rl
 from scripts.benchmarks.rsl_rl import benchmark_rsl_rl_train as train_rsl_rl
+from scripts.benchmarks.sb3 import benchmark_sb3_play as play_sb3
+from scripts.benchmarks.sb3 import benchmark_sb3_train as train_sb3
+from scripts.benchmarks.skrl import benchmark_skrl_play as play_skrl
+from scripts.benchmarks.skrl import benchmark_skrl_train as train_skrl
 
 ROOT = Path(__file__).resolve().parents[3]
 _TASK = "Isaac-Cartpole-v0"
+_ADAPTERS = tuple(
+    (library, action) for library in ("rl_games", "rsl_rl", "sb3", "skrl") for action in ("train", "play")
+)
 
 
-def test_training_dispatches_rsl_rl_to_library_named_adapter():
-    """The training dispatcher uses the RSL-RL-named benchmark adapter."""
-    assert training.LIBRARY_ENTRYPOINTS["rsl_rl"].name == "benchmark_rsl_rl_train.py"
+@pytest.mark.parametrize("library", ["rl_games", "rsl_rl", "sb3", "skrl"])
+def test_training_dispatches_libraries_to_library_named_adapters(library: str):
+    """The training dispatcher uses the library-named benchmark adapter."""
+    assert training.LIBRARY_ENTRYPOINTS[library].name == f"benchmark_{library}_train.py"
 
 
-def test_play_dispatches_rsl_rl_to_library_named_adapter():
-    """The play dispatcher uses the RSL-RL-named benchmark adapter."""
-    assert play.LIBRARY_ENTRYPOINTS["rsl_rl"].name == "benchmark_rsl_rl_play.py"
+@pytest.mark.parametrize("library", ["rl_games", "rsl_rl", "sb3", "skrl"])
+def test_play_dispatches_libraries_to_library_named_adapters(library: str):
+    """The play dispatcher uses the library-named benchmark adapter."""
+    assert play.LIBRARY_ENTRYPOINTS[library].name == f"benchmark_{library}_play.py"
 
 
-def test_play_adapter_help_does_not_require_task():
+@pytest.mark.parametrize("adapter", [play_rl_games, play_rsl_rl, play_sb3, play_skrl])
+def test_play_adapter_help_does_not_require_task(adapter):
     """Play adapter help exits successfully without a task selection."""
     with pytest.raises(SystemExit) as exc_info:
-        play_rsl_rl._parse_args(["--help"])
+        adapter._parse_args(["--help"])
     assert exc_info.value.code == 0
 
 
 def test_rsl_rl_disables_code_state_capture():
-    """RSL-RL cannot inspect Git state in the benchmark container."""
     logger = SimpleNamespace(git_status_repos=["rsl_rl.py"])
     runner = SimpleNamespace(logger=logger)
 
     train_rsl_rl._disable_code_state_capture(runner)
 
     assert logger.git_status_repos == []
+
+
+def test_sb3_checkpoint_pattern_includes_final_model():
+    """SB3 latest selection accepts the final model saved by a minimal run."""
+    assert re.fullmatch(play_sb3._CHECKPOINT_PATTERN, "model.zip")
+
+
+def test_rl_games_play_does_not_shadow_launch_timer():
+    """RL-Games play uses the module timer before post-launch imports."""
+    tree = ast.parse((ROOT / "scripts" / "benchmarks" / "rl_games" / "benchmark_rl_games_play.py").read_text())
+    run_function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run")
+    imported_names = {
+        alias.name for node in ast.walk(run_function) if isinstance(node, ast.Import) for alias in node.names
+    }
+
+    assert "time" not in imported_names
+
+
+def test_rl_games_training_overrides_make_small_batch_valid():
+    """RL-Games uses a valid minibatch when the smoke requests 16 environments."""
+    args = SimpleNamespace(num_envs=16, seed=7, max_iterations=1, distributed=False, device=None)
+    env_cfg = SimpleNamespace(
+        scene=SimpleNamespace(num_envs=512),
+        sim=SimpleNamespace(device="cuda:0"),
+        seed=42,
+    )
+    agent_cfg = {
+        "params": {
+            "seed": 42,
+            "config": {
+                "horizon_length": 16,
+                "minibatch_size": 8192,
+                "max_epochs": 150,
+            },
+        }
+    }
+
+    updated = train_rl_games._apply_training_overrides(args, env_cfg, agent_cfg)
+
+    assert updated is agent_cfg
+    assert env_cfg.scene.num_envs == 16
+    assert env_cfg.seed == agent_cfg["params"]["seed"] == 7
+    assert agent_cfg["params"]["config"]["max_epochs"] == 1
+    assert agent_cfg["params"]["config"]["minibatch_size"] == 256
 
 
 def test_training_parser_accepts_measured_cli_and_physx_selector(monkeypatch: pytest.MonkeyPatch):
@@ -114,10 +171,10 @@ def test_training_overrides_propagate_seed_and_iteration_limit():
     assert agent_cfg.max_iterations == 2
 
 
-@pytest.mark.parametrize("script_name", ["benchmark_rsl_rl_train.py", "benchmark_rsl_rl_play.py"])
-def test_rsl_rl_task_config_lookup_happens_after_app_launch(script_name: str):
+@pytest.mark.parametrize(("library", "action"), _ADAPTERS)
+def test_task_config_lookup_happens_after_app_launch(library: str, action: str):
     """The 2.x adapters launch Kit before task registration and config lookup."""
-    tree = ast.parse((ROOT / "scripts" / "benchmarks" / "rsl_rl" / script_name).read_text())
+    tree = ast.parse((ROOT / "scripts" / "benchmarks" / library / f"benchmark_{library}_{action}.py").read_text())
     calls = {
         node.func.id: node.lineno
         for node in ast.walk(tree)
@@ -129,10 +186,10 @@ def test_rsl_rl_task_config_lookup_happens_after_app_launch(script_name: str):
     assert calls["launch_app"] < calls["resolve_task_config"]
 
 
-@pytest.mark.parametrize("script_name", ["benchmark_rsl_rl_train.py", "benchmark_rsl_rl_play.py"])
-def test_rsl_rl_post_launch_work_is_guarded_by_app_cleanup(script_name: str):
+@pytest.mark.parametrize(("library", "action"), _ADAPTERS)
+def test_post_launch_work_is_guarded_by_app_cleanup(library: str, action: str):
     """Both adapters close SimulationApp even when post-launch work raises."""
-    tree = ast.parse((ROOT / "scripts" / "benchmarks" / "rsl_rl" / script_name).read_text())
+    tree = ast.parse((ROOT / "scripts" / "benchmarks" / library / f"benchmark_{library}_{action}.py").read_text())
     run_function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run")
     simulation_app_index = next(
         index
@@ -207,3 +264,79 @@ def test_rsl_rl_play_passes_expected_provenance_to_checkpoint_selector():
 
     assert "expected_git_shas" in assignments
     assert any(keyword.arg == "expected_git_shas" for keyword in selector_call.keywords)
+
+
+def test_sb3_iteration_time_includes_policy_update(monkeypatch: pytest.MonkeyPatch):
+    """Test that SB3 reports collection time separately from the full training iteration."""
+    timestamps = iter([1_000_000_000, 1_000_000_000, 3_000_000_000, 6_000_000_000])
+    monkeypatch.setattr(train_sb3.time, "perf_counter_ns", lambda: next(timestamps))
+
+    callback = train_sb3._build_benchmark_callback_class()()
+    callback.model = SimpleNamespace(ep_info_buffer=[])
+    callback._on_training_start()
+    callback._on_rollout_start()
+    callback._on_rollout_end()
+    callback._on_training_end()
+
+    assert callback.collection_times_s == [2.0]
+    assert callback.iter_times_s == [5.0]
+
+
+def test_skrl_reward_uses_episode_return_tracking(monkeypatch: pytest.MonkeyPatch):
+    """Test that SKRL records its canonical total-reward metric at rollout boundaries."""
+    from skrl.trainers.torch import SequentialTrainer
+
+    class FakeEnv:
+        num_agents = 1
+
+        def step(self, actions):
+            return None, torch.tensor([1.0]), None, None, {}
+
+    class FakeAgent:
+        cfg = SimpleNamespace(rollouts=2)
+
+        def __init__(self):
+            self.tracking_data = {}
+
+        def post_interaction(self, *, timestep: int, timesteps: int) -> None:
+            self.tracking_data.clear()
+
+    def run_two_steps(trainer) -> None:
+        for timestep in range(2):
+            trainer.env.step(None)
+            trainer.agents.tracking_data = {
+                "Reward / Total reward (mean)": [10.0, 20.0],
+                "Episode / Total timesteps (mean)": [5.0, 7.0],
+            }
+            trainer.agents.post_interaction(timestep=timestep, timesteps=2)
+
+    monkeypatch.setattr(SequentialTrainer, "train", run_two_steps)
+    timestamps = iter([1_000_000_000, 3_000_000_000, 6_000_000_000, 6_000_000_000])
+    monkeypatch.setattr(train_skrl.time, "perf_counter_ns", lambda: next(timestamps))
+    trainer_class = train_skrl._build_benchmark_trainer_class()
+    trainer = trainer_class.__new__(trainer_class)
+    trainer.env = FakeEnv()
+    trainer.agents = FakeAgent()
+    trainer.cfg = SimpleNamespace(timesteps=2)
+    trainer.num_simultaneous_agents = 1
+    trainer.collection_times_s = []
+    trainer.iter_times_s = []
+    trainer.iter_rewards = []
+    trainer.iter_ep_lengths = []
+
+    trainer.train()
+
+    assert trainer.collection_times_s == [2.0]
+    assert trainer.iter_times_s == [5.0]
+    assert trainer.iter_rewards == [15.0]
+
+
+def test_skrl_parser_rejects_unimplemented_modes():
+    """Test that SKRL rejects modes which cannot emit complete benchmark metrics."""
+    unsupported = [("--ml_framework", "jax"), ("--algorithm", "IPPO")]
+
+    for option, value in unsupported:
+        with pytest.raises(SystemExit):
+            train_skrl._parse_args(["--task", "unused", option, value])
+    with pytest.raises(SystemExit):
+        train_skrl._parse_args(["--task", "unused", "--distributed"])

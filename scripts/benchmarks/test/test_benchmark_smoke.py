@@ -44,7 +44,12 @@ def _run(command: list[str], working_directory: Path) -> None:
         "expect_success_rate",
         "expect_checkpoint",
     ),
-    [("rsl_rl", 16, 2, "schema,json", True, False, False)],
+    [
+        ("rl_games", 16, 20, "schema,json", True, False, False),
+        ("rsl_rl", 16, 2, "schema,json", True, False, False),
+        ("sb3", 16, 70, "schema,json", False, False, True),
+        ("skrl", 16, 20, "schema,json", True, False, False),
+    ],
 )
 def test_training_and_play_write_bundles(
     tmp_path,
