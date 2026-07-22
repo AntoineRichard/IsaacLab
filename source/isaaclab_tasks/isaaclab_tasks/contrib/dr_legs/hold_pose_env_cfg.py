@@ -253,6 +253,24 @@ class EventCfg:
     )
 
 
+def _kamino_dvi_event_cfg() -> EventCfg:
+    """Return the DR Legs reset profile that keeps closed-loop coordinates assembled."""
+    cfg = EventCfg()
+    cfg.reset_base.params["pose_range"] = {key: (0.0, 0.0) for key in cfg.reset_base.params["pose_range"]}
+    cfg.reset_robot_joints.params["position_range"] = (0.0, 0.0)
+    cfg.reset_robot_joints.params["velocity_range"] = (0.0, 0.0)
+    return cfg
+
+
+@configclass
+class DrLegsEventCfg(PresetCfg):
+    """Backend-specific DR Legs event presets."""
+
+    default: EventCfg = EventCfg()
+    newton_kamino: EventCfg = EventCfg()
+    newton_kamino_dvi: EventCfg = _kamino_dvi_event_cfg()
+
+
 @configclass
 class RewardsCfg:
     alive = RewTerm(func=mdp.is_alive, weight=5.0)
@@ -293,7 +311,7 @@ class DrLegsHoldPoseEnvCfg(ManagerBasedRLEnvCfg):
     scene: HoldPoseSceneCfg = HoldPoseSceneCfg(num_envs=_NUM_ENVS, env_spacing=2.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
-    events: EventCfg = EventCfg()
+    events: DrLegsEventCfg = DrLegsEventCfg()
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     sim: SimulationCfg = SimulationCfg(

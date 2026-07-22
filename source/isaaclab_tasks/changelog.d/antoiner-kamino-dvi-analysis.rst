@@ -2,7 +2,7 @@ Added
 ^^^^^
 
 * Added tuned Kamino DVI physics presets for Cartpole Direct, ANYmal-D Flat,
-  Fourbar Pole, and DR Legs benchmarks.
+  Fourbar Pole, and DR Legs benchmarks, including a closed-loop-safe DR Legs reset profile.
 
 Fixed
 ^^^^^
