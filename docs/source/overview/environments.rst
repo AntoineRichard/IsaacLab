@@ -980,7 +980,7 @@ inferencing, including reading from an already trained checkpoint and disabling 
       -
       - Manager Based
       - **rsl_rl** (PPO)
-      - **physics=** ``newton_mjwarp_vbd``
+      - **physics=** ``newton_mjwarp_vbd``, ``ovphysx``
     * - Isaac-Lift-Cube-Franka
       - Isaac-Lift-Cube-Franka-Play
       - Manager Based
@@ -1009,7 +1009,7 @@ inferencing, including reading from an already trained checkpoint and disabling 
       -
       - Manager Based
       - **rsl_rl** (PPO)
-      - **physics=** ``newton_mjwarp_vbd``, ``newton_mjwarp_vbd_proxy``, ``physx``
+      - **physics=** ``newton_mjwarp_vbd``, ``newton_mjwarp_vbd_proxy``, ``ovphysx``, ``physx``
     * - Isaac-Open-Drawer-Franka
       - Isaac-Open-Drawer-Franka-Play
       - Manager Based
