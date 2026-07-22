@@ -29,6 +29,7 @@
 - Successful raw artifacts are immutable. Reports and plots are always regenerable from raw artifacts.
 - The report is informational only and has no pass/fail regression threshold.
 - Every new source file uses the 2026 Isaac Lab copyright header.
+- A measured attempt starts only after the host passes the idle gate. The runner never kills unrelated work to make the machine idle.
 
 ## Task 0: Prepare pinned execution checkouts
 
@@ -424,6 +425,7 @@ Validate immutable benchmark artifacts
 - Create: tools/benchmark_comparison/cli.py
 - Create: tools/benchmark_comparison/tests/test_executors.py
 - Create: tools/benchmark_comparison/tests/test_runner.py
+- Create: tools/benchmark_comparison/tests/test_idle_gate.py
 
 - [ ] **Step 1: Write failing command-generation tests**
 
@@ -437,19 +439,31 @@ Reuse the repository base service, add a benchmark suffix, mount only the pinned
 
 Validate Git SHAs, clean worktrees, Docker image identity, uv lock state, NVIDIA SMI access, free disk space, writable artifact root, task registration, and both formatter names before any measured attempt starts.
 
-- [ ] **Step 4: Implement the resumable paired runner**
+- [ ] **Step 4: Implement the host-idle gate**
+
+Before every canary or final attempt, require all of the following:
+
+- no unexpected NVIDIA compute process or GPU-enabled Docker container;
+- GPU utilization at or below 5 percent for 60 consecutive one-second samples;
+- GPU memory no more than 1024 MiB above the idle baseline recorded during preflight;
+- one-minute host load average at or below 25 percent of the logical CPU count; and
+- no child process remaining from an earlier benchmark attempt.
+
+Persist the 60 raw NVIDIA SMI samples, process inventory, load average, idle baseline, thresholds, and decision beside the attempt. When the gate fails, wait five minutes and retry without modifying or terminating unrelated processes. After a configurable idle timeout, record a preflight failure and stop the run set before launching another simulator process.
+
+- [ ] **Step 5: Implement the resumable paired runner**
 
 Execute one attempt at a time to avoid GPU contention. Follow the approved version order for each seed. Skip only a semantically valid success. Retry failures only when explicitly requested. Persist runner state after every attempt and handle interruption without losing completed artifacts.
 
-- [ ] **Step 5: Add timeout and signal handling**
+- [ ] **Step 6: Add timeout and signal handling**
 
 Terminate the child cleanly, then the container or process group if needed. Record timeout or interruption distinctly and leave a recoverable failed attempt.
 
-- [ ] **Step 6: Test with fake executors**
+- [ ] **Step 7: Test with fake executors**
 
-Cover complete run, resume, corrupt-success rerun, failure preservation, counterbalancing, interruption, timeout, and out-of-memory classification.
+Cover complete run, resume, corrupt-success rerun, failure preservation, counterbalancing, interruption, timeout, out-of-memory classification, idle acceptance, busy-GPU rejection, busy-host rejection, retry, and idle timeout.
 
-- [ ] **Step 7: Run tests and commit**
+- [ ] **Step 8: Run tests and commit**
 
 Commit:
 
@@ -517,7 +531,7 @@ Ensure the feature worktree is at /home/antoiner/benchmarks/isaaclab2-vs-3/lab2-
 
 - [ ] **Step 3: Run final preflight and task-registration checks**
 
-Resolve all six task aliases in both versions, verify 4096 environments are accepted by CLI/config composition, and write a preflight report. This does not execute measured cells.
+Resolve all six task aliases in both versions, verify 4096 environments are accepted by CLI/config composition, record the idle GPU-memory baseline, and write a preflight report. This does not execute measured cells.
 
 - [ ] **Step 4: Run the separate 36-attempt canary**
 
@@ -529,7 +543,7 @@ Manually inspect at least one runtime and one training artifact from each versio
 
 - [ ] **Step 6: Run or resume the full 108-attempt matrix**
 
-Use the same artifact root and runner but a new final run-set ID. Never reuse reduced canary results as final measurements.
+Use the same artifact root and runner but a new final run-set ID. Never reuse reduced canary results as final measurements. Require and archive a fresh idle-gate decision before every attempt; if the machine becomes busy, pause the matrix until the gate passes again.
 
 - [ ] **Step 7: Validate matrix completeness**
 
@@ -562,6 +576,7 @@ Confirm no public API was removed, legacy scripts remain callable with deprecati
 - Benchmark core and script tests pass under the 2.x environment.
 - Legacy public entrypoints remain usable and provide migration guidance.
 - The controller expands exactly 108 attempts and resumes without overwriting valid successes.
+- Every measured attempt has an accepted idle-gate record proving the host and GPU were not busy immediately before launch.
 - Every success reports collection FPS, mean and peak GPU memory, mean GPU utilization, and GPU utilization sample count.
 - Raw schema and generic JSON artifacts, logs, manifests, validation records, normalized CSV files, Markdown report, PNG plots, and SVG plots are retained.
 - The final report is informational and clearly exposes failures rather than hiding or imputing them.
