@@ -247,15 +247,10 @@ def test_detect_deformable_type_rejects_material_topology_conflict(
     assert "Detected deformable types: ['surface', 'volume']" in message
 
 
-def test_detect_deformable_type_rejects_mixed_tetmesh_and_mesh_hierarchy() -> None:
+def test_detect_deformable_type_uses_tetmesh_with_visual_mesh_as_volume() -> None:
     root, material = _make_deformable_prims([], ["TetMesh", "Mesh"])
 
-    with pytest.raises(RuntimeError) as exc_info:
-        _detect_deformable_type(root, material)
-
-    message = str(exc_info.value)
-    assert "Hierarchy types: ['Mesh', 'TetMesh', 'Xform']" in message
-    assert "Detected deformable types: ['surface', 'volume']" in message
+    assert _detect_deformable_type(root, material) == "volume"
 
 
 @pytest.mark.parametrize(

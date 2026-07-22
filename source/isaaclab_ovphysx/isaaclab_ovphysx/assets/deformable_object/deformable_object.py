@@ -141,7 +141,7 @@ def _detect_deformable_type(root_prim: Usd.Prim, material_prim: Usd.Prim | None)
         detected_types.add("volume")
     if "TetMesh" in hierarchy_types:
         detected_types.add("volume")
-    if "Mesh" in hierarchy_types:
+    elif "Mesh" in hierarchy_types:
         detected_types.add("surface")
 
     if len(detected_types) == 1:
