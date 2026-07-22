@@ -100,6 +100,7 @@ def _kamino_dvi_newton_cfg() -> NewtonCfg:
             dvi_contact_block_preconditioner=False,
             dvi_warmstart_mode="containers",
         ),
+        num_substeps=2,
         use_cuda_graph=True,
         default_shape_cfg=NewtonShapeCfg(margin=0.0, gap=0.001),
     )
