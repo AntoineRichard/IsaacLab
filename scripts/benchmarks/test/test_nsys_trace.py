@@ -16,8 +16,6 @@ source by dotted paths. These tests catch two kinds of drift:
 
 from isaaclab.app import AppLauncher
 
-simulation_app = AppLauncher(headless=True).app
-
 """Rest everything follows."""
 
 import importlib
@@ -30,6 +28,16 @@ from pathlib import Path
 import pytest
 
 TRACE_JSON_PATH = Path(__file__).resolve().parents[1] / "nsys_trace.json"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _simulation_app_lifecycle():
+    """Launch and close the simulation app around this module's trace tests."""
+    simulation_app = AppLauncher(headless=True).app
+    try:
+        yield
+    finally:
+        simulation_app.close()
 
 
 def _load_trace_entries() -> list[dict]:
