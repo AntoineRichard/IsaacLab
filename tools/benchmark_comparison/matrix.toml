@@ -1,0 +1,59 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+[matrix]
+num_envs = 4096
+seeds = [42, 43, 44]
+
+[[task]]
+alias = "cartpole"
+lab2_id = "Isaac-Cartpole-v0"
+lab3_id = "Isaac-Cartpole"
+
+[[task]]
+alias = "ant"
+lab2_id = "Isaac-Ant-v0"
+lab3_id = "Isaac-Ant"
+
+[[task]]
+alias = "anymal_d_flat"
+lab2_id = "Isaac-Velocity-Flat-Anymal-D-v0"
+lab3_id = "Isaac-Velocity-Flat-AnymalD"
+
+[[task]]
+alias = "g1_flat"
+lab2_id = "Isaac-Velocity-Flat-G1-v0"
+lab3_id = "Isaac-Velocity-Flat-G1"
+
+[[task]]
+alias = "allegro_cube"
+lab2_id = "Isaac-Repose-Cube-Allegro-v0"
+lab3_id = "Isaac-Reorient-Cube-Allegro"
+
+[[task]]
+alias = "franka_reach"
+lab2_id = "Isaac-Reach-Franka-v0"
+lab3_id = "Isaac-Reach-Franka"
+
+[[mode]]
+id = "runtime-100"
+framework = "rsl_rl"
+unit = "steps"
+final_bound = 100
+canary_bound = 10
+
+[[mode]]
+id = "runtime-1000"
+framework = "rsl_rl"
+unit = "steps"
+final_bound = 1000
+canary_bound = 25
+
+[[mode]]
+id = "training-100"
+framework = "rsl_rl"
+unit = "iterations"
+final_bound = 100
+canary_bound = 2
