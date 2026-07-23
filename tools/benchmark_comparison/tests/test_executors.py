@@ -179,13 +179,18 @@ def test_version_probes_require_every_configured_task_registration(tmp_path: Pat
     assert all(task.lab3_id in lab3_probe for task in matrix.tasks)
 
 
-def test_lab2_version_probe_starts_app_before_importing_tasks(tmp_path: Path):
+def test_version_probes_use_version_specific_app_startup_and_sentinel(tmp_path: Path):
     config = _config(tmp_path)
 
     lab2_probe = Lab2DockerExecutor(config).version_invocation().argv[-1]
+    lab3_probe = Lab3UvExecutor(config).version_invocation().argv[-1]
 
-    assert "from isaaclab.app import AppLauncher" in lab2_probe
-    assert lab2_probe.index("AppLauncher") < lab2_probe.index("isaaclab_tasks")
+    app_launcher = "AppLauncher(headless=True)"
+    assert lab2_probe.index(app_launcher) < lab2_probe.index("MetricsFormatter")
+    assert lab2_probe.index(app_launcher) < lab2_probe.index("isaaclab_tasks")
+    assert "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__" in lab2_probe
+    assert "AppLauncher" not in lab3_probe
+    assert "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__" not in lab3_probe
 
 
 def test_child_timeout_terminates_process_group_and_cleans_only_owned_container(tmp_path: Path):
@@ -262,9 +267,18 @@ def test_lab2_invocation_uses_exact_image_id_without_host_source_mount(tmp_path:
 
 
 class _PreflightCommands:
-    def __init__(self, config: ExecutorConfig, *, fail_contains: str | None = None):
+    def __init__(
+        self,
+        config: ExecutorConfig,
+        *,
+        fail_contains: str | None = None,
+        lab2_probe_stdout: str = "kit startup log\n__ISAACLAB_BENCHMARK_PREFLIGHT_OK__\n",
+        lab3_probe_stdout: str = "ok\n",
+    ):
         self.config = config
         self.fail_contains = fail_contains
+        self.lab2_probe_stdout = lab2_probe_stdout
+        self.lab3_probe_stdout = lab3_probe_stdout
         self.argvs: list[tuple[str, ...]] = []
 
     def run(self, argv, *, cwd=None, environment=None, timeout=None):
@@ -284,7 +298,10 @@ class _PreflightCommands:
             return CommandResult(argv, 0, "", "")
         if argv and argv[0] == "nvidia-smi":
             return CommandResult(argv, 0, "100, 0\n", "")
-        return CommandResult(argv, 0, "kit startup log\nok\n", "")
+        if "MetricsFormatter.get_instance" in rendered:
+            stdout = self.lab2_probe_stdout if argv[0] == "docker" else self.lab3_probe_stdout
+            return CommandResult(argv, 0, stdout, "")
+        raise AssertionError(f"unexpected preflight command: {rendered}")
 
 
 def test_preflight_validates_all_required_system_identities(tmp_path: Path):
@@ -302,6 +319,25 @@ def test_preflight_validates_all_required_system_identities(tmp_path: Path):
     assert any("uv lock --check" in command for command in rendered)
     assert any(command.startswith("nvidia-smi") for command in rendered)
     assert len([command for command in rendered if "MetricsFormatter.get_instance" in command]) == 2
+
+
+def test_preflight_rejects_lab2_noise_without_unique_sentinel(tmp_path: Path):
+    config = _config(tmp_path)
+    commands = _PreflightCommands(config, lab2_probe_stdout="kit startup log\nok\n")
+
+    with pytest.raises(PreflightError, match="__ISAACLAB_BENCHMARK_PREFLIGHT_OK__"):
+        run_preflight(config, commands, min_free_bytes=1)
+
+
+def test_preflight_keeps_lab3_probe_stdout_strict(tmp_path: Path):
+    config = _config(tmp_path)
+    commands = _PreflightCommands(config, lab3_probe_stdout="kit startup log\nok\n")
+
+    with pytest.raises(
+        PreflightError,
+        match=r"lab3 task registration and formatters failed: expected 'ok', got 'kit startup log\\nok'",
+    ):
+        run_preflight(config, commands, min_free_bytes=1)
 
 
 def test_preflight_provenance_is_written_by_actual_executor_payloads(tmp_path: Path):

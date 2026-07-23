@@ -25,6 +25,8 @@ from typing import Protocol
 from .models import BenchmarkAttempt, BoundUnit, ExecutionProvenance, Version
 from .validate import attempt_identity
 
+_LAB2_PREFLIGHT_SENTINEL = "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__"
+
 
 @dataclass(frozen=True)
 class ExecutorConfig:
@@ -459,16 +461,17 @@ def run_preflight(
         raise PreflightError(f"preflight artifact root is not writable: {error}") from error
     if free_disk < min_free_bytes:
         raise PreflightError(f"preflight free disk is {free_disk} bytes; require {min_free_bytes}")
-    for name, invocation in (
-        ("lab2", Lab2DockerExecutor(config).version_invocation()),
-        ("lab3", Lab3UvExecutor(config).version_invocation()),
+    for name, invocation, expected_stdout, expected_stdout_line in (
+        ("lab2", Lab2DockerExecutor(config).version_invocation(), None, _LAB2_PREFLIGHT_SENTINEL),
+        ("lab3", Lab3UvExecutor(config).version_invocation(), "ok", None),
     ):
         _require_command(
             command_runner,
             invocation.argv,
             cwd=invocation.cwd,
             environment=invocation.environment,
-            expected_stdout_line="ok",
+            expected_stdout=expected_stdout,
+            expected_stdout_line=expected_stdout_line,
             description=f"{name} task registration and formatters",
         )
     lock_bytes = (config.lab3_root / "uv.lock").read_bytes()
@@ -529,13 +532,14 @@ def _registration_probe(version: Version) -> str:
     app_launcher = ""
     if version is Version.LAB2:
         app_launcher = "from isaaclab.app import AppLauncher;simulation_app=AppLauncher(headless=True).app;"
+    success_marker = _LAB2_PREFLIGHT_SENTINEL if version is Version.LAB2 else "ok"
     return (
         app_launcher + "from isaaclab.test.benchmark.formatters import MetricsFormatter;"
         "MetricsFormatter.get_instance('schema');"
         "MetricsFormatter.get_instance('json');"
         "import gymnasium as gym, isaaclab_tasks;"
         f"assert all(task_id in gym.registry for task_id in {task_ids!r});"
-        "print('ok')"
+        f"print({success_marker!r})"
     )
 
 
