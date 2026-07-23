@@ -174,3 +174,21 @@ def test_load_matrix_rejects_count_preserving_task_and_mode_shape(tmp_path: Path
 
     with pytest.raises(ValueError, match="expected 6 tasks and 3 modes"):
         load_matrix(path)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('framework = "rsl_rl"', 'framework = "other_framework"'),
+        ('unit = "steps"', 'unit = "iterations"'),
+        ('unit = "iterations"', 'unit = "steps"'),
+        ("final_bound = 1000", "final_bound = 1001"),
+        ("canary_bound = 25", "canary_bound = 26"),
+    ],
+)
+def test_load_matrix_rejects_altered_mode_parameters(tmp_path: Path, old: str, new: str) -> None:
+    """Mode framework, unit, and final/canary bounds are fixed comparison parameters."""
+    path = _write_invalid_matrix(tmp_path, old, new)
+
+    with pytest.raises(ValueError, match="unexpected mode parameters"):
+        load_matrix(path)

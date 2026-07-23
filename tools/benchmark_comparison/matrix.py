@@ -42,6 +42,11 @@ _TASK_IDENTIFIERS = (
     ("franka_reach", "Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
 )
 _MODE_IDS = ("runtime-100", "runtime-1000", "training-100")
+_MODE_DEFINITIONS = (
+    ("runtime-100", "rsl_rl", BoundUnit.STEPS, 100, BoundUnit.STEPS, 10),
+    ("runtime-1000", "rsl_rl", BoundUnit.STEPS, 1000, BoundUnit.STEPS, 25),
+    ("training-100", "rsl_rl", BoundUnit.ITERATIONS, 100, BoundUnit.ITERATIONS, 2),
+)
 _VERSION_ORDERS = {
     42: (Version.LAB2, Version.LAB3),
     43: (Version.LAB3, Version.LAB2),
@@ -230,6 +235,21 @@ def _validate_matrix(matrix: BenchmarkMatrix) -> None:
         raise ValueError("duplicate mode ID")
     if mode_ids != _MODE_IDS:
         raise ValueError("unexpected mode IDs")
+    if (
+        tuple(
+            (
+                mode.id,
+                mode.framework,
+                mode.final_bound.unit,
+                mode.final_bound.value,
+                mode.canary_bound.unit,
+                mode.canary_bound.value,
+            )
+            for mode in matrix.modes
+        )
+        != _MODE_DEFINITIONS
+    ):
+        raise ValueError("unexpected mode parameters")
     if matrix.num_envs != 4096:
         raise ValueError("matrix.num_envs must be 4096")
     if matrix.seeds != _FINAL_SEEDS:
