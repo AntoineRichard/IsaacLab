@@ -24,6 +24,7 @@ The following modules are available in the ``isaaclab`` extension:
    scene
    sensors
    sim
+   test
    terrains
    utils
 
