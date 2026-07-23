@@ -51,11 +51,11 @@ def _config(tmp_path: Path) -> ExecutorConfig:
     )
 
 
-def _attempt(version: Version, mode: str = "runtime-100"):
+def _attempt(version: Version, mode: str = "runtime-100", task: str = "cartpole"):
     return next(
         attempt
         for attempt in expand_final_matrix(load_matrix()).attempts
-        if attempt.version is version and attempt.mode.id == mode
+        if attempt.version is version and attempt.mode.id == mode and attempt.logical_task == task
     )
 
 
@@ -145,6 +145,21 @@ def test_lab3_runtime_and_training_commands_use_locked_uv_project(tmp_path: Path
     assert runtime.environment["ISAACLAB_BENCHMARK_LAB3_SHA"] == LAB3_SHA
 
 
+def test_lab3_omits_redundant_physx_alias_only_for_default_physx_tasks(tmp_path: Path):
+    config = _config(tmp_path)
+    executor = Lab3UvExecutor(config)
+
+    g1 = executor.invocation(_attempt(Version.LAB3, task="g1_flat"))
+    allegro = executor.invocation(_attempt(Version.LAB3, task="allegro_cube"))
+    cartpole = executor.invocation(_attempt(Version.LAB3, task="cartpole"))
+    lab2_g1 = Lab2DockerExecutor(config).invocation(_attempt(Version.LAB2, task="g1_flat"))
+
+    assert "presets=physx" not in g1.argv
+    assert "presets=physx" not in allegro.argv
+    assert "presets=physx" in cartpole.argv
+    assert "presets=physx" in lab2_g1.argv
+
+
 def test_version_probe_commands_are_argv_vectors(tmp_path: Path):
     config = _config(tmp_path)
 
@@ -191,7 +206,18 @@ def test_version_probes_use_version_specific_app_startup_and_sentinel(tmp_path: 
     assert "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__" in lab2_probe
     assert "flush=True" in lab2_probe
     assert "AppLauncher" not in lab3_probe
+    assert lab2_probe.index("flush=True") < lab2_probe.index("simulation_app.close()")
     assert "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__" not in lab3_probe
+
+
+def test_version_probes_require_physx_4096_and_rsl_configs_for_every_task(tmp_path: Path):
+    config = _config(tmp_path)
+
+    lab2_probe = Lab2DockerExecutor(config).version_invocation().argv[-1]
+    lab3_probe = Lab3UvExecutor(config).version_invocation().argv[-1]
+
+    assert all(token in lab2_probe for token in ("num_envs=4096", "rsl_rl_cfg_entry_point", "PhysxCfg"))
+    assert all(token in lab3_probe for token in ("env.scene.num_envs=4096", "rsl_rl_cfg_entry_point", "PhysxCfg"))
 
 
 def test_child_timeout_terminates_process_group_and_cleans_only_owned_container(tmp_path: Path):

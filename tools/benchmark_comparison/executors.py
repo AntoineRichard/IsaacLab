@@ -27,6 +27,11 @@ from .validate import attempt_identity
 
 _LAB2_PREFLIGHT_SENTINEL = "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__"
 
+_LAB3_DEFAULT_PHYSX_TASKS = {
+    "Isaac-Velocity-Flat-G1",
+    "Isaac-Reorient-Cube-Allegro",
+}
+
 
 @dataclass(frozen=True)
 class ExecutorConfig:
@@ -293,7 +298,10 @@ class _Executor:
             bounded = ("--num_frames", str(attempt.bound.value))
         else:
             bounded = ("--rl_library", attempt.framework, "--max_iterations", str(attempt.bound.value))
-        return (*common, *bounded, "--benchmark_formatter", "schema,json", "presets=physx", "--headless")
+        physics = ()
+        if attempt.version is not Version.LAB3 or attempt.concrete_task not in _LAB3_DEFAULT_PHYSX_TASKS:
+            physics = ("presets=physx",)
+        return (*common, *bounded, "--benchmark_formatter", "schema,json", *physics, "--headless")
 
 
 class Lab2DockerExecutor(_Executor):
@@ -529,18 +537,51 @@ def _registration_probe(version: Version) -> str:
     from .matrix import load_matrix
 
     task_ids = tuple(task.concrete_id(version) for task in load_matrix().tasks)
-    app_launcher = ""
     if version is Version.LAB2:
-        app_launcher = "from isaaclab.app import AppLauncher;simulation_app=AppLauncher(headless=True).app;"
-    success_marker = _LAB2_PREFLIGHT_SENTINEL if version is Version.LAB2 else "ok"
-    return (
-        app_launcher + "from isaaclab.test.benchmark.formatters import MetricsFormatter;"
-        "MetricsFormatter.get_instance('schema');"
-        "MetricsFormatter.get_instance('json');"
-        "import gymnasium as gym, isaaclab_tasks;"
-        f"assert all(task_id in gym.registry for task_id in {task_ids!r});"
-        f"print({success_marker!r}, flush=True)"
+        script = (
+            "from isaaclab.app import AppLauncher\n"
+            "simulation_app = AppLauncher(headless=True).app\n"
+            "from isaaclab.test.benchmark.formatters import MetricsFormatter\n"
+            "MetricsFormatter.get_instance('schema')\n"
+            "MetricsFormatter.get_instance('json')\n"
+            "import gymnasium as gym, isaaclab_tasks\n"
+            "from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg\n"
+            f"task_ids = {task_ids!r}\n"
+            "for task_id in task_ids:\n"
+            "    assert task_id in gym.registry\n"
+            "    env_cfg = parse_env_cfg(task_id, device='cuda:0', num_envs=4096)\n"
+            "    agent_cfg = load_cfg_from_registry(task_id, 'rsl_rl_cfg_entry_point')\n"
+            "    assert env_cfg.scene.num_envs == 4096\n"
+            "    assert type(env_cfg.sim.physx).__name__ == 'PhysxCfg'\n"
+            "    assert agent_cfg is not None\n"
+            f"print({_LAB2_PREFLIGHT_SENTINEL!r}, flush=True)\n"
+            "simulation_app.close()\n"
+        )
+        return f"exec({script!r})"
+    script = (
+        "import sys\n"
+        "from isaaclab.test.benchmark.formatters import MetricsFormatter\n"
+        "MetricsFormatter.get_instance('schema')\n"
+        "MetricsFormatter.get_instance('json')\n"
+        "import contextlib\n"
+        "import io\n"
+        "import gymnasium as gym, isaaclab_tasks\n"
+        "from isaaclab_tasks.utils.hydra import resolve_task_config\n"
+        f"task_ids = {task_ids!r}\n"
+        f"default_physx_tasks = {_LAB3_DEFAULT_PHYSX_TASKS!r}\n"
+        "for task_id in task_ids:\n"
+        "    assert task_id in gym.registry\n"
+        "    sys.argv = [sys.argv[0], 'env.scene.num_envs=4096']\n"
+        "    if task_id not in default_physx_tasks:\n"
+        "        sys.argv.append('presets=physx')\n"
+        "    with contextlib.redirect_stdout(io.StringIO()):\n"
+        "        env_cfg, agent_cfg = resolve_task_config(task_id, 'rsl_rl_cfg_entry_point')\n"
+        "    assert env_cfg.scene.num_envs == 4096\n"
+        "    assert type(env_cfg.sim.physics).__name__ == 'PhysxCfg'\n"
+        "    assert agent_cfg is not None\n"
+        "print('ok', flush=True)\n"
     )
+    return f"exec({script!r})"
 
 
 def _safe_token(value: str) -> str:
