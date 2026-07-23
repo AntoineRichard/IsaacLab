@@ -539,7 +539,7 @@ def _registration_probe(version: Version) -> str:
         "MetricsFormatter.get_instance('json');"
         "import gymnasium as gym, isaaclab_tasks;"
         f"assert all(task_id in gym.registry for task_id in {task_ids!r});"
-        f"print({success_marker!r})"
+        f"print({success_marker!r}, flush=True)"
     )
 
 

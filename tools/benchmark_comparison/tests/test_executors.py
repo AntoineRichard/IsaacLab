@@ -189,6 +189,7 @@ def test_version_probes_use_version_specific_app_startup_and_sentinel(tmp_path: 
     assert lab2_probe.index(app_launcher) < lab2_probe.index("MetricsFormatter")
     assert lab2_probe.index(app_launcher) < lab2_probe.index("isaaclab_tasks")
     assert "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__" in lab2_probe
+    assert "flush=True" in lab2_probe
     assert "AppLauncher" not in lab3_probe
     assert "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__" not in lab3_probe
 
