@@ -98,6 +98,13 @@ class CommandRunner(Protocol):
         """Run one argument vector and capture its result."""
 
 
+class ProcessGroupRegistry(Protocol):
+    """Registry of process groups created by benchmark attempts."""
+
+    def add(self, process_group_id: int) -> None:
+        """Record an owned process group for later idle checks."""
+
+
 class SystemCommandRunner:
     """Run short subprocesses without shell evaluation."""
 
@@ -126,9 +133,15 @@ class SystemCommandRunner:
 class ProcessLauncher:
     """Launch one process group and clean only its uniquely named container."""
 
-    def __init__(self, commands: CommandRunner | None = None, terminate_grace_s: float = 30.0):
+    def __init__(
+        self,
+        commands: CommandRunner | None = None,
+        terminate_grace_s: float = 30.0,
+        owned_process_groups: ProcessGroupRegistry | None = None,
+    ):
         self._commands = commands or SystemCommandRunner()
         self._terminate_grace_s = terminate_grace_s
+        self._owned_process_groups = owned_process_groups
 
     def run(self, invocation: Invocation, timeout_s: float) -> ProcessResult:
         """Execute one invocation with timeout and interruption classification."""
@@ -142,6 +155,8 @@ class ProcessLauncher:
             start_new_session=True,
             shell=False,
         )
+        if self._owned_process_groups is not None:
+            self._owned_process_groups.add(process.pid)
         previous_sigterm = signal.signal(signal.SIGTERM, _raise_interruption)
         try:
             try:
@@ -305,9 +320,8 @@ class Lab2DockerExecutor(_Executor):
         )
         compose_environment = {
             **environment,
-            "ISAACLAB_BENCHMARK_LAB2_ROOT": str(self.config.lab2_root),
             "ISAACLAB_BENCHMARK_ARTIFACT_ROOT": str(self.config.artifact_root),
-            "ISAACLAB_BENCHMARK_IMAGE": self.config.lab2_image,
+            "ISAACLAB_BENCHMARK_IMAGE_ID": self.config.lab2_image_id,
         }
         return Invocation(tuple(argv), compose_environment, self.config.lab2_root, container_name=container_name)
 
@@ -337,9 +351,8 @@ class Lab2DockerExecutor(_Executor):
             argv,
             {
                 **environment,
-                "ISAACLAB_BENCHMARK_LAB2_ROOT": str(self.config.lab2_root),
                 "ISAACLAB_BENCHMARK_ARTIFACT_ROOT": str(self.config.artifact_root),
-                "ISAACLAB_BENCHMARK_IMAGE": self.config.lab2_image,
+                "ISAACLAB_BENCHMARK_IMAGE_ID": self.config.lab2_image_id,
             },
             self.config.lab2_root,
         )

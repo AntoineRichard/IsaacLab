@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -21,6 +24,8 @@ from typing import Protocol
 from .artifacts import finalize_attempt, verify_success
 from .models import BenchmarkAttempt, MatrixExpansion
 from .validate import attempt_identity
+
+_FAILED_ATTEMPT_PATTERN = re.compile(r"attempt-[0-9]+-[a-z_]+$")
 
 
 @dataclass(frozen=True)
@@ -99,17 +104,46 @@ class SystemClock:
     sleep = staticmethod(time.sleep)
 
 
+class OwnedProcessGroups:
+    """Track every process group launched by this controller."""
+
+    def __init__(self):
+        self._group_ids: set[int] = set()
+        self._lock = threading.Lock()
+
+    def add(self, process_group_id: int) -> None:
+        """Record a benchmark-owned process group."""
+        with self._lock:
+            self._group_ids.add(process_group_id)
+
+    def alive_pids(self) -> tuple[int, ...]:
+        """Return all live PIDs in owned groups and forget empty groups."""
+        with self._lock:
+            grouped = _process_group_pids(self._group_ids)
+            self._group_ids.intersection_update(grouped)
+        return tuple(sorted(pid for pids in grouped.values() for pid in pids))
+
+
 class SystemIdleMonitor:
     """Capture host-idle evidence using system CLIs and ``/proc``."""
 
+    def __init__(self, owned_process_groups: OwnedProcessGroups | None = None):
+        self._owned_process_groups = owned_process_groups or OwnedProcessGroups()
+
     def inventory(self) -> IdleInventory:
         """Capture compute processes, GPU containers, and prior children."""
-        compute = _command_lines(("nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"))
         return IdleInventory(
-            nvidia_compute_processes=tuple(int(line) for line in compute if line.isdigit()),
-            gpu_container_ids=_gpu_container_ids(),
-            prior_child_pids=_direct_child_pids(),
+            nvidia_compute_processes=self._nvidia_compute_processes(),
+            gpu_container_ids=self._gpu_container_ids(),
+            prior_child_pids=self._owned_process_groups.alive_pids(),
         )
+
+    def _nvidia_compute_processes(self) -> tuple[int, ...]:
+        compute = _command_lines(("nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"))
+        return tuple(int(line) for line in compute if line.isdigit())
+
+    def _gpu_container_ids(self) -> tuple[str, ...]:
+        return _gpu_container_ids()
 
     def sample(self) -> IdleSample:
         """Capture maximum GPU utilization/memory and one-minute host load."""
@@ -154,10 +188,9 @@ class HostIdleGate:
     def wait(self, attempt_identity_value: str) -> Path:
         """Wait until all idle criteria pass or timeout expires."""
         started = self.clock.monotonic()
-        evaluation = 0
+        evaluation = _next_idle_evaluation_id(self.evidence_root, attempt_identity_value)
         while True:
-            evaluation += 1
-            inventory = self.monitor.inventory()
+            inventory_before = self.monitor.inventory()
             samples: list[IdleSample] = []
             for index in range(self.thresholds.sample_count):
                 raw = self.monitor.sample()
@@ -171,22 +204,31 @@ class HostIdleGate:
                 )
                 if index + 1 < self.thresholds.sample_count:
                     self.clock.sleep(self.thresholds.sample_interval_s)
-            reasons = self._rejection_reasons(inventory, samples)
-            evidence = self._persist_evidence(attempt_identity_value, evaluation, inventory, samples, reasons)
+            inventory_after = self.monitor.inventory()
+            reasons = self._rejection_reasons((inventory_before, inventory_after), samples)
+            evidence = self._persist_evidence(
+                attempt_identity_value,
+                evaluation,
+                inventory_before,
+                inventory_after,
+                samples,
+                reasons,
+            )
             if not reasons:
                 return evidence
             elapsed = self.clock.monotonic() - started
             if elapsed + self.thresholds.retry_interval_s > self.thresholds.timeout_s:
                 raise IdleGateTimeout(f"host idle gate timed out after {elapsed:.1f}s; latest evidence: {evidence}")
             self.clock.sleep(self.thresholds.retry_interval_s)
+            evaluation += 1
 
-    def _rejection_reasons(self, inventory: IdleInventory, samples: Sequence[IdleSample]) -> list[str]:
+    def _rejection_reasons(self, inventories: Sequence[IdleInventory], samples: Sequence[IdleSample]) -> list[str]:
         reasons: list[str] = []
-        if inventory.nvidia_compute_processes:
+        if any(inventory.nvidia_compute_processes for inventory in inventories):
             reasons.append("nvidia_compute_process")
-        if inventory.gpu_container_ids:
+        if any(inventory.gpu_container_ids for inventory in inventories):
             reasons.append("gpu_container")
-        if inventory.prior_child_pids:
+        if any(inventory.prior_child_pids for inventory in inventories):
             reasons.append("prior_child")
         if any(sample.gpu_utilization_pct > self.thresholds.gpu_utilization_max_pct for sample in samples):
             reasons.append("gpu_utilization")
@@ -202,21 +244,23 @@ class HostIdleGate:
         self,
         attempt_identity_value: str,
         evaluation: int,
-        inventory: IdleInventory,
+        inventory_before: IdleInventory,
+        inventory_after: IdleInventory,
         samples: Sequence[IdleSample],
         reasons: Sequence[str],
     ) -> Path:
         self.evidence_root.mkdir(parents=True, exist_ok=True)
         path = self.evidence_root / f"{attempt_identity_value}-idle-{evaluation:04d}.json"
         load_limit = self.logical_cpu_count * self.thresholds.host_load_cpu_fraction
-        _write_json_atomic(
+        _write_json_new(
             path,
             {
                 "attempt_identity": attempt_identity_value,
                 "evaluation": evaluation,
                 "decision": "rejected" if reasons else "accepted",
                 "reasons": list(reasons),
-                "inventory": asdict(inventory),
+                "inventory_before_samples": asdict(inventory_before),
+                "inventory_after_samples": asdict(inventory_after),
                 "samples": [asdict(sample) for sample in samples],
                 "idle_memory_baseline_mib": self.idle_memory_baseline_mib,
                 "thresholds": {
@@ -272,10 +316,16 @@ class BenchmarkRunner:
         artifact_root: Path,
         executors: Mapping[str, AttemptExecutor],
         idle_gate: AttemptIdleGate,
+        expected_lab2_sha: str,
+        expected_lab3_sha: str,
+        expected_lab2_image_id: str,
     ):
         self.artifact_root = artifact_root
         self.executors = executors
         self.idle_gate = idle_gate
+        self.expected_lab2_sha = expected_lab2_sha
+        self.expected_lab3_sha = expected_lab3_sha
+        self.expected_lab2_image_id = expected_lab2_image_id
         self.after_persist = None
 
     def run(self, expansion: MatrixExpansion, *, retry_failures: bool = False) -> RunResult:
@@ -286,15 +336,17 @@ class BenchmarkRunner:
         for attempt in expansion.attempts:
             attempt_root = self.artifact_root / attempt.run_directory
             success = attempt_root / "success"
+            quarantined_corrupt_success = False
             if success.exists():
-                if _valid_success(success, attempt):
+                if self._valid_success(success, attempt):
                     skipped += 1
                     _append_history(state, attempt, "skipped_success")
                     self._persist(state_path, state)
                     continue
                 _quarantine_corrupt_success(success)
-            prior_failures = tuple(attempt_root.glob("attempt-[0-9][0-9][0-9][0-9]-*"))
-            if prior_failures and not retry_failures:
+                quarantined_corrupt_success = True
+            prior_failures = _historical_failures(attempt_root)
+            if prior_failures and not retry_failures and not quarantined_corrupt_success:
                 failed += 1
                 skipped += 1
                 _append_history(state, attempt, "skipped_failure")
@@ -302,6 +354,11 @@ class BenchmarkRunner:
                 continue
             try:
                 idle_evidence = self.idle_gate.wait(attempt.identity)
+            except KeyboardInterrupt:
+                _append_history(state, attempt, "interrupted_idle_gate")
+                state["status"] = RunStatus.INTERRUPTED.value
+                self._persist(state_path, state)
+                return RunResult(RunStatus.INTERRUPTED, succeeded, failed, skipped, state_path)
             except IdleGateTimeout as error:
                 state["status"] = RunStatus.PREFLIGHT_FAILED.value
                 state["preflight_failure"] = str(error)
@@ -349,14 +406,19 @@ class BenchmarkRunner:
         self._persist(state_path, state)
         return RunResult(final_status, succeeded, failed, skipped, state_path)
 
+    def _valid_success(self, path: Path, attempt: BenchmarkAttempt) -> bool:
+        return verify_success(
+            path,
+            attempt,
+            expected_lab2_sha=self.expected_lab2_sha,
+            expected_lab3_sha=self.expected_lab3_sha,
+            expected_lab2_image_id=self.expected_lab2_image_id,
+        )
+
     def _persist(self, state_path: Path, state: dict[str, object]) -> None:
         _write_json_atomic(state_path, state)
         if self.after_persist is not None:
             self.after_persist(state_path)
-
-
-def _valid_success(path: Path, attempt: BenchmarkAttempt) -> bool:
-    return verify_success(path, attempt)
 
 
 def _quarantine_corrupt_success(success: Path) -> Path:
@@ -472,6 +534,37 @@ def _write_json_atomic(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
+def _write_json_new(path: Path, value: object) -> None:
+    """Atomically publish a new JSON document without replacing evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as file:
+        temporary = Path(file.name)
+        file.write(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n")
+    try:
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _next_idle_evaluation_id(root: Path, attempt_identity_value: str) -> int:
+    pattern = re.compile(rf"{re.escape(attempt_identity_value)}-idle-([0-9]+)\.json$")
+    numbers: list[int] = []
+    if root.exists():
+        for path in root.iterdir():
+            match = pattern.fullmatch(path.name)
+            if match is not None:
+                numbers.append(int(match.group(1)))
+    return max(numbers, default=0) + 1
+
+
+def _historical_failures(attempt_root: Path) -> tuple[Path, ...]:
+    if not attempt_root.exists():
+        return ()
+    return tuple(
+        path for path in attempt_root.iterdir() if path.is_dir() and _FAILED_ATTEMPT_PATTERN.fullmatch(path.name)
+    )
+
+
 def _command_lines(argv: Sequence[str]) -> tuple[str, ...]:
     result = subprocess.run(list(argv), text=True, capture_output=True, check=False, shell=False)
     if result.returncode != 0:
@@ -495,15 +588,17 @@ def _gpu_container_ids() -> tuple[str, ...]:
     return tuple(gpu_ids)
 
 
-def _direct_child_pids() -> tuple[int, ...]:
-    children: list[int] = []
+def _process_group_pids(group_ids: set[int]) -> dict[int, tuple[int, ...]]:
+    grouped: dict[int, list[int]] = {group_id: [] for group_id in group_ids}
     for path in Path("/proc").iterdir():
         if not path.name.isdigit():
             continue
         try:
-            fields = (path / "stat").read_text(encoding="ascii").split()
-            if int(fields[3]) == os.getpid():
-                children.append(int(path.name))
+            stat = (path / "stat").read_text(encoding="ascii")
+            fields = stat[stat.rfind(")") + 2 :].split()
+            process_group_id = int(fields[2])
+            if process_group_id in grouped:
+                grouped[process_group_id].append(int(path.name))
         except (OSError, UnicodeError, ValueError, IndexError):
             continue
-    return tuple(sorted(children))
+    return {group_id: tuple(sorted(pids)) for group_id, pids in grouped.items() if pids}

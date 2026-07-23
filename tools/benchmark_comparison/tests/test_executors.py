@@ -188,7 +188,13 @@ def test_child_timeout_terminates_process_group_and_cleans_only_owned_container(
             return CommandResult(tuple(argv), 0, "", "")
 
     commands = Commands()
-    launcher = ProcessLauncher(commands, terminate_grace_s=0.05)
+    owned_group_ids = []
+
+    class OwnedGroups:
+        def add(self, process_group_id):
+            owned_group_ids.append(process_group_id)
+
+    launcher = ProcessLauncher(commands, terminate_grace_s=0.05, owned_process_groups=OwnedGroups())
     invocation = Invocation(
         argv=(sys.executable, "-c", "import time; time.sleep(60)"),
         environment={},
@@ -199,6 +205,7 @@ def test_child_timeout_terminates_process_group_and_cleans_only_owned_container(
     result = launcher.run(invocation, timeout_s=0.05)
 
     assert result.timed_out is True
+    assert len(owned_group_ids) == 1
     assert commands.argvs == [("docker", "rm", "--force", "owned-benchmark-container")]
 
 
@@ -225,10 +232,23 @@ def test_process_launcher_installs_and_restores_sigterm_handler(tmp_path: Path, 
     assert calls[-1] == (signal.SIGTERM, "previous-handler")
 
 
-def test_compose_worktree_mount_allows_training_logs():
+def test_compose_uses_image_native_workspace_and_only_artifact_mount():
     compose = Path("tools/benchmark_comparison/docker-compose.benchmark.yaml").read_text(encoding="utf-8")
 
-    assert "read_only: true" not in compose
+    assert "ISAACLAB_BENCHMARK_LAB2_ROOT" not in compose
+    assert "source: ${ISAACLAB_BENCHMARK_ARTIFACT_ROOT}" in compose
+    assert compose.count("type: bind") == 1
+    assert "image: ${ISAACLAB_BENCHMARK_IMAGE_ID}" in compose
+
+
+def test_lab2_invocation_uses_exact_image_id_without_host_source_mount(tmp_path: Path):
+    config = _config(tmp_path)
+
+    invocation = Lab2DockerExecutor(config).invocation(_attempt(Version.LAB2))
+
+    assert "ISAACLAB_BENCHMARK_LAB2_ROOT" not in invocation.environment
+    assert invocation.environment["ISAACLAB_BENCHMARK_IMAGE_ID"] == config.lab2_image_id
+    assert "/workspace/isaaclab/isaaclab.sh" in invocation.argv
 
 
 class _PreflightCommands:

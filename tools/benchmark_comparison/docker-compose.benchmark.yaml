@@ -5,16 +5,13 @@
 
 services:
   isaac-lab-benchmark:
-    image: ${ISAACLAB_BENCHMARK_IMAGE}
+    image: ${ISAACLAB_BENCHMARK_IMAGE_ID}
     pull_policy: never
     environment:
       ISAACSIM_PATH: /workspace/isaaclab/_isaac_sim
       OMNI_KIT_ALLOW_ROOT: "1"
       OMNI_KIT_ACCEPT_EULA: "yes"
     volumes:
-      - type: bind
-        source: ${ISAACLAB_BENCHMARK_LAB2_ROOT}
-        target: /workspace/isaaclab
       - type: bind
         source: ${ISAACLAB_BENCHMARK_ARTIFACT_ROOT}
         target: /benchmark_artifacts

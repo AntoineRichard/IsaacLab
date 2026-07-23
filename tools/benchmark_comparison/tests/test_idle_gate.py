@@ -18,6 +18,7 @@ from tools.benchmark_comparison.runner import (
     IdleInventory,
     IdleSample,
     IdleThresholds,
+    SystemIdleMonitor,
 )
 
 
@@ -39,10 +40,13 @@ class _Monitor:
         self.rounds = rounds
         self.round_index = -1
         self.sample_index = 0
+        self.inventory_count = 0
 
     def inventory(self) -> IdleInventory:
-        self.round_index += 1
-        self.sample_index = 0
+        if self.inventory_count % 2 == 0:
+            self.round_index += 1
+            self.sample_index = 0
+        self.inventory_count += 1
         return self.rounds[self.round_index][0]
 
     def sample(self) -> IdleSample:
@@ -134,3 +138,77 @@ def test_idle_gate_waits_five_minutes_then_retries(tmp_path: Path):
     second = json.loads(evidence.read_text(encoding="utf-8"))
     assert first["decision"] == "rejected"
     assert second["decision"] == "accepted"
+
+
+def test_idle_gate_reinventories_after_final_sample_before_accepting(tmp_path: Path):
+    class LateProcessMonitor:
+        def __init__(self):
+            self.inventory_count = 0
+            self.sample_count = 0
+
+        def inventory(self):
+            self.inventory_count += 1
+            return _inventory(compute=(999,)) if self.inventory_count == 2 else _inventory()
+
+        def sample(self):
+            sample = _samples()[self.sample_count]
+            self.sample_count += 1
+            return sample
+
+    clock = _Clock()
+    gate = HostIdleGate(
+        monitor=LateProcessMonitor(),
+        clock=clock,
+        evidence_root=tmp_path,
+        idle_memory_baseline_mib=256,
+        logical_cpu_count=8,
+        thresholds=IdleThresholds(sample_count=60, sample_interval_s=1, retry_interval_s=300, timeout_s=60),
+    )
+
+    with pytest.raises(IdleGateTimeout):
+        gate.wait("attempt-a")
+
+    document = json.loads((tmp_path / "attempt-a-idle-0001.json").read_text(encoding="utf-8"))
+    assert document["inventory_after_samples"]["nvidia_compute_processes"] == [999]
+    assert "nvidia_compute_process" in document["reasons"]
+
+
+def test_idle_evidence_ids_are_monotonic_across_resume_and_never_overwrite(tmp_path: Path):
+    clock = _Clock()
+    gate = _gate(
+        tmp_path,
+        [(_inventory(), _samples()), (_inventory(), _samples())],
+        clock,
+    )
+
+    first = gate.wait("attempt-a")
+    first_contents = first.read_bytes()
+    second = gate.wait("attempt-a")
+
+    assert first.name == "attempt-a-idle-0001.json"
+    assert second.name == "attempt-a-idle-0002.json"
+    assert first.read_bytes() == first_contents
+
+
+def test_idle_evidence_scan_accepts_arbitrary_width_ids(tmp_path: Path):
+    (tmp_path / "attempt-a-idle-10000.json").write_text("preserved\n", encoding="utf-8")
+    gate = _gate(tmp_path, [(_inventory(), _samples())], _Clock())
+
+    evidence = gate.wait("attempt-a")
+
+    assert evidence.name == "attempt-a-idle-10001.json"
+    assert (tmp_path / "attempt-a-idle-10000.json").read_text(encoding="utf-8") == "preserved\n"
+
+
+def test_system_idle_monitor_reports_all_owned_process_group_descendants():
+    class OwnedGroups:
+        def alive_pids(self):
+            return (401, 402, 499)
+
+    monitor = SystemIdleMonitor(owned_process_groups=OwnedGroups())
+    monitor._nvidia_compute_processes = lambda: ()
+    monitor._gpu_container_ids = lambda: ()
+
+    inventory = monitor.inventory()
+
+    assert inventory.prior_child_pids == (401, 402, 499)

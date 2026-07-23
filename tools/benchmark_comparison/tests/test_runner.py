@@ -24,6 +24,9 @@ from tools.benchmark_comparison.runner import (
 from tools.benchmark_comparison.validate import attempt_identity
 
 FIXTURES = Path(__file__).parent / "fixtures"
+LAB2_SHA = "a" * 40
+LAB3_SHA = "b" * 40
+LAB2_IMAGE_ID = "sha256:" + "c" * 64
 
 
 def _schema(attempt):
@@ -49,7 +52,16 @@ def _execution(attempt, *, exit_code=0, timed_out=False, interrupted=False, oom=
     identity = attempt_identity(attempt)
     return AttemptExecution(
         command={"identity": identity, "argv": ["fake"]},
-        environment={"identity": identity, "values": {}},
+        environment={
+            "identity": identity,
+            "values": {
+                "ISAACLAB_BENCHMARK_LAB2_SHA": LAB2_SHA,
+                "ISAACLAB_BENCHMARK_LAB3_SHA": LAB3_SHA,
+            },
+            "lab2_sha": LAB2_SHA,
+            "lab3_sha": LAB3_SHA,
+            "lab2_image_id": LAB2_IMAGE_ID if attempt.version.value == "lab2" else None,
+        },
         stdout="",
         stderr="CUDA out of memory" if oom else "",
         exit_status={
@@ -92,11 +104,15 @@ class _Gate:
 
 
 def _runner(tmp_path: Path, executors, gate=None) -> BenchmarkRunner:
-    return BenchmarkRunner(
+    runner = BenchmarkRunner(
         artifact_root=tmp_path,
         executors=executors,
         idle_gate=gate or _Gate(),
+        expected_lab2_sha=LAB2_SHA,
+        expected_lab3_sha=LAB3_SHA,
+        expected_lab2_image_id=LAB2_IMAGE_ID,
     )
+    return runner
 
 
 def test_runner_executes_all_canary_attempts_in_task_six_order(tmp_path: Path):
@@ -183,6 +199,36 @@ def test_rechecksummed_forged_validation_is_quarantined_and_rerun(tmp_path: Path
     assert (attempt_root / "success").is_dir()
 
 
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [("lab2_sha", "d" * 40), ("lab3_sha", "e" * 40), ("lab2_image_id", "sha256:" + "f" * 64)],
+)
+def test_rechecksummed_forged_provenance_is_quarantined_and_rerun(tmp_path: Path, field: str, forged_value: str):
+    attempt = expand_canary_matrix(load_matrix()).attempts[0]
+    expansion = replace(expand_canary_matrix(load_matrix()), attempts=(attempt,))
+    _runner(tmp_path, {"lab2": _Executor(), "lab3": _Executor()}).run(expansion)
+    success = tmp_path / attempt.run_directory / "success"
+    environment = json.loads((success / "environment.json").read_text(encoding="utf-8"))
+    environment[field] = forged_value
+    (success / "environment.json").write_text(
+        json.dumps(environment, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    manifest = (success / "checksums.sha256").read_text(encoding="ascii").splitlines()
+    manifest = [
+        f"{hashlib.sha256((success / 'environment.json').read_bytes()).hexdigest()}  environment.json"
+        if line.endswith("  environment.json")
+        else line
+        for line in manifest
+    ]
+    (success / "checksums.sha256").write_text("\n".join(manifest) + "\n", encoding="ascii")
+    rerun = _Executor()
+
+    _runner(tmp_path, {"lab2": rerun, "lab3": _Executor()}).run(expansion)
+
+    assert len(rerun.attempts) == 1
+    assert (tmp_path / attempt.run_directory / "corrupt-success-0001").is_dir()
+
+
 def test_failed_attempt_is_retried_only_when_explicitly_requested(tmp_path: Path):
     attempt = expand_canary_matrix(load_matrix()).attempts[0]
     expansion = replace(expand_canary_matrix(load_matrix()), attempts=(attempt,))
@@ -199,6 +245,23 @@ def test_failed_attempt_is_retried_only_when_explicitly_requested(tmp_path: Path
     assert first_resume.status is RunStatus.COMPLETED_WITH_FAILURES
     assert len(retry.attempts) == 1
     assert second_resume.succeeded == 1
+
+
+def test_corrupt_success_reruns_even_when_historical_failure_exists(tmp_path: Path):
+    attempt = expand_canary_matrix(load_matrix()).attempts[0]
+    expansion = replace(expand_canary_matrix(load_matrix()), attempts=(attempt,))
+    failed = _Executor([lambda current: _execution(current, exit_code=7)])
+    _runner(tmp_path, {"lab2": failed, "lab3": _Executor()}).run(expansion)
+    _runner(tmp_path, {"lab2": _Executor(), "lab3": _Executor()}).run(expansion, retry_failures=True)
+    success = tmp_path / attempt.run_directory / "success"
+    (success / "stdout.log").write_text("corrupt", encoding="utf-8")
+    rerun = _Executor()
+
+    result = _runner(tmp_path, {"lab2": rerun, "lab3": _Executor()}).run(expansion)
+
+    assert len(rerun.attempts) == 1
+    assert result.succeeded == 1
+    assert (tmp_path / attempt.run_directory / "corrupt-success-0001").is_dir()
 
 
 @pytest.mark.parametrize(
@@ -249,6 +312,35 @@ def test_idle_timeout_stops_run_set_as_preflight_failure(tmp_path: Path):
     assert result.status is RunStatus.PREFLIGHT_FAILED
     assert executor.attempts == []
     assert json.loads(result.state_path.read_text(encoding="utf-8"))["status"] == "preflight_failed"
+
+
+def test_idle_gate_interruption_persists_interrupted_state(tmp_path: Path):
+    expansion = replace(expand_canary_matrix(load_matrix()), attempts=expand_canary_matrix(load_matrix()).attempts[:1])
+
+    result = _runner(
+        tmp_path,
+        {"lab2": _Executor(), "lab3": _Executor()},
+        gate=_Gate(KeyboardInterrupt()),
+    ).run(expansion)
+
+    assert result.status is RunStatus.INTERRUPTED
+    state = json.loads(result.state_path.read_text(encoding="utf-8"))
+    assert state["status"] == "interrupted"
+    assert state["history"][-1]["status"] == "interrupted_idle_gate"
+
+
+def test_arbitrary_width_historical_failure_is_not_retried_implicitly(tmp_path: Path):
+    attempt = expand_canary_matrix(load_matrix()).attempts[0]
+    expansion = replace(expand_canary_matrix(load_matrix()), attempts=(attempt,))
+    attempt_root = tmp_path / attempt.run_directory
+    attempt_root.mkdir(parents=True)
+    (attempt_root / "attempt-10000-nonzero_exit").mkdir()
+    executor = _Executor()
+
+    result = _runner(tmp_path, {"lab2": executor, "lab3": _Executor()}).run(expansion)
+
+    assert executor.attempts == []
+    assert result.status is RunStatus.COMPLETED_WITH_FAILURES
 
 
 def test_launch_exception_is_finalized_as_recoverable_failure(tmp_path: Path):

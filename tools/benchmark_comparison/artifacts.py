@@ -167,21 +167,69 @@ def verify_checksums(directory: Path) -> bool:
     return True
 
 
-def verify_success(directory: Path, attempt: BenchmarkAttempt) -> bool:
+def verify_success(
+    directory: Path,
+    attempt: BenchmarkAttempt,
+    *,
+    expected_lab2_sha: str,
+    expected_lab3_sha: str,
+    expected_lab2_image_id: str,
+) -> bool:
     """Verify a finalized success's checksums, semantics, and validation document.
 
     Args:
         directory: Finalized ``success`` artifact directory.
         attempt: Immutable matrix attempt expected in the artifact.
+        expected_lab2_sha: Exact Lab 2 Git revision required in the artifact.
+        expected_lab3_sha: Exact Lab 3 Git revision required in the artifact.
+        expected_lab2_image_id: Exact immutable Lab 2 image ID required for Lab 2.
 
     Returns:
         ``True`` only when the complete success artifact is trustworthy.
     """
     try:
         _verify_existing_success(directory, directory.parent, attempt)
+        _verify_execution_provenance(
+            directory,
+            attempt,
+            expected_lab2_sha=expected_lab2_sha,
+            expected_lab3_sha=expected_lab3_sha,
+            expected_lab2_image_id=expected_lab2_image_id,
+        )
     except ArtifactIntegrityError:
         return False
     return True
+
+
+def _verify_execution_provenance(
+    directory: Path,
+    attempt: BenchmarkAttempt,
+    *,
+    expected_lab2_sha: str,
+    expected_lab3_sha: str,
+    expected_lab2_image_id: str,
+) -> None:
+    """Reject a success produced by a different checkout or Lab 2 image."""
+    try:
+        environment = json.loads((directory / "environment.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ArtifactIntegrityError(f"cannot read success provenance: {error}") from error
+    if not isinstance(environment, dict) or not isinstance(environment.get("values"), dict):
+        raise ArtifactIntegrityError(f"success provenance must contain environment values: {directory}")
+    expected = {
+        "lab2_sha": expected_lab2_sha,
+        "lab3_sha": expected_lab3_sha,
+    }
+    for field, value in expected.items():
+        if environment.get(field) != value:
+            raise ArtifactIntegrityError(f"success provenance {field} does not match: {directory}")
+    values = environment["values"]
+    if values.get("ISAACLAB_BENCHMARK_LAB2_SHA") != expected_lab2_sha:
+        raise ArtifactIntegrityError(f"success environment Lab 2 SHA does not match: {directory}")
+    if values.get("ISAACLAB_BENCHMARK_LAB3_SHA") != expected_lab3_sha:
+        raise ArtifactIntegrityError(f"success environment Lab 3 SHA does not match: {directory}")
+    if attempt.version.value == "lab2" and environment.get("lab2_image_id") != expected_lab2_image_id:
+        raise ArtifactIntegrityError(f"success Lab 2 image ID does not match: {directory}")
 
 
 def _verify_existing_success(success_path: Path, attempt_root: Path, attempt: BenchmarkAttempt) -> None:

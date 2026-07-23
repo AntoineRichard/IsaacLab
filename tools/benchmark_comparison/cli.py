@@ -11,10 +11,10 @@ import argparse
 import os
 from pathlib import Path
 
-from .executors import ExecutorConfig, Lab2DockerExecutor, Lab3UvExecutor, run_preflight
+from .executors import ExecutorConfig, Lab2DockerExecutor, Lab3UvExecutor, ProcessLauncher, run_preflight
 from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
 from .models import RunSet
-from .runner import BenchmarkRunner, HostIdleGate, IdleThresholds, SystemClock, SystemIdleMonitor
+from .runner import BenchmarkRunner, HostIdleGate, IdleThresholds, OwnedProcessGroups, SystemClock, SystemIdleMonitor
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,8 +47,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.run_set == RunSet.CANARY.value
         else expand_final_matrix(load_matrix())
     )
+    owned_process_groups = OwnedProcessGroups()
+    launcher = ProcessLauncher(owned_process_groups=owned_process_groups)
     idle_gate = HostIdleGate(
-        monitor=SystemIdleMonitor(),
+        monitor=SystemIdleMonitor(owned_process_groups=owned_process_groups),
         clock=SystemClock(),
         evidence_root=config.artifact_root / args.run_set / "idle",
         idle_memory_baseline_mib=preflight.idle_memory_baseline_mib,
@@ -58,10 +60,13 @@ def main(argv: list[str] | None = None) -> int:
     runner = BenchmarkRunner(
         artifact_root=config.artifact_root,
         executors={
-            "lab2": Lab2DockerExecutor(config),
-            "lab3": Lab3UvExecutor(config),
+            "lab2": Lab2DockerExecutor(config, launcher=launcher),
+            "lab3": Lab3UvExecutor(config, launcher=launcher),
         },
         idle_gate=idle_gate,
+        expected_lab2_sha=config.lab2_sha,
+        expected_lab3_sha=config.lab3_sha,
+        expected_lab2_image_id=config.lab2_image_id,
     )
     result = runner.run(expansion, retry_failures=args.retry_failures)
     return 0 if result.failed == 0 and result.status.value == "completed" else 1
