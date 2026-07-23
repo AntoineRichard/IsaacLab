@@ -26,7 +26,7 @@ from tools.benchmark_comparison.executors import (
     run_preflight,
 )
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
-from tools.benchmark_comparison.models import Version
+from tools.benchmark_comparison.models import RunSet, Version
 
 LAB2_SHA = "28a9560c59df2306690ea717d6cf36f1e63c66e3"
 LAB3_SHA = "cb508381fb4874ce7afffeb9197bd91c20db7dad"
@@ -324,7 +324,28 @@ class _PreflightCommands:
         if argv[:2] == ("uv", "lock"):
             return CommandResult(argv, 0, "", "")
         if argv and argv[0] == "nvidia-smi":
-            return CommandResult(argv, 0, "100, 0\n", "")
+            return CommandResult(argv, 0, "Fixture GPU, 590.48.01, 100, 0\n", "")
+        if "ISAACLAB_BENCHMARK_HOST_METADATA" in rendered:
+            return CommandResult(
+                argv,
+                0,
+                (
+                    '__ISAACLAB_BENCHMARK_METADATA__{"hostname":"fixture-host","os":"Fixture OS",'
+                    '"cpu_model":"Fixture CPU","logical_cpu_count":32}\n'
+                ),
+                "",
+            )
+        if "ISAACLAB_BENCHMARK_SOFTWARE_METADATA" in rendered:
+            version = "lab2" if argv[0] == "docker" else "lab3"
+            value = (
+                ('{"isaac_lab":"2.3.2","isaac_sim":"5.1","python":"3.11","pytorch":"2.7","rsl_rl":"5.0","cuda":"12.8"}')
+                if version == "lab2"
+                else (
+                    '{"isaac_lab":"3.0.0","isaac_sim":"6.0","python":"3.12",'
+                    '"pytorch":"2.8","rsl_rl":"5.4","cuda":"12.8"}'
+                )
+            )
+            return CommandResult(argv, 0, "__ISAACLAB_BENCHMARK_METADATA__" + value + "\n", "")
         if "MetricsFormatter.get_instance" in rendered:
             stdout = self.lab2_probe_stdout if argv[0] == "docker" else self.lab3_probe_stdout
             return CommandResult(argv, 0, stdout, "")
@@ -340,6 +361,12 @@ def test_preflight_validates_all_required_system_identities(tmp_path: Path):
     rendered = [" ".join(argv) for argv in commands.argvs]
     assert result.idle_memory_baseline_mib == 100
     assert result.uv_lock_sha256 == hashlib.sha256(b"locked\n").hexdigest()
+    manifest = result.manifest(RunSet.FINAL, "measured")
+    assert manifest.host.gpu_model == "Fixture GPU"
+    assert manifest.host.gpu_driver == "590.48.01"
+    assert manifest.host.cpu_model == "Fixture CPU"
+    assert manifest.lab2.python == "3.11"
+    assert manifest.lab3.rsl_rl == "5.4"
     assert sum("git -C" in command and "rev-parse HEAD" in command for command in rendered) == 2
     assert sum("git -C" in command and "status --porcelain" in command for command in rendered) == 2
     assert any("docker image inspect" in command for command in rendered)

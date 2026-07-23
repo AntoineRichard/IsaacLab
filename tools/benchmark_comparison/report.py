@@ -10,11 +10,18 @@ from __future__ import annotations
 import csv
 import json
 import os
-from collections.abc import Mapping
 from pathlib import Path
 
+from .manifest import RunSetManifest, read_manifest, validate_manifest
 from .models import ExecutionProvenance
-from .normalize import MODE_ORDER, TASK_ORDER, read_raw_runs_csv
+from .normalize import (
+    FAILURE_FIELDS,
+    MODE_ORDER,
+    PAIRED_SUMMARY_FIELDS,
+    TASK_ORDER,
+    read_raw_runs_csv,
+    summarize_pairs,
+)
 
 _METRIC_LABELS = {
     "collection_fps": "Collection FPS",
@@ -32,16 +39,18 @@ def write_markdown_report(
     failures_path: Path,
     output_path: Path,
     *,
-    provenance: ExecutionProvenance | Path,
-    inventory: Mapping[str, object],
+    manifest: RunSetManifest | Path,
     artifact_root: Path | None = None,
 ) -> Path:
     """Write a deterministic report without reading simulator logs or schemas."""
     runs = read_raw_runs_csv(raw_runs_path)
-    expected_provenance = read_provenance(provenance) if isinstance(provenance, Path) else provenance
-    _validate_run_provenance(runs, expected_provenance)
-    summaries = _read_csv(paired_summary_path)
-    failures = _read_csv(failures_path)
+    expected_manifest = read_manifest(manifest) if isinstance(manifest, Path) else validate_manifest(manifest)
+    expected_provenance = expected_manifest.provenance
+    _validate_run_manifest(runs, expected_manifest)
+    summaries = _read_csv(paired_summary_path, PAIRED_SUMMARY_FIELDS)
+    failures = _read_csv(failures_path, FAILURE_FIELDS)
+    _validate_summaries(runs, summaries)
+    _validate_failures(failures, expected_manifest)
     source_root = artifact_root or _infer_artifact_root(raw_runs_path)
     lines = [
         "# Isaac Lab Paired Benchmark Report",
@@ -50,9 +59,7 @@ def write_markdown_report(
         "",
         "## Methodology",
         "",
-        "Both versions use PhysX, RSL-RL, 4,096 environments, and paired seeds 42, 43, and 44. "
-        "Runtime modes collect 100 or 1,000 environment steps; training runs 100 iterations. "
-        "The seed order is counterbalanced and no benchmark warm-up semantics are added.",
+        *_methodology(expected_manifest),
         "",
         "Only complete Lab 2/Lab 3 seed pairs contribute to paired statistics. Failures and missing "
         "attempts are not imputed. Sample standard deviations describe repeat variability (a single "
@@ -74,12 +81,35 @@ def write_markdown_report(
             f"| `{expected_provenance.environment_identity(version)}` |"
         )
 
-    lines.extend(["", "## Hardware and software inventory", ""])
-    if inventory:
-        lines.extend(["| Item | Value |", "|---|---|"])
-        lines.extend(f"| {_escape(str(name))} | {_escape(str(value))} |" for name, value in inventory.items())
-    else:
-        lines.append("No external preflight inventory was supplied.")
+    lines.extend(
+        [
+            "",
+            "## Hardware and software inventory",
+            "",
+            "| Host item | Value |",
+            "|---|---|",
+            f"| Hostname | {_escape(expected_manifest.host.hostname)} |",
+            f"| Operating system | {_escape(expected_manifest.host.os)} |",
+            f"| CPU | {_escape(expected_manifest.host.cpu_model)} |",
+            f"| Logical CPUs | {expected_manifest.host.logical_cpu_count} |",
+            f"| GPU | {_escape(expected_manifest.host.gpu_model)} |",
+            f"| NVIDIA driver | {_escape(expected_manifest.host.gpu_driver)} |",
+            f"| CUDA | {_escape(expected_manifest.host.cuda_version or chr(8212))} |",
+            "",
+            "| Version | Isaac Lab | Isaac Sim | Python | PyTorch | RSL-RL |",
+            "|---|---|---|---|---|---|",
+            _software_row("lab2", expected_manifest.lab2),
+            _software_row("lab3", expected_manifest.lab3),
+        ]
+    )
+    if expected_manifest.cpu_power_profile is not None:
+        lines.extend(
+            [
+                "",
+                f"> Interpretation note: the manifest records the CPU power profile as "
+                f"`{_escape(expected_manifest.cpu_power_profile)}`; absolute throughput reflects that host setting.",
+            ]
+        )
 
     lines.extend(["", "## Task mapping", "", "| Logical task | Isaac Lab 2 task | Isaac Lab 3 task |", "|---|---|---|"])
     mappings = _task_mappings(runs, failures)
@@ -194,12 +224,71 @@ def read_provenance(path: Path) -> ExecutionProvenance:
     return ExecutionProvenance(**value)
 
 
-def _validate_run_provenance(runs, provenance: ExecutionProvenance) -> None:
+def _validate_run_manifest(runs, manifest: RunSetManifest) -> None:
     for run in runs:
-        expected_sha = provenance.version_sha(run.version)
-        expected_environment = provenance.environment_identity(run.version)
+        expected_sha = manifest.provenance.version_sha(run.version)
+        expected_environment = manifest.provenance.environment_identity(run.version)
+        software = manifest.software(run.version)
+        actual_software = (
+            run.isaac_lab_version,
+            run.isaac_sim_version,
+            run.python_version,
+            run.pytorch_version,
+            run.rsl_rl_version,
+        )
+        expected_software = (
+            software.isaac_lab,
+            software.isaac_sim,
+            software.python,
+            software.pytorch,
+            software.rsl_rl,
+        )
         if run.version_sha != expected_sha or run.environment_identity != expected_environment:
-            raise ValueError(f"normalized run provenance does not match preflight: {run.artifact_path}")
+            raise ValueError("normalized run provenance does not match manifest: " + run.artifact_path)
+        if actual_software != expected_software:
+            raise ValueError("normalized run software versions do not match manifest: " + run.artifact_path)
+        if not run.artifact_path.startswith(manifest.run_set.value + "/"):
+            raise ValueError("normalized run set does not match manifest: " + run.artifact_path)
+
+
+def _validate_summaries(runs, summaries: list[dict[str, str]]) -> None:
+    expected = [summary.to_csv_row() for summary in summarize_pairs(runs)]
+    if summaries != expected:
+        raise ValueError("paired summary is not derived from normalized raw runs")
+
+
+def _validate_failures(failures: list[dict[str, str]], manifest: RunSetManifest) -> None:
+    run_set_prefix = manifest.run_set.value + "/"
+    for row in failures:
+        if row["version"] not in {"lab2", "lab3"}:
+            raise ValueError("failure version is not recognized")
+        artifact_path = row["artifact_path"]
+        if artifact_path and not artifact_path.startswith(run_set_prefix):
+            raise ValueError("failure run set does not match manifest: " + artifact_path)
+
+
+def _methodology(manifest: RunSetManifest) -> tuple[str, ...]:
+    identity = f"Run set: `{manifest.run_set.value}`; phase: `{manifest.phase}`."
+    if manifest.run_set.value == "canary":
+        bounds = (
+            "Both versions use PhysX, RSL-RL, 4,096 environments, and paired seed 42. "
+            "Runtime modes collect 10 or 25 environment steps; training runs 2 iterations. "
+            "No benchmark warm-up semantics are added."
+        )
+    else:
+        bounds = (
+            "Both versions use PhysX, RSL-RL, 4,096 environments, and paired seeds 42, 43, and 44. "
+            "Runtime modes collect 100 or 1,000 environment steps; training runs 100 iterations. "
+            "The seed order is counterbalanced and no benchmark warm-up semantics are added."
+        )
+    return identity, "", bounds
+
+
+def _software_row(version, software) -> str:
+    return (
+        f"| {version} | {_escape(software.isaac_lab)} | {_escape(software.isaac_sim)} "
+        f"| {_escape(software.python)} | {_escape(software.pytorch)} | {_escape(software.rsl_rl)} |"
+    )
 
 
 def _task_mappings(runs, failures: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -215,9 +304,12 @@ def _task_mappings(runs, failures: list[dict[str, str]]) -> dict[str, dict[str, 
     return mappings
 
 
-def _read_csv(path: Path) -> list[dict[str, str]]:
+def _read_csv(path: Path, expected_fields: tuple[str, ...]) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as file:
-        return list(csv.DictReader(file))
+        reader = csv.DictReader(file)
+        if tuple(reader.fieldnames or ()) != expected_fields:
+            raise ValueError(f"unexpected {path.name} columns: {reader.fieldnames}")
+        return list(reader)
 
 
 def _ordered_tasks(tasks: set[str]) -> list[str]:

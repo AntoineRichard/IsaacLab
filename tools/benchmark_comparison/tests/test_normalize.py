@@ -17,8 +17,9 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark_comparison.artifacts import finalize_attempt
+from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
-from tools.benchmark_comparison.models import ExecutionProvenance
+from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import (
     RAW_RUN_FIELDS,
     NormalizedRun,
@@ -44,6 +45,26 @@ def _provenance() -> ExecutionProvenance:
     )
 
 
+def _manifest() -> RunSetManifest:
+    return RunSetManifest(
+        schema_version="1.0",
+        run_set=RunSet.FINAL,
+        phase="measured",
+        provenance=_provenance(),
+        host=HostIdentity(
+            hostname="fixture-host",
+            os="Fixture OS",
+            cpu_model="Fixture CPU",
+            logical_cpu_count=32,
+            gpu_model="Fixture GPU",
+            gpu_driver="590.48.01",
+            cuda_version="12.8",
+        ),
+        lab2=SoftwareIdentity("2.3.2", "5.1.0", "3.11.13", "2.7.0+cu128", "5.0.1"),
+        lab3=SoftwareIdentity("3.0.0", "6.0.0", "3.12.13", "2.11.0+cu128", "5.4.1"),
+    )
+
+
 def _attempts():
     expansion = expand_final_matrix(load_matrix())
     selected = tuple(
@@ -64,7 +85,14 @@ def _payloads(attempt, *, collection_fps: float, utilization: float, exit_code: 
     schema["runtime"]["collection_fps"]["mean"] = collection_fps
     schema["resources"]["gpu_mem_gb"].update(mean=1.5, peak=2.0)
     schema["resources"]["gpu_util_pct"]["mean"] = utilization
-    schema["versions"]["isaaclab_release"] = "2.3.2" if attempt.version.value == "lab2" else "3.0.0"
+    software = _manifest().software(attempt.version.value)
+    schema["versions"].update(
+        isaaclab_release=software.isaac_lab,
+        isaacsim=software.isaac_sim,
+        torch=software.pytorch,
+        rsl_rl=software.rsl_rl,
+    )
+    schema["hardware"].update(cpu_name="Fixture CPU", cpu_count=32)
     measurements = json.loads((FIXTURES / "generic_runtime.json").read_text(encoding="utf-8"))
     environment_identity = LAB2_IMAGE_ID if attempt.version.value == "lab2" else f"uv-lock:{LAB3_LOCK}"
     return {
@@ -81,7 +109,7 @@ def _payloads(attempt, *, collection_fps: float, utilization: float, exit_code: 
                 "ISAACLAB_BENCHMARK_LAB3_SHA": LAB3_SHA,
             },
         },
-        "stdout": "",
+        "stdout": "| Driver Version: 590.48.01 | Graphics API: Vulkan\n",
         "stderr": "failure" if exit_code else "",
         "exit_status": {
             "exit_code": exit_code,
@@ -135,13 +163,16 @@ def test_normalization_writes_one_stably_ordered_row_per_success_and_preserves_f
         **_payloads(by_key[(43, "lab3")], collection_fps=0, utilization=0, exit_code=137),
     )
 
-    runs, failures = normalize_run_set(tmp_path, expansion, _provenance())
+    runs, failures = normalize_run_set(tmp_path, expansion, _manifest())
     paths = write_normalized_outputs(tmp_path / "normalized", runs, failures)
 
     assert [(row.seed, row.version) for row in runs] == [(42, "lab2"), (42, "lab3")]
     assert list(runs[0].to_csv_row()) == list(RAW_RUN_FIELDS)
     assert runs[0].version_sha == LAB2_SHA
     assert runs[0].environment_identity == LAB2_IMAGE_ID
+    assert runs[0].isaac_sim_version == "5.1.0"
+    assert runs[0].python_version == "3.11.13"
+    assert runs[1].pytorch_version == "2.11.0+cu128"
     assert runs[1].version_sha == LAB3_SHA
     assert runs[1].environment_identity == f"uv-lock:{LAB3_LOCK}"
     assert runs[0].concrete_task == "Isaac-Cartpole-v0"
@@ -156,6 +187,34 @@ def test_normalization_writes_one_stably_ordered_row_per_success_and_preserves_f
     assert {path.name for path in paths.values()} == {"raw_runs.csv", "paired_summary.csv", "failures.csv"}
     with paths["raw_runs"].open(newline="", encoding="utf-8") as file:
         assert list(csv.DictReader(file))[0]["collection_fps"] == "100"
+
+
+def test_written_paired_summary_is_derived_from_serialized_raw_runs(tmp_path: Path) -> None:
+    runs = (
+        _run(collection_fps=954293.634885703),
+        _run(
+            version="lab3",
+            version_sha=LAB3_SHA,
+            environment_identity=f"uv-lock:{LAB3_LOCK}",
+            concrete_task="Isaac-Cartpole",
+            collection_fps=947093.586299632,
+        ),
+    )
+
+    paths = write_normalized_outputs(tmp_path, runs, ())
+    with paths["paired_summary"].open(newline="", encoding="utf-8") as file:
+        written = list(csv.DictReader(file))
+    serialized_runs = tuple(
+        NormalizedRun(
+            **{
+                **run.__dict__,
+                "collection_fps": float(run.to_csv_row()["collection_fps"]),
+            }
+        )
+        for run in runs
+    )
+
+    assert written == [summary.to_csv_row() for summary in summarize_pairs(serialized_runs)]
 
 
 def test_paired_summaries_use_only_valid_pairs_and_compute_exact_signed_deltas() -> None:
@@ -215,7 +274,7 @@ def test_quarantined_success_and_later_valid_success_are_both_visible(tmp_path: 
     os.rename(original, quarantine)
     finalize_attempt(tmp_path, attempt, **_payloads(attempt, collection_fps=110, utilization=42))
 
-    runs, failures = normalize_run_set(tmp_path, expansion, _provenance())
+    runs, failures = normalize_run_set(tmp_path, expansion, _manifest())
 
     assert [run.collection_fps for run in runs] == [110.0]
     assert [(failure.failure_kind, failure.artifact_path) for failure in failures] == [
@@ -230,7 +289,7 @@ def test_quarantined_success_without_replacement_remains_linked_failure(tmp_path
     quarantine = success.with_name("corrupt-success-0001")
     os.rename(success, quarantine)
 
-    runs, failures = normalize_run_set(tmp_path, expansion, _provenance())
+    runs, failures = normalize_run_set(tmp_path, expansion, _manifest())
 
     assert runs == ()
     assert any(failure.artifact_path == quarantine.relative_to(tmp_path).as_posix() for failure in failures)
@@ -244,7 +303,7 @@ def test_normalization_rejects_success_with_preflight_provenance_mismatch(tmp_pa
     payloads["environment"]["uv_lock_sha256"] = "e" * 64
     finalize_attempt(tmp_path, attempt, **payloads)
 
-    runs, failures = normalize_run_set(tmp_path, expansion, _provenance())
+    runs, failures = normalize_run_set(tmp_path, expansion, _manifest())
 
     assert runs == ()
     assert [failure.failure_kind for failure in failures] == ["invalid_success"]
@@ -303,3 +362,17 @@ def test_paired_summaries_compute_sample_stddev_across_two_complete_seeds() -> N
     assert math.isclose(throughput.lab3_std, math.sqrt(200.0))
     assert throughput.absolute_delta == 30.0
     assert math.isclose(throughput.percent_delta, 300.0 / 11.0)
+
+
+def test_normalization_rejects_failed_attempt_with_manifest_provenance_mismatch(tmp_path: Path) -> None:
+    attempt = _attempts().attempts[0]
+    expansion = replace(_attempts(), attempts=(attempt,), pairs=())
+    payloads = _payloads(attempt, collection_fps=0, utilization=0, exit_code=137)
+    payloads["environment"]["uv_lock_sha256"] = "e" * 64
+    finalize_attempt(tmp_path, attempt, **payloads)
+
+    runs, failures = normalize_run_set(tmp_path, expansion, _manifest())
+
+    assert runs == ()
+    assert [failure.failure_kind for failure in failures] == ["malformed_artifact"]
+    assert "provenance uv_lock_sha256" in failures[0].reason

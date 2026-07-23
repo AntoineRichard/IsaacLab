@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .artifacts import verify_checksums
+from .manifest import RunSetManifest, SoftwareIdentity, validate_manifest
 from .models import BenchmarkAttempt, ExecutionProvenance, MatrixExpansion
 from .validate import validate_attempt_directory, validation_document
 
@@ -38,6 +39,11 @@ RAW_RUN_FIELDS = (
     "version",
     "version_sha",
     "environment_identity",
+    "isaac_lab_version",
+    "isaac_sim_version",
+    "python_version",
+    "pytorch_version",
+    "rsl_rl_version",
     "logical_task",
     "concrete_task",
     "mode",
@@ -106,6 +112,11 @@ class NormalizedRun:
     gpu_utilization_sample_count: int
     elapsed_time_s: float
     artifact_path: str
+    isaac_lab_version: str = ""
+    isaac_sim_version: str = ""
+    python_version: str = ""
+    pytorch_version: str = ""
+    rsl_rl_version: str = ""
 
     def to_csv_row(self) -> dict[str, str]:
         """Return the stable string projection used by ``raw_runs.csv``."""
@@ -113,6 +124,11 @@ class NormalizedRun:
             "version": self.version,
             "version_sha": self.version_sha,
             "environment_identity": self.environment_identity,
+            "isaac_lab_version": self.isaac_lab_version,
+            "isaac_sim_version": self.isaac_sim_version,
+            "python_version": self.python_version,
+            "pytorch_version": self.pytorch_version,
+            "rsl_rl_version": self.rsl_rl_version,
             "logical_task": self.logical_task,
             "concrete_task": self.concrete_task,
             "mode": self.mode,
@@ -201,13 +217,16 @@ class PairedSummary:
 def normalize_run_set(
     root: Path,
     expansion: MatrixExpansion,
-    provenance: ExecutionProvenance,
+    manifest: RunSetManifest,
 ) -> tuple[tuple[NormalizedRun, ...], tuple[FailureRow, ...]]:
     """Normalize every terminal artifact selected by an expanded matrix.
 
     Raw artifact files are only read. Invalid successes and missing attempts
     are preserved as failure rows and never converted to zero-valued runs.
     """
+    manifest = validate_manifest(manifest)
+    if manifest.run_set is not expansion.run_set:
+        raise ValueError("manifest run_set does not match matrix expansion")
     runs: list[NormalizedRun] = []
     failures: list[FailureRow] = []
     for attempt in sorted(
@@ -223,12 +242,12 @@ def normalize_run_set(
         success_path = attempt_root / "success"
         success_error: str | None = None
         if success_path.is_dir():
-            run, success_error = _read_success(root, success_path, attempt, provenance)
+            run, success_error = _read_success(root, success_path, attempt, manifest)
             if run is not None:
                 runs.append(run)
 
-        attempt_failures = _read_failures(root, attempt_root, attempt)
-        quarantine_failures = _read_quarantines(root, attempt_root, attempt, provenance)
+        attempt_failures = _read_failures(root, attempt_root, attempt, manifest)
+        quarantine_failures = _read_quarantines(root, attempt_root, attempt, manifest)
         failures.extend((*attempt_failures, *quarantine_failures))
         if success_error is not None:
             failures.append(_failure_from_attempt(root, attempt, "invalid_success", success_error, success_path))
@@ -298,12 +317,14 @@ def write_normalized_outputs(
 ) -> dict[str, Path]:
     """Atomically write all three deterministic normalized CSV tables."""
     output_directory.mkdir(parents=True, exist_ok=True)
+    raw_runs_path = write_raw_runs_csv(output_directory / "raw_runs.csv", runs)
+    serialized_runs = read_raw_runs_csv(raw_runs_path)
     paths = {
-        "raw_runs": write_raw_runs_csv(output_directory / "raw_runs.csv", runs),
+        "raw_runs": raw_runs_path,
         "paired_summary": _write_csv(
             output_directory / "paired_summary.csv",
             PAIRED_SUMMARY_FIELDS,
-            (summary.to_csv_row() for summary in summarize_pairs(runs)),
+            (summary.to_csv_row() for summary in summarize_pairs(serialized_runs)),
         ),
         "failures": _write_csv(
             output_directory / "failures.csv",
@@ -353,7 +374,7 @@ def _read_success(
     root: Path,
     path: Path,
     attempt: BenchmarkAttempt,
-    provenance: ExecutionProvenance,
+    manifest: RunSetManifest,
 ) -> tuple[NormalizedRun | None, str | None]:
     if not verify_checksums(path):
         return None, "success checksum or file layout verification failed"
@@ -372,11 +393,14 @@ def _read_success(
         wall_time = _finite_number(exit_status.get("wall_time_s"), "exit.wall_time_s")
         if wall_time < 0:
             raise ValueError("exit.wall_time_s must be non-negative")
-        _validate_environment_provenance(environment, attempt, provenance)
+        _validate_environment_provenance(environment, attempt, manifest.provenance)
         version_sha = environment.get(f"{attempt.version.value}_sha")
         if not isinstance(version_sha, str) or not re.fullmatch(r"[0-9a-f]{40,64}", version_sha):
             raise ValueError(f"environment is missing exact {attempt.version.value} SHA")
         environment_identity = _environment_identity(environment, attempt.version.value, version_sha)
+        schema = _read_mapping(path / "schema.json")
+        stdout = (path / "stdout.log").read_text(encoding="utf-8")
+        software = _validate_schema_identity(schema, stdout, attempt, manifest)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError) as error:
         return None, str(error)
     metrics = result.metrics
@@ -385,6 +409,11 @@ def _read_success(
             version=attempt.version.value,
             version_sha=version_sha,
             environment_identity=environment_identity,
+            isaac_lab_version=software.isaac_lab,
+            isaac_sim_version=software.isaac_sim,
+            python_version=software.python,
+            pytorch_version=software.pytorch,
+            rsl_rl_version=software.rsl_rl,
             logical_task=attempt.logical_task,
             concrete_task=attempt.concrete_task,
             mode=attempt.mode.id,
@@ -408,7 +437,7 @@ def _read_quarantines(
     root: Path,
     attempt_root: Path,
     attempt: BenchmarkAttempt,
-    provenance: ExecutionProvenance,
+    manifest: RunSetManifest,
 ) -> tuple[FailureRow, ...]:
     if not attempt_root.is_dir():
         return ()
@@ -417,7 +446,7 @@ def _read_quarantines(
         match = _CORRUPT_SUCCESS_DIRECTORY.fullmatch(path.name)
         if match is None or not path.is_dir():
             continue
-        _quarantined_run, error = _read_success(root, path, attempt, provenance)
+        _quarantined_run, error = _read_success(root, path, attempt, manifest)
         reason = error or "quarantined success is not the current immutable success"
         rows.append(
             _failure_from_attempt(
@@ -432,7 +461,12 @@ def _read_quarantines(
     return tuple(rows)
 
 
-def _read_failures(root: Path, attempt_root: Path, attempt: BenchmarkAttempt) -> tuple[FailureRow, ...]:
+def _read_failures(
+    root: Path,
+    attempt_root: Path,
+    attempt: BenchmarkAttempt,
+    manifest: RunSetManifest,
+) -> tuple[FailureRow, ...]:
     if not attempt_root.is_dir():
         return ()
     rows: list[FailureRow] = []
@@ -451,11 +485,12 @@ def _read_failures(root: Path, attempt_root: Path, attempt: BenchmarkAttempt) ->
                     raise ValueError("failure directory semantically validates as success")
                 if validation != validation_document(result, attempt_number):
                     raise ValueError("failure validation does not match source artifacts")
+                _validate_failure_identity(path, attempt, manifest)
                 kind = result.failure_kind.value
                 reason = result.reason or f"artifact directory classified as {kind}"
-            except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
                 kind = "malformed_artifact"
-                reason = "failure validation document is inconsistent"
+                reason = str(error) or "failure validation document is inconsistent"
         else:
             kind = "malformed_artifact"
             reason = "failure checksum or file layout verification failed"
@@ -470,6 +505,15 @@ def _read_failures(root: Path, attempt_root: Path, attempt: BenchmarkAttempt) ->
             )
         )
     return tuple(rows)
+
+
+def _validate_failure_identity(path: Path, attempt: BenchmarkAttempt, manifest: RunSetManifest) -> None:
+    environment = _read_mapping(path / "environment.json")
+    _validate_environment_provenance(environment, attempt, manifest.provenance)
+    schema_value = json.loads((path / "schema.json").read_text(encoding="utf-8"))
+    if isinstance(schema_value, Mapping) and {"versions", "hardware"}.issubset(schema_value):
+        stdout = (path / "stdout.log").read_text(encoding="utf-8")
+        _validate_schema_identity(schema_value, stdout, attempt, manifest)
 
 
 def _failure_from_attempt(
@@ -525,6 +569,48 @@ def _validate_environment_provenance(
         raise ValueError("environment provenance identity does not match preflight")
 
 
+def _validate_schema_identity(
+    schema: Mapping[str, object],
+    stdout: str,
+    attempt: BenchmarkAttempt,
+    manifest: RunSetManifest,
+) -> SoftwareIdentity:
+    software = manifest.software(attempt.version.value)
+    versions = schema.get("versions")
+    if not isinstance(versions, Mapping):
+        raise ValueError("schema versions must be an object")
+    expected_versions = {
+        "isaaclab_release": software.isaac_lab,
+        "isaacsim": software.isaac_sim,
+        "torch": software.pytorch,
+        "rsl_rl": software.rsl_rl,
+    }
+    labels = {"isaaclab_release": "isaac_lab", "isaacsim": "isaac_sim", "torch": "pytorch", "rsl_rl": "rsl_rl"}
+    for field, expected in expected_versions.items():
+        if versions.get(field) != expected:
+            raise ValueError(f"schema versions.{labels[field]} does not match manifest")
+    hardware = schema.get("hardware")
+    if not isinstance(hardware, Mapping):
+        raise ValueError("schema hardware must be an object")
+    expected_hardware = {
+        "hostname": manifest.host.hostname,
+        "cpu_name": manifest.host.cpu_model,
+        "cpu_count": manifest.host.logical_cpu_count,
+    }
+    for field, expected in expected_hardware.items():
+        if hardware.get(field) != expected:
+            raise ValueError(f"schema hardware.{field} does not match manifest")
+    devices = hardware.get("gpu_devices")
+    if not isinstance(devices, list) or not devices or not isinstance(devices[0], Mapping):
+        raise ValueError("schema hardware.gpu_devices must identify a GPU")
+    if devices[0].get("name") != manifest.host.gpu_model:
+        raise ValueError("schema hardware.gpu_model does not match manifest")
+    driver_match = re.search(r"Driver Version:\s*([^|\s]+)", stdout)
+    if driver_match is not None and driver_match.group(1) != manifest.host.gpu_driver:
+        raise ValueError("GPU driver does not match manifest")
+    return software
+
+
 def _validate_pair_invariants(lab2: NormalizedRun, lab3: NormalizedRun) -> None:
     invariants = ("logical_task", "mode", "seed", "bound", "bound_unit", "num_envs")
     for field in invariants:
@@ -537,6 +623,11 @@ def _run_from_csv(row: Mapping[str, str]) -> NormalizedRun:
         version=row["version"],
         version_sha=row["version_sha"],
         environment_identity=row["environment_identity"],
+        isaac_lab_version=row["isaac_lab_version"],
+        isaac_sim_version=row["isaac_sim_version"],
+        python_version=row["python_version"],
+        pytorch_version=row["pytorch_version"],
+        rsl_rl_version=row["rsl_rl_version"],
         logical_task=row["logical_task"],
         concrete_task=row["concrete_task"],
         mode=row["mode"],

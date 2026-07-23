@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark_comparison.models import ExecutionProvenance
+from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity
+from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
 from tools.benchmark_comparison.report import read_provenance, write_markdown_report, write_provenance
 
@@ -21,8 +22,20 @@ def _provenance() -> ExecutionProvenance:
     return ExecutionProvenance(
         lab2_sha="a" * 40,
         lab3_sha="b" * 40,
-        lab2_image_id="sha256:image",
-        uv_lock_sha256="lock",
+        lab2_image_id="sha256:" + "c" * 64,
+        uv_lock_sha256="d" * 64,
+    )
+
+
+def _manifest() -> RunSetManifest:
+    return RunSetManifest(
+        schema_version="1.0",
+        run_set=RunSet.FINAL,
+        phase="measured",
+        provenance=_provenance(),
+        host=HostIdentity("host", "Ubuntu", "CPU", 32, "NVIDIA Test GPU", "590.00", "13.0"),
+        lab2=SoftwareIdentity("2.3.2", "5.1", "3.11", "2.7", "5.0"),
+        lab3=SoftwareIdentity("3.0.0", "6.0", "3.12", "2.8", "5.4"),
     )
 
 
@@ -30,7 +43,7 @@ def _run(version: str, fps: float) -> NormalizedRun:
     return NormalizedRun(
         version=version,
         version_sha=("a" if version == "lab2" else "b") * 40,
-        environment_identity="sha256:image" if version == "lab2" else "uv-lock:lock",
+        environment_identity="sha256:" + "c" * 64 if version == "lab2" else "uv-lock:" + "d" * 64,
         logical_task="cartpole",
         concrete_task="Isaac-Cartpole-v0" if version == "lab2" else "Isaac-Cartpole",
         mode="runtime-100",
@@ -45,6 +58,11 @@ def _run(version: str, fps: float) -> NormalizedRun:
         gpu_utilization_sample_count=10,
         elapsed_time_s=20.0,
         artifact_path=f"final/{version}/success",
+        isaac_lab_version="2.3.2" if version == "lab2" else "3.0.0",
+        isaac_sim_version="5.1" if version == "lab2" else "6.0",
+        python_version="3.11" if version == "lab2" else "3.12",
+        pytorch_version="2.7" if version == "lab2" else "2.8",
+        rsl_rl_version="5.0" if version == "lab2" else "5.4",
     )
 
 
@@ -72,18 +90,7 @@ def test_report_contains_methodology_inventory_mapping_modes_deltas_samples_and_
         normalized["paired_summary"],
         normalized["failures"],
         tmp_path / "report" / "report.md",
-        provenance=_provenance(),
-        inventory={
-            "Lab 2 image": "sha256:image",
-            "Lab 3 uv lock": "lock",
-            "GPU": "NVIDIA Test GPU",
-            "Driver": "590.00",
-            "CUDA": "13.0",
-            "Isaac Sim Lab 2": "5.1",
-            "Isaac Sim Lab 3": "6.0",
-            "PyTorch": "2.8",
-            "RSL-RL": "5.4",
-        },
+        manifest=_manifest(),
     )
 
     text = report_path.read_text(encoding="utf-8")
@@ -116,8 +123,7 @@ def test_report_renders_partial_data_without_inventing_missing_values(tmp_path: 
         normalized["paired_summary"],
         normalized["failures"],
         tmp_path / "report.md",
-        provenance=_provenance(),
-        inventory={},
+        manifest=_manifest(),
     )
 
     text = report_path.read_text(encoding="utf-8")
@@ -151,24 +157,23 @@ def test_report_uses_structured_provenance_file_when_a_version_has_no_successes(
         normalized["paired_summary"],
         normalized["failures"],
         tmp_path / "report.md",
-        provenance=provenance_path,
-        inventory={},
+        manifest=_manifest(),
     )
 
     assert read_provenance(provenance_path) == _provenance()
     assert provenance_path.read_text(encoding="utf-8") == (
         "{\n"
-        '  "lab2_image_id": "sha256:image",\n'
+        f'  "lab2_image_id": "sha256:{"c" * 64}",\n'
         f'  "lab2_sha": "{"a" * 40}",\n'
         f'  "lab3_sha": "{"b" * 40}",\n'
-        '  "uv_lock_sha256": "lock"\n'
+        f'  "uv_lock_sha256": "{"d" * 64}"\n'
         "}\n"
     )
     text = report_path.read_text(encoding="utf-8")
     assert f"`{'a' * 40}`" in text
     assert f"`{'b' * 40}`" in text
-    assert "`sha256:image`" in text
-    assert "`uv-lock:lock`" in text
+    assert f"`sha256:{'c' * 64}`" in text
+    assert f"`uv-lock:{'d' * 64}`" in text
     assert "`out_of_memory`" in text
 
     original = provenance_path.read_bytes()
@@ -200,6 +205,5 @@ def test_report_rejects_normalized_rows_that_mismatch_expected_provenance(
             normalized["paired_summary"],
             normalized["failures"],
             tmp_path / "report.md",
-            provenance=_provenance(),
-            inventory={},
+            manifest=_manifest(),
         )

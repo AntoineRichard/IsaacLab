@@ -12,9 +12,9 @@ import os
 from pathlib import Path
 
 from .executors import ExecutorConfig, Lab2DockerExecutor, Lab3UvExecutor, ProcessLauncher, run_preflight
+from .manifest import write_manifest
 from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
 from .models import RunSet
-from .report import write_provenance
 from .runner import BenchmarkRunner, HostIdleGate, IdleThresholds, OwnedProcessGroups, SystemClock, SystemIdleMonitor
 
 
@@ -22,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     """Run a preflighted canary or final comparison matrix."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run_set", choices=[value.value for value in RunSet], required=True)
+    parser.add_argument("--phase", required=True)
     parser.add_argument("--lab2_root", type=Path, required=True)
     parser.add_argument("--lab3_root", type=Path, required=True)
     parser.add_argument("--artifact_root", type=Path, required=True)
@@ -43,12 +44,12 @@ def main(argv: list[str] | None = None) -> int:
         lab2_image_id=args.lab2_image_id,
     )
     preflight = run_preflight(config)
-    write_provenance(config.artifact_root / args.run_set / "provenance.json", preflight.provenance)
-    expansion = (
-        expand_canary_matrix(load_matrix())
-        if args.run_set == RunSet.CANARY.value
-        else expand_final_matrix(load_matrix())
+    run_set = RunSet(args.run_set)
+    write_manifest(
+        config.artifact_root / run_set.value / "manifest.json",
+        preflight.manifest(run_set, args.phase),
     )
+    expansion = expand_canary_matrix(load_matrix()) if run_set is RunSet.CANARY else expand_final_matrix(load_matrix())
     owned_process_groups = OwnedProcessGroups()
     launcher = ProcessLauncher(owned_process_groups=owned_process_groups)
     idle_gate = HostIdleGate(

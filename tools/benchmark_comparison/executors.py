@@ -13,6 +13,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -22,7 +23,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from .models import BenchmarkAttempt, BoundUnit, ExecutionProvenance, Version
+from .manifest import HostIdentity, RunSetManifest, SoftwareIdentity
+from .models import BenchmarkAttempt, BoundUnit, ExecutionProvenance, RunSet, Version
+from .preflight_metadata import (
+    host_metadata_probe as _host_metadata_probe,
+)
+from .preflight_metadata import (
+    metadata_int as _metadata_int,
+)
+from .preflight_metadata import (
+    metadata_object as _metadata_object,
+)
+from .preflight_metadata import (
+    metadata_text as _metadata_text,
+)
+from .preflight_metadata import (
+    optional_metadata_text as _optional_metadata_text,
+)
+from .preflight_metadata import (
+    parse_nvidia_identity as _parse_nvidia_identity_value,
+)
+from .preflight_metadata import (
+    software_metadata as _software_metadata,
+)
+from .preflight_metadata import (
+    software_metadata_probe as _software_metadata_probe,
+)
 from .validate import attempt_identity
 
 _LAB2_PREFLIGHT_SENTINEL = "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__"
@@ -85,11 +111,28 @@ class PreflightResult:
     idle_memory_baseline_mib: int
     free_disk_bytes: int
     provenance: ExecutionProvenance
+    host: HostIdentity
+    lab2_software: SoftwareIdentity
+    lab3_software: SoftwareIdentity
+    cpu_power_profile: str | None = None
 
     @property
     def uv_lock_sha256(self) -> str:
         """Return the validated lock hash for compatibility with existing callers."""
         return self.provenance.uv_lock_sha256
+
+    def manifest(self, run_set: RunSet, phase: str) -> RunSetManifest:
+        """Build the self-contained manifest validated before measurement."""
+        return RunSetManifest(
+            schema_version="1.0",
+            run_set=run_set,
+            phase=phase,
+            provenance=self.provenance,
+            host=self.host,
+            lab2=self.lab2_software,
+            lab3=self.lab3_software,
+            cpu_power_profile=self.cpu_power_profile,
+        )
 
 
 class PreflightError(RuntimeError):
@@ -456,10 +499,10 @@ def run_preflight(
     )
     nvidia = _require_command(
         command_runner,
-        ("nvidia-smi", "--query-gpu=memory.used,utilization.gpu", "--format=csv,noheader,nounits"),
+        ("nvidia-smi", "--query-gpu=name,driver_version,memory.used,utilization.gpu", "--format=csv,noheader,nounits"),
         description="NVIDIA SMI access",
     )
-    idle_memory = _parse_idle_memory(nvidia.stdout)
+    gpu_model, gpu_driver, idle_memory = _parse_nvidia_identity(nvidia.stdout)
     try:
         config.artifact_root.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=config.artifact_root):
@@ -482,6 +525,34 @@ def run_preflight(
             expected_stdout_line=expected_stdout_line,
             description=f"{name} task registration and formatters",
         )
+    host_result = _require_command(
+        command_runner,
+        (sys.executable, "-c", _host_metadata_probe()),
+        description="host metadata",
+    )
+    try:
+        host_metadata = _metadata_object(host_result.stdout, "host")
+    except ValueError as error:
+        raise PreflightError(f"preflight host metadata failed: {error}") from error
+    software = {}
+    cuda_versions = set()
+    for version in (Version.LAB2, Version.LAB3):
+        invocation = _software_metadata_invocation(config, version)
+        result = _require_command(
+            command_runner,
+            invocation.argv,
+            cwd=invocation.cwd,
+            environment=invocation.environment,
+            description=f"{version.value} software metadata",
+        )
+        try:
+            software[version], cuda = _software_metadata(result.stdout, version)
+        except ValueError as error:
+            raise PreflightError(f"preflight {version.value} software metadata failed: {error}") from error
+        if cuda is not None:
+            cuda_versions.add(cuda)
+    if len(cuda_versions) > 1:
+        raise PreflightError("preflight CUDA versions differ across benchmark environments")
     lock_bytes = (config.lab3_root / "uv.lock").read_bytes()
     return PreflightResult(
         idle_memory_baseline_mib=idle_memory,
@@ -492,7 +563,28 @@ def run_preflight(
             lab2_image_id=config.lab2_image_id,
             uv_lock_sha256=hashlib.sha256(lock_bytes).hexdigest(),
         ),
+        host=HostIdentity(
+            hostname=_metadata_text(host_metadata, "hostname", "host"),
+            os=_metadata_text(host_metadata, "os", "host"),
+            cpu_model=_metadata_text(host_metadata, "cpu_model", "host"),
+            logical_cpu_count=_metadata_int(host_metadata, "logical_cpu_count", "host"),
+            gpu_model=gpu_model,
+            gpu_driver=gpu_driver,
+            cuda_version=next(iter(cuda_versions), None),
+        ),
+        lab2_software=software[Version.LAB2],
+        lab3_software=software[Version.LAB3],
+        cpu_power_profile=_optional_metadata_text(host_metadata, "cpu_power_profile", "host"),
     )
+
+
+def _software_metadata_invocation(config: ExecutorConfig, version: Version) -> Invocation:
+    base = (
+        Lab2DockerExecutor(config).version_invocation()
+        if version is Version.LAB2
+        else Lab3UvExecutor(config).version_invocation()
+    )
+    return Invocation((*base.argv[:-1], _software_metadata_probe()), base.environment, base.cwd)
 
 
 def _require_command(
@@ -522,11 +614,11 @@ def _require_command(
     return result
 
 
-def _parse_idle_memory(stdout: str) -> int:
+def _parse_nvidia_identity(stdout: str) -> tuple[str, str, int]:
     try:
-        return max(int(line.split(",", maxsplit=1)[0].strip()) for line in stdout.splitlines() if line.strip())
-    except (ValueError, IndexError) as error:
-        raise PreflightError(f"preflight NVIDIA SMI output is malformed: {stdout!r}") from error
+        return _parse_nvidia_identity_value(stdout)
+    except ValueError as error:
+        raise PreflightError(f"preflight {error}") from error
 
 
 def _script_name(attempt: BenchmarkAttempt) -> str:
