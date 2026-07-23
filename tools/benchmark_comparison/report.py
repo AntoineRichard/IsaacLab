@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
 
+from .models import ExecutionProvenance
 from .normalize import MODE_ORDER, TASK_ORDER, read_raw_runs_csv
 
 _METRIC_LABELS = {
@@ -30,11 +32,14 @@ def write_markdown_report(
     failures_path: Path,
     output_path: Path,
     *,
+    provenance: ExecutionProvenance | Path,
     inventory: Mapping[str, object],
     artifact_root: Path | None = None,
 ) -> Path:
     """Write a deterministic report without reading simulator logs or schemas."""
     runs = read_raw_runs_csv(raw_runs_path)
+    expected_provenance = read_provenance(provenance) if isinstance(provenance, Path) else provenance
+    _validate_run_provenance(runs, expected_provenance)
     summaries = _read_csv(paired_summary_path)
     failures = _read_csv(failures_path)
     source_root = artifact_root or _infer_artifact_root(raw_runs_path)
@@ -63,14 +68,11 @@ def write_markdown_report(
         "| Version | Exact Git SHA | Environment identity |",
         "|---|---|---|",
     ]
-    identities = {(run.version, run.version_sha, run.environment_identity) for run in runs}
     for version in ("lab2", "lab3"):
-        entries = sorted(entry for entry in identities if entry[0] == version)
-        if entries:
-            for _, sha, environment in entries:
-                lines.append(f"| {version} | `{_escape(sha)}` | `{_escape(environment)}` |")
-        else:
-            lines.append(f"| {version} | unavailable | unavailable |")
+        lines.append(
+            f"| {version} | `{expected_provenance.version_sha(version)}` "
+            f"| `{expected_provenance.environment_identity(version)}` |"
+        )
 
     lines.extend(["", "## Hardware and software inventory", ""])
     if inventory:
@@ -163,6 +165,41 @@ def write_markdown_report(
 
     _write_text_atomic(output_path, "\n".join(lines) + "\n")
     return output_path
+
+
+def write_provenance(path: Path, provenance: ExecutionProvenance) -> Path:
+    """Atomically write the exact preflight identities consumed by reports."""
+    if path.exists():
+        if read_provenance(path) != provenance:
+            raise ValueError(f"refusing to replace different benchmark provenance: {path}")
+        return path
+    contents = json.dumps(provenance.to_json(), indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
+    _write_text_atomic(path, contents)
+    return path
+
+
+def read_provenance(path: Path) -> ExecutionProvenance:
+    """Read the exact preflight identities consumed by reports."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read benchmark provenance: {error}") from error
+    fields = {"lab2_sha", "lab3_sha", "lab2_image_id", "uv_lock_sha256"}
+    if (
+        not isinstance(value, dict)
+        or set(value) != fields
+        or not all(isinstance(value[field], str) for field in fields)
+    ):
+        raise ValueError("benchmark provenance must contain exactly four string identity fields")
+    return ExecutionProvenance(**value)
+
+
+def _validate_run_provenance(runs, provenance: ExecutionProvenance) -> None:
+    for run in runs:
+        expected_sha = provenance.version_sha(run.version)
+        expected_environment = provenance.environment_identity(run.version)
+        if run.version_sha != expected_sha or run.environment_identity != expected_environment:
+            raise ValueError(f"normalized run provenance does not match preflight: {run.artifact_path}")
 
 
 def _task_mappings(runs, failures: list[dict[str, str]]) -> dict[str, dict[str, str]]:

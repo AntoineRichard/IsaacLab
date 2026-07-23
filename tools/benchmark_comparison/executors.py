@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from .models import BenchmarkAttempt, BoundUnit, Version
+from .models import BenchmarkAttempt, BoundUnit, ExecutionProvenance, Version
 from .validate import attempt_identity
 
 
@@ -76,8 +76,13 @@ class PreflightResult:
     """Validated execution identities and idle memory baseline."""
 
     idle_memory_baseline_mib: int
-    uv_lock_sha256: str
     free_disk_bytes: int
+    provenance: ExecutionProvenance
+
+    @property
+    def uv_lock_sha256(self) -> str:
+        """Return the validated lock hash for compatibility with existing callers."""
+        return self.provenance.uv_lock_sha256
 
 
 class PreflightError(RuntimeError):
@@ -197,10 +202,12 @@ class _Executor:
         *,
         launcher: ProcessLauncher | None = None,
         timeout_s: float = 7200.0,
+        provenance: ExecutionProvenance | None = None,
     ):
         self.config = config
         self._launcher = launcher or ProcessLauncher()
         self._timeout_s = timeout_s
+        self.provenance = provenance
 
     def invocation(self, attempt: BenchmarkAttempt, output_suffix: str | None = None) -> Invocation:
         """Build the measured command for ``attempt``."""
@@ -213,6 +220,9 @@ class _Executor:
     def execute(self, attempt: BenchmarkAttempt):
         """Run one attempt and return runner artifact inputs."""
         from .runner import AttemptExecution
+
+        if self.provenance is None:
+            raise RuntimeError("benchmark execution requires validated preflight provenance")
 
         output_suffix = f"{attempt.identity}-{uuid.uuid4().hex}"
         output_path = self.config.artifact_root / ".outputs" / output_suffix
@@ -233,11 +243,10 @@ class _Executor:
             },
             environment={
                 "identity": identity,
+                "environment_identity": self.provenance.environment_identity(attempt.version),
                 "values": dict(sorted(invocation.environment.items())),
-                "lab2_image": self.config.lab2_image if attempt.version is Version.LAB2 else None,
-                "lab2_image_id": self.config.lab2_image_id if attempt.version is Version.LAB2 else None,
-                "lab2_sha": self.config.lab2_sha,
-                "lab3_sha": self.config.lab3_sha,
+                "lab2_image": self.config.lab2_image,
+                **self.provenance.to_json(),
             },
             stdout=result.stdout,
             stderr=result.stderr,
@@ -256,11 +265,15 @@ class _Executor:
         )
 
     def _environment(self) -> dict[str, str]:
-        return {
+        environment = {
             "ISAACLAB_BENCHMARK_LAB2_SHA": self.config.lab2_sha,
             "ISAACLAB_BENCHMARK_LAB3_SHA": self.config.lab3_sha,
             "OMNI_KIT_ACCEPT_EULA": "yes",
         }
+        if self.provenance is not None:
+            environment["ISAACLAB_BENCHMARK_LAB2_IMAGE_ID"] = self.provenance.lab2_image_id
+            environment["ISAACLAB_BENCHMARK_UV_LOCK_SHA256"] = self.provenance.uv_lock_sha256
+        return environment
 
     @staticmethod
     def _benchmark_arguments(attempt: BenchmarkAttempt, output_path: str) -> tuple[str, ...]:
@@ -461,8 +474,13 @@ def run_preflight(
     lock_bytes = (config.lab3_root / "uv.lock").read_bytes()
     return PreflightResult(
         idle_memory_baseline_mib=idle_memory,
-        uv_lock_sha256=hashlib.sha256(lock_bytes).hexdigest(),
         free_disk_bytes=free_disk,
+        provenance=ExecutionProvenance(
+            lab2_sha=config.lab2_sha,
+            lab3_sha=config.lab3_sha,
+            lab2_image_id=config.lab2_image_id,
+            uv_lock_sha256=hashlib.sha256(lock_bytes).hexdigest(),
+        ),
     )
 
 

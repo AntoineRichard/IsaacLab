@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .artifacts import finalize_attempt, verify_success
-from .models import BenchmarkAttempt, MatrixExpansion
+from .models import BenchmarkAttempt, ExecutionProvenance, MatrixExpansion
 from .validate import attempt_identity
 
 _FAILED_ATTEMPT_PATTERN = re.compile(r"attempt-[0-9]+-[a-z_]+$")
@@ -316,16 +316,12 @@ class BenchmarkRunner:
         artifact_root: Path,
         executors: Mapping[str, AttemptExecutor],
         idle_gate: AttemptIdleGate,
-        expected_lab2_sha: str,
-        expected_lab3_sha: str,
-        expected_lab2_image_id: str,
+        expected_provenance: ExecutionProvenance,
     ):
         self.artifact_root = artifact_root
         self.executors = executors
         self.idle_gate = idle_gate
-        self.expected_lab2_sha = expected_lab2_sha
-        self.expected_lab3_sha = expected_lab3_sha
-        self.expected_lab2_image_id = expected_lab2_image_id
+        self.expected_provenance = expected_provenance
         self.after_persist = None
 
     def run(self, expansion: MatrixExpansion, *, retry_failures: bool = False) -> RunResult:
@@ -410,9 +406,7 @@ class BenchmarkRunner:
         return verify_success(
             path,
             attempt,
-            expected_lab2_sha=self.expected_lab2_sha,
-            expected_lab3_sha=self.expected_lab3_sha,
-            expected_lab2_image_id=self.expected_lab2_image_id,
+            expected_provenance=self.expected_provenance,
         )
 
     def _persist(self, state_path: Path, state: dict[str, object]) -> None:

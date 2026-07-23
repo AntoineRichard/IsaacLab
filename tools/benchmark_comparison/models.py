@@ -18,6 +18,37 @@ class Version(str, Enum):
     LAB3 = "lab3"
 
 
+@dataclass(frozen=True)
+class ExecutionProvenance:
+    """Immutable execution identities validated before measured attempts."""
+
+    lab2_sha: str
+    lab3_sha: str
+    lab2_image_id: str
+    uv_lock_sha256: str
+
+    def version_sha(self, version: Version | str) -> str:
+        """Return the expected Git revision for one product version."""
+        value = Version(version)
+        return self.lab2_sha if value is Version.LAB2 else self.lab3_sha
+
+    def environment_identity(self, version: Version | str) -> str:
+        """Return the immutable executor identity for one product version."""
+        value = Version(version)
+        if value is Version.LAB2:
+            return self.lab2_image_id
+        return f"uv-lock:{self.uv_lock_sha256}"
+
+    def to_json(self) -> dict[str, str]:
+        """Return the deterministic JSON representation used by reporting."""
+        return {
+            "lab2_sha": self.lab2_sha,
+            "lab3_sha": self.lab3_sha,
+            "lab2_image_id": self.lab2_image_id,
+            "uv_lock_sha256": self.uv_lock_sha256,
+        }
+
+
 class RunSet(str, Enum):
     """Selector for the full final matrix or its bounded canary subset."""
 

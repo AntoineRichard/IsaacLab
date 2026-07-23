@@ -22,6 +22,7 @@ from tools.benchmark_comparison.executors import (
     Lab3UvExecutor,
     PreflightError,
     ProcessLauncher,
+    ProcessResult,
     run_preflight,
 )
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
@@ -292,6 +293,32 @@ def test_preflight_validates_all_required_system_identities(tmp_path: Path):
     assert any("uv lock --check" in command for command in rendered)
     assert any(command.startswith("nvidia-smi") for command in rendered)
     assert len([command for command in rendered if "MetricsFormatter.get_instance" in command]) == 2
+
+
+def test_preflight_provenance_is_written_by_actual_executor_payloads(tmp_path: Path):
+    """Validated lock/image/SHA identities flow into both version artifact payloads."""
+    config = _config(tmp_path)
+    preflight = run_preflight(config, _PreflightCommands(config), min_free_bytes=1)
+
+    class Launcher:
+        def run(self, _invocation, _timeout_s):
+            return ProcessResult(returncode=0, stdout="", stderr="")
+
+    lab2 = Lab2DockerExecutor(config, launcher=Launcher(), provenance=preflight.provenance).execute(
+        _attempt(Version.LAB2)
+    )
+    lab3 = Lab3UvExecutor(config, launcher=Launcher(), provenance=preflight.provenance).execute(_attempt(Version.LAB3))
+
+    expected_common = {
+        "lab2_sha": LAB2_SHA,
+        "lab3_sha": LAB3_SHA,
+        "lab2_image_id": config.lab2_image_id,
+        "uv_lock_sha256": hashlib.sha256(b"locked\n").hexdigest(),
+    }
+    for execution in (lab2, lab3):
+        assert {key: execution.environment[key] for key in expected_common} == expected_common
+    assert lab2.environment["environment_identity"] == config.lab2_image_id
+    assert lab3.environment["environment_identity"] == f"uv-lock:{expected_common['uv_lock_sha256']}"
 
 
 @pytest.mark.parametrize(

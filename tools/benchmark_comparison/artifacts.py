@@ -18,7 +18,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from .models import BenchmarkAttempt
+from .models import BenchmarkAttempt, ExecutionProvenance
 from .validate import (
     FailureKind,
     validate_attempt_directory,
@@ -171,18 +171,14 @@ def verify_success(
     directory: Path,
     attempt: BenchmarkAttempt,
     *,
-    expected_lab2_sha: str,
-    expected_lab3_sha: str,
-    expected_lab2_image_id: str,
+    expected_provenance: ExecutionProvenance,
 ) -> bool:
     """Verify a finalized success's checksums, semantics, and validation document.
 
     Args:
         directory: Finalized ``success`` artifact directory.
         attempt: Immutable matrix attempt expected in the artifact.
-        expected_lab2_sha: Exact Lab 2 Git revision required in the artifact.
-        expected_lab3_sha: Exact Lab 3 Git revision required in the artifact.
-        expected_lab2_image_id: Exact immutable Lab 2 image ID required for Lab 2.
+        expected_provenance: Exact preflight identities required in the artifact.
 
     Returns:
         ``True`` only when the complete success artifact is trustworthy.
@@ -192,9 +188,7 @@ def verify_success(
         _verify_execution_provenance(
             directory,
             attempt,
-            expected_lab2_sha=expected_lab2_sha,
-            expected_lab3_sha=expected_lab3_sha,
-            expected_lab2_image_id=expected_lab2_image_id,
+            expected_provenance=expected_provenance,
         )
     except ArtifactIntegrityError:
         return False
@@ -205,31 +199,30 @@ def _verify_execution_provenance(
     directory: Path,
     attempt: BenchmarkAttempt,
     *,
-    expected_lab2_sha: str,
-    expected_lab3_sha: str,
-    expected_lab2_image_id: str,
+    expected_provenance: ExecutionProvenance,
 ) -> None:
-    """Reject a success produced by a different checkout or Lab 2 image."""
+    """Reject a success produced by different preflight execution identities."""
     try:
         environment = json.loads((directory / "environment.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ArtifactIntegrityError(f"cannot read success provenance: {error}") from error
     if not isinstance(environment, dict) or not isinstance(environment.get("values"), dict):
         raise ArtifactIntegrityError(f"success provenance must contain environment values: {directory}")
-    expected = {
-        "lab2_sha": expected_lab2_sha,
-        "lab3_sha": expected_lab3_sha,
-    }
+    expected = expected_provenance.to_json()
     for field, value in expected.items():
         if environment.get(field) != value:
             raise ArtifactIntegrityError(f"success provenance {field} does not match: {directory}")
     values = environment["values"]
-    if values.get("ISAACLAB_BENCHMARK_LAB2_SHA") != expected_lab2_sha:
+    if values.get("ISAACLAB_BENCHMARK_LAB2_SHA") != expected_provenance.lab2_sha:
         raise ArtifactIntegrityError(f"success environment Lab 2 SHA does not match: {directory}")
-    if values.get("ISAACLAB_BENCHMARK_LAB3_SHA") != expected_lab3_sha:
+    if values.get("ISAACLAB_BENCHMARK_LAB3_SHA") != expected_provenance.lab3_sha:
         raise ArtifactIntegrityError(f"success environment Lab 3 SHA does not match: {directory}")
-    if attempt.version.value == "lab2" and environment.get("lab2_image_id") != expected_lab2_image_id:
-        raise ArtifactIntegrityError(f"success Lab 2 image ID does not match: {directory}")
+    if values.get("ISAACLAB_BENCHMARK_LAB2_IMAGE_ID") != expected_provenance.lab2_image_id:
+        raise ArtifactIntegrityError(f"success environment Lab 2 image ID does not match: {directory}")
+    if values.get("ISAACLAB_BENCHMARK_UV_LOCK_SHA256") != expected_provenance.uv_lock_sha256:
+        raise ArtifactIntegrityError(f"success environment uv lock does not match: {directory}")
+    if environment.get("environment_identity") != expected_provenance.environment_identity(attempt.version):
+        raise ArtifactIntegrityError(f"success executor identity does not match: {directory}")
 
 
 def _verify_existing_success(success_path: Path, attempt_root: Path, attempt: BenchmarkAttempt) -> None:

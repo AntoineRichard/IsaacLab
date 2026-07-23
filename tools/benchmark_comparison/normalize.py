@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .artifacts import verify_checksums
-from .models import BenchmarkAttempt, MatrixExpansion
+from .models import BenchmarkAttempt, ExecutionProvenance, MatrixExpansion
 from .validate import validate_attempt_directory, validation_document
 
 VERSION_ORDER = ("lab2", "lab3")
@@ -82,6 +82,7 @@ FAILURE_FIELDS = (
 )
 
 _FAILED_DIRECTORY = re.compile(r"attempt-(?P<number>[0-9]+)-(?P<kind>[a-z_]+)$")
+_CORRUPT_SUCCESS_DIRECTORY = re.compile(r"corrupt-success-(?P<number>[0-9]+)$")
 
 
 @dataclass(frozen=True)
@@ -198,7 +199,9 @@ class PairedSummary:
 
 
 def normalize_run_set(
-    root: Path, expansion: MatrixExpansion
+    root: Path,
+    expansion: MatrixExpansion,
+    provenance: ExecutionProvenance,
 ) -> tuple[tuple[NormalizedRun, ...], tuple[FailureRow, ...]]:
     """Normalize every terminal artifact selected by an expanded matrix.
 
@@ -220,15 +223,16 @@ def normalize_run_set(
         success_path = attempt_root / "success"
         success_error: str | None = None
         if success_path.is_dir():
-            run, success_error = _read_success(root, success_path, attempt)
+            run, success_error = _read_success(root, success_path, attempt, provenance)
             if run is not None:
                 runs.append(run)
 
         attempt_failures = _read_failures(root, attempt_root, attempt)
-        failures.extend(attempt_failures)
+        quarantine_failures = _read_quarantines(root, attempt_root, attempt, provenance)
+        failures.extend((*attempt_failures, *quarantine_failures))
         if success_error is not None:
             failures.append(_failure_from_attempt(root, attempt, "invalid_success", success_error, success_path))
-        elif not success_path.is_dir() and not attempt_failures:
+        elif not success_path.is_dir() and not attempt_failures and not quarantine_failures:
             failures.append(_failure_from_attempt(root, attempt, "missing", "no terminal artifact", attempt_root))
     return tuple(runs), tuple(failures)
 
@@ -255,6 +259,8 @@ def summarize_pairs(runs: Sequence[NormalizedRun]) -> tuple[PairedSummary, ...]:
         ]
         if not paired:
             continue
+        for lab2, lab3 in paired:
+            _validate_pair_invariants(lab2, lab3)
         for metric in SUMMARY_METRICS:
             lab2_values = [float(getattr(pair[0], metric)) for pair in paired]
             lab3_values = [float(getattr(pair[1], metric)) for pair in paired]
@@ -343,7 +349,12 @@ def read_raw_runs_csv(path: Path) -> tuple[NormalizedRun, ...]:
         return tuple(_run_from_csv(row) for row in reader)
 
 
-def _read_success(root: Path, path: Path, attempt: BenchmarkAttempt) -> tuple[NormalizedRun | None, str | None]:
+def _read_success(
+    root: Path,
+    path: Path,
+    attempt: BenchmarkAttempt,
+    provenance: ExecutionProvenance,
+) -> tuple[NormalizedRun | None, str | None]:
     if not verify_checksums(path):
         return None, "success checksum or file layout verification failed"
     result = validate_attempt_directory(path, attempt)
@@ -361,6 +372,7 @@ def _read_success(root: Path, path: Path, attempt: BenchmarkAttempt) -> tuple[No
         wall_time = _finite_number(exit_status.get("wall_time_s"), "exit.wall_time_s")
         if wall_time < 0:
             raise ValueError("exit.wall_time_s must be non-negative")
+        _validate_environment_provenance(environment, attempt, provenance)
         version_sha = environment.get(f"{attempt.version.value}_sha")
         if not isinstance(version_sha, str) or not re.fullmatch(r"[0-9a-f]{40,64}", version_sha):
             raise ValueError(f"environment is missing exact {attempt.version.value} SHA")
@@ -390,6 +402,34 @@ def _read_success(root: Path, path: Path, attempt: BenchmarkAttempt) -> tuple[No
         ),
         None,
     )
+
+
+def _read_quarantines(
+    root: Path,
+    attempt_root: Path,
+    attempt: BenchmarkAttempt,
+    provenance: ExecutionProvenance,
+) -> tuple[FailureRow, ...]:
+    if not attempt_root.is_dir():
+        return ()
+    rows: list[FailureRow] = []
+    for path in sorted(attempt_root.iterdir()):
+        match = _CORRUPT_SUCCESS_DIRECTORY.fullmatch(path.name)
+        if match is None or not path.is_dir():
+            continue
+        _quarantined_run, error = _read_success(root, path, attempt, provenance)
+        reason = error or "quarantined success is not the current immutable success"
+        rows.append(
+            _failure_from_attempt(
+                root,
+                attempt,
+                "invalid_success",
+                reason,
+                path,
+                attempt_number=int(match.group("number")),
+            )
+        )
+    return tuple(rows)
 
 
 def _read_failures(root: Path, attempt_root: Path, attempt: BenchmarkAttempt) -> tuple[FailureRow, ...]:
@@ -469,6 +509,27 @@ def _environment_identity(environment: Mapping[str, object], version: str, versi
         if isinstance(lock, str) and lock:
             return f"uv-lock:{lock}"
     return f"git:{version_sha}"
+
+
+def _validate_environment_provenance(
+    environment: Mapping[str, object],
+    attempt: BenchmarkAttempt,
+    provenance: ExecutionProvenance,
+) -> None:
+    expected = provenance.to_json()
+    for field, value in expected.items():
+        if environment.get(field) != value:
+            raise ValueError(f"environment provenance {field} does not match preflight")
+    expected_identity = provenance.environment_identity(attempt.version)
+    if environment.get("environment_identity") != expected_identity:
+        raise ValueError("environment provenance identity does not match preflight")
+
+
+def _validate_pair_invariants(lab2: NormalizedRun, lab3: NormalizedRun) -> None:
+    invariants = ("logical_task", "mode", "seed", "bound", "bound_unit", "num_envs")
+    for field in invariants:
+        if getattr(lab2, field) != getattr(lab3, field):
+            raise ValueError(f"paired runs have mismatched {field}")
 
 
 def _run_from_csv(row: Mapping[str, str]) -> NormalizedRun:

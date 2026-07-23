@@ -14,6 +14,7 @@ from pathlib import Path
 from .executors import ExecutorConfig, Lab2DockerExecutor, Lab3UvExecutor, ProcessLauncher, run_preflight
 from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
 from .models import RunSet
+from .report import write_provenance
 from .runner import BenchmarkRunner, HostIdleGate, IdleThresholds, OwnedProcessGroups, SystemClock, SystemIdleMonitor
 
 
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         lab2_image_id=args.lab2_image_id,
     )
     preflight = run_preflight(config)
+    write_provenance(config.artifact_root / args.run_set / "provenance.json", preflight.provenance)
     expansion = (
         expand_canary_matrix(load_matrix())
         if args.run_set == RunSet.CANARY.value
@@ -60,13 +62,11 @@ def main(argv: list[str] | None = None) -> int:
     runner = BenchmarkRunner(
         artifact_root=config.artifact_root,
         executors={
-            "lab2": Lab2DockerExecutor(config, launcher=launcher),
-            "lab3": Lab3UvExecutor(config, launcher=launcher),
+            "lab2": Lab2DockerExecutor(config, launcher=launcher, provenance=preflight.provenance),
+            "lab3": Lab3UvExecutor(config, launcher=launcher, provenance=preflight.provenance),
         },
         idle_gate=idle_gate,
-        expected_lab2_sha=config.lab2_sha,
-        expected_lab3_sha=config.lab3_sha,
-        expected_lab2_image_id=config.lab2_image_id,
+        expected_provenance=preflight.provenance,
     )
     result = runner.run(expansion, retry_failures=args.retry_failures)
     return 0 if result.failed == 0 and result.status.value == "completed" else 1

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark_comparison.matrix import expand_canary_matrix, expand_final_matrix, load_matrix
+from tools.benchmark_comparison.models import ExecutionProvenance
 from tools.benchmark_comparison.runner import (
     AttemptExecution,
     BenchmarkRunner,
@@ -27,6 +28,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 LAB2_SHA = "a" * 40
 LAB3_SHA = "b" * 40
 LAB2_IMAGE_ID = "sha256:" + "c" * 64
+LAB3_LOCK = "d" * 64
 
 
 def _schema(attempt):
@@ -57,10 +59,14 @@ def _execution(attempt, *, exit_code=0, timed_out=False, interrupted=False, oom=
             "values": {
                 "ISAACLAB_BENCHMARK_LAB2_SHA": LAB2_SHA,
                 "ISAACLAB_BENCHMARK_LAB3_SHA": LAB3_SHA,
+                "ISAACLAB_BENCHMARK_LAB2_IMAGE_ID": LAB2_IMAGE_ID,
+                "ISAACLAB_BENCHMARK_UV_LOCK_SHA256": LAB3_LOCK,
             },
+            "environment_identity": (LAB2_IMAGE_ID if attempt.version.value == "lab2" else f"uv-lock:{LAB3_LOCK}"),
             "lab2_sha": LAB2_SHA,
             "lab3_sha": LAB3_SHA,
-            "lab2_image_id": LAB2_IMAGE_ID if attempt.version.value == "lab2" else None,
+            "lab2_image_id": LAB2_IMAGE_ID,
+            "uv_lock_sha256": LAB3_LOCK,
         },
         stdout="",
         stderr="CUDA out of memory" if oom else "",
@@ -108,9 +114,12 @@ def _runner(tmp_path: Path, executors, gate=None) -> BenchmarkRunner:
         artifact_root=tmp_path,
         executors=executors,
         idle_gate=gate or _Gate(),
-        expected_lab2_sha=LAB2_SHA,
-        expected_lab3_sha=LAB3_SHA,
-        expected_lab2_image_id=LAB2_IMAGE_ID,
+        expected_provenance=ExecutionProvenance(
+            lab2_sha=LAB2_SHA,
+            lab3_sha=LAB3_SHA,
+            lab2_image_id=LAB2_IMAGE_ID,
+            uv_lock_sha256=LAB3_LOCK,
+        ),
     )
     return runner
 
@@ -201,7 +210,13 @@ def test_rechecksummed_forged_validation_is_quarantined_and_rerun(tmp_path: Path
 
 @pytest.mark.parametrize(
     ("field", "forged_value"),
-    [("lab2_sha", "d" * 40), ("lab3_sha", "e" * 40), ("lab2_image_id", "sha256:" + "f" * 64)],
+    [
+        ("lab2_sha", "d" * 40),
+        ("lab3_sha", "e" * 40),
+        ("lab2_image_id", "sha256:" + "f" * 64),
+        ("uv_lock_sha256", "f" * 64),
+        ("environment_identity", "sha256:" + "f" * 64),
+    ],
 )
 def test_rechecksummed_forged_provenance_is_quarantined_and_rerun(tmp_path: Path, field: str, forged_value: str):
     attempt = expand_canary_matrix(load_matrix()).attempts[0]

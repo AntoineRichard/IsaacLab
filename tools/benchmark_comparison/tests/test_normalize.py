@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import csv
 import json
+import math
+import os
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from tools.benchmark_comparison.artifacts import finalize_attempt
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
+from tools.benchmark_comparison.models import ExecutionProvenance
 from tools.benchmark_comparison.normalize import (
     RAW_RUN_FIELDS,
     NormalizedRun,
@@ -28,6 +33,15 @@ LAB2_SHA = "a" * 40
 LAB3_SHA = "b" * 40
 LAB2_IMAGE_ID = "sha256:" + "c" * 64
 LAB3_LOCK = "d" * 64
+
+
+def _provenance() -> ExecutionProvenance:
+    return ExecutionProvenance(
+        lab2_sha=LAB2_SHA,
+        lab3_sha=LAB3_SHA,
+        lab2_image_id=LAB2_IMAGE_ID,
+        uv_lock_sha256=LAB3_LOCK,
+    )
 
 
 def _attempts():
@@ -60,8 +74,8 @@ def _payloads(attempt, *, collection_fps: float, utilization: float, exit_code: 
             "environment_identity": environment_identity,
             "lab2_sha": LAB2_SHA,
             "lab3_sha": LAB3_SHA,
-            "lab2_image_id": LAB2_IMAGE_ID if attempt.version.value == "lab2" else None,
-            "uv_lock_sha256": LAB3_LOCK if attempt.version.value == "lab3" else None,
+            "lab2_image_id": LAB2_IMAGE_ID,
+            "uv_lock_sha256": LAB3_LOCK,
             "values": {
                 "ISAACLAB_BENCHMARK_LAB2_SHA": LAB2_SHA,
                 "ISAACLAB_BENCHMARK_LAB3_SHA": LAB3_SHA,
@@ -121,7 +135,7 @@ def test_normalization_writes_one_stably_ordered_row_per_success_and_preserves_f
         **_payloads(by_key[(43, "lab3")], collection_fps=0, utilization=0, exit_code=137),
     )
 
-    runs, failures = normalize_run_set(tmp_path, expansion)
+    runs, failures = normalize_run_set(tmp_path, expansion, _provenance())
     paths = write_normalized_outputs(tmp_path / "normalized", runs, failures)
 
     assert [(row.seed, row.version) for row in runs] == [(42, "lab2"), (42, "lab3")]
@@ -191,3 +205,101 @@ def test_zero_lab2_baseline_has_explicit_undefined_percent_semantics() -> None:
     assert utilization.percent_delta is None
     assert utilization.percent_delta_status == "undefined_zero_baseline"
     assert utilization.to_csv_row()["percent_delta"] == ""
+
+
+def test_quarantined_success_and_later_valid_success_are_both_visible(tmp_path: Path) -> None:
+    attempt = _attempts().attempts[0]
+    expansion = replace(_attempts(), attempts=(attempt,), pairs=())
+    original = finalize_attempt(tmp_path, attempt, **_payloads(attempt, collection_fps=100, utilization=40))
+    quarantine = original.with_name("corrupt-success-0001")
+    os.rename(original, quarantine)
+    finalize_attempt(tmp_path, attempt, **_payloads(attempt, collection_fps=110, utilization=42))
+
+    runs, failures = normalize_run_set(tmp_path, expansion, _provenance())
+
+    assert [run.collection_fps for run in runs] == [110.0]
+    assert [(failure.failure_kind, failure.artifact_path) for failure in failures] == [
+        ("invalid_success", quarantine.relative_to(tmp_path).as_posix())
+    ]
+
+
+def test_quarantined_success_without_replacement_remains_linked_failure(tmp_path: Path) -> None:
+    attempt = _attempts().attempts[0]
+    expansion = replace(_attempts(), attempts=(attempt,), pairs=())
+    success = finalize_attempt(tmp_path, attempt, **_payloads(attempt, collection_fps=100, utilization=40))
+    quarantine = success.with_name("corrupt-success-0001")
+    os.rename(success, quarantine)
+
+    runs, failures = normalize_run_set(tmp_path, expansion, _provenance())
+
+    assert runs == ()
+    assert any(failure.artifact_path == quarantine.relative_to(tmp_path).as_posix() for failure in failures)
+    assert any(failure.failure_kind == "invalid_success" for failure in failures)
+
+
+def test_normalization_rejects_success_with_preflight_provenance_mismatch(tmp_path: Path) -> None:
+    attempt = _attempts().attempts[0]
+    expansion = replace(_attempts(), attempts=(attempt,), pairs=())
+    payloads = _payloads(attempt, collection_fps=100, utilization=40)
+    payloads["environment"]["uv_lock_sha256"] = "e" * 64
+    finalize_attempt(tmp_path, attempt, **payloads)
+
+    runs, failures = normalize_run_set(tmp_path, expansion, _provenance())
+
+    assert runs == ()
+    assert [failure.failure_kind for failure in failures] == ["invalid_success"]
+    assert "provenance uv_lock_sha256" in failures[0].reason
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("bound", 1000),
+        ("bound_unit", "iterations"),
+        ("num_envs", 2048),
+    ],
+)
+def test_paired_summaries_reject_mismatched_pair_invariants(field: str, value: object) -> None:
+    lab3 = {
+        "version": "lab3",
+        "version_sha": LAB3_SHA,
+        "environment_identity": f"uv-lock:{LAB3_LOCK}",
+        "concrete_task": "Isaac-Cartpole",
+    }
+    lab3[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        summarize_pairs((_run(), _run(**lab3)))
+
+
+def test_paired_summaries_compute_sample_stddev_across_two_complete_seeds() -> None:
+    runs = (
+        _run(seed=42, collection_fps=100.0),
+        _run(
+            version="lab3",
+            version_sha=LAB3_SHA,
+            environment_identity=f"uv-lock:{LAB3_LOCK}",
+            concrete_task="Isaac-Cartpole",
+            seed=42,
+            collection_fps=130.0,
+        ),
+        _run(seed=43, collection_fps=120.0),
+        _run(
+            version="lab3",
+            version_sha=LAB3_SHA,
+            environment_identity=f"uv-lock:{LAB3_LOCK}",
+            concrete_task="Isaac-Cartpole",
+            seed=43,
+            collection_fps=150.0,
+        ),
+    )
+
+    throughput = next(row for row in summarize_pairs(runs) if row.metric == "collection_fps")
+
+    assert throughput.paired_seed_count == 2
+    assert throughput.lab2_mean == 110.0
+    assert throughput.lab3_mean == 140.0
+    assert math.isclose(throughput.lab2_std, math.sqrt(200.0))
+    assert math.isclose(throughput.lab3_std, math.sqrt(200.0))
+    assert throughput.absolute_delta == 30.0
+    assert math.isclose(throughput.percent_delta, 300.0 / 11.0)
