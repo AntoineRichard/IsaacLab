@@ -41,6 +41,42 @@ def _write_invalid_matrix(tmp_path: Path, old: str, new: str) -> Path:
     return destination_path
 
 
+def _write_count_preserving_invalid_matrix(tmp_path: Path) -> Path:
+    """Write a 9-task, 2-mode matrix that still expands to 54 final pairs."""
+    source_path = Path(__file__).parents[1] / "matrix.toml"
+    destination_path = tmp_path / "matrix.toml"
+    source = source_path.read_text(encoding="utf-8")
+    source = source.replace(
+        """
+[[mode]]
+id = "training-100"
+framework = "rsl_rl"
+unit = "iterations"
+final_bound = 100
+canary_bound = 2
+""",
+        "",
+    )
+    source += """
+[[task]]
+alias = "extra_task_one"
+lab2_id = "Isaac-Extra-Task-One-v0"
+lab3_id = "Isaac-Extra-Task-One"
+
+[[task]]
+alias = "extra_task_two"
+lab2_id = "Isaac-Extra-Task-Two-v0"
+lab3_id = "Isaac-Extra-Task-Two"
+
+[[task]]
+alias = "extra_task_three"
+lab2_id = "Isaac-Extra-Task-Three-v0"
+lab3_id = "Isaac-Extra-Task-Three"
+"""
+    destination_path.write_text(source, encoding="utf-8")
+    return destination_path
+
+
 def test_load_matrix_parses_explicit_task_aliases_and_run_parameters() -> None:
     """The checked-in configuration exposes every logical task and final run parameter."""
     matrix = load_matrix()
@@ -129,4 +165,12 @@ def test_load_matrix_rejects_duplicate_ids_and_incorrect_final_counts(
     path = _write_invalid_matrix(tmp_path, old, new)
 
     with pytest.raises(ValueError, match=message):
+        load_matrix(path)
+
+
+def test_load_matrix_rejects_count_preserving_task_and_mode_shape(tmp_path: Path) -> None:
+    """A 54-pair product cannot substitute for the required six-task, three-mode matrix."""
+    path = _write_count_preserving_invalid_matrix(tmp_path)
+
+    with pytest.raises(ValueError, match="expected 6 tasks and 3 modes"):
         load_matrix(path)

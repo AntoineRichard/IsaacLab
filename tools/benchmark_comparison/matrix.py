@@ -33,6 +33,15 @@ CANARY_ATTEMPT_COUNT = 36
 _MATRIX_PATH = Path(__file__).with_name("matrix.toml")
 _FINAL_SEEDS = (42, 43, 44)
 _CANARY_SEEDS = (42,)
+_TASK_IDENTIFIERS = (
+    ("cartpole", "Isaac-Cartpole-v0", "Isaac-Cartpole"),
+    ("ant", "Isaac-Ant-v0", "Isaac-Ant"),
+    ("anymal_d_flat", "Isaac-Velocity-Flat-Anymal-D-v0", "Isaac-Velocity-Flat-AnymalD"),
+    ("g1_flat", "Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
+    ("allegro_cube", "Isaac-Repose-Cube-Allegro-v0", "Isaac-Reorient-Cube-Allegro"),
+    ("franka_reach", "Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
+)
+_MODE_IDS = ("runtime-100", "runtime-1000", "training-100")
 _VERSION_ORDERS = {
     42: (Version.LAB2, Version.LAB3),
     43: (Version.LAB3, Version.LAB2),
@@ -206,15 +215,21 @@ def _validate_matrix(matrix: BenchmarkMatrix) -> None:
     aliases = tuple(task.alias for task in matrix.tasks)
     if len(aliases) != len(set(aliases)):
         raise ValueError("duplicate task alias")
+    if len(matrix.tasks) != 6 or len(matrix.modes) != 3:
+        raise ValueError("expected 6 tasks and 3 modes")
 
     for version in Version:
         task_ids = tuple(task.concrete_id(version) for task in matrix.tasks)
         if len(task_ids) != len(set(task_ids)):
             raise ValueError("duplicate concrete task ID")
+    if tuple((task.alias, task.lab2_id, task.lab3_id) for task in matrix.tasks) != _TASK_IDENTIFIERS:
+        raise ValueError("unexpected task aliases or concrete task IDs")
 
     mode_ids = tuple(mode.id for mode in matrix.modes)
     if len(mode_ids) != len(set(mode_ids)):
         raise ValueError("duplicate mode ID")
+    if mode_ids != _MODE_IDS:
+        raise ValueError("unexpected mode IDs")
     if matrix.num_envs != 4096:
         raise ValueError("matrix.num_envs must be 4096")
     if matrix.seeds != _FINAL_SEEDS:
