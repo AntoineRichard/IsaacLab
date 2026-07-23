@@ -39,6 +39,23 @@ def _manifest() -> RunSetManifest:
     )
 
 
+def _attempt_directory(
+    logical_task: str,
+    mode: str,
+    bound_unit: str,
+    bound: int,
+    seed: int,
+    version: str,
+) -> str:
+    repeat = {42: 0, 43: 1, 44: 2}[seed]
+    first_version = "lab3" if seed == 43 else "lab2"
+    version_order = 0 if version == first_version else 1
+    return (
+        f"final--{logical_task}--{mode}--{bound_unit}-{bound}--seed-{seed}--repeat-{repeat}"
+        f"--envs-4096--rsl_rl--{version}--version-order-{version_order}"
+    )
+
+
 def _run(version: str, fps: float) -> NormalizedRun:
     return NormalizedRun(
         version=version,
@@ -57,7 +74,7 @@ def _run(version: str, fps: float) -> NormalizedRun:
         gpu_utilization_mean_pct=75.0,
         gpu_utilization_sample_count=10,
         elapsed_time_s=20.0,
-        artifact_path=f"final/{version}/success",
+        artifact_path=f"final/{_attempt_directory('cartpole', 'runtime-100', 'steps', 100, 42, version)}/success",
         isaac_lab_version="2.3.2" if version == "lab2" else "3.0.0",
         isaac_sim_version="5.1" if version == "lab2" else "6.0",
         python_version="3.11" if version == "lab2" else "3.12",
@@ -81,7 +98,11 @@ def test_report_contains_methodology_inventory_mapping_modes_deltas_samples_and_
             attempt_number=1,
             failure_kind="out_of_memory",
             reason="benchmark ran out of memory",
-            artifact_path="final/ant/failure",
+            artifact_path=(
+                "final/"
+                + _attempt_directory("ant", "training-100", "iterations", 100, 44, "lab3")
+                + "/attempt-0001-out_of_memory"
+            ),
         ),
     )
     normalized = write_normalized_outputs(tmp_path / "normalized", runs, failures)
@@ -109,7 +130,7 @@ def test_report_contains_methodology_inventory_mapping_modes_deltas_samples_and_
     assert "Isaac-Cartpole-v0" in text and "Isaac-Cartpole" in text
     assert "+25.000%" in text
     assert "GPU utilization samples" in text
-    assert "[final/ant/failure](../final/ant/failure)" in text
+    assert "attempt-0001-out_of_memory" in text
     assert "not imputed" in text
 
 
@@ -146,7 +167,11 @@ def test_report_uses_structured_provenance_file_when_a_version_has_no_successes(
             attempt_number=1,
             failure_kind="out_of_memory",
             reason="benchmark ran out of memory",
-            artifact_path="final/ant/attempt-0001-out_of_memory",
+            artifact_path=(
+                "final/"
+                + _attempt_directory("ant", "training-100", "iterations", 100, 42, "lab3")
+                + "/attempt-0001-out_of_memory"
+            ),
         ),
     )
     normalized = write_normalized_outputs(tmp_path / "normalized", (), failures)

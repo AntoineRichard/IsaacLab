@@ -32,6 +32,14 @@ def _manifest() -> RunSetManifest:
     )
 
 
+def _attempt_directory(version: str) -> str:
+    version_order = 0 if version == "lab2" else 1
+    return (
+        "final--cartpole--runtime-100--steps-100--seed-42--repeat-0"
+        f"--envs-4096--rsl_rl--{version}--version-order-{version_order}"
+    )
+
+
 def _run(version: str, fps: float) -> NormalizedRun:
     software = _manifest().software(version)
     return NormalizedRun(
@@ -51,7 +59,7 @@ def _run(version: str, fps: float) -> NormalizedRun:
         gpu_utilization_mean_pct=75.0,
         gpu_utilization_sample_count=10,
         elapsed_time_s=20.0,
-        artifact_path=f"final/{version}/success",
+        artifact_path=f"final/{_attempt_directory(version)}/success",
         isaac_lab_version=software.isaac_lab,
         isaac_sim_version=software.isaac_sim,
         python_version=software.python,
@@ -96,7 +104,7 @@ def test_report_rejects_failure_from_another_run_set(tmp_path: Path) -> None:
     )
     normalized = write_normalized_outputs(tmp_path / "normalized", (), (failure,))
 
-    with pytest.raises(ValueError, match="failure run set"):
+    with pytest.raises(ValueError, match="artifact path"):
         write_markdown_report(
             normalized["raw_runs"],
             normalized["paired_summary"],
@@ -124,7 +132,7 @@ def test_report_only_cli_rejects_output_overlapping_raw_attempts(tmp_path: Path)
     manifest = replace(_manifest(), run_set=RunSet.CANARY)
     write_manifest(artifact_root / "canary" / "manifest.json", manifest)
 
-    with pytest.raises(ValueError, match="overlaps raw"):
+    with pytest.raises(ValueError, match="overlaps benchmark artifact root"):
         main(
             [
                 "--artifact_root",
@@ -144,7 +152,7 @@ def test_report_only_cli_rejects_output_that_contains_raw_attempts(tmp_path: Pat
     manifest = replace(_manifest(), run_set=RunSet.CANARY)
     write_manifest(artifact_root / "canary" / "manifest.json", manifest)
 
-    with pytest.raises(ValueError, match="overlaps raw"):
+    with pytest.raises(ValueError, match="overlaps benchmark artifact root"):
         main(
             [
                 "--artifact_root",

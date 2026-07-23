@@ -10,9 +10,11 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 from pathlib import Path
 
 from .manifest import RunSetManifest, read_manifest, validate_manifest
+from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
 from .models import ExecutionProvenance
 from .normalize import (
     FAILURE_FIELDS,
@@ -22,6 +24,7 @@ from .normalize import (
     read_raw_runs_csv,
     summarize_pairs,
 )
+from .report_paths import validate_artifact_path
 
 _METRIC_LABELS = {
     "collection_fps": "Collection FPS",
@@ -46,12 +49,13 @@ def write_markdown_report(
     runs = read_raw_runs_csv(raw_runs_path)
     expected_manifest = read_manifest(manifest) if isinstance(manifest, Path) else validate_manifest(manifest)
     expected_provenance = expected_manifest.provenance
-    _validate_run_manifest(runs, expected_manifest)
+    source_root = (artifact_root or _infer_artifact_root(raw_runs_path)).resolve()
+    attempt_directories = _attempt_directory_index(expected_manifest)
+    _validate_run_manifest(runs, expected_manifest, source_root, attempt_directories)
     summaries = _read_csv(paired_summary_path, PAIRED_SUMMARY_FIELDS)
     failures = _read_csv(failures_path, FAILURE_FIELDS)
     _validate_summaries(runs, summaries)
-    _validate_failures(failures, expected_manifest)
-    source_root = artifact_root or _infer_artifact_root(raw_runs_path)
+    _validate_failures(failures, expected_manifest, source_root, attempt_directories)
     lines = [
         "# Isaac Lab Paired Benchmark Report",
         "",
@@ -224,7 +228,57 @@ def read_provenance(path: Path) -> ExecutionProvenance:
     return ExecutionProvenance(**value)
 
 
-def _validate_run_manifest(runs, manifest: RunSetManifest) -> None:
+_FAILED_ARTIFACT_DIRECTORY = re.compile(r"attempt-[0-9]{4,}-[a-z_]+")
+_QUARANTINED_SUCCESS_DIRECTORY = re.compile(r"corrupt-success-[0-9]{4,}")
+
+
+def _attempt_directory_index(manifest: RunSetManifest) -> dict[tuple[str, ...], str]:
+    expansion = (
+        expand_canary_matrix(load_matrix())
+        if manifest.run_set.value == "canary"
+        else expand_final_matrix(load_matrix())
+    )
+    return {
+        _attempt_key(
+            attempt.version.value,
+            attempt.logical_task,
+            attempt.concrete_task,
+            attempt.mode.id,
+            attempt.bound.value,
+            attempt.bound.unit.value,
+            attempt.seed,
+            attempt.num_envs,
+        ): attempt.run_directory
+        for attempt in expansion.attempts
+    }
+
+
+def _attempt_key(
+    version: str,
+    logical_task: str,
+    concrete_task: str,
+    mode: str,
+    bound: int | str,
+    bound_unit: str,
+    seed: int | str,
+    num_envs: int | str,
+) -> tuple[str, ...]:
+    return (version, logical_task, concrete_task, mode, str(bound), bound_unit, str(seed), str(num_envs))
+
+
+def _expected_attempt_directory(index: dict[tuple[str, ...], str], key: tuple[str, ...], path: str) -> str:
+    try:
+        return index[key]
+    except KeyError as error:
+        raise ValueError(f"artifact path identity does not match benchmark matrix: {path}") from error
+
+
+def _validate_run_manifest(
+    runs,
+    manifest: RunSetManifest,
+    artifact_root: Path,
+    attempt_directories: dict[tuple[str, ...], str],
+) -> None:
     for run in runs:
         expected_sha = manifest.provenance.version_sha(run.version)
         expected_environment = manifest.provenance.environment_identity(run.version)
@@ -247,8 +301,23 @@ def _validate_run_manifest(runs, manifest: RunSetManifest) -> None:
             raise ValueError("normalized run provenance does not match manifest: " + run.artifact_path)
         if actual_software != expected_software:
             raise ValueError("normalized run software versions do not match manifest: " + run.artifact_path)
-        if not run.artifact_path.startswith(manifest.run_set.value + "/"):
-            raise ValueError("normalized run set does not match manifest: " + run.artifact_path)
+        parts = validate_artifact_path(run.artifact_path, manifest.run_set, artifact_root)
+        expected_directory = _expected_attempt_directory(
+            attempt_directories,
+            _attempt_key(
+                run.version,
+                run.logical_task,
+                run.concrete_task,
+                run.mode,
+                run.bound,
+                run.bound_unit,
+                run.seed,
+                run.num_envs,
+            ),
+            run.artifact_path,
+        )
+        if "/".join(parts[:2]) != expected_directory or parts[2:] != ("success",):
+            raise ValueError("artifact path is not the expected immutable success: " + run.artifact_path)
 
 
 def _validate_summaries(runs, summaries: list[dict[str, str]]) -> None:
@@ -257,14 +326,44 @@ def _validate_summaries(runs, summaries: list[dict[str, str]]) -> None:
         raise ValueError("paired summary is not derived from normalized raw runs")
 
 
-def _validate_failures(failures: list[dict[str, str]], manifest: RunSetManifest) -> None:
-    run_set_prefix = manifest.run_set.value + "/"
+def _validate_failures(
+    failures: list[dict[str, str]],
+    manifest: RunSetManifest,
+    artifact_root: Path,
+    attempt_directories: dict[tuple[str, ...], str],
+) -> None:
     for row in failures:
         if row["version"] not in {"lab2", "lab3"}:
             raise ValueError("failure version is not recognized")
         artifact_path = row["artifact_path"]
-        if artifact_path and not artifact_path.startswith(run_set_prefix):
-            raise ValueError("failure run set does not match manifest: " + artifact_path)
+        parts = validate_artifact_path(artifact_path, manifest.run_set, artifact_root)
+        expected_directory = _expected_attempt_directory(
+            attempt_directories,
+            _attempt_key(
+                row["version"],
+                row["logical_task"],
+                row["concrete_task"],
+                row["mode"],
+                row["bound"],
+                row["bound_unit"],
+                row["seed"],
+                row["num_envs"],
+            ),
+            artifact_path,
+        )
+        if "/".join(parts[:2]) != expected_directory:
+            raise ValueError("artifact path does not match the expected benchmark attempt: " + artifact_path)
+        terminal = parts[2] if len(parts) == 3 else None
+        if row["failure_kind"] == "missing":
+            valid_terminal = terminal is None
+        elif row["failure_kind"] == "invalid_success":
+            valid_terminal = terminal == "success" or (
+                terminal is not None and _QUARANTINED_SUCCESS_DIRECTORY.fullmatch(terminal) is not None
+            )
+        else:
+            valid_terminal = terminal is not None and _FAILED_ARTIFACT_DIRECTORY.fullmatch(terminal) is not None
+        if not valid_terminal:
+            raise ValueError("artifact path terminal does not match failure classification: " + artifact_path)
 
 
 def _methodology(manifest: RunSetManifest) -> tuple[str, ...]:

@@ -109,15 +109,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _validate_output_directory(artifact_root: Path, run_set: RunSet, output_directory: Path) -> None:
-    run_set_root = (artifact_root / run_set.value).resolve()
-    canonical_report = run_set_root / "report"
-    overlaps_raw = (
-        output_directory == run_set_root
-        or output_directory in run_set_root.parents
-        or run_set_root in output_directory.parents
+    resolved_root = artifact_root.resolve()
+    canonical_report = resolved_root / run_set.value / "report"
+    if output_directory == canonical_report:
+        return
+    overlaps_artifacts = (
+        output_directory == resolved_root
+        or output_directory in resolved_root.parents
+        or resolved_root in output_directory.parents
     )
-    if overlaps_raw and output_directory != canonical_report:
-        raise ValueError("output directory overlaps raw run-set artifacts")
+    if overlaps_artifacts:
+        raise ValueError("output directory overlaps benchmark artifact root")
 
 
 def _raw_hash_manifest(
