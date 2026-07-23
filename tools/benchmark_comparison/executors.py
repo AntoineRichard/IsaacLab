@@ -468,7 +468,7 @@ def run_preflight(
             invocation.argv,
             cwd=invocation.cwd,
             environment=invocation.environment,
-            expected_stdout="ok",
+            expected_stdout_line="ok",
             description=f"{name} task registration and formatters",
         )
     lock_bytes = (config.lab3_root / "uv.lock").read_bytes()
@@ -491,6 +491,7 @@ def _require_command(
     cwd: Path | None = None,
     environment: Mapping[str, str] | None = None,
     expected_stdout: str | None = None,
+    expected_stdout_line: str | None = None,
     description: str,
 ) -> CommandResult:
     try:
@@ -503,6 +504,10 @@ def _require_command(
         raise PreflightError(
             f"preflight {description} failed: expected {expected_stdout!r}, got {result.stdout.strip()!r}"
         )
+    if expected_stdout_line is not None and expected_stdout_line not in {
+        line.strip() for line in result.stdout.splitlines()
+    }:
+        raise PreflightError(f"preflight {description} failed: missing stdout line {expected_stdout_line!r}")
     return result
 
 
@@ -521,8 +526,11 @@ def _registration_probe(version: Version) -> str:
     from .matrix import load_matrix
 
     task_ids = tuple(task.concrete_id(version) for task in load_matrix().tasks)
+    app_launcher = ""
+    if version is Version.LAB2:
+        app_launcher = "from isaaclab.app import AppLauncher;simulation_app=AppLauncher(headless=True).app;"
     return (
-        "from isaaclab.test.benchmark.formatters import MetricsFormatter;"
+        app_launcher + "from isaaclab.test.benchmark.formatters import MetricsFormatter;"
         "MetricsFormatter.get_instance('schema');"
         "MetricsFormatter.get_instance('json');"
         "import gymnasium as gym, isaaclab_tasks;"

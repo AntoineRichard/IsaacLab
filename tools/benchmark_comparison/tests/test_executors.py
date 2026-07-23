@@ -179,6 +179,15 @@ def test_version_probes_require_every_configured_task_registration(tmp_path: Pat
     assert all(task.lab3_id in lab3_probe for task in matrix.tasks)
 
 
+def test_lab2_version_probe_starts_app_before_importing_tasks(tmp_path: Path):
+    config = _config(tmp_path)
+
+    lab2_probe = Lab2DockerExecutor(config).version_invocation().argv[-1]
+
+    assert "from isaaclab.app import AppLauncher" in lab2_probe
+    assert lab2_probe.index("AppLauncher") < lab2_probe.index("isaaclab_tasks")
+
+
 def test_child_timeout_terminates_process_group_and_cleans_only_owned_container(tmp_path: Path):
     class Commands:
         def __init__(self):
@@ -275,7 +284,7 @@ class _PreflightCommands:
             return CommandResult(argv, 0, "", "")
         if argv and argv[0] == "nvidia-smi":
             return CommandResult(argv, 0, "100, 0\n", "")
-        return CommandResult(argv, 0, "ok\n", "")
+        return CommandResult(argv, 0, "kit startup log\nok\n", "")
 
 
 def test_preflight_validates_all_required_system_identities(tmp_path: Path):
