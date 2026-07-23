@@ -167,6 +167,23 @@ def verify_checksums(directory: Path) -> bool:
     return True
 
 
+def verify_success(directory: Path, attempt: BenchmarkAttempt) -> bool:
+    """Verify a finalized success's checksums, semantics, and validation document.
+
+    Args:
+        directory: Finalized ``success`` artifact directory.
+        attempt: Immutable matrix attempt expected in the artifact.
+
+    Returns:
+        ``True`` only when the complete success artifact is trustworthy.
+    """
+    try:
+        _verify_existing_success(directory, directory.parent, attempt)
+    except ArtifactIntegrityError:
+        return False
+    return True
+
+
 def _verify_existing_success(success_path: Path, attempt_root: Path, attempt: BenchmarkAttempt) -> None:
     """Revalidate a checksummed success against its matrix attempt and validation document."""
     if not verify_checksums(success_path):

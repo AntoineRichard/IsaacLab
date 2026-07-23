@@ -1,0 +1,29 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+services:
+  isaac-lab-benchmark:
+    image: ${ISAACLAB_BENCHMARK_IMAGE}
+    pull_policy: never
+    environment:
+      ISAACSIM_PATH: /workspace/isaaclab/_isaac_sim
+      OMNI_KIT_ALLOW_ROOT: "1"
+      OMNI_KIT_ACCEPT_EULA: "yes"
+    volumes:
+      - type: bind
+        source: ${ISAACLAB_BENCHMARK_LAB2_ROOT}
+        target: /workspace/isaaclab
+      - type: bind
+        source: ${ISAACLAB_BENCHMARK_ARTIFACT_ROOT}
+        target: /benchmark_artifacts
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: []

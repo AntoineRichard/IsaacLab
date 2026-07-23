@@ -24,6 +24,7 @@ class FailureKind(str, Enum):
     SETUP = "setup"
     LAUNCH = "launch"
     TIMEOUT = "timeout"
+    INTERRUPTED = "interrupted"
     OUT_OF_MEMORY = "out_of_memory"
     NONZERO_EXIT = "nonzero_exit"
     MALFORMED_ARTIFACT = "malformed_artifact"
@@ -232,11 +233,12 @@ def _classify_exit(exit_status: Mapping[object, object]) -> ValidationResult | N
     """Validate exit metadata and classify an execution failure."""
     failure_stage = exit_status.get("failure_stage")
     timed_out = exit_status.get("timed_out")
+    interrupted = exit_status.get("interrupted", False)
     out_of_memory = exit_status.get("out_of_memory")
     exit_code = exit_status.get("exit_code")
     if failure_stage not in (None, FailureKind.SETUP.value, FailureKind.LAUNCH.value):
         return _failure(FailureKind.MALFORMED_ARTIFACT, "exit.json failure_stage is invalid")
-    if not isinstance(timed_out, bool) or not isinstance(out_of_memory, bool):
+    if not isinstance(timed_out, bool) or not isinstance(interrupted, bool) or not isinstance(out_of_memory, bool):
         return _failure(FailureKind.MALFORMED_ARTIFACT, "exit.json failure flags must be boolean")
     if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
         return _failure(FailureKind.MALFORMED_ARTIFACT, "exit.json exit_code must be an integer or null")
@@ -244,6 +246,8 @@ def _classify_exit(exit_status: Mapping[object, object]) -> ValidationResult | N
         return _failure(FailureKind(failure_stage), f"benchmark {failure_stage} failed")
     if timed_out:
         return _failure(FailureKind.TIMEOUT, "benchmark timed out")
+    if interrupted:
+        return _failure(FailureKind.INTERRUPTED, "benchmark was interrupted")
     if out_of_memory:
         return _failure(FailureKind.OUT_OF_MEMORY, "benchmark ran out of memory")
     if exit_code is None:
