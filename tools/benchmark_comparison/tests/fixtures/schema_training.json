@@ -1,0 +1,71 @@
+{
+  "run": {
+    "run_id": "rsl_rl_physx_Isaac-Cartpole-v0_fixture_seed42",
+    "framework": "rsl_rl",
+    "config": {
+      "physics_backend": "physx",
+      "rendering_backend": "none",
+      "presets": [
+        "physx"
+      ]
+    },
+    "task": "Isaac-Cartpole-v0",
+    "seed": 42,
+    "status": "completed",
+    "num_envs": 4096,
+    "max_iterations": 2
+  },
+  "versions": {
+    "isaaclab_release": "2.3.2"
+  },
+  "hardware": {
+    "hostname": "fixture-host",
+    "gpu_devices": [
+      {
+        "name": "Fixture GPU",
+        "mem_gb": 24.0,
+        "compute_cap": "8.9"
+      }
+    ]
+  },
+  "runtime": {
+    "startup_time_s": {
+      "app_launch": 1.8,
+      "env_creation": 1.6,
+      "first_step": 0.46,
+      "python_imports": 0.7,
+      "task_config": 0.42
+    },
+    "iterations_completed": 2,
+    "collection_fps": {
+      "mean": 1448.49,
+      "std": 848.06,
+      "peak": 2048.16
+    }
+  },
+  "resources": {
+    "gpu_util_pct": {
+      "mean": 51.0,
+      "std": 14.14,
+      "peak": null
+    },
+    "gpu_mem_gb": {
+      "mean": 5.55,
+      "std": 0.03,
+      "peak": 5.57
+    }
+  },
+  "learning": {
+    "ema_alpha": 0.1,
+    "reward": {
+      "final_raw": 0.08,
+      "final_ema": 0.08,
+      "series_per_iter": [
+        0.08,
+        0.08
+      ]
+    }
+  },
+  "extra": null,
+  "schema_version": "1.0"
+}

@@ -1,0 +1,65 @@
+[
+  {
+    "phase_name": "benchmark_info",
+    "measurements": [],
+    "metadata": [
+      {
+        "name": "benchmark_runtime benchmark_info workflow_name",
+        "data": "benchmark_runtime",
+        "type": "string"
+      },
+      {
+        "name": "benchmark_runtime benchmark_info task",
+        "data": "Isaac-Cartpole-v0",
+        "type": "string"
+      },
+      {
+        "name": "benchmark_runtime benchmark_info num_frames",
+        "data": 10,
+        "type": "int"
+      }
+    ]
+  },
+  {
+    "phase_name": "runtime",
+    "measurements": [
+      {
+        "name": "benchmark_runtime runtime Mean Collection FPS",
+        "value": 10413.98,
+        "unit": "FPS",
+        "type": "single"
+      },
+      {
+        "name": "benchmark_runtime runtime GPU Memory Used",
+        "value": 3.49,
+        "unit": "GB",
+        "type": "single"
+      },
+      {
+        "name": "benchmark_runtime runtime GPU Memory Used peak",
+        "value": 3.49,
+        "unit": "GB",
+        "type": "single"
+      },
+      {
+        "name": "benchmark_runtime runtime GPU Utilization",
+        "value": 35.0,
+        "unit": "%",
+        "type": "single"
+      },
+      {
+        "name": "benchmark_runtime runtime GPU Utilization n",
+        "value": 2,
+        "unit": "",
+        "type": "single"
+      }
+    ],
+    "metadata": [
+      {
+        "name": "benchmark_runtime runtime phase",
+        "data": "runtime",
+        "type": "string"
+      }
+    ]
+  }
+]

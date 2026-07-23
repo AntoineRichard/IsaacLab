@@ -1,0 +1,65 @@
+[
+  {
+    "phase_name": "benchmark_info",
+    "measurements": [],
+    "metadata": [
+      {
+        "name": "benchmark_training benchmark_info workflow_name",
+        "data": "benchmark_training",
+        "type": "string"
+      },
+      {
+        "name": "benchmark_training benchmark_info seed",
+        "data": 42,
+        "type": "int"
+      },
+      {
+        "name": "benchmark_training benchmark_info max_iterations",
+        "data": 2,
+        "type": "int"
+      }
+    ]
+  },
+  {
+    "phase_name": "runtime",
+    "measurements": [
+      {
+        "name": "benchmark_training runtime Mean Collection FPS",
+        "value": 1448.49,
+        "unit": "FPS",
+        "type": "single"
+      },
+      {
+        "name": "benchmark_training runtime GPU Memory Used",
+        "value": 5.55,
+        "unit": "GB",
+        "type": "single"
+      },
+      {
+        "name": "benchmark_training runtime GPU Memory Used peak",
+        "value": 5.57,
+        "unit": "GB",
+        "type": "single"
+      },
+      {
+        "name": "benchmark_training runtime GPU Utilization",
+        "value": 51.0,
+        "unit": "%",
+        "type": "single"
+      },
+      {
+        "name": "benchmark_training runtime GPU Utilization n",
+        "value": 2,
+        "unit": "",
+        "type": "single"
+      }
+    ],
+    "metadata": [
+      {
+        "name": "benchmark_training runtime phase",
+        "data": "runtime",
+        "type": "string"
+      }
+    ]
+  }
+]
