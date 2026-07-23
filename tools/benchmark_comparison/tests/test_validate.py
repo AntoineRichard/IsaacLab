@@ -51,6 +51,16 @@ def _valid_payloads(mode_id: str = "runtime-100") -> tuple[BenchmarkAttempt, dic
     }
 
 
+def _gpu_sample_measurement(measurements: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the generic GPU utilization sample-count measurement."""
+    return next(
+        measurement
+        for phase in measurements
+        for measurement in phase["measurements"]
+        if measurement["name"].endswith("GPU Utilization n")
+    )
+
+
 @pytest.mark.parametrize("mode_id", ["runtime-100", "training-100"])
 def test_validate_attempt_extracts_canonical_metrics_for_each_bound_unit(mode_id: str) -> None:
     """Runtime steps and training iterations validate against real schema-shaped fixtures."""
@@ -71,6 +81,27 @@ def test_validate_attempt_extracts_canonical_metrics_for_each_bound_unit(mode_id
     )
     assert result.metrics.gpu_utilization_mean_pct == payloads["schema"]["resources"]["gpu_util_pct"]["mean"]
     assert result.metrics.gpu_utilization_sample_count == 2
+
+
+def test_validate_attempt_accepts_lab3_schema_identity_and_exact_task_alias() -> None:
+    """Lab 3 validation binds major version three and its explicit Task 6 task identifier."""
+    attempt = next(
+        attempt
+        for attempt in expand_canary_matrix(load_matrix()).attempts
+        if attempt.mode.id == "runtime-100" and attempt.version.value == "lab3"
+    )
+    _, payloads = _valid_payloads()
+    identity = attempt_identity(attempt)
+    payloads["command"]["identity"] = identity
+    payloads["environment"]["identity"] = identity
+    payloads["schema"]["run"]["task"] = "Isaac-Cartpole"
+    payloads["schema"]["versions"]["isaaclab_release"] = "3.0.0"
+
+    result = validate_attempt(attempt, **payloads)
+
+    assert attempt.logical_task == "cartpole"
+    assert attempt.concrete_task == "Isaac-Cartpole"
+    assert result.succeeded
 
 
 @pytest.mark.parametrize(
@@ -193,18 +224,42 @@ def test_validate_attempt_rejects_each_missing_required_metric(mutation: str) ->
     elif mutation == "gpu_utilization_mean":
         payloads["schema"]["resources"]["gpu_util_pct"]["mean"] = None
     else:
-        next(
-            measurement
-            for phase in payloads["measurements"]
-            for measurement in phase["measurements"]
-            if measurement["name"].endswith("GPU Utilization n")
-        )["value"] = 0
+        _gpu_sample_measurement(payloads["measurements"])["value"] = 0
 
     result = validate_attempt(attempt, **payloads)
 
     assert result.failure_kind is FailureKind.MISSING_METRIC
     assert result.metrics is None
     assert "0" not in result.reason if mutation != "gpu_utilization_samples" else "positive" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("sample_state", "expected"),
+    [
+        ("absent", FailureKind.MISSING_METRIC),
+        ("null", FailureKind.MISSING_METRIC),
+        ("wrong_type", FailureKind.MALFORMED_ARTIFACT),
+        ("zero", FailureKind.MISSING_METRIC),
+        ("positive", None),
+    ],
+)
+def test_validate_attempt_classifies_gpu_sample_count_values(sample_state: str, expected: FailureKind | None) -> None:
+    """Missing and zero sample counts differ from malformed non-null values."""
+    attempt, payloads = _valid_payloads()
+    sample = _gpu_sample_measurement(payloads["measurements"])
+    if sample_state == "absent":
+        del sample["value"]
+    elif sample_state == "null":
+        sample["value"] = None
+    elif sample_state == "wrong_type":
+        sample["value"] = "two"
+    elif sample_state == "zero":
+        sample["value"] = 0
+
+    result = validate_attempt(attempt, **payloads)
+
+    assert result.failure_kind is expected
+    assert result.succeeded is (expected is None)
 
 
 def test_validate_attempt_uses_schema_values_instead_of_generic_metric_duplicates() -> None:

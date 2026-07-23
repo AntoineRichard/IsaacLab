@@ -38,7 +38,7 @@ REQUIRED_ARTIFACT_FILES = (
 )
 
 _CHECKSUMMED_FILES = tuple(sorted(set(REQUIRED_ARTIFACT_FILES) - {"checksums.sha256"}))
-_FAILED_ATTEMPT_PATTERN = re.compile(r"attempt-(?P<number>[0-9]{4})-[a-z_]+$")
+_FAILED_ATTEMPT_PATTERN = re.compile(r"attempt-(?P<number>[0-9]+)-[a-z_]+$")
 
 
 class SuccessfulArtifactExistsError(FileExistsError):
@@ -89,14 +89,7 @@ def finalize_attempt(
     with _finalization_lock(attempt_root):
         success_path = attempt_root / "success"
         if success_path.exists():
-            if not verify_checksums(success_path):
-                raise ArtifactIntegrityError(f"existing success artifact failed verification: {success_path}")
-            try:
-                validation = json.loads((success_path / "validation.json").read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as error:
-                raise ArtifactIntegrityError(f"cannot read existing success validation: {error}") from error
-            if not isinstance(validation, dict) or validation.get("status") != "success":
-                raise ArtifactIntegrityError(f"existing success artifact is not validated: {success_path}")
+            _verify_existing_success(success_path, attempt_root, attempt)
             raise SuccessfulArtifactExistsError(f"successful artifact already exists: {success_path}")
 
         attempt_number = _next_attempt_number(attempt_root)
@@ -174,6 +167,33 @@ def verify_checksums(directory: Path) -> bool:
     return True
 
 
+def _verify_existing_success(success_path: Path, attempt_root: Path, attempt: BenchmarkAttempt) -> None:
+    """Revalidate a checksummed success against its matrix attempt and validation document."""
+    if not verify_checksums(success_path):
+        raise ArtifactIntegrityError(f"existing success artifact failed verification: {success_path}")
+
+    result = validate_attempt_directory(success_path, attempt)
+    if not result.succeeded:
+        kind = result.failure_kind.value if result.failure_kind is not None else "unclassified"
+        raise ArtifactIntegrityError(f"existing success failed semantic validation ({kind}): {success_path}")
+
+    try:
+        validation = json.loads((success_path / "validation.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ArtifactIntegrityError(f"cannot read existing success validation: {error}") from error
+    if not isinstance(validation, dict):
+        raise ArtifactIntegrityError(f"existing success validation must be an object: {success_path}")
+    attempt_number = validation.get("attempt_number")
+    if (
+        not isinstance(attempt_number, int)
+        or isinstance(attempt_number, bool)
+        or attempt_number != _next_attempt_number(attempt_root)
+    ):
+        raise ArtifactIntegrityError(f"existing success attempt number is inconsistent: {success_path}")
+    if validation != validation_document(result, attempt_number):
+        raise ArtifactIntegrityError(f"existing success validation is inconsistent: {success_path}")
+
+
 def _write_json(path: Path, value: object) -> None:
     """Write deterministic UTF-8 JSON."""
     path.write_text(
@@ -197,7 +217,9 @@ def _next_attempt_number(attempt_root: Path) -> int:
     for path in attempt_root.iterdir():
         match = _FAILED_ATTEMPT_PATTERN.fullmatch(path.name)
         if match is not None:
-            numbers.append(int(match.group("number")))
+            number = int(match.group("number"))
+            if number > 0:
+                numbers.append(number)
     return max(numbers, default=0) + 1
 
 

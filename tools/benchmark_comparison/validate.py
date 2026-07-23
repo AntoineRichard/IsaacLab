@@ -33,7 +33,16 @@ class FailureKind(str, Enum):
 
 @dataclass(frozen=True)
 class SemanticMetrics:
-    """Canonical metrics extracted from a successful schema bundle."""
+    """Canonical metrics extracted from a successful schema bundle.
+
+    Attributes:
+        phase_timings_s: Phase timings [s], keyed by phase name.
+        collection_fps: Mean collection throughput [FPS].
+        gpu_memory_mean_mib: Mean GPU memory use [MiB].
+        gpu_memory_peak_mib: Peak GPU memory use [MiB].
+        gpu_utilization_mean_pct: Mean GPU utilization [%].
+        gpu_utilization_sample_count: Number of GPU utilization samples.
+    """
 
     phase_timings_s: dict[str, float]
     collection_fps: float
@@ -308,11 +317,13 @@ def _extract_metrics(schema: Mapping[object, object], measurements: list[object]
     gpu_memory_peak_gb = _required_number(gpu_memory, "peak", "resources.gpu_mem_gb.peak")
     gpu_utilization_mean_pct = _required_number(gpu_utilization, "mean", "resources.gpu_util_pct.mean")
     sample_count = _gpu_utilization_sample_count(measurements)
+    gpu_memory_mean_mib = _gigabytes_to_mib(gpu_memory_mean_gb, "resources.gpu_mem_gb.mean")
+    gpu_memory_peak_mib = _gigabytes_to_mib(gpu_memory_peak_gb, "resources.gpu_mem_gb.peak")
     return SemanticMetrics(
         phase_timings_s=phase_timings,
         collection_fps=collection_fps,
-        gpu_memory_mean_mib=gpu_memory_mean_gb * 1024.0,
-        gpu_memory_peak_mib=gpu_memory_peak_gb * 1024.0,
+        gpu_memory_mean_mib=gpu_memory_mean_mib,
+        gpu_memory_peak_mib=gpu_memory_peak_mib,
         gpu_utilization_mean_pct=gpu_utilization_mean_pct,
         gpu_utilization_sample_count=sample_count,
     )
@@ -320,7 +331,7 @@ def _extract_metrics(schema: Mapping[object, object], measurements: list[object]
 
 def _gpu_utilization_sample_count(measurements: list[object]) -> int:
     """Extract the generic runtime phase's GPU utilization sample count."""
-    matches: list[object] = []
+    matches: list[Mapping[object, object]] = []
     for phase in measurements:
         if not isinstance(phase, Mapping):
             raise _MalformedArtifact("measurements.json phases must be objects")
@@ -334,12 +345,15 @@ def _gpu_utilization_sample_count(measurements: list[object]) -> int:
             if not isinstance(name, str):
                 raise _MalformedArtifact("measurements.json measurement names must be strings")
             if name.endswith("GPU Utilization n"):
-                matches.append(measurement.get("value"))
+                matches.append(measurement)
     if not matches:
         raise _MissingMetric("measurements.json is missing GPU Utilization n")
     if len(matches) != 1:
         raise _MalformedArtifact("measurements.json contains duplicate GPU Utilization n measurements")
-    sample_count = matches[0]
+    sample_measurement = matches[0]
+    if "value" not in sample_measurement or sample_measurement["value"] is None:
+        raise _MissingMetric("GPU utilization sample count is required")
+    sample_count = sample_measurement["value"]
     if not isinstance(sample_count, int) or isinstance(sample_count, bool):
         raise _MalformedArtifact("GPU utilization sample count must be an integer")
     if sample_count <= 0:
@@ -378,11 +392,25 @@ def _required_number(mapping: Mapping[object, object], key: str, path: str) -> f
     return _number(mapping[key], path)
 
 
+def _gigabytes_to_mib(value: float, path: str) -> float:
+    """Convert a canonical GPU memory value to finite mebibytes [MiB]."""
+    try:
+        result = value * 1024.0
+    except (OverflowError, ValueError, TypeError):
+        raise _MalformedArtifact(f"{path} cannot be converted to MiB") from None
+    if not math.isfinite(result):
+        raise _MalformedArtifact(f"{path} converted to MiB must be finite")
+    return result
+
+
 def _number(value: object, path: str) -> float:
     """Return a finite JSON number without accepting booleans."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise _MalformedArtifact(f"{path} must be numeric")
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError, TypeError):
+        raise _MalformedArtifact(f"{path} must be a finite numeric value") from None
     if not math.isfinite(number):
         raise _MalformedArtifact(f"{path} must be finite")
     return number

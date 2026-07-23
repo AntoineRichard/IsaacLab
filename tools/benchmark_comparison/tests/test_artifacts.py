@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ import pytest
 
 from tools.benchmark_comparison.artifacts import (
     REQUIRED_ARTIFACT_FILES,
+    ArtifactIntegrityError,
     SuccessfulArtifactExistsError,
     finalize_attempt,
     verify_checksums,
@@ -54,6 +57,13 @@ def _payloads(attempt: BenchmarkAttempt, exit_code: int | None = 0) -> dict[str,
         "schema": _load("schema_runtime.json") if exit_code == 0 else None,
         "measurements": _load("generic_runtime.json") if exit_code == 0 else None,
     }
+
+
+def _rewrite_checksums(directory: Path) -> None:
+    """Recompute a syntactically valid checksum manifest after test tampering."""
+    filenames = sorted(set(REQUIRED_ARTIFACT_FILES) - {"checksums.sha256"})
+    lines = [f"{hashlib.sha256((directory / filename).read_bytes()).hexdigest()}  {filename}" for filename in filenames]
+    (directory / "checksums.sha256").write_text("\n".join(lines) + "\n", encoding="ascii")
 
 
 def test_finalize_attempt_atomically_creates_complete_success_directory(tmp_path: Path) -> None:
@@ -97,6 +107,42 @@ def test_finalize_attempt_never_overwrites_valid_success(tmp_path: Path) -> None
     assert verify_checksums(original_path)
 
 
+@pytest.mark.parametrize("tampering", ["wrong_identity", "invalid_schema", "forged_validation"])
+def test_finalize_attempt_semantically_revalidates_preexisting_success(tmp_path: Path, tampering: str) -> None:
+    """Re-checksummed semantic or validation forgeries cannot become trusted success."""
+    attempt = _attempt()
+    success_path = finalize_attempt(tmp_path, attempt, **_payloads(attempt))
+    if tampering == "wrong_identity":
+        command = json.loads((success_path / "command.json").read_text(encoding="utf-8"))
+        command["identity"]["seed"] = 43
+        (success_path / "command.json").write_text(
+            json.dumps(command, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    elif tampering == "invalid_schema":
+        schema = json.loads((success_path / "schema.json").read_text(encoding="utf-8"))
+        schema["resources"]["gpu_mem_gb"]["peak"] = None
+        (success_path / "schema.json").write_text(
+            json.dumps(schema, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        validation = json.loads((success_path / "validation.json").read_text(encoding="utf-8"))
+        validation["metrics"]["collection_fps"] = 0
+        (success_path / "validation.json").write_text(
+            json.dumps(validation, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    _rewrite_checksums(success_path)
+    assert verify_checksums(success_path)
+
+    with pytest.raises(ArtifactIntegrityError):
+        finalize_attempt(tmp_path, attempt, **_payloads(attempt))
+
+    assert success_path.exists()
+    assert verify_checksums(success_path)
+
+
 def test_finalize_attempt_preserves_failures_with_monotonic_retry_numbers(tmp_path: Path) -> None:
     """Failed attempts remain numbered while a later valid retry finalizes as success."""
     attempt = _attempt()
@@ -113,6 +159,19 @@ def test_finalize_attempt_preserves_failures_with_monotonic_retry_numbers(tmp_pa
     assert all(path.exists() and verify_checksums(path) for path in (first, second, success))
 
 
+def test_finalize_attempt_discovers_arbitrary_width_retry_numbers(tmp_path: Path) -> None:
+    """Attempt numbers remain monotonic after four digits without creating 10k attempts."""
+    attempt = _attempt()
+    attempt_root = tmp_path / attempt.run_directory
+    (attempt_root / "attempt-9999-timeout").mkdir(parents=True)
+    (attempt_root / "attempt-10000-nonzero_exit").mkdir()
+
+    failed_path = finalize_attempt(tmp_path, attempt, **_payloads(attempt, exit_code=3))
+
+    assert failed_path.name == "attempt-10001-nonzero_exit"
+    assert verify_checksums(failed_path)
+
+
 def test_finalize_attempt_preserves_malformed_artifact_without_zero_metrics(tmp_path: Path) -> None:
     """Malformed successful output remains diagnostic evidence, never a zero-valued success."""
     attempt = _attempt()
@@ -124,6 +183,25 @@ def test_finalize_attempt_preserves_malformed_artifact_without_zero_metrics(tmp_
     validation = json.loads((failed_path / "validation.json").read_text(encoding="utf-8"))
     assert failed_path.name == "attempt-0001-missing_metric"
     assert validation["status"] == "failure"
+    assert validation["metrics"] is None
+    assert verify_checksums(failed_path)
+
+
+@pytest.mark.parametrize("extreme", ["huge_integer", "derived_mib_overflow"])
+def test_finalize_attempt_preserves_extreme_numbers_as_malformed_artifacts(tmp_path: Path, extreme: str) -> None:
+    """Extreme JSON numbers become preserved failures rather than escaping finalization."""
+    attempt = _attempt()
+    payloads = _payloads(attempt)
+    if extreme == "huge_integer":
+        payloads["schema"]["runtime"]["collection_fps"]["mean"] = 10**1000
+    else:
+        payloads["schema"]["resources"]["gpu_mem_gb"]["mean"] = sys.float_info.max / 2
+
+    failed_path = finalize_attempt(tmp_path, attempt, **payloads)
+
+    validation = json.loads((failed_path / "validation.json").read_text(encoding="utf-8"))
+    assert failed_path.name == "attempt-0001-malformed_artifact"
+    assert validation["failure_kind"] == "malformed_artifact"
     assert validation["metrics"] is None
     assert verify_checksums(failed_path)
 
