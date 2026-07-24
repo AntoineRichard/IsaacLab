@@ -438,6 +438,7 @@ class Lab2DockerExecutor(_Executor):
     def version_invocation(self) -> Invocation:
         """Build the Lab 2 registration and formatter probe."""
         environment = self._environment()
+        container_name = f"isaaclab-benchmark-preflight-{uuid.uuid4().hex[:24]}"
         argv = [
             "docker",
             "compose",
@@ -451,6 +452,8 @@ class Lab2DockerExecutor(_Executor):
             "--rm",
             "--no-deps",
             "-T",
+            "--name",
+            container_name,
         ]
         for name, value in sorted(environment.items()):
             argv.extend(("-e", f"{name}={value}"))
@@ -471,6 +474,7 @@ class Lab2DockerExecutor(_Executor):
                 "ISAACLAB_BENCHMARK_IMAGE_ID": self.config.lab2_image_id,
             },
             self.config.lab2_root,
+            container_name=container_name,
         )
 
 
@@ -516,10 +520,12 @@ def run_preflight(
     config: ExecutorConfig,
     commands: CommandRunner | None = None,
     *,
+    launcher: ProcessLauncher | None = None,
     min_free_bytes: int = 10 * 1024**3,
 ) -> PreflightResult:
     """Validate all immutable inputs before any measured attempt."""
     command_runner = commands or SystemCommandRunner()
+    process_launcher = launcher or ProcessLauncher(commands=command_runner)
     for root, expected_sha, name in (
         (config.lab2_root, config.lab2_sha, "lab2"),
         (config.lab3_root, config.lab3_sha, "lab3"),
@@ -576,11 +582,9 @@ def run_preflight(
         ),
         ("lab3", Lab3UvExecutor(config, selected_gpu_uuid=gpu_uuid).version_invocation(), "ok", None),
     ):
-        _require_command(
-            command_runner,
-            invocation.argv,
-            cwd=invocation.cwd,
-            environment=invocation.environment,
+        _require_process(
+            process_launcher,
+            invocation,
             expected_stdout=expected_stdout,
             expected_stdout_line=expected_stdout_line,
             description=f"{name} task registration and formatters",
@@ -646,7 +650,42 @@ def _software_metadata_invocation(config: ExecutorConfig, version: Version, gpu_
         if version is Version.LAB2
         else Lab3UvExecutor(config, selected_gpu_uuid=gpu_uuid).version_invocation()
     )
-    return Invocation((*base.argv[:-1], _software_metadata_probe()), base.environment, base.cwd)
+    return Invocation(
+        (*base.argv[:-1], _software_metadata_probe()),
+        base.environment,
+        base.cwd,
+        container_name=base.container_name,
+    )
+
+
+def _require_process(
+    launcher: ProcessLauncher,
+    invocation: Invocation,
+    *,
+    expected_stdout: str | None = None,
+    expected_stdout_line: str | None = None,
+    description: str,
+) -> ProcessResult:
+    """Run one potentially long probe with process-group cleanup semantics."""
+    try:
+        result = launcher.run(invocation, timeout_s=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PreflightError(f"preflight {description} failed: {error}") from error
+    if result.timed_out:
+        raise PreflightError(f"preflight {description} timed out")
+    if result.interrupted:
+        raise KeyboardInterrupt
+    if result.returncode != 0:
+        raise PreflightError(f"preflight {description} failed: {result.stderr.strip()}")
+    if expected_stdout is not None and result.stdout.strip() != expected_stdout:
+        raise PreflightError(
+            f"preflight {description} failed: expected {expected_stdout!r}, got {result.stdout.strip()!r}"
+        )
+    if expected_stdout_line is not None and expected_stdout_line not in {
+        line.strip() for line in result.stdout.splitlines()
+    }:
+        raise PreflightError(f"preflight {description} failed: missing stdout line {expected_stdout_line!r}")
+    return result
 
 
 def _require_command(

@@ -276,6 +276,20 @@ def test_lab2_version_probe_forwards_gpu_zero_selection_into_container(tmp_path:
     assert "ISAACLAB_BENCHMARK_GPU_UUID=" + GPU_UUID in forwarded
 
 
+def test_lab2_version_probes_use_unique_owned_container_names(tmp_path: Path) -> None:
+    executor = Lab2DockerExecutor(_config(tmp_path), selected_gpu_uuid=GPU_UUID)
+
+    first = executor.version_invocation()
+    second = executor.version_invocation()
+
+    assert first.container_name is not None
+    assert second.container_name is not None
+    assert first.container_name != second.container_name
+    for invocation in (first, second):
+        name_index = invocation.argv.index("--name")
+        assert invocation.argv[name_index + 1] == invocation.container_name
+
+
 def test_version_probes_require_every_configured_task_registration(tmp_path: Path):
     config = _config(tmp_path)
     matrix = load_matrix()
@@ -352,6 +366,54 @@ def test_child_timeout_terminates_process_group_and_cleans_only_owned_container(
     assert result.timed_out is True
     assert len(owned_group_ids) == 1
     assert commands.argvs == [("docker", "rm", "--force", "owned-benchmark-container")]
+
+
+def test_child_interruption_terminates_process_group_and_cleans_owned_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Commands:
+        def __init__(self):
+            self.argvs = []
+
+        def run(self, argv, **_kwargs):
+            self.argvs.append(tuple(argv))
+            return CommandResult(tuple(argv), 0, "", "")
+
+    class Process:
+        pid = 4321
+
+        def __init__(self):
+            self.returncode = None
+            self.communicate_count = 0
+
+        def communicate(self, timeout=None):
+            self.communicate_count += 1
+            if self.communicate_count == 1:
+                raise KeyboardInterrupt
+            self.returncode = -signal.SIGTERM
+            return "partial stdout", "partial stderr"
+
+        def poll(self):
+            return self.returncode
+
+    commands = Commands()
+    process = Process()
+    killed: list[tuple[int, signal.Signals]] = []
+    monkeypatch.setattr("tools.benchmark_comparison.executors.subprocess.Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr("tools.benchmark_comparison.executors.os.killpg", lambda pid, sig: killed.append((pid, sig)))
+    launcher = ProcessLauncher(commands)
+    invocation = Invocation(
+        argv=(sys.executable, "-c", "pass"),
+        environment={},
+        cwd=tmp_path,
+        container_name="owned-preflight-container",
+    )
+
+    result = launcher.run(invocation, timeout_s=120)
+
+    assert result.interrupted
+    assert killed == [(process.pid, signal.SIGTERM)]
+    assert commands.argvs == [("docker", "rm", "--force", "owned-preflight-container")]
 
 
 def test_process_launcher_installs_and_restores_sigterm_handler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -457,11 +519,74 @@ class _PreflightCommands:
         raise AssertionError(f"unexpected preflight command: {rendered}")
 
 
+class _RegistrationLauncher:
+    def __init__(
+        self,
+        outcomes: list[ProcessResult] | None = None,
+        commands: _PreflightCommands | None = None,
+    ):
+        self.outcomes = list(outcomes or [])
+        self.commands = commands
+        self.invocations: list[tuple[Invocation, float]] = []
+
+    def run(self, invocation: Invocation, timeout_s: float) -> ProcessResult:
+        self.invocations.append((invocation, timeout_s))
+        if self.outcomes:
+            return self.outcomes.pop(0)
+        if self.commands is not None:
+            result = self.commands.run(
+                invocation.argv,
+                cwd=invocation.cwd,
+                environment=invocation.environment,
+                timeout=timeout_s,
+            )
+            return ProcessResult(result.returncode, result.stdout, result.stderr)
+        stdout = "kit startup log\n__ISAACLAB_BENCHMARK_PREFLIGHT_OK__\n" if invocation.argv[0] == "docker" else "ok\n"
+        return ProcessResult(0, stdout, "")
+
+
+def _mocked_preflight(config: ExecutorConfig, commands: _PreflightCommands):
+    return run_preflight(config, commands, launcher=_RegistrationLauncher(commands=commands), min_free_bytes=1)
+
+
+def test_preflight_runs_registration_probes_through_process_launcher(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    commands = _PreflightCommands(config)
+    launcher = _RegistrationLauncher()
+
+    run_preflight(config, commands, launcher=launcher, min_free_bytes=1)
+
+    assert len(launcher.invocations) == 2
+    assert all(timeout == 120 for _invocation, timeout in launcher.invocations)
+    assert launcher.invocations[0][0].container_name is not None
+    assert not any("MetricsFormatter.get_instance" in " ".join(argv) for argv in commands.argvs)
+
+
+def test_preflight_registration_timeout_is_a_preflight_error(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    launcher = _RegistrationLauncher([ProcessResult(None, "", "", timed_out=True)])
+
+    with pytest.raises(PreflightError, match="lab2 task registration.*timed out"):
+        run_preflight(config, _PreflightCommands(config), launcher=launcher, min_free_bytes=1)
+
+    assert launcher.invocations[0][0].container_name is not None
+
+
+def test_preflight_registration_interruption_propagates(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    launcher = _RegistrationLauncher([ProcessResult(None, "", "", interrupted=True)])
+
+    with pytest.raises(KeyboardInterrupt):
+        run_preflight(config, _PreflightCommands(config), launcher=launcher, min_free_bytes=1)
+
+    assert launcher.invocations[0][0].container_name is not None
+
+
 def test_preflight_validates_all_required_system_identities(tmp_path: Path):
     config = _config(tmp_path)
     commands = _PreflightCommands(config)
 
-    result = run_preflight(config, commands, min_free_bytes=1)
+    result = _mocked_preflight(config, commands)
 
     rendered = [" ".join(argv) for argv in commands.argvs]
     assert result.idle_memory_baseline_mib == 100
@@ -493,7 +618,7 @@ def test_preflight_rejects_lab2_noise_without_unique_sentinel(tmp_path: Path):
     commands = _PreflightCommands(config, lab2_probe_stdout="kit startup log\nok\n")
 
     with pytest.raises(PreflightError, match="__ISAACLAB_BENCHMARK_PREFLIGHT_OK__"):
-        run_preflight(config, commands, min_free_bytes=1)
+        _mocked_preflight(config, commands)
 
 
 def test_preflight_keeps_lab3_probe_stdout_strict(tmp_path: Path):
@@ -504,13 +629,14 @@ def test_preflight_keeps_lab3_probe_stdout_strict(tmp_path: Path):
         PreflightError,
         match=r"lab3 task registration and formatters failed: expected 'ok', got 'kit startup log\\nok'",
     ):
-        run_preflight(config, commands, min_free_bytes=1)
+        _mocked_preflight(config, commands)
 
 
 def test_preflight_provenance_is_written_by_actual_executor_payloads(tmp_path: Path):
     """Validated lock/image/SHA identities flow into both version artifact payloads."""
     config = _config(tmp_path)
-    preflight = run_preflight(config, _PreflightCommands(config), min_free_bytes=1)
+    commands = _PreflightCommands(config)
+    preflight = _mocked_preflight(config, commands)
 
     class Launcher:
         def run(self, _invocation, _timeout_s):
@@ -552,4 +678,5 @@ def test_preflight_stops_on_required_check_failure(tmp_path: Path, failure: str)
     config = _config(tmp_path)
 
     with pytest.raises(PreflightError, match="preflight"):
-        run_preflight(config, _PreflightCommands(config, fail_contains=failure), min_free_bytes=1)
+        commands = _PreflightCommands(config, fail_contains=failure)
+        _mocked_preflight(config, commands)
