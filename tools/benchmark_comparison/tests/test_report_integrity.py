@@ -14,6 +14,12 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity, write_manifest
+from tools.benchmark_comparison.matrix import (
+    expand_canary_matrix,
+    expand_final_matrix,
+    expand_legacy_schema_1_matrix,
+    load_matrix,
+)
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
 from tools.benchmark_comparison.report import write_markdown_report
@@ -22,13 +28,24 @@ from tools.benchmark_comparison.report_cli import main
 
 def _manifest() -> RunSetManifest:
     return RunSetManifest(
-        schema_version="1.0",
+        schema_version="2.0",
         run_set=RunSet.FINAL,
         phase="measured",
         provenance=ExecutionProvenance("a" * 40, "b" * 40, "sha256:" + "c" * 64, "d" * 64),
-        host=HostIdentity("host", "Ubuntu", "CPU", 32, "GPU", "590.00", "13.0"),
+        host=HostIdentity(
+            "host",
+            "Ubuntu",
+            "CPU",
+            32,
+            "GPU",
+            "590.00",
+            "13.0",
+            gpu_index=0,
+            gpu_uuid="GPU-01234567-89ab-cdef-0123-456789abcdef",
+        ),
         lab2=SoftwareIdentity("2.3.2", "5.1", "3.11", "2.7", "5.0"),
         lab3=SoftwareIdentity("3.0.0", "6.0", "3.12", "2.8", "5.4"),
+        expansion=expand_final_matrix(load_matrix()),
     )
 
 
@@ -123,13 +140,36 @@ def test_report_rejects_invalid_in_memory_manifest(tmp_path: Path) -> None:
             normalized["paired_summary"],
             normalized["failures"],
             tmp_path / "report.md",
-            manifest=replace(_manifest(), schema_version="2.0"),
+            manifest=replace(_manifest(), schema_version="3.0"),
+        )
+
+
+def test_report_rejects_run_present_in_checkout_but_absent_from_manifest_snapshot(tmp_path: Path) -> None:
+    run = replace(
+        _run("lab2", 100.0),
+        logical_task="cartpole_direct",
+        concrete_task="Isaac-Cartpole-Direct-v0",
+        artifact_path=(
+            "final/final--cartpole_direct--runtime-100--steps-100--seed-42--repeat-0"
+            "--envs-4096--rsl_rl--lab2--version-order-0/success"
+        ),
+    )
+    normalized = write_normalized_outputs(tmp_path / "normalized", (run,), ())
+    manifest = replace(_manifest(), expansion=expand_legacy_schema_1_matrix(RunSet.FINAL))
+
+    with pytest.raises(ValueError, match="manifest run-set identity"):
+        write_markdown_report(
+            normalized["raw_runs"],
+            normalized["paired_summary"],
+            normalized["failures"],
+            tmp_path / "report.md",
+            manifest=manifest,
         )
 
 
 def test_report_only_cli_rejects_output_overlapping_raw_attempts(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
-    manifest = replace(_manifest(), run_set=RunSet.CANARY)
+    manifest = replace(_manifest(), run_set=RunSet.CANARY, expansion=expand_canary_matrix(load_matrix()))
     write_manifest(artifact_root / "canary" / "manifest.json", manifest)
 
     with pytest.raises(ValueError, match="overlaps benchmark artifact root"):
@@ -149,7 +189,7 @@ def test_report_only_cli_rejects_output_overlapping_raw_attempts(tmp_path: Path)
 
 def test_report_only_cli_rejects_output_that_contains_raw_attempts(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
-    manifest = replace(_manifest(), run_set=RunSet.CANARY)
+    manifest = replace(_manifest(), run_set=RunSet.CANARY, expansion=expand_canary_matrix(load_matrix()))
     write_manifest(artifact_root / "canary" / "manifest.json", manifest)
 
     with pytest.raises(ValueError, match="overlaps benchmark artifact root"):

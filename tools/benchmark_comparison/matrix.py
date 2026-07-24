@@ -59,6 +59,14 @@ _VERSION_ORDERS = {
     43: (Version.LAB3, Version.LAB2),
     44: (Version.LAB2, Version.LAB3),
 }
+_LEGACY_SCHEMA_1_TASK_IDENTIFIERS = (
+    ("cartpole", "Isaac-Cartpole-v0", "Isaac-Cartpole"),
+    ("ant", "Isaac-Ant-v0", "Isaac-Ant"),
+    ("anymal_d_flat", "Isaac-Velocity-Flat-Anymal-D-v0", "Isaac-Velocity-Flat-AnymalD"),
+    ("g1_flat", "Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
+    ("allegro_cube", "Isaac-Repose-Cube-Allegro-v0", "Isaac-Reorient-Cube-Allegro"),
+    ("franka_reach", "Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
+)
 
 
 def load_matrix(path: Path | None = None) -> BenchmarkMatrix:
@@ -96,6 +104,33 @@ def expand_final_matrix(matrix: BenchmarkMatrix) -> MatrixExpansion:
 def expand_canary_matrix(matrix: BenchmarkMatrix) -> MatrixExpansion:
     """Expand the bounded seed-42 canary attempts from ``matrix``."""
     return _expand_matrix(matrix, RunSet.CANARY, _CANARY_SEEDS)
+
+
+def expand_legacy_schema_1_matrix(run_set: RunSet) -> MatrixExpansion:
+    """Return the immutable six-task expansion used by schema-1 manifests."""
+    modes = tuple(
+        BenchmarkMode(
+            id=mode_id,
+            framework=framework,
+            final_bound=Bound(final_value, final_unit),
+            canary_bound=Bound(canary_value, canary_unit),
+        )
+        for mode_id, framework, final_unit, final_value, canary_unit, canary_value in _MODE_DEFINITIONS
+    )
+    matrix = BenchmarkMatrix(
+        tasks=tuple(
+            BenchmarkTask(alias, lab2_id, lab3_id) for alias, lab2_id, lab3_id in _LEGACY_SCHEMA_1_TASK_IDENTIFIERS
+        ),
+        modes=modes,
+        seeds=_FINAL_SEEDS,
+        num_envs=4096,
+    )
+    selected_seeds = _FINAL_SEEDS if run_set is RunSet.FINAL else _CANARY_SEEDS
+    expansion = _expand_configured_matrix(matrix, run_set, selected_seeds)
+    expected = 108 if run_set is RunSet.FINAL else 36
+    if len(expansion.attempts) != expected:
+        raise RuntimeError("legacy schema-1 matrix expansion is inconsistent")
+    return expansion
 
 
 def _parse_task(data: Any) -> BenchmarkTask:
@@ -138,6 +173,16 @@ def _expand_matrix(matrix: BenchmarkMatrix, run_set: RunSet, selected_seeds: tup
     _validate_matrix(matrix)
     if any(seed not in matrix.seeds for seed in selected_seeds):
         raise ValueError(f"{run_set.value} seeds are not present in the configured matrix")
+
+    expansion = _expand_configured_matrix(matrix, run_set, selected_seeds)
+    _validate_expansion(expansion)
+    return expansion
+
+
+def _expand_configured_matrix(
+    matrix: BenchmarkMatrix, run_set: RunSet, selected_seeds: tuple[int, ...]
+) -> MatrixExpansion:
+    """Expand a validated or immutable compatibility matrix without shape assumptions."""
 
     pairs: list[BenchmarkPair] = []
     attempts: list[BenchmarkAttempt] = []
@@ -183,9 +228,7 @@ def _expand_matrix(matrix: BenchmarkMatrix, run_set: RunSet, selected_seeds: tup
                 )
                 attempts.extend(pair_attempts)
 
-    expansion = MatrixExpansion(run_set=run_set, pairs=tuple(pairs), attempts=tuple(attempts))
-    _validate_expansion(expansion)
-    return expansion
+    return MatrixExpansion(run_set=run_set, pairs=tuple(pairs), attempts=tuple(attempts))
 
 
 def _make_attempt(

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity, write_manifest
+from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.report_cli import _publish, main
 
@@ -20,13 +21,24 @@ from tools.benchmark_comparison.report_cli import _publish, main
 def _manifest() -> RunSetManifest:
     software = SoftwareIdentity("2.3.2", "5.1", "3.11", "2.7", "5.0")
     return RunSetManifest(
-        "1.0",
+        "2.0",
         RunSet.CANARY,
         "measured",
         ExecutionProvenance("a" * 40, "b" * 40, "sha256:" + "c" * 64, "d" * 64),
-        HostIdentity("host", "os", "cpu", 32, "gpu", "driver", "cuda"),
+        HostIdentity(
+            "host",
+            "os",
+            "cpu",
+            32,
+            "gpu",
+            "driver",
+            "cuda",
+            gpu_index=0,
+            gpu_uuid="GPU-TEST-0000",
+        ),
         software,
         software,
+        expansion=expand_canary_matrix(load_matrix()),
     )
 
 
@@ -42,7 +54,7 @@ def test_report_cli_rejects_raw_changes_during_normalization(
         return (), ()
 
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.normalize_run_set", normalize_then_mutate)
-    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args: ())
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
 
     with pytest.raises(ValueError, match="changed during normalization"):
         main(

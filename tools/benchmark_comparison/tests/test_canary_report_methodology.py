@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity
+from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import write_normalized_outputs
 from tools.benchmark_comparison.report import write_markdown_report
@@ -19,13 +20,24 @@ def test_canary_report_states_canary_phase_seed_and_bounds(tmp_path: Path) -> No
     provenance = ExecutionProvenance("a" * 40, "b" * 40, "sha256:" + "c" * 64, "d" * 64)
     software = SoftwareIdentity("2.3.2", "5.1", "3.11", "2.7", "5.0")
     manifest = RunSetManifest(
-        "1.0",
+        "2.0",
         RunSet.CANARY,
         "measured",
         provenance,
-        HostIdentity("host", "os", "cpu", 32, "gpu", "driver", "cuda"),
+        HostIdentity(
+            "host",
+            "os",
+            "cpu",
+            32,
+            "gpu",
+            "driver",
+            "cuda",
+            gpu_index=0,
+            gpu_uuid="GPU-TEST-0000",
+        ),
         software,
         software,
+        expansion=expand_canary_matrix(load_matrix()),
     )
     normalized = write_normalized_outputs(tmp_path / "normalized", (), ())
 

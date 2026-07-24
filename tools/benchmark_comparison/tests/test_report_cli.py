@@ -10,7 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from tools.benchmark_comparison.manifest import (
     HostIdentity,
@@ -18,19 +21,31 @@ from tools.benchmark_comparison.manifest import (
     SoftwareIdentity,
     write_manifest,
 )
+from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.report_cli import main
 
 
 def _manifest() -> RunSetManifest:
     return RunSetManifest(
-        schema_version="1.0",
+        schema_version="2.0",
         run_set=RunSet.CANARY,
         phase="measured",
         provenance=ExecutionProvenance("a" * 40, "b" * 40, "sha256:" + "c" * 64, "d" * 64),
-        host=HostIdentity("host", "Ubuntu", "cpu", 32, "gpu", "590.48.01", "13.0"),
+        host=HostIdentity(
+            "host",
+            "Ubuntu",
+            "cpu",
+            32,
+            "gpu",
+            "590.48.01",
+            "13.0",
+            gpu_index=0,
+            gpu_uuid="GPU-01234567-89ab-cdef-0123-456789abcdef",
+        ),
         lab2=SoftwareIdentity("2.3.2", "5.1", "3.11", "2.7", "5.0"),
         lab3=SoftwareIdentity("3.0.0", "6.0", "3.12", "2.8", "5.4"),
+        expansion=expand_canary_matrix(load_matrix()),
     )
 
 
@@ -85,3 +100,31 @@ def test_report_only_cli_is_deterministic_self_contained_and_simulator_free(tmp_
     assert audit["failed_or_missing_attempts"] == 76
     assert audit["raw_file_count"] == 0
     assert hashlib.sha256(first["generated_hashes.sha256"]).hexdigest() == audit["generated_hash_manifest_sha256"]
+
+
+def test_report_only_cli_refuses_ambiguous_schema_one_artifact_identity(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    output = artifact_root / "canary" / "report"
+    write_manifest(
+        artifact_root / "canary" / "manifest.json",
+        replace(
+            _manifest(),
+            schema_version="1.0",
+            expansion=None,
+            host=replace(_manifest().host, gpu_index=None, gpu_uuid=None),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="schema 1.0.*ambiguous"):
+        main(
+            [
+                "--artifact_root",
+                str(artifact_root),
+                "--run_set",
+                "canary",
+                "--phase",
+                "measured",
+                "--output_dir",
+                str(output),
+            ]
+        )

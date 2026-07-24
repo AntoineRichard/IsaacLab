@@ -11,7 +11,8 @@ import os
 import statistics
 from pathlib import Path
 
-from .normalize import MODE_ORDER, VERSION_ORDER, NormalizedRun, read_raw_runs_csv, task_order_for_mode
+from .models import MatrixExpansion
+from .normalize import VERSION_ORDER, NormalizedRun, expansion_orders, read_raw_runs_csv, task_order_for_mode
 
 PLOT_METRICS = {
     "collection_fps": ("collection_fps", "Collection FPS", "Collection FPS"),
@@ -29,7 +30,9 @@ _VERSION_COLORS = {"lab2": "#4C78A8", "lab3": "#F58518"}
 _VERSION_LABELS = {"lab2": "Isaac Lab 2", "lab3": "Isaac Lab 3"}
 
 
-def generate_plots(raw_runs_path: Path, output_directory: Path) -> tuple[Path, ...]:
+def generate_plots(
+    raw_runs_path: Path, output_directory: Path, *, expansion: MatrixExpansion | None = None
+) -> tuple[Path, ...]:
     """Generate four fixed PNG/SVG figures using normalized successful runs.
 
     Matplotlib is imported only when plotting is requested. This keeps the
@@ -37,6 +40,7 @@ def generate_plots(raw_runs_path: Path, output_directory: Path) -> tuple[Path, .
     """
     plt, matplotlib = _matplotlib()
     runs = read_raw_runs_csv(raw_runs_path)
+    _task_order, mode_order, _task_modes = expansion_orders(expansion)
     output_directory.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     with matplotlib.rc_context(
@@ -51,10 +55,10 @@ def generate_plots(raw_runs_path: Path, output_directory: Path) -> tuple[Path, .
         }
     ):
         for basename, (attribute, title, y_label) in PLOT_METRICS.items():
-            figure, axes = plt.subplots(1, len(MODE_ORDER), figsize=(12, 20 / 3), dpi=150, sharey=False)
+            figure, axes = plt.subplots(1, len(mode_order), figsize=(12, 20 / 3), dpi=150, sharey=False)
             figure.suptitle(title, fontsize=14)
-            for axis, mode in zip(axes, MODE_ORDER, strict=True):
-                task_order = _task_order_for_mode(mode)
+            for axis, mode in zip(axes, mode_order, strict=True):
+                task_order = _task_order_for_mode(mode, expansion)
                 _draw_mode(axis, runs, mode, attribute, task_order)
                 axis.set_title(mode)
                 axis.set_ylabel(y_label)
@@ -88,9 +92,9 @@ def generate_plots(raw_runs_path: Path, output_directory: Path) -> tuple[Path, .
     return tuple(generated)
 
 
-def _task_order_for_mode(mode: str) -> tuple[str, ...]:
+def _task_order_for_mode(mode: str, expansion: MatrixExpansion | None = None) -> tuple[str, ...]:
     """Return the deterministic plot order for one benchmark mode."""
-    return task_order_for_mode(mode)
+    return task_order_for_mode(mode, expansion)
 
 
 def _draw_mode(

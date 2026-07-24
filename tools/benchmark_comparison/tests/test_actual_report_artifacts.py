@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
 from tools.benchmark_comparison.manifest import read_manifest
+from tools.benchmark_comparison.report_cli import main
 
 _ROOT = Path("/home/antoiner/benchmarks/isaaclab2-vs-3/artifacts/91631f3328")
 
@@ -38,6 +40,38 @@ def test_measured_report_manifest_and_hashes_are_self_consistent(
         assert tuple(csv.DictReader(file)) == ()
     assert len((report / "raw_artifact_hashes.sha256").read_text(encoding="utf-8").splitlines()) == raw_files
     _verify_hash_manifest(report / "generated_hashes.sha256", report)
+
+
+@pytest.mark.benchmark
+def test_retained_schema_one_final_report_regenerates_without_manufactured_failures(tmp_path: Path) -> None:
+    if not _ROOT.is_dir():
+        pytest.skip("measured comparison artifact root is not present")
+    output = tmp_path / "regenerated-final"
+
+    assert (
+        main(
+            [
+                "--artifact_root",
+                str(_ROOT),
+                "--run_set",
+                "final",
+                "--phase",
+                "measured",
+                "--output_dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    audit = json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))
+    assert audit["successful_attempts"] == 108
+    assert audit["failed_or_missing_attempts"] == 0
+    svg = (output / "collection_fps.svg").read_text(encoding="utf-8")
+    assert "<!-- rgb -->" not in svg
+    assert "<!-- humanoid -->" not in svg
+    assert "<!-- cassie -->" not in svg
+    assert "<!-- rough -->" not in svg
 
 
 def _verify_hash_manifest(path: Path, root: Path) -> None:

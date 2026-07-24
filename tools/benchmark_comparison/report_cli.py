@@ -16,8 +16,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from .manifest import manifest_path, read_manifest
-from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
+from .manifest import manifest_path, read_manifest, resolve_manifest_expansion
 from .models import RunSet
 from .normalize import normalize_run_set, write_normalized_outputs
 from .plot import generate_plots
@@ -50,13 +49,13 @@ def main(argv: list[str] | None = None) -> int:
     if existing_raw_hashes.exists() and existing_raw_hashes.read_text(encoding="utf-8") != raw_hash_contents:
         raise ValueError("raw artifact hashes differ from the previously published report")
 
-    expansion = expand_canary_matrix(load_matrix()) if run_set is RunSet.CANARY else expand_final_matrix(load_matrix())
+    expansion = resolve_manifest_expansion(manifest, artifact_root)
     runs, failures = normalize_run_set(artifact_root, expansion, manifest)
 
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output_directory.name}.", dir=output_directory.parent))
     try:
-        normalized = write_normalized_outputs(staging, runs, failures)
+        normalized = write_normalized_outputs(staging, runs, failures, expansion=expansion)
         write_markdown_report(
             normalized["raw_runs"],
             normalized["paired_summary"],
@@ -65,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest=manifest,
             artifact_root=artifact_root,
         )
-        generate_plots(normalized["raw_runs"], staging)
+        generate_plots(normalized["raw_runs"], staging, expansion=expansion)
         _write_text(staging / "raw_artifact_hashes.sha256", raw_hash_contents)
 
         generated = tuple(

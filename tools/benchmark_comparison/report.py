@@ -13,14 +13,12 @@ import os
 import re
 from pathlib import Path
 
-from .manifest import RunSetManifest, read_manifest, validate_manifest
-from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
-from .models import ExecutionProvenance
+from .manifest import RunSetManifest, read_manifest, resolve_manifest_expansion, validate_manifest
+from .models import ExecutionProvenance, MatrixExpansion
 from .normalize import (
     FAILURE_FIELDS,
-    MODE_ORDER,
     PAIRED_SUMMARY_FIELDS,
-    TASK_ORDER,
+    expansion_orders,
     read_raw_runs_csv,
     summarize_pairs,
 )
@@ -50,11 +48,13 @@ def write_markdown_report(
     expected_manifest = read_manifest(manifest) if isinstance(manifest, Path) else validate_manifest(manifest)
     expected_provenance = expected_manifest.provenance
     source_root = (artifact_root or _infer_artifact_root(raw_runs_path)).resolve()
-    attempt_directories = _attempt_directory_index(expected_manifest)
+    expansion = resolve_manifest_expansion(expected_manifest, source_root)
+    task_order, mode_order, _task_modes = expansion_orders(expansion)
+    attempt_directories = _attempt_directory_index(expansion)
     _validate_run_manifest(runs, expected_manifest, source_root, attempt_directories)
     summaries = _read_csv(paired_summary_path, PAIRED_SUMMARY_FIELDS)
     failures = _read_csv(failures_path, FAILURE_FIELDS)
-    _validate_summaries(runs, summaries)
+    _validate_summaries(runs, summaries, expansion)
     _validate_failures(failures, expected_manifest, source_root, attempt_directories)
     lines = [
         "# Isaac Lab Paired Benchmark Report",
@@ -117,7 +117,7 @@ def write_markdown_report(
 
     lines.extend(["", "## Task mapping", "", "| Logical task | Isaac Lab 2 task | Isaac Lab 3 task |", "|---|---|---|"])
     mappings = _task_mappings(runs, failures)
-    for task in _ordered_tasks(set(mappings)):
+    for task in _ordered_tasks(set(mappings), task_order):
         versions = mappings[task]
         lines.append(
             f"| `{_escape(task)}` | `{_escape(versions.get('lab2', 'missing'))}` "
@@ -126,7 +126,7 @@ def write_markdown_report(
     if not mappings:
         lines.append("| unavailable | missing | missing |")
 
-    for mode in MODE_ORDER:
+    for mode in mode_order:
         lines.extend(["", f"## {mode}", ""])
         mode_runs = [run for run in runs if run.mode == mode]
         mode_summaries = [row for row in summaries if row.get("mode") == mode]
@@ -232,12 +232,7 @@ _FAILED_ARTIFACT_DIRECTORY = re.compile(r"attempt-[0-9]{4,}-[a-z_]+")
 _QUARANTINED_SUCCESS_DIRECTORY = re.compile(r"corrupt-success-[0-9]{4,}")
 
 
-def _attempt_directory_index(manifest: RunSetManifest) -> dict[tuple[str, ...], str]:
-    expansion = (
-        expand_canary_matrix(load_matrix())
-        if manifest.run_set.value == "canary"
-        else expand_final_matrix(load_matrix())
-    )
+def _attempt_directory_index(expansion: MatrixExpansion) -> dict[tuple[str, ...], str]:
     return {
         _attempt_key(
             attempt.version.value,
@@ -270,7 +265,7 @@ def _expected_attempt_directory(index: dict[tuple[str, ...], str], key: tuple[st
     try:
         return index[key]
     except KeyError as error:
-        raise ValueError(f"artifact path identity does not match benchmark matrix: {path}") from error
+        raise ValueError(f"artifact path identity does not match manifest run-set identity: {path}") from error
 
 
 def _validate_run_manifest(
@@ -320,8 +315,8 @@ def _validate_run_manifest(
             raise ValueError("artifact path is not the expected immutable success: " + run.artifact_path)
 
 
-def _validate_summaries(runs, summaries: list[dict[str, str]]) -> None:
-    expected = [summary.to_csv_row() for summary in summarize_pairs(runs)]
+def _validate_summaries(runs, summaries: list[dict[str, str]], expansion: MatrixExpansion) -> None:
+    expected = [summary.to_csv_row() for summary in summarize_pairs(runs, expansion=expansion)]
     if summaries != expected:
         raise ValueError("paired summary is not derived from normalized raw runs")
 
@@ -411,8 +406,8 @@ def _read_csv(path: Path, expected_fields: tuple[str, ...]) -> list[dict[str, st
         return list(reader)
 
 
-def _ordered_tasks(tasks: set[str]) -> list[str]:
-    return sorted(tasks, key=lambda task: (TASK_ORDER.index(task) if task in TASK_ORDER else len(TASK_ORDER), task))
+def _ordered_tasks(tasks: set[str], task_order: tuple[str, ...]) -> list[str]:
+    return sorted(tasks, key=lambda task: (task_order.index(task) if task in task_order else len(task_order), task))
 
 
 def _number(value: str) -> str:

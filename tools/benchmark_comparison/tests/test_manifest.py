@@ -21,6 +21,7 @@ from tools.benchmark_comparison.manifest import (
     read_manifest,
     write_manifest,
 )
+from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 
 
@@ -118,3 +119,39 @@ def test_manifest_concurrent_publication_has_one_complete_winner(tmp_path: Path)
     assert results.count("published") == 4
     assert results.count("conflict") == 4
     assert json.loads(path.read_text(encoding="utf-8")) == winner.to_json()
+
+
+def test_schema_two_manifest_round_trips_exact_expansion_and_selected_gpu(tmp_path: Path) -> None:
+    expansion = expand_final_matrix(load_matrix())
+    expected = replace(
+        manifest(),
+        schema_version="2.0",
+        host=replace(manifest().host, gpu_index=0, gpu_uuid="GPU-01234567-89ab-cdef-0123-456789abcdef"),
+        expansion=expansion,
+    )
+
+    path = write_manifest(tmp_path / "final" / "manifest.json", expected)
+    actual = read_manifest(path)
+
+    assert actual == expected
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["host"]["gpu_index"] == 0
+    assert document["host"]["gpu_uuid"] == "GPU-01234567-89ab-cdef-0123-456789abcdef"
+    assert len(document["run_set_identity"]["attempts"]) == 228
+    assert len(document["run_set_identity"]["sha256"]) == 64
+
+
+def test_schema_two_manifest_rejects_tampered_attempt_snapshot(tmp_path: Path) -> None:
+    expected = replace(
+        manifest(),
+        schema_version="2.0",
+        host=replace(manifest().host, gpu_index=0, gpu_uuid="GPU-TEST-0000"),
+        expansion=expand_final_matrix(load_matrix()),
+    )
+    document = expected.to_json()
+    document["run_set_identity"]["attempts"][0]["logical_task"] = "tampered"
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sha256 does not match"):
+        read_manifest(path)

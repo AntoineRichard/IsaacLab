@@ -25,17 +25,29 @@ def test_report_only_cli_normalizes_a_synthetic_raw_success(tmp_path: Path) -> N
     root = tmp_path / "artifacts"
     provenance = ExecutionProvenance("a" * 40, "b" * 40, "sha256:" + "c" * 64, "d" * 64)
     software = SoftwareIdentity("2.3.2", "5.1.0", "3.11.13", "2.7.0", "5.0.1")
+    expansion = expand_canary_matrix(load_matrix())
     manifest = RunSetManifest(
-        "1.0",
+        "2.0",
         RunSet.CANARY,
         "measured",
         provenance,
-        HostIdentity("fixture-host", "Fixture OS", "Fixture CPU", 32, "Fixture GPU", "590.48.01", "12.8"),
+        HostIdentity(
+            "fixture-host",
+            "Fixture OS",
+            "Fixture CPU",
+            32,
+            "Fixture GPU",
+            "590.48.01",
+            "12.8",
+            gpu_index=0,
+            gpu_uuid="GPU-TEST-0000",
+        ),
         software,
         SoftwareIdentity("3.0.0", "6.0.0", "3.12.13", "2.11.0", "5.4.1"),
+        expansion=expansion,
     )
     write_manifest(root / "canary" / "manifest.json", manifest)
-    attempt = expand_canary_matrix(load_matrix()).attempts[0]
+    attempt = expansion.attempts[0]
     schema = json.loads((_FIXTURES / "schema_runtime.json").read_text(encoding="utf-8"))
     schema["run"].update(task=attempt.concrete_task, seed=attempt.seed, num_envs=attempt.num_envs)
     schema["runtime"]["iterations_completed"] = attempt.bound.value

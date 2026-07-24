@@ -96,11 +96,28 @@ _FAILED_DIRECTORY = re.compile(r"attempt-(?P<number>[0-9]+)-(?P<kind>[a-z_]+)$")
 _CORRUPT_SUCCESS_DIRECTORY = re.compile(r"corrupt-success-(?P<number>[0-9]+)$")
 
 
-def task_order_for_mode(mode: str) -> tuple[str, ...]:
+def expansion_orders(
+    expansion: MatrixExpansion | None,
+) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Return deterministic task, mode, and capability order for an expansion."""
+    if expansion is None:
+        return TASK_ORDER, MODE_ORDER, TASK_MODES
+    ordered_pairs = tuple(sorted(expansion.pairs, key=lambda pair: pair.pair_order))
+    task_order = tuple(dict.fromkeys(pair.logical_task for pair in ordered_pairs))
+    mode_order = tuple(dict.fromkeys(pair.mode.id for pair in ordered_pairs))
+    task_modes = {
+        task: tuple(dict.fromkeys(pair.mode.id for pair in ordered_pairs if pair.logical_task == task))
+        for task in task_order
+    }
+    return task_order, mode_order, task_modes
+
+
+def task_order_for_mode(mode: str, expansion: MatrixExpansion | None = None) -> tuple[str, ...]:
     """Return canonical tasks that support ``mode``."""
-    if mode not in MODE_ORDER:
+    task_order, mode_order, task_modes = expansion_orders(expansion)
+    if mode not in mode_order:
         raise ValueError(f"unknown benchmark mode: {mode}")
-    return tuple(task for task in TASK_ORDER if mode in TASK_MODES[task])
+    return tuple(task for task in task_order if mode in task_modes[task])
 
 
 @dataclass(frozen=True)
@@ -239,13 +256,14 @@ def normalize_run_set(
     manifest = validate_manifest(manifest)
     if manifest.run_set is not expansion.run_set:
         raise ValueError("manifest run_set does not match matrix expansion")
+    task_order, mode_order, _task_modes = expansion_orders(expansion)
     runs: list[NormalizedRun] = []
     failures: list[FailureRow] = []
     for attempt in sorted(
         expansion.attempts,
         key=lambda value: (
-            _order(TASK_ORDER, value.logical_task),
-            _order(MODE_ORDER, value.mode.id),
+            _order(task_order, value.logical_task),
+            _order(mode_order, value.mode.id),
             value.seed,
             _order(VERSION_ORDER, value.version.value),
         ),
@@ -268,8 +286,11 @@ def normalize_run_set(
     return tuple(runs), tuple(failures)
 
 
-def summarize_pairs(runs: Sequence[NormalizedRun]) -> tuple[PairedSummary, ...]:
+def summarize_pairs(
+    runs: Sequence[NormalizedRun], *, expansion: MatrixExpansion | None = None
+) -> tuple[PairedSummary, ...]:
     """Summarize metrics across seeds for complete Lab 2/Lab 3 pairs only."""
+    task_order, mode_order, _task_modes = expansion_orders(expansion)
     indexed: dict[tuple[str, str, int, str], NormalizedRun] = {}
     for run in runs:
         key = (run.logical_task, run.mode, run.seed, run.version)
@@ -280,7 +301,7 @@ def summarize_pairs(runs: Sequence[NormalizedRun]) -> tuple[PairedSummary, ...]:
     summaries: list[PairedSummary] = []
     task_modes = {(run.logical_task, run.mode) for run in runs}
     for logical_task, mode in sorted(
-        task_modes, key=lambda value: (_order(TASK_ORDER, value[0]), _order(MODE_ORDER, value[1]))
+        task_modes, key=lambda value: (_order(task_order, value[0]), _order(mode_order, value[1]))
     ):
         seeds = sorted({key[2] for key in indexed if key[:2] == (logical_task, mode)})
         paired = [
@@ -326,17 +347,20 @@ def write_normalized_outputs(
     output_directory: Path,
     runs: Sequence[NormalizedRun],
     failures: Sequence[FailureRow],
+    *,
+    expansion: MatrixExpansion | None = None,
 ) -> dict[str, Path]:
     """Atomically write all three deterministic normalized CSV tables."""
+    task_order, mode_order, _task_modes = expansion_orders(expansion)
     output_directory.mkdir(parents=True, exist_ok=True)
-    raw_runs_path = write_raw_runs_csv(output_directory / "raw_runs.csv", runs)
+    raw_runs_path = write_raw_runs_csv(output_directory / "raw_runs.csv", runs, expansion=expansion)
     serialized_runs = read_raw_runs_csv(raw_runs_path)
     paths = {
         "raw_runs": raw_runs_path,
         "paired_summary": _write_csv(
             output_directory / "paired_summary.csv",
             PAIRED_SUMMARY_FIELDS,
-            (summary.to_csv_row() for summary in summarize_pairs(serialized_runs)),
+            (summary.to_csv_row() for summary in summarize_pairs(serialized_runs, expansion=expansion)),
         ),
         "failures": _write_csv(
             output_directory / "failures.csv",
@@ -346,8 +370,8 @@ def write_normalized_outputs(
                 for failure in sorted(
                     failures,
                     key=lambda row: (
-                        _order(TASK_ORDER, row.logical_task),
-                        _order(MODE_ORDER, row.mode),
+                        _order(task_order, row.logical_task),
+                        _order(mode_order, row.mode),
                         row.seed,
                         _order(VERSION_ORDER, row.version),
                         row.attempt_number or 0,
@@ -359,13 +383,14 @@ def write_normalized_outputs(
     return paths
 
 
-def write_raw_runs_csv(path: Path, runs: Sequence[NormalizedRun]) -> Path:
+def write_raw_runs_csv(path: Path, runs: Sequence[NormalizedRun], *, expansion: MatrixExpansion | None = None) -> Path:
     """Atomically write stable successful-attempt rows."""
+    task_order, mode_order, _task_modes = expansion_orders(expansion)
     ordered = sorted(
         runs,
         key=lambda run: (
-            _order(TASK_ORDER, run.logical_task),
-            _order(MODE_ORDER, run.mode),
+            _order(task_order, run.logical_task),
+            _order(mode_order, run.mode),
             run.seed,
             _order(VERSION_ORDER, run.version),
         ),

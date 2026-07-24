@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity
+from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
 from tools.benchmark_comparison.report import read_provenance, write_markdown_report, write_provenance
@@ -29,13 +30,24 @@ def _provenance() -> ExecutionProvenance:
 
 def _manifest() -> RunSetManifest:
     return RunSetManifest(
-        schema_version="1.0",
+        schema_version="2.0",
         run_set=RunSet.FINAL,
         phase="measured",
         provenance=_provenance(),
-        host=HostIdentity("host", "Ubuntu", "CPU", 32, "NVIDIA Test GPU", "590.00", "13.0"),
+        host=HostIdentity(
+            "host",
+            "Ubuntu",
+            "CPU",
+            32,
+            "NVIDIA Test GPU",
+            "590.00",
+            "13.0",
+            gpu_index=0,
+            gpu_uuid="GPU-TEST-0000",
+        ),
         lab2=SoftwareIdentity("2.3.2", "5.1", "3.11", "2.7", "5.0"),
         lab3=SoftwareIdentity("3.0.0", "6.0", "3.12", "2.8", "5.4"),
+        expansion=expand_final_matrix(load_matrix()),
     )
 
 

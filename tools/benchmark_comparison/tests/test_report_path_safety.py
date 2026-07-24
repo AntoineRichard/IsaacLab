@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity, write_manifest
+from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
 from tools.benchmark_comparison.report import write_markdown_report
@@ -20,13 +21,24 @@ from tools.benchmark_comparison.report_cli import _validate_output_directory, ma
 
 def _manifest() -> RunSetManifest:
     return RunSetManifest(
-        schema_version="1.0",
+        schema_version="2.0",
         run_set=RunSet.FINAL,
         phase="measured",
         provenance=ExecutionProvenance("a" * 40, "b" * 40, "sha256:" + "c" * 64, "d" * 64),
-        host=HostIdentity("host", "Ubuntu", "CPU", 32, "GPU", "590.00", "13.0"),
+        host=HostIdentity(
+            "host",
+            "Ubuntu",
+            "CPU",
+            32,
+            "GPU",
+            "590.00",
+            "13.0",
+            gpu_index=0,
+            gpu_uuid="GPU-TEST-0000",
+        ),
         lab2=SoftwareIdentity("2.3.2", "5.1", "3.11", "2.7", "5.0"),
         lab3=SoftwareIdentity("3.0.0", "6.0", "3.12", "2.8", "5.4"),
+        expansion=expand_final_matrix(load_matrix()),
     )
 
 
@@ -115,7 +127,7 @@ def test_report_cli_rejects_final_output_inside_canary(
     canary_marker = artifact_root / "canary" / "raw-marker"
     canary_marker.parent.mkdir(parents=True)
     canary_marker.write_text("must survive", encoding="utf-8")
-    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args: ())
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
 
     with pytest.raises(ValueError, match="overlaps benchmark artifact root"):
         main(
@@ -140,7 +152,7 @@ def test_report_cli_accepts_disjoint_external_output(
     artifact_root = tmp_path / "artifacts"
     write_manifest(artifact_root / "final" / "manifest.json", _manifest())
     output = tmp_path / "external-report"
-    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args: ())
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
 
     assert (
         main(
