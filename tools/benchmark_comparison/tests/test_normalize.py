@@ -37,6 +37,7 @@ LAB2_SHA = "a" * 40
 LAB3_SHA = "b" * 40
 LAB2_IMAGE_ID = "sha256:" + "c" * 64
 LAB3_LOCK = "d" * 64
+GPU_UUID = "GPU-01234567-89ab-cdef-0123-456789abcdef"
 
 
 def test_expanded_task_order_keeps_rgb_runtime_only_and_both_anymal_terrains() -> None:
@@ -212,6 +213,36 @@ def test_normalization_writes_one_stably_ordered_row_per_success_and_preserves_f
     assert {path.name for path in paths.values()} == {"raw_runs.csv", "paired_summary.csv", "failures.csv"}
     with paths["raw_runs"].open(newline="", encoding="utf-8") as file:
         assert list(csv.DictReader(file))[0]["collection_fps"] == "100"
+
+
+def test_schema_two_normalization_rejects_success_from_different_gpu_uuid(tmp_path: Path) -> None:
+    full_expansion = expand_final_matrix(load_matrix())
+    expansion = replace(full_expansion, pairs=full_expansion.pairs[:1], attempts=full_expansion.attempts[:2])
+    attempt = expansion.attempts[0]
+    payloads = _payloads(attempt, collection_fps=100, utilization=40)
+    payloads["environment"]["selected_gpu"] = {"physical_index": 0, "uuid": "GPU-WRONG"}
+    payloads["environment"]["values"].update(
+        {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": "0",
+            "NVIDIA_VISIBLE_DEVICES": "0",
+            "ISAACLAB_BENCHMARK_GPU_INDEX": "0",
+            "ISAACLAB_BENCHMARK_GPU_UUID": "GPU-WRONG",
+        }
+    )
+    finalize_attempt(tmp_path, attempt, **payloads)
+    manifest = replace(
+        _manifest(),
+        schema_version="2.0",
+        host=replace(_manifest().host, gpu_index=0, gpu_uuid=GPU_UUID),
+        expansion=expansion,
+    )
+
+    runs, failures = normalize_run_set(tmp_path, expansion, manifest)
+
+    assert runs == ()
+    invalid = next(failure for failure in failures if failure.failure_kind == "invalid_success")
+    assert "selected GPU UUID" in invalid.reason
 
 
 def test_written_paired_summary_is_derived_from_serialized_raw_runs(tmp_path: Path) -> None:

@@ -212,3 +212,27 @@ def test_system_idle_monitor_reports_all_owned_process_group_descendants():
     inventory = monitor.inventory()
 
     assert inventory.prior_child_pids == (401, 402, 499)
+
+
+def test_system_idle_monitor_samples_only_physical_gpu_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[tuple[str, ...]] = []
+
+    def command_lines(argv):
+        observed.append(tuple(argv))
+        return ("2, 300",)
+
+    monkeypatch.setattr("tools.benchmark_comparison.runner._command_lines", command_lines)
+    monkeypatch.setattr("tools.benchmark_comparison.runner.os.getloadavg", lambda: (1.0, 1.0, 1.0))
+
+    sample = SystemIdleMonitor().sample()
+
+    assert sample.gpu_utilization_pct == 2
+    assert sample.gpu_memory_mib == 300
+    assert observed == [
+        (
+            "nvidia-smi",
+            "--id=0",
+            "--query-gpu=utilization.gpu,memory.used",
+            "--format=csv,noheader,nounits",
+        )
+    ]

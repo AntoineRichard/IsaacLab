@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 
 from .manifest import SoftwareIdentity
@@ -121,20 +122,20 @@ def metadata_int(value: Mapping[str, object], field: str, name: str) -> int:
     return result
 
 
-def parse_nvidia_identity(stdout: str) -> tuple[str, str, int]:
-    """Parse one consistent GPU model/driver and the maximum idle memory [MiB]."""
+def parse_nvidia_identity(stdout: str) -> tuple[str, str, int, str]:
+    """Parse physical GPU 0 model, driver, idle memory [MiB], and UUID."""
     rows = [tuple(item.strip() for item in line.split(",")) for line in stdout.splitlines() if line.strip()]
     try:
-        if not rows or any(len(row) != 4 for row in rows):
+        if len(rows) != 1 or len(rows[0]) != 5:
             raise ValueError
-        models = {row[0] for row in rows}
-        drivers = {row[1] for row in rows}
-        if len(models) != 1 or len(drivers) != 1 or not next(iter(models)) or not next(iter(drivers)):
+        model, driver, memory, utilization, gpu_uuid = rows[0]
+        if not model or not driver or re.fullmatch(r"GPU-[0-9A-Za-z-]+", gpu_uuid) is None:
             raise ValueError
-        idle_memory = max(int(row[2]) for row in rows)
+        idle_memory = int(memory)
+        int(utilization)
     except (ValueError, IndexError) as error:
         raise ValueError(f"NVIDIA SMI output is malformed: {stdout!r}") from error
-    return next(iter(models)), next(iter(drivers)), idle_memory
+    return model, driver, idle_memory, gpu_uuid
 
 
 def software_metadata(stdout: str, version: Version) -> tuple[SoftwareIdentity, str | None]:

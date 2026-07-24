@@ -256,6 +256,8 @@ def normalize_run_set(
     manifest = validate_manifest(manifest)
     if manifest.run_set is not expansion.run_set:
         raise ValueError("manifest run_set does not match matrix expansion")
+    if manifest.expansion is not None and manifest.expansion != expansion:
+        raise ValueError("matrix expansion does not match manifest run-set identity")
     task_order, mode_order, _task_modes = expansion_orders(expansion)
     runs: list[NormalizedRun] = []
     failures: list[FailureRow] = []
@@ -431,6 +433,7 @@ def _read_success(
         if wall_time < 0:
             raise ValueError("exit.wall_time_s must be non-negative")
         _validate_environment_provenance(environment, attempt, manifest.provenance)
+        _validate_selected_gpu(environment, manifest)
         version_sha = environment.get(f"{attempt.version.value}_sha")
         if not isinstance(version_sha, str) or not re.fullmatch(r"[0-9a-f]{40,64}", version_sha):
             raise ValueError(f"environment is missing exact {attempt.version.value} SHA")
@@ -547,6 +550,7 @@ def _read_failures(
 def _validate_failure_identity(path: Path, attempt: BenchmarkAttempt, manifest: RunSetManifest) -> None:
     environment = _read_mapping(path / "environment.json")
     _validate_environment_provenance(environment, attempt, manifest.provenance)
+    _validate_selected_gpu(environment, manifest)
     schema_value = json.loads((path / "schema.json").read_text(encoding="utf-8"))
     if isinstance(schema_value, Mapping) and {"versions", "hardware"}.issubset(schema_value):
         stdout = (path / "stdout.log").read_text(encoding="utf-8")
@@ -606,6 +610,35 @@ def _validate_environment_provenance(
         raise ValueError("environment provenance identity does not match preflight")
 
 
+def _validate_selected_gpu(environment: Mapping[str, object], manifest: RunSetManifest) -> None:
+    """Validate physical GPU 0 attestation for schema-2 artifacts."""
+    if manifest.schema_version == "1.0":
+        return
+    expected_uuid = manifest.host.gpu_uuid
+    if expected_uuid is None:
+        raise ValueError("manifest selected GPU UUID is missing")
+    selected_gpu = environment.get("selected_gpu")
+    if not isinstance(selected_gpu, Mapping) or set(selected_gpu) != {"physical_index", "uuid"}:
+        raise ValueError("environment selected GPU attestation is missing")
+    if selected_gpu.get("physical_index") != 0:
+        raise ValueError("environment selected GPU physical index does not match manifest")
+    if selected_gpu.get("uuid") != expected_uuid:
+        raise ValueError("environment selected GPU UUID does not match manifest")
+    values = environment.get("values")
+    if not isinstance(values, Mapping):
+        raise ValueError("environment selected GPU variables are missing")
+    expected_variables = {
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "NVIDIA_VISIBLE_DEVICES": "0",
+        "ISAACLAB_BENCHMARK_GPU_INDEX": "0",
+        "ISAACLAB_BENCHMARK_GPU_UUID": expected_uuid,
+    }
+    for name, expected in expected_variables.items():
+        if values.get(name) != expected:
+            raise ValueError(f"environment selected GPU variable {name} does not match manifest")
+
+
 def _validate_schema_identity(
     schema: Mapping[str, object],
     stdout: str,
@@ -638,8 +671,8 @@ def _validate_schema_identity(
         if hardware.get(field) != expected:
             raise ValueError(f"schema hardware.{field} does not match manifest")
     devices = hardware.get("gpu_devices")
-    if not isinstance(devices, list) or not devices or not isinstance(devices[0], Mapping):
-        raise ValueError("schema hardware.gpu_devices must identify a GPU")
+    if not isinstance(devices, list) or len(devices) != 1 or not isinstance(devices[0], Mapping):
+        raise ValueError("schema hardware.gpu_devices must identify exactly one GPU")
     if devices[0].get("name") != manifest.host.gpu_model:
         raise ValueError("schema hardware.gpu_model does not match manifest")
     driver_match = re.search(r"Driver Version:\s*([^|\s]+)", stdout)

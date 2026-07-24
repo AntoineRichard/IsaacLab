@@ -23,6 +23,7 @@ from tools.benchmark_comparison.executors import (
     PreflightError,
     ProcessLauncher,
     ProcessResult,
+    _merged_environment,
     run_preflight,
 )
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
@@ -30,6 +31,7 @@ from tools.benchmark_comparison.models import RunSet, Version
 
 LAB2_SHA = "28a9560c59df2306690ea717d6cf36f1e63c66e3"
 LAB3_SHA = "cb508381fb4874ce7afffeb9197bd91c20db7dad"
+GPU_UUID = "GPU-01234567-89ab-cdef-0123-456789abcdef"
 
 
 def _config(tmp_path: Path) -> ExecutorConfig:
@@ -81,13 +83,15 @@ def test_lab2_runtime_command_is_an_argument_vector_with_container_output(tmp_pa
     assert "--name" in invocation.argv
     assert "isaac-lab-benchmark" in invocation.argv
     assert "/workspace/isaaclab/scripts/benchmarks/runtime.py" in invocation.argv
-    assert invocation.argv[-12:] == (
+    assert invocation.argv[-14:] == (
         "--task",
         attempt.concrete_task,
         "--num_envs",
         "4096",
         "--seed",
         "42",
+        "--device",
+        "cuda:0",
         "--num_frames",
         "100",
         "--benchmark_formatter",
@@ -143,6 +147,60 @@ def test_lab3_runtime_and_training_commands_use_locked_uv_project(tmp_path: Path
     assert "presets=physx" in training.argv
     assert runtime.environment["ISAACLAB_BENCHMARK_LAB2_SHA"] == LAB2_SHA
     assert runtime.environment["ISAACLAB_BENCHMARK_LAB3_SHA"] == LAB3_SHA
+
+
+@pytest.mark.parametrize(
+    ("version", "executor_type"),
+    [(Version.LAB2, Lab2DockerExecutor), (Version.LAB3, Lab3UvExecutor)],
+)
+def test_measured_commands_pin_physical_gpu_zero(
+    tmp_path: Path, version: Version, executor_type: type[Lab2DockerExecutor] | type[Lab3UvExecutor]
+) -> None:
+    invocation = executor_type(_config(tmp_path), selected_gpu_uuid=GPU_UUID).invocation(_attempt(version))
+
+    assert invocation.argv[invocation.argv.index("--device") : invocation.argv.index("--device") + 2] == (
+        "--device",
+        "cuda:0",
+    )
+    assert invocation.environment["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert invocation.environment["CUDA_VISIBLE_DEVICES"] == "0"
+    assert invocation.environment["NVIDIA_VISIBLE_DEVICES"] == "0"
+    assert invocation.environment["ISAACLAB_BENCHMARK_GPU_INDEX"] == "0"
+    assert invocation.environment["ISAACLAB_BENCHMARK_GPU_UUID"] == GPU_UUID
+
+
+def test_subprocess_environment_drops_inherited_distributed_and_gpu_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inherited = {
+        "CUDA_VISIBLE_DEVICES": "3,2",
+        "NVIDIA_VISIBLE_DEVICES": "all",
+        "RANK": "7",
+        "LOCAL_RANK": "1",
+        "WORLD_SIZE": "8",
+        "MASTER_ADDR": "example.invalid",
+        "MASTER_PORT": "1234",
+        "TORCHELASTIC_RUN_ID": "inherited",
+        "OMPI_COMM_WORLD_RANK": "4",
+        "SLURM_PROCID": "5",
+        "JAX_RANK": "6",
+        "JAX_LOCAL_RANK": "2",
+    }
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+
+    merged = _merged_environment(
+        {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": "0",
+            "NVIDIA_VISIBLE_DEVICES": "0",
+        }
+    )
+
+    assert merged["CUDA_VISIBLE_DEVICES"] == "0"
+    assert merged["NVIDIA_VISIBLE_DEVICES"] == "0"
+    explicitly_replaced = {"CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"}
+    assert all(name not in merged for name in inherited if name not in explicitly_replaced)
 
 
 def test_lab3_omits_redundant_physx_alias_only_for_default_physx_tasks(tmp_path: Path):
@@ -206,6 +264,16 @@ def test_version_probe_commands_are_argv_vectors(tmp_path: Path):
     )
     assert "MetricsFormatter.get_instance('schema')" in lab2.argv[-1]
     assert "MetricsFormatter.get_instance('json')" in lab3.argv[-1]
+
+
+def test_lab2_version_probe_forwards_gpu_zero_selection_into_container(tmp_path: Path) -> None:
+    invocation = Lab2DockerExecutor(_config(tmp_path), selected_gpu_uuid=GPU_UUID).version_invocation()
+    forwarded = {invocation.argv[index + 1] for index, argument in enumerate(invocation.argv[:-1]) if argument == "-e"}
+
+    assert "CUDA_DEVICE_ORDER=PCI_BUS_ID" in forwarded
+    assert "CUDA_VISIBLE_DEVICES=0" in forwarded
+    assert "NVIDIA_VISIBLE_DEVICES=0" in forwarded
+    assert "ISAACLAB_BENCHMARK_GPU_UUID=" + GPU_UUID in forwarded
 
 
 def test_version_probes_require_every_configured_task_registration(tmp_path: Path):
@@ -316,6 +384,8 @@ def test_compose_uses_image_native_workspace_and_only_artifact_mount():
     assert "source: ${ISAACLAB_BENCHMARK_ARTIFACT_ROOT}" in compose
     assert compose.count("type: bind") == 1
     assert "image: ${ISAACLAB_BENCHMARK_IMAGE_ID}" in compose
+    assert 'device_ids: ["0"]' in compose
+    assert "count: all" not in compose
 
 
 def test_lab2_invocation_uses_exact_image_id_without_host_source_mount(tmp_path: Path):
@@ -359,7 +429,7 @@ class _PreflightCommands:
         if argv[:2] == ("uv", "lock"):
             return CommandResult(argv, 0, "", "")
         if argv and argv[0] == "nvidia-smi":
-            return CommandResult(argv, 0, "Fixture GPU, 590.48.01, 100, 0\n", "")
+            return CommandResult(argv, 0, f"Fixture GPU, 590.48.01, 100, 0, {GPU_UUID}\n", "")
         if "ISAACLAB_BENCHMARK_HOST_METADATA" in rendered:
             return CommandResult(
                 argv,
@@ -396,9 +466,14 @@ def test_preflight_validates_all_required_system_identities(tmp_path: Path):
     rendered = [" ".join(argv) for argv in commands.argvs]
     assert result.idle_memory_baseline_mib == 100
     assert result.uv_lock_sha256 == hashlib.sha256(b"locked\n").hexdigest()
-    manifest = result.manifest(RunSet.FINAL, "measured")
+    expansion = expand_final_matrix(load_matrix())
+    manifest = result.manifest(RunSet.FINAL, "measured", expansion)
+    assert manifest.schema_version == "2.0"
     assert manifest.host.gpu_model == "Fixture GPU"
     assert manifest.host.gpu_driver == "590.48.01"
+    assert manifest.host.gpu_index == 0
+    assert manifest.host.gpu_uuid == GPU_UUID
+    assert manifest.expansion == expansion
     assert manifest.host.cpu_model == "Fixture CPU"
     assert manifest.lab2.python == "3.11"
     assert manifest.lab3.rsl_rl == "5.4"
@@ -407,6 +482,9 @@ def test_preflight_validates_all_required_system_identities(tmp_path: Path):
     assert any("docker image inspect" in command for command in rendered)
     assert any("uv lock --check" in command for command in rendered)
     assert any(command.startswith("nvidia-smi") for command in rendered)
+    nvidia_command = next(argv for argv in commands.argvs if argv and argv[0] == "nvidia-smi")
+    assert "--id=0" in nvidia_command
+    assert any("uuid" in argument for argument in nvidia_command)
     assert len([command for command in rendered if "MetricsFormatter.get_instance" in command]) == 2
 
 
@@ -438,10 +516,18 @@ def test_preflight_provenance_is_written_by_actual_executor_payloads(tmp_path: P
         def run(self, _invocation, _timeout_s):
             return ProcessResult(returncode=0, stdout="", stderr="")
 
-    lab2 = Lab2DockerExecutor(config, launcher=Launcher(), provenance=preflight.provenance).execute(
-        _attempt(Version.LAB2)
-    )
-    lab3 = Lab3UvExecutor(config, launcher=Launcher(), provenance=preflight.provenance).execute(_attempt(Version.LAB3))
+    lab2 = Lab2DockerExecutor(
+        config,
+        launcher=Launcher(),
+        provenance=preflight.provenance,
+        selected_gpu_uuid=preflight.host.gpu_uuid,
+    ).execute(_attempt(Version.LAB2))
+    lab3 = Lab3UvExecutor(
+        config,
+        launcher=Launcher(),
+        provenance=preflight.provenance,
+        selected_gpu_uuid=preflight.host.gpu_uuid,
+    ).execute(_attempt(Version.LAB3))
 
     expected_common = {
         "lab2_sha": LAB2_SHA,
@@ -451,6 +537,9 @@ def test_preflight_provenance_is_written_by_actual_executor_payloads(tmp_path: P
     }
     for execution in (lab2, lab3):
         assert {key: execution.environment[key] for key in expected_common} == expected_common
+        assert execution.environment["selected_gpu"] == {"physical_index": 0, "uuid": GPU_UUID}
+        assert execution.environment["values"]["CUDA_VISIBLE_DEVICES"] == "0"
+        assert execution.environment["values"]["NVIDIA_VISIBLE_DEVICES"] == "0"
     assert lab2.environment["environment_identity"] == config.lab2_image_id
     assert lab3.environment["environment_identity"] == f"uv-lock:{expected_common['uv_lock_sha256']}"
 

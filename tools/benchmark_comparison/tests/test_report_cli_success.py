@@ -66,8 +66,15 @@ def test_report_only_cli_normalizes_a_synthetic_raw_success(tmp_path: Path) -> N
         environment={
             "identity": identity,
             "environment_identity": provenance.environment_identity(attempt.version),
+            "selected_gpu": {"physical_index": 0, "uuid": "GPU-TEST-0000"},
             **provenance.to_json(),
-            "values": {},
+            "values": {
+                "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "NVIDIA_VISIBLE_DEVICES": "0",
+                "ISAACLAB_BENCHMARK_GPU_INDEX": "0",
+                "ISAACLAB_BENCHMARK_GPU_UUID": "GPU-TEST-0000",
+            },
         },
         stdout="| Driver Version: 590.48.01 | Graphics API: Vulkan\n",
         stderr="",

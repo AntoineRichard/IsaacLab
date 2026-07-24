@@ -172,6 +172,7 @@ def verify_success(
     attempt: BenchmarkAttempt,
     *,
     expected_provenance: ExecutionProvenance,
+    expected_gpu_uuid: str,
 ) -> bool:
     """Verify a finalized success's checksums, semantics, and validation document.
 
@@ -179,6 +180,7 @@ def verify_success(
         directory: Finalized ``success`` artifact directory.
         attempt: Immutable matrix attempt expected in the artifact.
         expected_provenance: Exact preflight identities required in the artifact.
+        expected_gpu_uuid: Physical GPU UUID selected by preflight.
 
     Returns:
         ``True`` only when the complete success artifact is trustworthy.
@@ -189,6 +191,7 @@ def verify_success(
             directory,
             attempt,
             expected_provenance=expected_provenance,
+            expected_gpu_uuid=expected_gpu_uuid,
         )
     except ArtifactIntegrityError:
         return False
@@ -200,6 +203,7 @@ def _verify_execution_provenance(
     attempt: BenchmarkAttempt,
     *,
     expected_provenance: ExecutionProvenance,
+    expected_gpu_uuid: str,
 ) -> None:
     """Reject a success produced by different preflight execution identities."""
     try:
@@ -223,6 +227,19 @@ def _verify_execution_provenance(
         raise ArtifactIntegrityError(f"success environment uv lock does not match: {directory}")
     if environment.get("environment_identity") != expected_provenance.environment_identity(attempt.version):
         raise ArtifactIntegrityError(f"success executor identity does not match: {directory}")
+    expected_gpu = {"physical_index": 0, "uuid": expected_gpu_uuid}
+    if environment.get("selected_gpu") != expected_gpu:
+        raise ArtifactIntegrityError(f"success selected GPU does not match: {directory}")
+    expected_gpu_environment = {
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "NVIDIA_VISIBLE_DEVICES": "0",
+        "ISAACLAB_BENCHMARK_GPU_INDEX": "0",
+        "ISAACLAB_BENCHMARK_GPU_UUID": expected_gpu_uuid,
+    }
+    for name, value in expected_gpu_environment.items():
+        if values.get(name) != value:
+            raise ArtifactIntegrityError(f"success environment {name} does not match: {directory}")
 
 
 def _verify_existing_success(success_path: Path, attempt_root: Path, attempt: BenchmarkAttempt) -> None:

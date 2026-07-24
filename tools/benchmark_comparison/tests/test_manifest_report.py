@@ -60,6 +60,7 @@ def test_zero_success_report_uses_typed_manifest_versions_and_driver(tmp_path: P
     text = report.read_text(encoding="utf-8")
     for expected in (
         "590.48.01",
+        "GPU-TEST-0000",
         "2.3.2",
         "3.0.0",
         "5.1.0",

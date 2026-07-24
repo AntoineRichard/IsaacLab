@@ -262,6 +262,29 @@ def test_validate_attempt_classifies_gpu_sample_count_values(sample_state: str, 
     assert result.succeeded is (expected is None)
 
 
+def test_validate_attempt_accepts_selected_gpu_zero_sample_name() -> None:
+    attempt, payloads = _valid_payloads()
+    _gpu_sample_measurement(payloads["measurements"])["name"] = "benchmark_runtime runtime GPU 0 Utilization n"
+
+    result = validate_attempt(attempt, **payloads)
+
+    assert result.succeeded
+    assert result.metrics is not None
+    assert result.metrics.gpu_utilization_sample_count == 2
+
+
+def test_validate_attempt_rejects_multiple_visible_gpu_devices() -> None:
+    attempt, payloads = _valid_payloads()
+    payloads["schema"]["hardware"]["gpu_devices"].append(
+        {"name": "Unexpected GPU", "mem_gb": 24.0, "compute_cap": "8.9"}
+    )
+
+    result = validate_attempt(attempt, **payloads)
+
+    assert result.failure_kind is FailureKind.IDENTITY_MISMATCH
+    assert "exactly one visible GPU" in result.reason
+
+
 def test_validate_attempt_uses_schema_values_instead_of_generic_metric_duplicates() -> None:
     """Generic values cannot silently replace the canonical schema metric values."""
     attempt, payloads = _valid_payloads()

@@ -29,6 +29,7 @@ LAB2_SHA = "a" * 40
 LAB3_SHA = "b" * 40
 LAB2_IMAGE_ID = "sha256:" + "c" * 64
 LAB3_LOCK = "d" * 64
+GPU_UUID = "GPU-01234567-89ab-cdef-0123-456789abcdef"
 
 
 def _schema(attempt):
@@ -61,7 +62,13 @@ def _execution(attempt, *, exit_code=0, timed_out=False, interrupted=False, oom=
                 "ISAACLAB_BENCHMARK_LAB3_SHA": LAB3_SHA,
                 "ISAACLAB_BENCHMARK_LAB2_IMAGE_ID": LAB2_IMAGE_ID,
                 "ISAACLAB_BENCHMARK_UV_LOCK_SHA256": LAB3_LOCK,
+                "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "NVIDIA_VISIBLE_DEVICES": "0",
+                "ISAACLAB_BENCHMARK_GPU_INDEX": "0",
+                "ISAACLAB_BENCHMARK_GPU_UUID": GPU_UUID,
             },
+            "selected_gpu": {"physical_index": 0, "uuid": GPU_UUID},
             "environment_identity": (LAB2_IMAGE_ID if attempt.version.value == "lab2" else f"uv-lock:{LAB3_LOCK}"),
             "lab2_sha": LAB2_SHA,
             "lab3_sha": LAB3_SHA,
@@ -120,6 +127,7 @@ def _runner(tmp_path: Path, executors, gate=None) -> BenchmarkRunner:
             lab2_image_id=LAB2_IMAGE_ID,
             uv_lock_sha256=LAB3_LOCK,
         ),
+        expected_gpu_uuid=GPU_UUID,
     )
     return runner
 
@@ -216,6 +224,7 @@ def test_rechecksummed_forged_validation_is_quarantined_and_rerun(tmp_path: Path
         ("lab2_image_id", "sha256:" + "f" * 64),
         ("uv_lock_sha256", "f" * 64),
         ("environment_identity", "sha256:" + "f" * 64),
+        ("selected_gpu", {"physical_index": 0, "uuid": "GPU-WRONG"}),
     ],
 )
 def test_rechecksummed_forged_provenance_is_quarantined_and_rerun(tmp_path: Path, field: str, forged_value: str):

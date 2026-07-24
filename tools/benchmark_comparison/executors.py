@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .manifest import HostIdentity, RunSetManifest, SoftwareIdentity
-from .models import BenchmarkAttempt, BoundUnit, ExecutionProvenance, RunSet, Version
+from .models import BenchmarkAttempt, BoundUnit, ExecutionProvenance, MatrixExpansion, RunSet, Version
 from .preflight_metadata import (
     host_metadata_probe as _host_metadata_probe,
 )
@@ -52,6 +52,23 @@ from .preflight_metadata import (
 from .validate import attempt_identity
 
 _LAB2_PREFLIGHT_SENTINEL = "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__"
+
+_ISOLATED_ENVIRONMENT_NAMES = {
+    "CUDA_DEVICE_ORDER",
+    "CUDA_VISIBLE_DEVICES",
+    "NVIDIA_VISIBLE_DEVICES",
+    "RANK",
+    "LOCAL_RANK",
+    "WORLD_SIZE",
+    "LOCAL_WORLD_SIZE",
+    "GROUP_RANK",
+    "ROLE_RANK",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+    "JAX_RANK",
+    "JAX_LOCAL_RANK",
+}
+_ISOLATED_ENVIRONMENT_PREFIXES = ("TORCHELASTIC_", "OMPI_COMM_WORLD_", "PMI_", "PMIX_", "SLURM_")
 
 _LAB3_DEFAULT_PHYSX_TASKS = {
     "Isaac-Velocity-Flat-G1",
@@ -121,10 +138,12 @@ class PreflightResult:
         """Return the validated lock hash for compatibility with existing callers."""
         return self.provenance.uv_lock_sha256
 
-    def manifest(self, run_set: RunSet, phase: str) -> RunSetManifest:
+    def manifest(self, run_set: RunSet, phase: str, expansion: MatrixExpansion) -> RunSetManifest:
         """Build the self-contained manifest validated before measurement."""
+        if expansion.run_set is not run_set:
+            raise ValueError("manifest expansion does not match run_set")
         return RunSetManifest(
-            schema_version="1.0",
+            schema_version="2.0",
             run_set=run_set,
             phase=phase,
             provenance=self.provenance,
@@ -132,6 +151,7 @@ class PreflightResult:
             lab2=self.lab2_software,
             lab3=self.lab3_software,
             cpu_power_profile=self.cpu_power_profile,
+            expansion=expansion,
         )
 
 
@@ -253,11 +273,13 @@ class _Executor:
         launcher: ProcessLauncher | None = None,
         timeout_s: float = 7200.0,
         provenance: ExecutionProvenance | None = None,
+        selected_gpu_uuid: str | None = None,
     ):
         self.config = config
         self._launcher = launcher or ProcessLauncher()
         self._timeout_s = timeout_s
         self.provenance = provenance
+        self.selected_gpu_uuid = selected_gpu_uuid
 
     def invocation(self, attempt: BenchmarkAttempt, output_suffix: str | None = None) -> Invocation:
         """Build the measured command for ``attempt``."""
@@ -273,6 +295,8 @@ class _Executor:
 
         if self.provenance is None:
             raise RuntimeError("benchmark execution requires validated preflight provenance")
+        if self.selected_gpu_uuid is None:
+            raise RuntimeError("benchmark execution requires the selected physical GPU UUID")
 
         output_suffix = f"{attempt.identity}-{uuid.uuid4().hex}"
         output_path = self.config.artifact_root / ".outputs" / output_suffix
@@ -296,6 +320,7 @@ class _Executor:
                 "environment_identity": self.provenance.environment_identity(attempt.version),
                 "values": dict(sorted(invocation.environment.items())),
                 "lab2_image": self.config.lab2_image,
+                "selected_gpu": {"physical_index": 0, "uuid": self.selected_gpu_uuid},
                 **self.provenance.to_json(),
             },
             stdout=result.stdout,
@@ -316,10 +341,16 @@ class _Executor:
 
     def _environment(self) -> dict[str, str]:
         environment = {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": "0",
+            "NVIDIA_VISIBLE_DEVICES": "0",
+            "ISAACLAB_BENCHMARK_GPU_INDEX": "0",
             "ISAACLAB_BENCHMARK_LAB2_SHA": self.config.lab2_sha,
             "ISAACLAB_BENCHMARK_LAB3_SHA": self.config.lab3_sha,
             "OMNI_KIT_ACCEPT_EULA": "yes",
         }
+        if self.selected_gpu_uuid is not None:
+            environment["ISAACLAB_BENCHMARK_GPU_UUID"] = self.selected_gpu_uuid
         if self.provenance is not None:
             environment["ISAACLAB_BENCHMARK_LAB2_IMAGE_ID"] = self.provenance.lab2_image_id
             environment["ISAACLAB_BENCHMARK_UV_LOCK_SHA256"] = self.provenance.uv_lock_sha256
@@ -336,6 +367,8 @@ class _Executor:
             str(attempt.num_envs),
             "--seed",
             str(attempt.seed),
+            "--device",
+            "cuda:0",
         )
         if attempt.bound.unit is BoundUnit.STEPS:
             bounded = ("--num_frames", str(attempt.bound.value))
@@ -405,7 +438,7 @@ class Lab2DockerExecutor(_Executor):
     def version_invocation(self) -> Invocation:
         """Build the Lab 2 registration and formatter probe."""
         environment = self._environment()
-        argv = (
+        argv = [
             "docker",
             "compose",
             "--env-file",
@@ -418,14 +451,20 @@ class Lab2DockerExecutor(_Executor):
             "--rm",
             "--no-deps",
             "-T",
-            "isaac-lab-benchmark",
-            "/workspace/isaaclab/isaaclab.sh",
-            "-p",
-            "-c",
-            _registration_probe(Version.LAB2),
+        ]
+        for name, value in sorted(environment.items()):
+            argv.extend(("-e", f"{name}={value}"))
+        argv.extend(
+            (
+                "isaac-lab-benchmark",
+                "/workspace/isaaclab/isaaclab.sh",
+                "-p",
+                "-c",
+                _registration_probe(Version.LAB2),
+            )
         )
         return Invocation(
-            argv,
+            tuple(argv),
             {
                 **environment,
                 "ISAACLAB_BENCHMARK_ARTIFACT_ROOT": str(self.config.artifact_root),
@@ -510,10 +549,15 @@ def run_preflight(
     )
     nvidia = _require_command(
         command_runner,
-        ("nvidia-smi", "--query-gpu=name,driver_version,memory.used,utilization.gpu", "--format=csv,noheader,nounits"),
+        (
+            "nvidia-smi",
+            "--id=0",
+            "--query-gpu=name,driver_version,memory.used,utilization.gpu,uuid",
+            "--format=csv,noheader,nounits",
+        ),
         description="NVIDIA SMI access",
     )
-    gpu_model, gpu_driver, idle_memory = _parse_nvidia_identity(nvidia.stdout)
+    gpu_model, gpu_driver, idle_memory, gpu_uuid = _parse_nvidia_identity(nvidia.stdout)
     try:
         config.artifact_root.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=config.artifact_root):
@@ -524,8 +568,13 @@ def run_preflight(
     if free_disk < min_free_bytes:
         raise PreflightError(f"preflight free disk is {free_disk} bytes; require {min_free_bytes}")
     for name, invocation, expected_stdout, expected_stdout_line in (
-        ("lab2", Lab2DockerExecutor(config).version_invocation(), None, _LAB2_PREFLIGHT_SENTINEL),
-        ("lab3", Lab3UvExecutor(config).version_invocation(), "ok", None),
+        (
+            "lab2",
+            Lab2DockerExecutor(config, selected_gpu_uuid=gpu_uuid).version_invocation(),
+            None,
+            _LAB2_PREFLIGHT_SENTINEL,
+        ),
+        ("lab3", Lab3UvExecutor(config, selected_gpu_uuid=gpu_uuid).version_invocation(), "ok", None),
     ):
         _require_command(
             command_runner,
@@ -548,7 +597,7 @@ def run_preflight(
     software = {}
     cuda_versions = set()
     for version in (Version.LAB2, Version.LAB3):
-        invocation = _software_metadata_invocation(config, version)
+        invocation = _software_metadata_invocation(config, version, gpu_uuid)
         result = _require_command(
             command_runner,
             invocation.argv,
@@ -582,6 +631,8 @@ def run_preflight(
             gpu_model=gpu_model,
             gpu_driver=gpu_driver,
             cuda_version=next(iter(cuda_versions), None),
+            gpu_index=0,
+            gpu_uuid=gpu_uuid,
         ),
         lab2_software=software[Version.LAB2],
         lab3_software=software[Version.LAB3],
@@ -589,11 +640,11 @@ def run_preflight(
     )
 
 
-def _software_metadata_invocation(config: ExecutorConfig, version: Version) -> Invocation:
+def _software_metadata_invocation(config: ExecutorConfig, version: Version, gpu_uuid: str) -> Invocation:
     base = (
-        Lab2DockerExecutor(config).version_invocation()
+        Lab2DockerExecutor(config, selected_gpu_uuid=gpu_uuid).version_invocation()
         if version is Version.LAB2
-        else Lab3UvExecutor(config).version_invocation()
+        else Lab3UvExecutor(config, selected_gpu_uuid=gpu_uuid).version_invocation()
     )
     return Invocation((*base.argv[:-1], _software_metadata_probe()), base.environment, base.cwd)
 
@@ -625,7 +676,7 @@ def _require_command(
     return result
 
 
-def _parse_nvidia_identity(stdout: str) -> tuple[str, str, int]:
+def _parse_nvidia_identity(stdout: str) -> tuple[str, str, int, str]:
     try:
         return _parse_nvidia_identity_value(stdout)
     except ValueError as error:
@@ -731,6 +782,9 @@ def _raise_interruption(_signal_number: int, _frame: object) -> None:
 
 def _merged_environment(environment: Mapping[str, str] | None) -> dict[str, str]:
     merged = os.environ.copy()
+    for name in tuple(merged):
+        if name in _ISOLATED_ENVIRONMENT_NAMES or name.startswith(_ISOLATED_ENVIRONMENT_PREFIXES):
+            merged.pop(name)
     if environment is not None:
         merged.update(environment)
     return merged

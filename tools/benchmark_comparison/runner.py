@@ -150,6 +150,7 @@ class SystemIdleMonitor:
         lines = _command_lines(
             (
                 "nvidia-smi",
+                "--id=0",
                 "--query-gpu=utilization.gpu,memory.used",
                 "--format=csv,noheader,nounits",
             )
@@ -317,11 +318,13 @@ class BenchmarkRunner:
         executors: Mapping[str, AttemptExecutor],
         idle_gate: AttemptIdleGate,
         expected_provenance: ExecutionProvenance,
+        expected_gpu_uuid: str,
     ):
         self.artifact_root = artifact_root
         self.executors = executors
         self.idle_gate = idle_gate
         self.expected_provenance = expected_provenance
+        self.expected_gpu_uuid = expected_gpu_uuid
         self.after_persist = None
 
     def run(self, expansion: MatrixExpansion, *, retry_failures: bool = False) -> RunResult:
@@ -407,6 +410,7 @@ class BenchmarkRunner:
             path,
             attempt,
             expected_provenance=self.expected_provenance,
+            expected_gpu_uuid=self.expected_gpu_uuid,
         )
 
     def _persist(self, state_path: Path, state: dict[str, object]) -> None:

@@ -85,6 +85,8 @@ def write_markdown_report(
             f"| `{expected_provenance.environment_identity(version)}` |"
         )
 
+    gpu_index = expected_manifest.host.gpu_index
+    gpu_index_text = str(gpu_index) if gpu_index is not None else chr(8212)
     lines.extend(
         [
             "",
@@ -97,6 +99,8 @@ def write_markdown_report(
             f"| CPU | {_escape(expected_manifest.host.cpu_model)} |",
             f"| Logical CPUs | {expected_manifest.host.logical_cpu_count} |",
             f"| GPU | {_escape(expected_manifest.host.gpu_model)} |",
+            f"| Physical GPU index | {gpu_index_text} |",
+            f"| GPU UUID | {_escape(expected_manifest.host.gpu_uuid or chr(8212))} |",
             f"| NVIDIA driver | {_escape(expected_manifest.host.gpu_driver)} |",
             f"| CUDA | {_escape(expected_manifest.host.cuda_version or chr(8212))} |",
             "",

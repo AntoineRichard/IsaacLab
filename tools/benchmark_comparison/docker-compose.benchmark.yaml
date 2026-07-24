@@ -21,6 +21,6 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["0"]
               capabilities: [gpu]
     entrypoint: []

@@ -45,11 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     preflight = run_preflight(config)
     run_set = RunSet(args.run_set)
+    expansion = expand_canary_matrix(load_matrix()) if run_set is RunSet.CANARY else expand_final_matrix(load_matrix())
     write_manifest(
         config.artifact_root / run_set.value / "manifest.json",
-        preflight.manifest(run_set, args.phase),
+        preflight.manifest(run_set, args.phase, expansion),
     )
-    expansion = expand_canary_matrix(load_matrix()) if run_set is RunSet.CANARY else expand_final_matrix(load_matrix())
     owned_process_groups = OwnedProcessGroups()
     launcher = ProcessLauncher(owned_process_groups=owned_process_groups)
     idle_gate = HostIdleGate(
@@ -63,11 +63,22 @@ def main(argv: list[str] | None = None) -> int:
     runner = BenchmarkRunner(
         artifact_root=config.artifact_root,
         executors={
-            "lab2": Lab2DockerExecutor(config, launcher=launcher, provenance=preflight.provenance),
-            "lab3": Lab3UvExecutor(config, launcher=launcher, provenance=preflight.provenance),
+            "lab2": Lab2DockerExecutor(
+                config,
+                launcher=launcher,
+                provenance=preflight.provenance,
+                selected_gpu_uuid=preflight.host.gpu_uuid,
+            ),
+            "lab3": Lab3UvExecutor(
+                config,
+                launcher=launcher,
+                provenance=preflight.provenance,
+                selected_gpu_uuid=preflight.host.gpu_uuid,
+            ),
         },
         idle_gate=idle_gate,
         expected_provenance=preflight.provenance,
+        expected_gpu_uuid=preflight.host.gpu_uuid,
     )
     result = runner.run(expansion, retry_failures=args.retry_failures)
     return 0 if result.failed == 0 and result.status.value == "completed" else 1

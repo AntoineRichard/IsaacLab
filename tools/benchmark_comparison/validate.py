@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -263,6 +264,10 @@ def _validate_schema_identity(attempt: BenchmarkAttempt, schema: Mapping[object,
         run = _mapping_at(schema, "run")
         runtime = _mapping_at(schema, "runtime")
         versions = _mapping_at(schema, "versions")
+        hardware = _mapping_at(schema, "hardware")
+        gpu_devices = _required_at(hardware, "gpu_devices")
+        if not isinstance(gpu_devices, list):
+            raise _MalformedArtifact("hardware.gpu_devices must be a list")
         release = _required_at(versions, "isaaclab_release")
         if not isinstance(release, str):
             raise _MalformedArtifact("versions.isaaclab_release must be a string")
@@ -278,6 +283,9 @@ def _validate_schema_identity(attempt: BenchmarkAttempt, schema: Mapping[object,
             actual_identity["max_iterations"] = _required_at(run, "max_iterations")
     except _MalformedArtifact as error:
         return _failure(FailureKind.MALFORMED_ARTIFACT, str(error))
+
+    if len(gpu_devices) != 1:
+        return _failure(FailureKind.IDENTITY_MISMATCH, "schema.json must identify exactly one visible GPU")
 
     expected_identity: dict[str, object] = {
         "task": attempt.concrete_task,
@@ -348,7 +356,7 @@ def _gpu_utilization_sample_count(measurements: list[object]) -> int:
             name = measurement.get("name")
             if not isinstance(name, str):
                 raise _MalformedArtifact("measurements.json measurement names must be strings")
-            if name.endswith("GPU Utilization n"):
+            if re.search(r"(?:^| )GPU(?: 0)? Utilization n$", name) is not None:
                 matches.append(measurement)
     if not matches:
         raise _MissingMetric("measurements.json is missing GPU Utilization n")
