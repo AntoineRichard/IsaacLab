@@ -160,6 +160,31 @@ def test_lab3_omits_redundant_physx_alias_only_for_default_physx_tasks(tmp_path:
     assert "presets=physx" in lab2_g1.argv
 
 
+def test_rgb_cartpole_runtime_commands_enable_cameras_and_select_kit_rgb(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    lab2 = Lab2DockerExecutor(config).invocation(_attempt(Version.LAB2, task="cartpole_rgb_kit"))
+    lab3 = Lab3UvExecutor(config).invocation(_attempt(Version.LAB3, task="cartpole_rgb_kit"))
+
+    assert "--enable_cameras" in lab2.argv
+    assert "--enable_cameras" in lab3.argv
+    assert "presets=physx" in lab2.argv
+    assert "presets=physx,rgb" in lab3.argv
+    assert "presets=physx" not in lab3.argv
+    assert all("newton_renderer" not in argument for argument in lab3.argv)
+
+
+def test_non_camera_tasks_keep_camera_flags_and_extra_presets_disabled(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    for version, executor in (
+        (Version.LAB2, Lab2DockerExecutor(config)),
+        (Version.LAB3, Lab3UvExecutor(config)),
+    ):
+        invocation = executor.invocation(_attempt(version, task="cartpole"))
+        assert "--enable_cameras" not in invocation.argv
+        assert all(argument != "presets=physx,rgb" for argument in invocation.argv)
+
+
 def test_version_probe_commands_are_argv_vectors(tmp_path: Path):
     config = _config(tmp_path)
 
@@ -200,7 +225,7 @@ def test_version_probes_use_version_specific_app_startup_and_sentinel(tmp_path: 
     lab2_probe = Lab2DockerExecutor(config).version_invocation().argv[-1]
     lab3_probe = Lab3UvExecutor(config).version_invocation().argv[-1]
 
-    app_launcher = "AppLauncher(headless=True)"
+    app_launcher = "AppLauncher(headless=True, enable_cameras=True)"
     assert lab2_probe.index(app_launcher) < lab2_probe.index("MetricsFormatter")
     assert lab2_probe.index(app_launcher) < lab2_probe.index("isaaclab_tasks")
     assert "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__" in lab2_probe
@@ -210,14 +235,24 @@ def test_version_probes_use_version_specific_app_startup_and_sentinel(tmp_path: 
     assert "__ISAACLAB_BENCHMARK_PREFLIGHT_OK__" not in lab3_probe
 
 
-def test_version_probes_require_physx_4096_and_rsl_configs_for_every_task(tmp_path: Path):
+def test_version_probes_require_rsl_only_for_training_tasks_and_validate_rgb_camera(tmp_path: Path) -> None:
     config = _config(tmp_path)
 
     lab2_probe = Lab2DockerExecutor(config).version_invocation().argv[-1]
     lab3_probe = Lab3UvExecutor(config).version_invocation().argv[-1]
 
-    assert all(token in lab2_probe for token in ("num_envs=4096", "rsl_rl_cfg_entry_point", "PhysxCfg"))
-    assert all(token in lab3_probe for token in ("env.scene.num_envs=4096", "rsl_rl_cfg_entry_point", "PhysxCfg"))
+    assert "AppLauncher(headless=True, enable_cameras=True)" in lab2_probe
+    assert "if supports_training" in lab2_probe
+    assert "if supports_training" in lab3_probe
+    assert "rsl_rl_cfg_entry_point" in lab2_probe
+    assert "rsl_rl_cfg_entry_point" in lab3_probe
+    assert "Isaac-Cartpole-RGB-v0" in lab2_probe
+    assert "Isaac-Cartpole-Camera" in lab3_probe
+    assert "('Isaac-Cartpole-Camera', False, True, ('rgb',))" in lab3_probe
+    assert "presets={','.join(presets)}" in lab3_probe
+    assert "env_cfg.scene.tiled_camera.data_types == ['rgb']" in lab2_probe
+    assert "env_cfg.scene.tiled_camera.data_types == ['rgb']" in lab3_probe
+    assert "IsaacRtxRendererCfg" in lab3_probe
 
 
 def test_child_timeout_terminates_process_group_and_cleans_only_owned_container(tmp_path: Path):

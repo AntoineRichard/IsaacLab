@@ -341,10 +341,21 @@ class _Executor:
             bounded = ("--num_frames", str(attempt.bound.value))
         else:
             bounded = ("--rl_library", attempt.framework, "--max_iterations", str(attempt.bound.value))
-        physics = ()
+        presets: list[str] = []
         if attempt.version is not Version.LAB3 or attempt.concrete_task not in _LAB3_DEFAULT_PHYSX_TASKS:
-            physics = ("presets=physx",)
-        return (*common, *bounded, "--benchmark_formatter", "schema,json", *physics, "--headless")
+            presets.append("physx")
+        presets.extend(attempt.extra_presets)
+        preset_argument = (f"presets={','.join(presets)}",) if presets else ()
+        camera_arguments = ("--enable_cameras",) if attempt.enable_cameras else ()
+        return (
+            *common,
+            *bounded,
+            "--benchmark_formatter",
+            "schema,json",
+            *preset_argument,
+            *camera_arguments,
+            "--headless",
+        )
 
 
 class Lab2DockerExecutor(_Executor):
@@ -628,28 +639,40 @@ def _script_name(attempt: BenchmarkAttempt) -> str:
 def _registration_probe(version: Version) -> str:
     from .matrix import load_matrix
 
-    task_ids = tuple(task.concrete_id(version) for task in load_matrix().tasks)
+    tasks = load_matrix().tasks
+    task_specs = tuple(
+        (
+            task.concrete_id(version),
+            task.supports_mode("training-100"),
+            task.enable_cameras,
+            task.presets_for(version),
+        )
+        for task in tasks
+    )
     if version is Version.LAB2:
         script = (
             "from isaaclab.app import AppLauncher\n"
-            "simulation_app = AppLauncher(headless=True).app\n"
+            "simulation_app = AppLauncher(headless=True, enable_cameras=True).app\n"
             "from isaaclab.test.benchmark.formatters import MetricsFormatter\n"
             "MetricsFormatter.get_instance('schema')\n"
             "MetricsFormatter.get_instance('json')\n"
             "import gymnasium as gym, isaaclab_tasks\n"
             "from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg\n"
-            f"task_ids = {task_ids!r}\n"
-            "for task_id in task_ids:\n"
+            f"task_specs = {task_specs!r}\n"
+            "for task_id, supports_training, enable_cameras, _presets in task_specs:\n"
             "    assert task_id in gym.registry\n"
             "    env_cfg = parse_env_cfg(task_id, device='cuda:0', num_envs=4096)\n"
-            "    agent_cfg = load_cfg_from_registry(task_id, 'rsl_rl_cfg_entry_point')\n"
             "    assert env_cfg.scene.num_envs == 4096\n"
             "    assert type(env_cfg.sim.physx).__name__ == 'PhysxCfg'\n"
-            "    assert agent_cfg is not None\n"
+            "    if enable_cameras:\n"
+            "        assert env_cfg.scene.tiled_camera.data_types == ['rgb']\n"
+            "    if supports_training:\n"
+            "        agent_cfg = load_cfg_from_registry(task_id, 'rsl_rl_cfg_entry_point')\n"
+            "        assert agent_cfg is not None\n"
             f"print({_LAB2_PREFLIGHT_SENTINEL!r}, flush=True)\n"
             "simulation_app.close()\n"
         )
-        return f"exec({script!r})"
+        return f"exec({json.dumps(script)})"
     script = (
         "import sys\n"
         "from isaaclab.test.benchmark.formatters import MetricsFormatter\n"
@@ -659,21 +682,28 @@ def _registration_probe(version: Version) -> str:
         "import io\n"
         "import gymnasium as gym, isaaclab_tasks\n"
         "from isaaclab_tasks.utils.hydra import resolve_task_config\n"
-        f"task_ids = {task_ids!r}\n"
+        f"task_specs = {task_specs!r}\n"
         f"default_physx_tasks = {_LAB3_DEFAULT_PHYSX_TASKS!r}\n"
-        "for task_id in task_ids:\n"
+        "for task_id, supports_training, enable_cameras, extra_presets in task_specs:\n"
         "    assert task_id in gym.registry\n"
+        "    presets = [] if task_id in default_physx_tasks else ['physx']\n"
+        "    presets.extend(extra_presets)\n"
         "    sys.argv = [sys.argv[0], 'env.scene.num_envs=4096']\n"
-        "    if task_id not in default_physx_tasks:\n"
-        "        sys.argv.append('presets=physx')\n"
+        "    if presets:\n"
+        "        sys.argv.append(f\"presets={','.join(presets)}\")\n"
+        "    agent_key = 'rsl_rl_cfg_entry_point' if supports_training else None\n"
         "    with contextlib.redirect_stdout(io.StringIO()):\n"
-        "        env_cfg, agent_cfg = resolve_task_config(task_id, 'rsl_rl_cfg_entry_point')\n"
+        "        env_cfg, agent_cfg = resolve_task_config(task_id, agent_key)\n"
         "    assert env_cfg.scene.num_envs == 4096\n"
         "    assert type(env_cfg.sim.physics).__name__ == 'PhysxCfg'\n"
-        "    assert agent_cfg is not None\n"
+        "    if enable_cameras:\n"
+        "        assert env_cfg.scene.tiled_camera.data_types == ['rgb']\n"
+        "        assert type(env_cfg.scene.tiled_camera.renderer_cfg).__name__ == 'IsaacRtxRendererCfg'\n"
+        "    if supports_training:\n"
+        "        assert agent_cfg is not None\n"
         "print('ok', flush=True)\n"
     )
-    return f"exec({script!r})"
+    return f"exec({json.dumps(script)})"
 
 
 def _safe_token(value: str) -> str:
