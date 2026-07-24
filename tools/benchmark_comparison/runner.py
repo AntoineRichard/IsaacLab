@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -26,6 +27,40 @@ from .models import BenchmarkAttempt, ExecutionProvenance, MatrixExpansion
 from .validate import attempt_identity
 
 _FAILED_ATTEMPT_PATTERN = re.compile(r"attempt-[0-9]+-[a-z_]+$")
+
+
+class ControllerLockError(RuntimeError):
+    """Raised when another benchmark controller owns the artifact root."""
+
+
+class ControllerLock:
+    """Nonblocking process lock shared by every run set under one artifact root."""
+
+    def __init__(self, artifact_root: Path):
+        self.artifact_root = artifact_root.resolve()
+        self.path = self.artifact_root / ".benchmark-controller.lock"
+        self._file = None
+
+    def __enter__(self) -> ControllerLock:
+        """Acquire the artifact-root lock or fail without waiting."""
+        self.artifact_root.mkdir(parents=True, exist_ok=True)
+        lock_file = self.path.open("a+b")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            lock_file.close()
+            raise ControllerLockError(
+                f"another benchmark controller is already active for artifact root: {self.artifact_root}"
+            ) from error
+        self._file = lock_file
+        return self
+
+    def __exit__(self, _exception_type: object, _exception: object, _traceback: object) -> None:
+        """Release the controller lock after normal or exceptional completion."""
+        if self._file is not None:
+            fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+            self._file.close()
+            self._file = None
 
 
 @dataclass(frozen=True)
@@ -524,12 +559,22 @@ def _append_history(
 
 def _write_json_atomic(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n",
+    with tempfile.NamedTemporaryFile(
+        "w",
         encoding="utf-8",
-    )
-    os.replace(temporary, path)
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    ) as file:
+        temporary = Path(file.name)
+        file.write(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n")
+        file.flush()
+        os.fsync(file.fileno())
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _write_json_new(path: Path, value: object) -> None:

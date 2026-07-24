@@ -15,7 +15,15 @@ from .executors import ExecutorConfig, Lab2DockerExecutor, Lab3UvExecutor, Proce
 from .manifest import write_manifest
 from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
 from .models import RunSet
-from .runner import BenchmarkRunner, HostIdleGate, IdleThresholds, OwnedProcessGroups, SystemClock, SystemIdleMonitor
+from .runner import (
+    BenchmarkRunner,
+    ControllerLock,
+    HostIdleGate,
+    IdleThresholds,
+    OwnedProcessGroups,
+    SystemClock,
+    SystemIdleMonitor,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,6 +51,12 @@ def main(argv: list[str] | None = None) -> int:
         lab2_image=args.lab2_image,
         lab2_image_id=args.lab2_image_id,
     )
+    with ControllerLock(config.artifact_root):
+        return _run_locked(config, args)
+
+
+def _run_locked(config: ExecutorConfig, args: argparse.Namespace) -> int:
+    """Run preflight and the selected matrix while holding the controller lock."""
     preflight = run_preflight(config)
     run_set = RunSet(args.run_set)
     expansion = expand_canary_matrix(load_matrix()) if run_set is RunSet.CANARY else expand_final_matrix(load_matrix())

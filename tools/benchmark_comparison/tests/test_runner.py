@@ -9,18 +9,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from tools.benchmark_comparison.cli import main as controller_main
 from tools.benchmark_comparison.matrix import expand_canary_matrix, expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance
 from tools.benchmark_comparison.runner import (
     AttemptExecution,
     BenchmarkRunner,
+    ControllerLock,
+    ControllerLockError,
     IdleGateTimeout,
     RunStatus,
+    _write_json_atomic,
 )
 from tools.benchmark_comparison.validate import attempt_identity
 
@@ -399,3 +406,85 @@ def test_state_is_atomically_durable_after_each_attempt(tmp_path: Path):
     runner.run(expansion)
 
     assert observed[:3] == [1, 2, 3]
+
+
+def test_controller_lock_is_shared_across_run_sets_and_released(tmp_path: Path) -> None:
+    with ControllerLock(tmp_path):
+        with pytest.raises(ControllerLockError, match="already active"):
+            with ControllerLock(tmp_path):
+                pass
+
+    assert (tmp_path / ".benchmark-controller.lock").is_file()
+    with ControllerLock(tmp_path):
+        pass
+
+
+def test_controller_lock_is_released_after_exception(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="forced"):
+        with ControllerLock(tmp_path):
+            raise RuntimeError("forced")
+
+    with ControllerLock(tmp_path):
+        pass
+
+
+def test_controller_acquires_global_lock_before_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    artifact_root = tmp_path / "artifacts"
+    observed = False
+
+    def preflight(_config):
+        nonlocal observed
+        with pytest.raises(ControllerLockError, match="already active"):
+            with ControllerLock(artifact_root):
+                pass
+        observed = True
+        raise RuntimeError("stop after lock assertion")
+
+    monkeypatch.setattr("tools.benchmark_comparison.cli.run_preflight", preflight)
+    with pytest.raises(RuntimeError, match="stop after lock assertion"):
+        controller_main(
+            [
+                "--run_set",
+                "canary",
+                "--phase",
+                "measured",
+                "--lab2_root",
+                str(tmp_path / "lab2"),
+                "--lab3_root",
+                str(tmp_path / "lab3"),
+                "--artifact_root",
+                str(artifact_root),
+                "--lab2_sha",
+                LAB2_SHA,
+                "--lab3_sha",
+                LAB3_SHA,
+                "--lab2_image",
+                "fixture",
+                "--lab2_image_id",
+                LAB2_IMAGE_ID,
+            ]
+        )
+
+    assert observed
+
+
+def test_atomic_state_writes_use_unique_temporary_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "final" / "runner-state.json"
+    barrier = threading.Barrier(2)
+    temporary_paths: list[Path] = []
+    real_replace = os.replace
+
+    def synchronized_replace(source, destination):
+        temporary_paths.append(Path(source))
+        barrier.wait(timeout=2)
+        real_replace(source, destination)
+
+    monkeypatch.setattr("tools.benchmark_comparison.runner.os.replace", synchronized_replace)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_write_json_atomic, path, {"writer": writer}) for writer in (1, 2)]
+        for future in futures:
+            future.result(timeout=2)
+
+    assert len(set(temporary_paths)) == 2
+    assert json.loads(path.read_text(encoding="utf-8"))["writer"] in {1, 2}
+    assert not tuple(path.parent.glob(f".{path.name}.*.tmp"))
