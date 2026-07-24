@@ -14,6 +14,15 @@ from tools.benchmark_comparison.normalize import NormalizedRun, write_raw_runs_c
 from tools.benchmark_comparison.plot import PLOT_BASENAMES, generate_plots
 
 
+def test_plot_task_order_does_not_create_an_rgb_training_slot() -> None:
+    from tools.benchmark_comparison.normalize import TASK_ORDER
+    from tools.benchmark_comparison.plot import _task_order_for_mode
+
+    assert "cartpole_rgb_kit" in _task_order_for_mode("runtime-100")
+    assert "cartpole_rgb_kit" not in _task_order_for_mode("training-100")
+    assert _task_order_for_mode("training-100") == tuple(task for task in TASK_ORDER if task != "cartpole_rgb_kit")
+
+
 def _run(task: str, mode: str, seed: int, version: str, value: float) -> NormalizedRun:
     return NormalizedRun(
         version=version,

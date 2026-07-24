@@ -11,7 +11,7 @@ import os
 import statistics
 from pathlib import Path
 
-from .normalize import MODE_ORDER, TASK_ORDER, VERSION_ORDER, NormalizedRun, read_raw_runs_csv
+from .normalize import MODE_ORDER, VERSION_ORDER, NormalizedRun, read_raw_runs_csv, task_order_for_mode
 
 PLOT_METRICS = {
     "collection_fps": ("collection_fps", "Collection FPS", "Collection FPS"),
@@ -54,10 +54,11 @@ def generate_plots(raw_runs_path: Path, output_directory: Path) -> tuple[Path, .
             figure, axes = plt.subplots(1, len(MODE_ORDER), figsize=(12, 20 / 3), dpi=150, sharey=False)
             figure.suptitle(title, fontsize=14)
             for axis, mode in zip(axes, MODE_ORDER, strict=True):
-                _draw_mode(axis, runs, mode, attribute)
+                task_order = _task_order_for_mode(mode)
+                _draw_mode(axis, runs, mode, attribute, task_order)
                 axis.set_title(mode)
                 axis.set_ylabel(y_label)
-                axis.set_xticks(range(len(TASK_ORDER)), [task.replace("_", "\n") for task in TASK_ORDER])
+                axis.set_xticks(range(len(task_order)), [task.replace("_", "\n") for task in task_order])
                 axis.tick_params(axis="x", labelsize=8)
             handles = [
                 matplotlib.patches.Patch(color=_VERSION_COLORS[version], label=_VERSION_LABELS[version])
@@ -87,7 +88,18 @@ def generate_plots(raw_runs_path: Path, output_directory: Path) -> tuple[Path, .
     return tuple(generated)
 
 
-def _draw_mode(axis, runs: tuple[NormalizedRun, ...], mode: str, attribute: str) -> None:
+def _task_order_for_mode(mode: str) -> tuple[str, ...]:
+    """Return the deterministic plot order for one benchmark mode."""
+    return task_order_for_mode(mode)
+
+
+def _draw_mode(
+    axis,
+    runs: tuple[NormalizedRun, ...],
+    mode: str,
+    attribute: str,
+    task_order: tuple[str, ...],
+) -> None:
     width = 0.34
     version_offsets = {"lab2": -width / 2, "lab3": width / 2}
     max_value = max(
@@ -95,7 +107,7 @@ def _draw_mode(axis, runs: tuple[NormalizedRun, ...], mode: str, attribute: str)
         default=1.0,
     )
     label_height = max(max_value * 0.025, 0.1)
-    for task_index, task in enumerate(TASK_ORDER):
+    for task_index, task in enumerate(task_order):
         for version in VERSION_ORDER:
             values = sorted(
                 (
@@ -141,7 +153,7 @@ def _draw_mode(axis, runs: tuple[NormalizedRun, ...], mode: str, attribute: str)
                 linewidths=0.35,
                 zorder=3,
             )
-    axis.set_xlim(-0.55, len(TASK_ORDER) - 0.45)
+    axis.set_xlim(-0.55, len(task_order) - 0.45)
     axis.set_ylim(bottom=0)
 
 

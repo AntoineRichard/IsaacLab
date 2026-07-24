@@ -20,12 +20,17 @@ from pathlib import Path
 
 from .artifacts import verify_checksums
 from .manifest import RunSetManifest, SoftwareIdentity, validate_manifest
+from .matrix import load_matrix
 from .models import BenchmarkAttempt, ExecutionProvenance, MatrixExpansion
 from .validate import validate_attempt_directory, validation_document
 
 VERSION_ORDER = ("lab2", "lab3")
-TASK_ORDER = ("cartpole", "ant", "anymal_d_flat", "g1_flat", "allegro_cube", "franka_reach")
-MODE_ORDER = ("runtime-100", "runtime-1000", "training-100")
+_MATRIX = load_matrix()
+TASK_ORDER = tuple(task.alias for task in _MATRIX.tasks)
+MODE_ORDER = tuple(mode.id for mode in _MATRIX.modes)
+TASK_MODES = {
+    task.alias: tuple(mode.id for mode in _MATRIX.modes if task.supports_mode(mode.id)) for task in _MATRIX.tasks
+}
 SUMMARY_METRICS = (
     "collection_fps",
     "gpu_memory_mean_mib",
@@ -89,6 +94,13 @@ FAILURE_FIELDS = (
 
 _FAILED_DIRECTORY = re.compile(r"attempt-(?P<number>[0-9]+)-(?P<kind>[a-z_]+)$")
 _CORRUPT_SUCCESS_DIRECTORY = re.compile(r"corrupt-success-(?P<number>[0-9]+)$")
+
+
+def task_order_for_mode(mode: str) -> tuple[str, ...]:
+    """Return canonical tasks that support ``mode``."""
+    if mode not in MODE_ORDER:
+        raise ValueError(f"unknown benchmark mode: {mode}")
+    return tuple(task for task in TASK_ORDER if mode in TASK_MODES[task])
 
 
 @dataclass(frozen=True)

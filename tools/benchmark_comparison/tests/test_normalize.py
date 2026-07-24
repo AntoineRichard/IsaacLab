@@ -22,9 +22,12 @@ from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import (
     RAW_RUN_FIELDS,
+    TASK_MODES,
+    TASK_ORDER,
     NormalizedRun,
     normalize_run_set,
     summarize_pairs,
+    task_order_for_mode,
     write_normalized_outputs,
 )
 from tools.benchmark_comparison.validate import attempt_identity
@@ -34,6 +37,28 @@ LAB2_SHA = "a" * 40
 LAB3_SHA = "b" * 40
 LAB2_IMAGE_ID = "sha256:" + "c" * 64
 LAB3_LOCK = "d" * 64
+
+
+def test_expanded_task_order_keeps_rgb_runtime_only_and_both_anymal_terrains() -> None:
+    assert TASK_ORDER == (
+        "cartpole",
+        "cartpole_rgb_kit",
+        "cartpole_direct",
+        "ant",
+        "ant_direct",
+        "humanoid_manager",
+        "humanoid_direct",
+        "anymal_d_flat",
+        "anymal_d_rough",
+        "g1_flat",
+        "cassie_flat",
+        "allegro_cube",
+        "franka_reach",
+    )
+    assert task_order_for_mode("runtime-100") == TASK_ORDER
+    assert task_order_for_mode("runtime-1000") == TASK_ORDER
+    assert "cartpole_rgb_kit" not in task_order_for_mode("training-100")
+    assert TASK_MODES["cartpole_rgb_kit"] == ("runtime-100", "runtime-1000")
 
 
 def _provenance() -> ExecutionProvenance:
