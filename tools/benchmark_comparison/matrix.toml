@@ -13,9 +13,37 @@ lab2_id = "Isaac-Cartpole-v0"
 lab3_id = "Isaac-Cartpole"
 
 [[task]]
+alias = "cartpole_rgb_kit"
+lab2_id = "Isaac-Cartpole-RGB-v0"
+lab3_id = "Isaac-Cartpole-Camera"
+supported_modes = ["runtime-100", "runtime-1000"]
+enable_cameras = true
+lab3_presets = ["rgb"]
+
+[[task]]
+alias = "cartpole_direct"
+lab2_id = "Isaac-Cartpole-Direct-v0"
+lab3_id = "Isaac-Cartpole-Direct"
+
+[[task]]
 alias = "ant"
 lab2_id = "Isaac-Ant-v0"
 lab3_id = "Isaac-Ant"
+
+[[task]]
+alias = "ant_direct"
+lab2_id = "Isaac-Ant-Direct-v0"
+lab3_id = "Isaac-Ant-Direct"
+
+[[task]]
+alias = "humanoid_manager"
+lab2_id = "Isaac-Humanoid-v0"
+lab3_id = "Isaac-Humanoid"
+
+[[task]]
+alias = "humanoid_direct"
+lab2_id = "Isaac-Humanoid-Direct-v0"
+lab3_id = "Isaac-Humanoid-Direct"
 
 [[task]]
 alias = "anymal_d_flat"
@@ -23,9 +51,19 @@ lab2_id = "Isaac-Velocity-Flat-Anymal-D-v0"
 lab3_id = "Isaac-Velocity-Flat-AnymalD"
 
 [[task]]
+alias = "anymal_d_rough"
+lab2_id = "Isaac-Velocity-Rough-Anymal-D-v0"
+lab3_id = "Isaac-Velocity-Rough-AnymalD"
+
+[[task]]
 alias = "g1_flat"
 lab2_id = "Isaac-Velocity-Flat-G1-v0"
 lab3_id = "Isaac-Velocity-Flat-G1"
+
+[[task]]
+alias = "cassie_flat"
+lab2_id = "Isaac-Velocity-Flat-Cassie-v0"
+lab3_id = "Isaac-Velocity-Flat-Cassie"
 
 [[task]]
 alias = "allegro_cube"

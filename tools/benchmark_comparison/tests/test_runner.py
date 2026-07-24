@@ -124,7 +124,7 @@ def _runner(tmp_path: Path, executors, gate=None) -> BenchmarkRunner:
     return runner
 
 
-def test_runner_executes_all_canary_attempts_in_task_six_order(tmp_path: Path):
+def test_runner_executes_all_canary_attempts_in_task_thirteen_order(tmp_path: Path):
     expansion = expand_canary_matrix(load_matrix())
     lab2 = _Executor()
     lab3 = _Executor()
@@ -134,21 +134,21 @@ def test_runner_executes_all_canary_attempts_in_task_six_order(tmp_path: Path):
     observed = [entry["attempt_identity"] for entry in json.loads(result.state_path.read_text())["history"]]
     assert observed == [attempt.identity for attempt in expansion.attempts]
     assert result.status is RunStatus.COMPLETED
-    assert len(lab2.attempts) == len(lab3.attempts) == 18
+    assert len(lab2.attempts) == len(lab3.attempts) == 38
     assert all(
         expansion.attempts[index].version_order < expansion.attempts[index + 1].version_order
         for index in range(0, len(expansion.attempts), 2)
     )
 
 
-def test_full_matrix_runner_preserves_108_counterbalanced_attempts(tmp_path: Path):
+def test_full_matrix_runner_preserves_228_counterbalanced_attempts(tmp_path: Path):
     expansion = expand_final_matrix(load_matrix())
     lab2 = _Executor()
     lab3 = _Executor()
 
     _runner(tmp_path, {"lab2": lab2, "lab3": lab3}).run(expansion)
 
-    assert len(lab2.attempts) + len(lab3.attempts) == 108
+    assert len(lab2.attempts) + len(lab3.attempts) == 228
     assert [attempt.version.value for attempt in expansion.attempts[:2]] == ["lab2", "lab3"]
     seed_43 = next(index for index, attempt in enumerate(expansion.attempts) if attempt.seed == 43)
     assert [attempt.version.value for attempt in expansion.attempts[seed_43 : seed_43 + 2]] == ["lab3", "lab2"]

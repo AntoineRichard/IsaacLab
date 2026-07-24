@@ -25,19 +25,26 @@ from .models import (
     Version,
 )
 
-FINAL_LOGICAL_PAIR_COUNT = 54
-FINAL_ATTEMPT_COUNT = 108
-CANARY_LOGICAL_PAIR_COUNT = 18
-CANARY_ATTEMPT_COUNT = 36
+FINAL_LOGICAL_PAIR_COUNT = 114
+FINAL_ATTEMPT_COUNT = 228
+CANARY_LOGICAL_PAIR_COUNT = 38
+CANARY_ATTEMPT_COUNT = 76
 
 _MATRIX_PATH = Path(__file__).with_name("matrix.toml")
 _FINAL_SEEDS = (42, 43, 44)
 _CANARY_SEEDS = (42,)
 _TASK_IDENTIFIERS = (
     ("cartpole", "Isaac-Cartpole-v0", "Isaac-Cartpole"),
+    ("cartpole_rgb_kit", "Isaac-Cartpole-RGB-v0", "Isaac-Cartpole-Camera"),
+    ("cartpole_direct", "Isaac-Cartpole-Direct-v0", "Isaac-Cartpole-Direct"),
     ("ant", "Isaac-Ant-v0", "Isaac-Ant"),
+    ("ant_direct", "Isaac-Ant-Direct-v0", "Isaac-Ant-Direct"),
+    ("humanoid_manager", "Isaac-Humanoid-v0", "Isaac-Humanoid"),
+    ("humanoid_direct", "Isaac-Humanoid-Direct-v0", "Isaac-Humanoid-Direct"),
     ("anymal_d_flat", "Isaac-Velocity-Flat-Anymal-D-v0", "Isaac-Velocity-Flat-AnymalD"),
+    ("anymal_d_rough", "Isaac-Velocity-Rough-Anymal-D-v0", "Isaac-Velocity-Rough-AnymalD"),
     ("g1_flat", "Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
+    ("cassie_flat", "Isaac-Velocity-Flat-Cassie-v0", "Isaac-Velocity-Flat-Cassie"),
     ("allegro_cube", "Isaac-Repose-Cube-Allegro-v0", "Isaac-Reorient-Cube-Allegro"),
     ("franka_reach", "Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
 )
@@ -93,10 +100,25 @@ def expand_canary_matrix(matrix: BenchmarkMatrix) -> MatrixExpansion:
 
 def _parse_task(data: Any) -> BenchmarkTask:
     task = _as_dict(data, "task entry")
+    supported_modes_value = task.get("supported_modes")
+    supported_modes = (
+        None
+        if supported_modes_value is None
+        else tuple(
+            _as_str(mode_id, "task.supported_modes")
+            for mode_id in _as_list(supported_modes_value, "task.supported_modes")
+        )
+    )
     return BenchmarkTask(
         alias=_as_str(task.get("alias"), "task.alias"),
         lab2_id=_as_str(task.get("lab2_id"), "task.lab2_id"),
         lab3_id=_as_str(task.get("lab3_id"), "task.lab3_id"),
+        supported_modes=supported_modes,
+        enable_cameras=_as_bool(task.get("enable_cameras", False), "task.enable_cameras"),
+        lab3_presets=tuple(
+            _as_str(preset, "task.lab3_presets")
+            for preset in _as_list(task.get("lab3_presets", []), "task.lab3_presets")
+        ),
     )
 
 
@@ -124,6 +146,8 @@ def _expand_matrix(matrix: BenchmarkMatrix, run_set: RunSet, selected_seeds: tup
         versions = _VERSION_ORDERS[seed]
         for task in matrix.tasks:
             for mode in matrix.modes:
+                if not task.supports_mode(mode.id):
+                    continue
                 pair_order = len(pairs)
                 bound = mode.bound_for(run_set)
                 pair_identity = _pair_identity(run_set, task, mode, bound, seed, repeat_index)
@@ -193,6 +217,8 @@ def _make_attempt(
         repeat_index=repeat_index,
         num_envs=num_envs,
         framework=mode.framework,
+        enable_cameras=task.enable_cameras,
+        extra_presets=task.presets_for(version),
         pair_order=pair_order,
         version=version,
         version_order=version_order,
@@ -220,8 +246,8 @@ def _validate_matrix(matrix: BenchmarkMatrix) -> None:
     aliases = tuple(task.alias for task in matrix.tasks)
     if len(aliases) != len(set(aliases)):
         raise ValueError("duplicate task alias")
-    if len(matrix.tasks) != 6 or len(matrix.modes) != 3:
-        raise ValueError("expected 6 tasks and 3 modes")
+    if len(matrix.tasks) != 13 or len(matrix.modes) != 3:
+        raise ValueError("expected 13 tasks and 3 modes")
 
     for version in Version:
         task_ids = tuple(task.concrete_id(version) for task in matrix.tasks)
@@ -235,6 +261,29 @@ def _validate_matrix(matrix: BenchmarkMatrix) -> None:
         raise ValueError("duplicate mode ID")
     if mode_ids != _MODE_IDS:
         raise ValueError("unexpected mode IDs")
+    configured_mode_ids = {mode.id for mode in matrix.modes}
+    for task in matrix.tasks:
+        if task.supported_modes is not None:
+            if not task.supported_modes:
+                raise ValueError("task supported_modes must not be empty")
+            if len(task.supported_modes) != len(set(task.supported_modes)):
+                raise ValueError("duplicate task mode ID")
+            if not set(task.supported_modes) <= configured_mode_ids:
+                raise ValueError("unknown task mode ID")
+
+    rgb_task = next(task for task in matrix.tasks if task.alias == "cartpole_rgb_kit")
+    if (
+        rgb_task.supported_modes != ("runtime-100", "runtime-1000")
+        or not rgb_task.enable_cameras
+        or rgb_task.lab3_presets != ("rgb",)
+    ):
+        raise ValueError("unexpected RGB task capabilities")
+    if any(
+        task.supported_modes is not None or task.enable_cameras or task.lab3_presets
+        for task in matrix.tasks
+        if task.alias != "cartpole_rgb_kit"
+    ):
+        raise ValueError("unexpected non-RGB task capabilities")
     if (
         tuple(
             (
@@ -254,7 +303,8 @@ def _validate_matrix(matrix: BenchmarkMatrix) -> None:
         raise ValueError("matrix.num_envs must be 4096")
     if matrix.seeds != _FINAL_SEEDS:
         raise ValueError(f"expected {FINAL_LOGICAL_PAIR_COUNT} logical pairs from seeds {_FINAL_SEEDS}")
-    if len(matrix.tasks) * len(matrix.modes) * len(matrix.seeds) != FINAL_LOGICAL_PAIR_COUNT:
+    task_mode_count = sum(1 for task in matrix.tasks for mode in matrix.modes if task.supports_mode(mode.id))
+    if task_mode_count * len(matrix.seeds) != FINAL_LOGICAL_PAIR_COUNT:
         raise ValueError(f"expected {FINAL_LOGICAL_PAIR_COUNT} logical pairs")
 
 
@@ -303,4 +353,11 @@ def _as_int(value: Any, name: str) -> int:
     """Return a TOML integer or raise a focused validation error."""
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
+    return value
+
+
+def _as_bool(value: Any, name: str) -> bool:
+    """Return a TOML boolean or raise a focused validation error."""
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
     return value

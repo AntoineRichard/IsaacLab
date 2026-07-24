@@ -73,17 +73,30 @@ class Bound:
 
 @dataclass(frozen=True)
 class BenchmarkTask:
-    """Logical task alias and its explicit version-specific task identifiers."""
+    """Logical task alias, version-specific IDs, and execution capabilities."""
 
     alias: str
     lab2_id: str
     lab3_id: str
+    supported_modes: tuple[str, ...] | None = None
+    enable_cameras: bool = False
+    lab3_presets: tuple[str, ...] = ()
 
     def concrete_id(self, version: Version) -> str:
         """Return the configured task identifier for ``version``."""
         if version is Version.LAB2:
             return self.lab2_id
         return self.lab3_id
+
+    def supports_mode(self, mode_id: str) -> bool:
+        """Return whether this task participates in ``mode_id``."""
+        return self.supported_modes is None or mode_id in self.supported_modes
+
+    def presets_for(self, version: Version) -> tuple[str, ...]:
+        """Return task-specific preset additions for ``version``."""
+        if version is Version.LAB3:
+            return self.lab3_presets
+        return ()
 
 
 @dataclass(frozen=True)
@@ -128,6 +141,8 @@ class BenchmarkAttempt:
     repeat_index: int
     num_envs: int
     framework: str
+    enable_cameras: bool
+    extra_presets: tuple[str, ...]
     pair_order: int
     version: Version
     version_order: int
