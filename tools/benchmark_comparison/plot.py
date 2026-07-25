@@ -62,14 +62,20 @@ def generate_plots(
                 _draw_mode(axis, runs, mode, attribute, task_order)
                 axis.set_title(mode)
                 axis.set_ylabel(y_label)
-                axis.set_xticks(range(len(task_order)), [task.replace("_", "\n") for task in task_order])
-                axis.tick_params(axis="x", labelsize=8)
+                axis.set_xticks(
+                    range(len(task_order)),
+                    [task.replace("_", " ") for task in task_order],
+                    rotation=45,
+                    ha="right",
+                    rotation_mode="anchor",
+                )
+                axis.tick_params(axis="x", labelsize=7)
             handles = [
                 matplotlib.patches.Patch(color=_VERSION_COLORS[version], label=_VERSION_LABELS[version])
                 for version in VERSION_ORDER
             ]
             figure.legend(handles=handles, loc="upper center", ncols=2, bbox_to_anchor=(0.5, 0.955), frameon=False)
-            figure.subplots_adjust(left=0.06, right=0.99, bottom=0.12, top=0.88, wspace=0.28)
+            figure.subplots_adjust(left=0.06, right=0.99, bottom=0.22, top=0.88, wspace=0.28)
             for extension in ("png", "svg"):
                 path = output_directory / f"{basename}.{extension}"
                 temporary = path.with_suffix(path.suffix + ".tmp")

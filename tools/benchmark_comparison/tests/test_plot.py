@@ -74,4 +74,5 @@ def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_p
     assert all(path.stat().st_size > 1000 for path in first)
     assert {_png_dimensions(path) for path in first if path.suffix == ".png"} == {(1800, 1000)}
     assert all(b"Missing" in path.read_bytes() for path in first if path.suffix == ".svg")
+    assert all(b"rotate(-45)" in path.read_bytes() for path in first if path.suffix == ".svg")
     assert {path.name: path.read_bytes() for path in first} == {path.name: path.read_bytes() for path in second}

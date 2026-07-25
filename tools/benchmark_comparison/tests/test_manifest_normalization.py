@@ -69,6 +69,19 @@ def test_schema_identity_mismatch_is_rejected(field: str, message: str) -> None:
         _validate_schema_identity(schema, stdout, attempt, _manifest())
 
 
+def test_schema_cpu_brand_may_differ_from_manifest_processor_architecture() -> None:
+    attempt = next(item for item in expand_final_matrix(load_matrix()).attempts if item.version.value == "lab2")
+    schema = _schema()
+    schema["hardware"]["cpu_name"] = "Intel(R) Core(TM) i9-14900K"
+
+    _validate_schema_identity(
+        schema,
+        "| Driver Version: 590.48.01 | Graphics API: Vulkan\n",
+        attempt,
+        _manifest(),
+    )
+
+
 def test_manifest_run_set_mismatch_is_not_interchangeable() -> None:
     manifest = replace(_manifest(), run_set=RunSet.CANARY)
     assert manifest.run_set is not RunSet.FINAL

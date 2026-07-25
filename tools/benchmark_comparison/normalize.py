@@ -664,7 +664,6 @@ def _validate_schema_identity(
         raise ValueError("schema hardware must be an object")
     expected_hardware = {
         "hostname": manifest.host.hostname,
-        "cpu_name": manifest.host.cpu_model,
         "cpu_count": manifest.host.logical_cpu_count,
     }
     for field, expected in expected_hardware.items():
