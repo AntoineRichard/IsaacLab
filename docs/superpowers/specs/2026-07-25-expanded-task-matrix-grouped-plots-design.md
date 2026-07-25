@@ -137,10 +137,14 @@ The expanded root is seeded as follows:
    attempt identity, and execution provenance.
 3. Create the new schema-2 manifests with the expanded 136/408 attempt
    identities and the exact original execution provenance.
-4. Copy the 76 canary and 228 final success directories using independent
-   copies or copy-on-write reflinks. Do not use hardlinks or symlinks.
-5. Revalidate every imported success against the expanded manifest and prove
-   byte-for-byte equality with its original source.
+4. Copy the complete immutable attempt directory for each of the 76 canary and
+   228 final successes using independent copies or copy-on-write reflinks. An
+   attempt import includes `success/` and any preceding failure or quarantine
+   directories needed to preserve its validated attempt number. Do not use
+   hardlinks or symlinks.
+5. Revalidate every imported success against the expanded manifest and its
+   copied attempt history, then prove byte-for-byte equality with its original
+   source.
 6. Record an import audit containing source/destination roots, source manifest
    digests, imported counts, file counts, and aggregate hashes.
 
@@ -259,8 +263,10 @@ All execution settings remain unchanged:
   plotting, PDF rendering, or publication fails.
 - Plot/PDF failure leaves the previously complete expanded report intact.
 - Raw artifacts are rehashed immediately before publication.
-- The final audit must reconcile manifest attempts, runner history, success
-  directories, normalized rows, paired rows, raw hashes, and generated hashes.
+- The final audit must reconcile manifest attempts, imported attempt counts,
+  runner history (`skipped_success` for imports and `success` for new runs),
+  success directories, normalized rows, paired rows, raw hashes, and generated
+  hashes.
 
 ## Testing Strategy
 
