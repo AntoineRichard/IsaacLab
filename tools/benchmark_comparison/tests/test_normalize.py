@@ -213,6 +213,27 @@ def test_normalization_preserves_startup_components_and_computed_total(tmp_path:
 
 
 @pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("startup_app_launch_s", "-0.01", "startup phase app_launch must be non-negative"),
+        ("startup_total_s", "4.42", "startup_total_s does not equal serialized startup phases"),
+    ],
+)
+def test_raw_runs_csv_rejects_tampered_startup_metrics(tmp_path: Path, field: str, value: str, reason: str) -> None:
+    path = write_raw_runs_csv(tmp_path / "raw_runs.csv", (_run(),))
+    with path.open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    rows[0][field] = value
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=RAW_RUN_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with pytest.raises(ValueError, match=reason):
+        read_raw_runs_csv(path)
+
+
+@pytest.mark.parametrize(
     ("mutation", "reason"),
     [
         ("missing", "startup phases do not match canonical set"),
