@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix, task_aliases_by_category
+from tools.benchmark_comparison.models import TaskCategory
 from tools.benchmark_comparison.normalize import STARTUP_PHASES, NormalizedRun, write_raw_runs_csv
 from tools.benchmark_comparison.plot import PLOT_BASENAMES, _startup_phase_means, generate_plots
 
@@ -62,6 +64,8 @@ def _png_dimensions(path: Path) -> tuple[int, int]:
 
 
 def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_path: Path) -> None:
+    expansion = expand_final_matrix(load_matrix())
+    category_aliases = task_aliases_by_category(expansion)
     rows = tuple(
         _run(task, mode, seed, version, 100 + index * 10)
         for index, (task, mode, seed, version) in enumerate(
@@ -71,23 +75,48 @@ def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_p
                 ("cartpole", "runtime-100", 43, "lab2"),
                 ("cartpole", "runtime-100", 43, "lab3"),
                 ("ant", "training-100", 42, "lab2"),
+                ("anymal_d_flat", "runtime-100", 42, "lab2"),
+                ("allegro_cube", "runtime-100", 42, "lab2"),
+                ("cartpole_rgb_kit", "runtime-100", 42, "lab2"),
             )
         )
     )
     csv_path = write_raw_runs_csv(tmp_path / "raw_runs.csv", rows)
 
-    first = generate_plots(csv_path, tmp_path / "first")
-    second = generate_plots(csv_path, tmp_path / "second")
+    first = generate_plots(csv_path, tmp_path / "first", expansion=expansion)
+    second = generate_plots(csv_path, tmp_path / "second", expansion=expansion)
 
     expected_names = {f"{basename}.{extension}" for basename in PLOT_BASENAMES for extension in ("png", "svg")}
     assert {path.name for path in first} == expected_names
+    assert len(first) == 36
     assert all(path.stat().st_size > 1000 for path in first)
     assert {_png_dimensions(path) for path in first if path.suffix == ".png"} == {(1800, 1000)}
     assert all(b"Missing" in path.read_bytes() for path in first if path.suffix == ".svg")
     assert all(b"rotate(-45)" in path.read_bytes() for path in first if path.suffix == ".svg")
     assert {path.name: path.read_bytes() for path in first} == {path.name: path.read_bytes() for path in second}
-    assert b"Total startup time [s]" in (tmp_path / "first" / "startup_total_s.svg").read_bytes()
-    breakdown = (tmp_path / "first" / "startup_phase_breakdown.svg").read_bytes()
+    assert b"Total startup time [s]" in (tmp_path / "first" / "classic_startup_total_s.svg").read_bytes()
+    for basename in PLOT_BASENAMES:
+        category = TaskCategory(basename.split("_", maxsplit=1)[0])
+        svg = (tmp_path / "first" / f"{basename}.svg").read_bytes()
+        aliases = category_aliases[category]
+        assert all(f"<!-- {task.replace('_', ' ')} -->".encode() in svg for task in aliases)
+        assert all(
+            f"<!-- {task.replace('_', ' ')} -->".encode() not in svg
+            for other_category, other_aliases in category_aliases.items()
+            if other_category is not category
+            for task in other_aliases
+        )
+
+    classic_svg = (tmp_path / "first" / "classic_collection_fps.svg").read_bytes()
+    runtime_100, runtime_1000, training_100 = (
+        classic_svg.split(f'<g id="axes_{index}">'.encode(), maxsplit=1)[1] for index in range(1, 4)
+    )
+    rgb_label = b"<!-- cartpole rgb kit -->"
+    assert rgb_label in runtime_100
+    assert rgb_label in runtime_1000
+    assert rgb_label not in training_100
+
+    breakdown = (tmp_path / "first" / "classic_startup_phase_breakdown.svg").read_bytes()
     assert all(
         label.encode() in breakdown
         for label in ("App launch", "Python imports", "Task config", "Environment creation", "First step")
@@ -125,11 +154,15 @@ def test_startup_phase_means_sum_to_total_bar_height() -> None:
 
 
 def test_plot_basenames_include_startup_figures() -> None:
-    assert PLOT_BASENAMES == (
+    metric_basenames = (
         "collection_fps",
         "gpu_memory_mean_mib",
         "gpu_memory_peak_mib",
         "gpu_utilization_mean_pct",
         "startup_total_s",
         "startup_phase_breakdown",
+    )
+    assert (
+        tuple(f"{category.value}_{metric}" for category in TaskCategory for metric in metric_basenames)
+        == PLOT_BASENAMES
     )

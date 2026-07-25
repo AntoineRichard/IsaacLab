@@ -12,7 +12,8 @@ import statistics
 from collections.abc import Sequence
 from pathlib import Path
 
-from .models import MatrixExpansion
+from .matrix import expand_legacy_schema_1_matrix, task_aliases_by_category
+from .models import MatrixExpansion, RunSet, TaskCategory
 from .normalize import (
     STARTUP_PHASES,
     VERSION_ORDER,
@@ -49,20 +50,24 @@ _PHASE_LABELS = {
     "startup_env_creation_s": "Environment creation",
     "startup_first_step_s": "First step",
 }
-PLOT_BASENAMES = (*tuple(PLOT_METRICS), "startup_phase_breakdown")
+PLOT_BASENAMES = tuple(
+    f"{category.value}_{metric}" for category in TaskCategory for metric in (*PLOT_METRICS, "startup_phase_breakdown")
+)
 
 
 def generate_plots(
     raw_runs_path: Path, output_directory: Path, *, expansion: MatrixExpansion | None = None
 ) -> tuple[Path, ...]:
-    """Generate six fixed PNG/SVG figures using normalized successful runs.
+    """Generate 18 fixed PNG/SVG figures using normalized successful runs.
 
     Matplotlib is imported only when plotting is requested. This keeps the
     comparison controller's non-plotting commands dependency-free.
     """
     plt, matplotlib = _matplotlib()
     runs = read_raw_runs_csv(raw_runs_path)
-    _task_order, mode_order, _task_modes = expansion_orders(expansion)
+    plot_expansion = expansion if expansion is not None else expand_legacy_schema_1_matrix(RunSet.FINAL)
+    _task_order, mode_order, _task_modes = expansion_orders(plot_expansion)
+    category_aliases = task_aliases_by_category(plot_expansion)
     output_directory.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     with matplotlib.rc_context(
@@ -76,56 +81,91 @@ def generate_plots(
             "svg.hashsalt": "isaaclab-benchmark-comparison",
         }
     ):
-        for basename, (attribute, title, y_label) in PLOT_METRICS.items():
-            figure, axes = plt.subplots(1, len(mode_order), figsize=(12, 20 / 3), dpi=150, sharey=False)
-            figure.suptitle(title, fontsize=14)
-            for axis, mode in zip(axes, mode_order, strict=True):
-                task_order = _task_order_for_mode(mode, expansion)
-                _draw_mode(axis, runs, mode, attribute, task_order)
-                axis.set_title(mode)
-                axis.set_ylabel(y_label)
-                axis.set_xticks(
-                    range(len(task_order)),
-                    [task.replace("_", " ") for task in task_order],
-                    rotation=45,
-                    ha="right",
-                    rotation_mode="anchor",
+        for category, category_tasks in category_aliases.items():
+            for metric, (attribute, title, y_label) in PLOT_METRICS.items():
+                generated.extend(
+                    _generate_scalar_metric(
+                        plt,
+                        matplotlib,
+                        runs,
+                        output_directory,
+                        category,
+                        category_tasks,
+                        metric,
+                        attribute,
+                        title,
+                        y_label,
+                        mode_order,
+                        plot_expansion,
+                    )
                 )
-                axis.tick_params(axis="x", labelsize=7)
-            handles = [
-                matplotlib.patches.Patch(color=_VERSION_COLORS[version], label=_VERSION_LABELS[version])
-                for version in VERSION_ORDER
-            ]
-            figure.legend(handles=handles, loc="upper center", ncols=2, bbox_to_anchor=(0.5, 0.955), frameon=False)
-            figure.subplots_adjust(left=0.06, right=0.99, bottom=0.22, top=0.88, wspace=0.28)
-            for extension in ("png", "svg"):
-                path = output_directory / f"{basename}.{extension}"
-                temporary = path.with_suffix(path.suffix + ".tmp")
-                metadata = (
-                    {"Software": "Isaac Lab benchmark comparison"}
-                    if extension == "png"
-                    else {"Date": None, "Creator": "Isaac Lab benchmark comparison"}
+            generated.extend(
+                _generate_startup_phase_breakdown(
+                    plt,
+                    matplotlib,
+                    runs,
+                    output_directory,
+                    category,
+                    category_tasks,
+                    mode_order,
+                    plot_expansion,
                 )
-                figure.savefig(
-                    temporary,
-                    format=extension,
-                    dpi=150,
-                    metadata=metadata,
-                    facecolor="white",
-                    edgecolor="white",
-                )
-                os.replace(temporary, path)
-                generated.append(path)
-            plt.close(figure)
-        generated.extend(
-            _generate_startup_phase_breakdown(plt, matplotlib, runs, output_directory, mode_order, expansion)
-        )
+            )
     return tuple(generated)
 
 
 def _task_order_for_mode(mode: str, expansion: MatrixExpansion | None = None) -> tuple[str, ...]:
     """Return the deterministic plot order for one benchmark mode."""
     return task_order_for_mode(mode, expansion)
+
+
+def _category_task_order_for_mode(
+    category_tasks: tuple[str, ...], mode: str, expansion: MatrixExpansion
+) -> tuple[str, ...]:
+    """Return category tasks that support one benchmark mode."""
+    mode_tasks = set(_task_order_for_mode(mode, expansion))
+    return tuple(task for task in category_tasks if task in mode_tasks)
+
+
+def _generate_scalar_metric(
+    plt,
+    matplotlib,
+    runs: Sequence[NormalizedRun],
+    output_directory: Path,
+    category: TaskCategory,
+    category_tasks: tuple[str, ...],
+    metric: str,
+    attribute: str,
+    title: str,
+    y_label: str,
+    mode_order: tuple[str, ...],
+    expansion: MatrixExpansion,
+) -> tuple[Path, Path]:
+    """Generate one category-specific scalar metric figure."""
+    figure, axes = plt.subplots(1, len(mode_order), figsize=(12, 20 / 3), dpi=150, sharey=False)
+    figure.suptitle(f"{category.value.title()} — {title}", fontsize=14)
+    for axis, mode in zip(axes, mode_order, strict=True):
+        task_order = _category_task_order_for_mode(category_tasks, mode, expansion)
+        _draw_mode(axis, runs, mode, attribute, task_order)
+        axis.set_title(mode)
+        axis.set_ylabel(y_label)
+        axis.set_xticks(
+            range(len(task_order)),
+            [task.replace("_", " ") for task in task_order],
+            rotation=45,
+            ha="right",
+            rotation_mode="anchor",
+        )
+        axis.tick_params(axis="x", labelsize=7)
+    handles = [
+        matplotlib.patches.Patch(color=_VERSION_COLORS[version], label=_VERSION_LABELS[version])
+        for version in VERSION_ORDER
+    ]
+    figure.legend(handles=handles, loc="upper center", ncols=2, bbox_to_anchor=(0.5, 0.955), frameon=False)
+    figure.subplots_adjust(left=0.06, right=0.99, bottom=0.22, top=0.88, wspace=0.28)
+    paths = _save_figure(figure, output_directory, f"{category.value}_{metric}")
+    plt.close(figure)
+    return paths
 
 
 def _draw_mode(
@@ -209,16 +249,18 @@ def _generate_startup_phase_breakdown(
     matplotlib,
     runs: Sequence[NormalizedRun],
     output_directory: Path,
+    category: TaskCategory,
+    category_tasks: tuple[str, ...],
     mode_order: tuple[str, ...],
-    expansion: MatrixExpansion | None,
+    expansion: MatrixExpansion,
 ) -> tuple[Path, Path]:
     figure, axes = plt.subplots(1, len(mode_order), figsize=(12, 20 / 3), dpi=150, sharey=False)
-    figure.suptitle("Startup Phase Breakdown", fontsize=14)
+    figure.suptitle(f"{category.value.title()} — Startup Phase Breakdown", fontsize=14)
     width = 0.34
     version_offsets = {"lab2": -width / 2, "lab3": width / 2}
     version_hatches = {"lab2": "/", "lab3": "\\"}
     for axis, mode in zip(axes, mode_order, strict=True):
-        task_order = _task_order_for_mode(mode, expansion)
+        task_order = _category_task_order_for_mode(category_tasks, mode, expansion)
         max_value = max((run.startup_total_s for run in runs if run.mode == mode), default=1.0)
         label_height = max(max_value * 0.025, 0.1)
         for task_index, task in enumerate(task_order):
@@ -282,9 +324,16 @@ def _generate_startup_phase_breakdown(
     figure.legend(handles=phase_handles, loc="upper center", ncols=5, bbox_to_anchor=(0.5, 0.955), frameon=False)
     figure.legend(handles=version_handles, loc="upper center", ncols=2, bbox_to_anchor=(0.5, 0.915), frameon=False)
     figure.subplots_adjust(left=0.06, right=0.99, bottom=0.22, top=0.84, wspace=0.28)
+    paths = _save_figure(figure, output_directory, f"{category.value}_startup_phase_breakdown")
+    plt.close(figure)
+    return paths
+
+
+def _save_figure(figure, output_directory: Path, basename: str) -> tuple[Path, Path]:
+    """Save one figure atomically in PNG and SVG formats."""
     paths: list[Path] = []
     for extension in ("png", "svg"):
-        path = output_directory / f"startup_phase_breakdown.{extension}"
+        path = output_directory / f"{basename}.{extension}"
         temporary = path.with_suffix(path.suffix + ".tmp")
         metadata = (
             {"Software": "Isaac Lab benchmark comparison"}
@@ -301,7 +350,6 @@ def _generate_startup_phase_breakdown(
         )
         os.replace(temporary, path)
         paths.append(path)
-    plt.close(figure)
     return tuple(paths)
 
 
