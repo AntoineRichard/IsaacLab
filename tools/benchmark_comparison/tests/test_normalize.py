@@ -93,9 +93,19 @@ def test_expanded_task_order_keeps_rgb_runtime_only_and_both_anymal_terrains() -
         "anymal_d_flat",
         "anymal_d_rough",
         "g1_flat",
+        "g1_rough",
         "cassie_flat",
+        "digit_flat",
+        "digit_rough",
+        "go1_flat",
+        "go1_rough",
+        "go2_flat",
+        "go2_rough",
         "allegro_cube",
         "franka_reach",
+        "franka_cabinet_direct",
+        "kuka_allegro_reorient",
+        "kuka_allegro_lift",
     )
     assert task_order_for_mode("runtime-100") == TASK_ORDER
     assert task_order_for_mode("runtime-1000") == TASK_ORDER

@@ -98,7 +98,7 @@ def test_report_only_cli_is_deterministic_self_contained_and_simulator_free(tmp_
     }
     audit = json.loads(first["audit_summary.json"])
     assert audit["successful_attempts"] == 0
-    assert audit["failed_or_missing_attempts"] == 76
+    assert audit["failed_or_missing_attempts"] == 136
     assert audit["raw_file_count"] == 0
     assert hashlib.sha256(first["generated_hashes.sha256"]).hexdigest() == audit["generated_hash_manifest_sha256"]
 
