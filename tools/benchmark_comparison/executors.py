@@ -70,11 +70,6 @@ _ISOLATED_ENVIRONMENT_NAMES = {
 }
 _ISOLATED_ENVIRONMENT_PREFIXES = ("TORCHELASTIC_", "OMPI_COMM_WORLD_", "PMI_", "PMIX_", "SLURM_")
 
-_LAB3_DEFAULT_PHYSX_TASKS = {
-    "Isaac-Velocity-Flat-G1",
-    "Isaac-Reorient-Cube-Allegro",
-}
-
 
 @dataclass(frozen=True)
 class ExecutorConfig:
@@ -374,9 +369,7 @@ class _Executor:
             bounded = ("--num_frames", str(attempt.bound.value))
         else:
             bounded = ("--rl_library", attempt.framework, "--max_iterations", str(attempt.bound.value))
-        presets: list[str] = []
-        if attempt.version is not Version.LAB3 or attempt.concrete_task not in _LAB3_DEFAULT_PHYSX_TASKS:
-            presets.append("physx")
+        presets = ["physx"] if attempt.version is Version.LAB2 else []
         presets.extend(attempt.extra_presets)
         preset_argument = (f"presets={','.join(presets)}",) if presets else ()
         camera_arguments = ("--enable_cameras",) if attempt.enable_cameras else ()
@@ -773,11 +766,9 @@ def _registration_probe(version: Version) -> str:
         "import gymnasium as gym, isaaclab_tasks\n"
         "from isaaclab_tasks.utils.hydra import resolve_task_config\n"
         f"task_specs = {task_specs!r}\n"
-        f"default_physx_tasks = {_LAB3_DEFAULT_PHYSX_TASKS!r}\n"
         "for task_id, supports_training, enable_cameras, extra_presets in task_specs:\n"
         "    assert task_id in gym.registry\n"
-        "    presets = [] if task_id in default_physx_tasks else ['physx']\n"
-        "    presets.extend(extra_presets)\n"
+        "    presets = list(extra_presets)\n"
         "    sys.argv = [sys.argv[0], 'env.scene.num_envs=4096']\n"
         "    if presets:\n"
         "        sys.argv.append(f\"presets={','.join(presets)}\")\n"

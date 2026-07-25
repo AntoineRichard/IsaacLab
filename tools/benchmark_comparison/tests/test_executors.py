@@ -143,8 +143,8 @@ def test_lab3_runtime_and_training_commands_use_locked_uv_project(tmp_path: Path
     assert runtime.argv[: len(prefix)] == prefix
     assert str(config.lab3_root / "scripts/benchmarks/runtime.py") in runtime.argv
     assert str(config.lab3_root / "scripts/benchmarks/training.py") in training.argv
-    assert "presets=physx" in runtime.argv
-    assert "presets=physx" in training.argv
+    assert all(not argument.startswith("presets=") for argument in runtime.argv)
+    assert all(not argument.startswith("presets=") for argument in training.argv)
     assert runtime.environment["ISAACLAB_BENCHMARK_LAB2_SHA"] == LAB2_SHA
     assert runtime.environment["ISAACLAB_BENCHMARK_LAB3_SHA"] == LAB3_SHA
 
@@ -203,19 +203,24 @@ def test_subprocess_environment_drops_inherited_distributed_and_gpu_mapping(
     assert all(name not in merged for name in inherited if name not in explicitly_replaced)
 
 
-def test_lab3_omits_redundant_physx_alias_only_for_default_physx_tasks(tmp_path: Path):
+def test_lab3_default_physx_omits_preset_token_for_all_tasks(tmp_path: Path) -> None:
     config = _config(tmp_path)
     executor = Lab3UvExecutor(config)
+    matrix = load_matrix()
 
-    g1 = executor.invocation(_attempt(Version.LAB3, task="g1_flat"))
-    allegro = executor.invocation(_attempt(Version.LAB3, task="allegro_cube"))
-    cartpole = executor.invocation(_attempt(Version.LAB3, task="cartpole"))
-    lab2_g1 = Lab2DockerExecutor(config).invocation(_attempt(Version.LAB2, task="g1_flat"))
+    implicit_presets = {
+        task.alias: tuple(
+            argument
+            for argument in executor.invocation(_attempt(Version.LAB3, task=task.alias)).argv
+            if argument.startswith("presets=")
+        )
+        for task in matrix.tasks
+        if not task.lab3_presets
+    }
+    lab2_cartpole = Lab2DockerExecutor(config).invocation(_attempt(Version.LAB2, task="cartpole"))
 
-    assert "presets=physx" not in g1.argv
-    assert "presets=physx" not in allegro.argv
-    assert "presets=physx" in cartpole.argv
-    assert "presets=physx" in lab2_g1.argv
+    assert implicit_presets == {task.alias: () for task in matrix.tasks if not task.lab3_presets}
+    assert "presets=physx" in lab2_cartpole.argv
 
 
 def test_rgb_cartpole_runtime_commands_enable_cameras_and_select_kit_rgb(tmp_path: Path) -> None:
@@ -226,7 +231,8 @@ def test_rgb_cartpole_runtime_commands_enable_cameras_and_select_kit_rgb(tmp_pat
     assert "--enable_cameras" in lab2.argv
     assert "--enable_cameras" in lab3.argv
     assert "presets=physx" in lab2.argv
-    assert "presets=physx,rgb" in lab3.argv
+    assert "presets=rgb" in lab3.argv
+    assert "presets=physx,rgb" not in lab3.argv
     assert "presets=physx" not in lab3.argv
     assert all("newton_renderer" not in argument for argument in lab3.argv)
 
@@ -331,6 +337,8 @@ def test_version_probes_require_rsl_only_for_training_tasks_and_validate_rgb_cam
     assert "Isaac-Cartpole-RGB-v0" in lab2_probe
     assert "Isaac-Cartpole-Camera" in lab3_probe
     assert "('Isaac-Cartpole-Camera', False, True, ('rgb',))" in lab3_probe
+    assert "presets = list(extra_presets)" in lab3_probe
+    assert "default_physx_tasks" not in lab3_probe
     assert "presets={','.join(presets)}" in lab3_probe
     assert "env_cfg.scene.tiled_camera.data_types == ['rgb']" in lab2_probe
     assert "env_cfg.scene.tiled_camera.data_types == ['rgb']" in lab3_probe
