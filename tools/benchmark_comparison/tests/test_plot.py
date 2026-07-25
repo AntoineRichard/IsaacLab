@@ -7,11 +7,15 @@
 
 from __future__ import annotations
 
+import statistics
 import struct
+from dataclasses import replace
 from pathlib import Path
 
-from tools.benchmark_comparison.normalize import NormalizedRun, write_raw_runs_csv
-from tools.benchmark_comparison.plot import PLOT_BASENAMES, generate_plots
+import pytest
+
+from tools.benchmark_comparison.normalize import STARTUP_PHASES, NormalizedRun, write_raw_runs_csv
+from tools.benchmark_comparison.plot import PLOT_BASENAMES, _startup_phase_means, generate_plots
 
 
 def test_plot_task_order_does_not_create_an_rgb_training_slot() -> None:
@@ -82,3 +86,50 @@ def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_p
     assert all(b"Missing" in path.read_bytes() for path in first if path.suffix == ".svg")
     assert all(b"rotate(-45)" in path.read_bytes() for path in first if path.suffix == ".svg")
     assert {path.name: path.read_bytes() for path in first} == {path.name: path.read_bytes() for path in second}
+    assert b"Total startup time [s]" in (tmp_path / "first" / "startup_total_s.svg").read_bytes()
+    breakdown = (tmp_path / "first" / "startup_phase_breakdown.svg").read_bytes()
+    assert all(
+        label.encode() in breakdown
+        for label in ("App launch", "Python imports", "Task config", "Environment creation", "First step")
+    )
+    assert b"Isaac Lab 2" in breakdown
+    assert b"Isaac Lab 3" in breakdown
+
+
+def test_startup_phase_means_sum_to_total_bar_height() -> None:
+    runs = (
+        replace(
+            _run("cartpole", "runtime-100", 42, "lab2", 100.0),
+            startup_total_s=15.0,
+            startup_app_launch_s=1.0,
+            startup_python_imports_s=2.0,
+            startup_task_config_s=3.0,
+            startup_env_creation_s=4.0,
+            startup_first_step_s=5.0,
+        ),
+        replace(
+            _run("cartpole", "runtime-100", 43, "lab2", 110.0),
+            startup_total_s=20.0,
+            startup_app_launch_s=2.0,
+            startup_python_imports_s=3.0,
+            startup_task_config_s=4.0,
+            startup_env_creation_s=5.0,
+            startup_first_step_s=6.0,
+        ),
+    )
+    phase_means = _startup_phase_means(runs, "runtime-100", "cartpole", "lab2")
+    assert tuple(phase_means) == tuple(attribute for _, attribute in STARTUP_PHASES)
+    assert sum(phase_means.values()) == pytest.approx(
+        statistics.fmean(run.startup_total_s for run in runs if run.version == "lab2")
+    )
+
+
+def test_plot_basenames_include_startup_figures() -> None:
+    assert PLOT_BASENAMES == (
+        "collection_fps",
+        "gpu_memory_mean_mib",
+        "gpu_memory_peak_mib",
+        "gpu_utilization_mean_pct",
+        "startup_total_s",
+        "startup_phase_breakdown",
+    )

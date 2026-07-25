@@ -23,6 +23,7 @@ from tools.benchmark_comparison.manifest import (
 )
 from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
+from tools.benchmark_comparison.plot import PLOT_BASENAMES
 from tools.benchmark_comparison.report_cli import main
 
 
@@ -90,8 +91,8 @@ def test_report_only_cli_is_deterministic_self_contained_and_simulator_free(tmp_
         "generated_hashes.sha256",
         "audit_summary.json",
     }.issubset(first)
-    assert len([name for name in first if name.endswith(".png")]) == 4
-    assert len([name for name in first if name.endswith(".svg")]) == 4
+    assert len([name for name in first if name.endswith(".png")]) == len(PLOT_BASENAMES)
+    assert len([name for name in first if name.endswith(".svg")]) == len(PLOT_BASENAMES)
     assert simulator_modules_before == {
         name for name in sys.modules if name == "isaacsim" or name.startswith(("isaacsim.", "omni.", "docker"))
     }

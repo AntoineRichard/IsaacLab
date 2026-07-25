@@ -9,10 +9,18 @@ from __future__ import annotations
 
 import os
 import statistics
+from collections.abc import Sequence
 from pathlib import Path
 
 from .models import MatrixExpansion
-from .normalize import VERSION_ORDER, NormalizedRun, expansion_orders, read_raw_runs_csv, task_order_for_mode
+from .normalize import (
+    STARTUP_PHASES,
+    VERSION_ORDER,
+    NormalizedRun,
+    expansion_orders,
+    read_raw_runs_csv,
+    task_order_for_mode,
+)
 
 PLOT_METRICS = {
     "collection_fps": ("collection_fps", "Collection FPS", "Collection FPS"),
@@ -23,17 +31,31 @@ PLOT_METRICS = {
         "Mean GPU utilization [%]",
         "Mean GPU utilization [%]",
     ),
+    "startup_total_s": ("startup_total_s", "Total Startup Time", "Total startup time [s]"),
 }
-PLOT_BASENAMES = tuple(PLOT_METRICS)
-
 _VERSION_COLORS = {"lab2": "#4C78A8", "lab3": "#F58518"}
 _VERSION_LABELS = {"lab2": "Isaac Lab 2", "lab3": "Isaac Lab 3"}
+_PHASE_COLORS = {
+    "startup_app_launch_s": "#4C78A8",
+    "startup_python_imports_s": "#72B7B2",
+    "startup_task_config_s": "#F2CF5B",
+    "startup_env_creation_s": "#F58518",
+    "startup_first_step_s": "#E45756",
+}
+_PHASE_LABELS = {
+    "startup_app_launch_s": "App launch",
+    "startup_python_imports_s": "Python imports",
+    "startup_task_config_s": "Task config",
+    "startup_env_creation_s": "Environment creation",
+    "startup_first_step_s": "First step",
+}
+PLOT_BASENAMES = (*tuple(PLOT_METRICS), "startup_phase_breakdown")
 
 
 def generate_plots(
     raw_runs_path: Path, output_directory: Path, *, expansion: MatrixExpansion | None = None
 ) -> tuple[Path, ...]:
-    """Generate four fixed PNG/SVG figures using normalized successful runs.
+    """Generate six fixed PNG/SVG figures using normalized successful runs.
 
     Matplotlib is imported only when plotting is requested. This keeps the
     comparison controller's non-plotting commands dependency-free.
@@ -95,6 +117,9 @@ def generate_plots(
                 os.replace(temporary, path)
                 generated.append(path)
             plt.close(figure)
+        generated.extend(
+            _generate_startup_phase_breakdown(plt, matplotlib, runs, output_directory, mode_order, expansion)
+        )
     return tuple(generated)
 
 
@@ -172,6 +197,112 @@ def _repeat_offsets(count: int, spread: float) -> list[float]:
         return [0.0] * count
     step = spread / (count - 1)
     return [-spread / 2 + index * step for index in range(count)]
+
+
+def _startup_phase_means(runs: Sequence[NormalizedRun], mode: str, task: str, version: str) -> dict[str, float]:
+    selected = tuple(run for run in runs if run.mode == mode and run.logical_task == task and run.version == version)
+    return {attribute: statistics.fmean(getattr(run, attribute) for run in selected) for _, attribute in STARTUP_PHASES}
+
+
+def _generate_startup_phase_breakdown(
+    plt,
+    matplotlib,
+    runs: Sequence[NormalizedRun],
+    output_directory: Path,
+    mode_order: tuple[str, ...],
+    expansion: MatrixExpansion | None,
+) -> tuple[Path, Path]:
+    figure, axes = plt.subplots(1, len(mode_order), figsize=(12, 20 / 3), dpi=150, sharey=False)
+    figure.suptitle("Startup Phase Breakdown", fontsize=14)
+    width = 0.34
+    version_offsets = {"lab2": -width / 2, "lab3": width / 2}
+    version_hatches = {"lab2": "/", "lab3": "\\"}
+    for axis, mode in zip(axes, mode_order, strict=True):
+        task_order = _task_order_for_mode(mode, expansion)
+        max_value = max((run.startup_total_s for run in runs if run.mode == mode), default=1.0)
+        label_height = max(max_value * 0.025, 0.1)
+        for task_index, task in enumerate(task_order):
+            for version in VERSION_ORDER:
+                x_position = task_index + version_offsets[version]
+                selected = tuple(
+                    run for run in runs if run.mode == mode and run.logical_task == task and run.version == version
+                )
+                if not selected:
+                    axis.text(
+                        x_position,
+                        label_height,
+                        "Missing",
+                        rotation=90,
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color=_VERSION_COLORS[version],
+                    )
+                    continue
+                phase_means = _startup_phase_means(runs, mode, task, version)
+                bottom = 0.0
+                for _, attribute in STARTUP_PHASES:
+                    value = phase_means[attribute]
+                    axis.bar(
+                        x_position,
+                        value,
+                        bottom=bottom,
+                        width=width * 0.86,
+                        color=_PHASE_COLORS[attribute],
+                        hatch=version_hatches[version],
+                        edgecolor="black",
+                        linewidth=0.3,
+                    )
+                    bottom += value
+        axis.set_title(mode)
+        axis.set_ylabel("Startup time [s]")
+        axis.set_xticks(
+            range(len(task_order)),
+            [task.replace("_", " ") for task in task_order],
+            rotation=45,
+            ha="right",
+            rotation_mode="anchor",
+        )
+        axis.tick_params(axis="x", labelsize=7)
+        axis.set_xlim(-0.55, len(task_order) - 0.45)
+        axis.set_ylim(bottom=0)
+    phase_handles = [
+        matplotlib.patches.Patch(color=_PHASE_COLORS[attribute], label=_PHASE_LABELS[attribute])
+        for _, attribute in STARTUP_PHASES
+    ]
+    version_handles = [
+        matplotlib.patches.Patch(
+            facecolor="white",
+            edgecolor="black",
+            hatch=version_hatches[version],
+            label=_VERSION_LABELS[version],
+        )
+        for version in VERSION_ORDER
+    ]
+    figure.legend(handles=phase_handles, loc="upper center", ncols=5, bbox_to_anchor=(0.5, 0.955), frameon=False)
+    figure.legend(handles=version_handles, loc="upper center", ncols=2, bbox_to_anchor=(0.5, 0.915), frameon=False)
+    figure.subplots_adjust(left=0.06, right=0.99, bottom=0.22, top=0.84, wspace=0.28)
+    paths: list[Path] = []
+    for extension in ("png", "svg"):
+        path = output_directory / f"startup_phase_breakdown.{extension}"
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        metadata = (
+            {"Software": "Isaac Lab benchmark comparison"}
+            if extension == "png"
+            else {"Date": None, "Creator": "Isaac Lab benchmark comparison"}
+        )
+        figure.savefig(
+            temporary,
+            format=extension,
+            dpi=150,
+            metadata=metadata,
+            facecolor="white",
+            edgecolor="white",
+        )
+        os.replace(temporary, path)
+        paths.append(path)
+    plt.close(figure)
+    return tuple(paths)
 
 
 def _matplotlib():
