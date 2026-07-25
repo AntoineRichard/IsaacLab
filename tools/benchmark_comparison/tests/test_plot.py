@@ -41,6 +41,12 @@ def _run(task: str, mode: str, seed: int, version: str, value: float) -> Normali
         gpu_utilization_mean_pct=value / 10,
         gpu_utilization_sample_count=seed - 30,
         elapsed_time_s=5.0,
+        startup_total_s=4.41,
+        startup_app_launch_s=2.5,
+        startup_python_imports_s=0.2,
+        startup_task_config_s=0.4,
+        startup_env_creation_s=1.3,
+        startup_first_step_s=0.01,
         artifact_path=f"final/{task}/{mode}/{seed}/{version}/success",
     )
 

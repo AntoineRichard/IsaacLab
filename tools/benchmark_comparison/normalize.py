@@ -31,6 +31,14 @@ MODE_ORDER = tuple(mode.id for mode in _MATRIX.modes)
 TASK_MODES = {
     task.alias: tuple(mode.id for mode in _MATRIX.modes if task.supports_mode(mode.id)) for task in _MATRIX.tasks
 }
+STARTUP_PHASES = (
+    ("app_launch", "startup_app_launch_s"),
+    ("python_imports", "startup_python_imports_s"),
+    ("task_config", "startup_task_config_s"),
+    ("env_creation", "startup_env_creation_s"),
+    ("first_step", "startup_first_step_s"),
+)
+STARTUP_METRICS = ("startup_total_s", *(attribute for _, attribute in STARTUP_PHASES))
 SUMMARY_METRICS = (
     "collection_fps",
     "gpu_memory_mean_mib",
@@ -38,6 +46,7 @@ SUMMARY_METRICS = (
     "gpu_utilization_mean_pct",
     "gpu_utilization_sample_count",
     "elapsed_time_s",
+    *STARTUP_METRICS,
 )
 
 RAW_RUN_FIELDS = (
@@ -62,6 +71,12 @@ RAW_RUN_FIELDS = (
     "gpu_utilization_mean_pct",
     "gpu_utilization_sample_count",
     "elapsed_time_s",
+    "startup_total_s",
+    "startup_app_launch_s",
+    "startup_python_imports_s",
+    "startup_task_config_s",
+    "startup_env_creation_s",
+    "startup_first_step_s",
     "artifact_path",
 )
 PAIRED_SUMMARY_FIELDS = (
@@ -140,6 +155,12 @@ class NormalizedRun:
     gpu_utilization_mean_pct: float
     gpu_utilization_sample_count: int
     elapsed_time_s: float
+    startup_total_s: float
+    startup_app_launch_s: float
+    startup_python_imports_s: float
+    startup_task_config_s: float
+    startup_env_creation_s: float
+    startup_first_step_s: float
     artifact_path: str
     isaac_lab_version: str = ""
     isaac_sim_version: str = ""
@@ -171,6 +192,12 @@ class NormalizedRun:
             "gpu_utilization_mean_pct": _format_float(self.gpu_utilization_mean_pct),
             "gpu_utilization_sample_count": str(self.gpu_utilization_sample_count),
             "elapsed_time_s": _format_float(self.elapsed_time_s),
+            "startup_total_s": _format_float(self.startup_total_s),
+            "startup_app_launch_s": _format_float(self.startup_app_launch_s),
+            "startup_python_imports_s": _format_float(self.startup_python_imports_s),
+            "startup_task_config_s": _format_float(self.startup_task_config_s),
+            "startup_env_creation_s": _format_float(self.startup_env_creation_s),
+            "startup_first_step_s": _format_float(self.startup_first_step_s),
             "artifact_path": self.artifact_path,
         }
 
@@ -420,6 +447,7 @@ def _read_success(
     result = validate_attempt_directory(path, attempt)
     if not result.succeeded or result.metrics is None:
         return None, result.reason or "success semantic validation failed"
+    metrics = result.metrics
     try:
         environment = _read_mapping(path / "environment.json")
         exit_status = _read_mapping(path / "exit.json")
@@ -441,9 +469,9 @@ def _read_success(
         schema = _read_mapping(path / "schema.json")
         stdout = (path / "stdout.log").read_text(encoding="utf-8")
         software = _validate_schema_identity(schema, stdout, attempt, manifest)
+        startup = _startup_metrics(metrics.phase_timings_s)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError) as error:
         return None, str(error)
-    metrics = result.metrics
     return (
         NormalizedRun(
             version=attempt.version.value,
@@ -466,6 +494,7 @@ def _read_success(
             gpu_memory_peak_mib=metrics.gpu_memory_peak_mib,
             gpu_utilization_mean_pct=metrics.gpu_utilization_mean_pct,
             gpu_utilization_sample_count=metrics.gpu_utilization_sample_count,
+            **startup,
             elapsed_time_s=wall_time,
             artifact_path=_relative_artifact(root, path),
         ),
@@ -688,7 +717,7 @@ def _validate_pair_invariants(lab2: NormalizedRun, lab3: NormalizedRun) -> None:
 
 
 def _run_from_csv(row: Mapping[str, str]) -> NormalizedRun:
-    return NormalizedRun(
+    run = NormalizedRun(
         version=row["version"],
         version_sha=row["version_sha"],
         environment_identity=row["environment_identity"],
@@ -713,8 +742,42 @@ def _run_from_csv(row: Mapping[str, str]) -> NormalizedRun:
         ),
         gpu_utilization_sample_count=int(row["gpu_utilization_sample_count"]),
         elapsed_time_s=_finite_number(row["elapsed_time_s"], "elapsed_time_s"),
+        startup_total_s=_finite_number(row["startup_total_s"], "startup_total_s"),
+        startup_app_launch_s=_finite_number(row["startup_app_launch_s"], "startup_app_launch_s"),
+        startup_python_imports_s=_finite_number(row["startup_python_imports_s"], "startup_python_imports_s"),
+        startup_task_config_s=_finite_number(row["startup_task_config_s"], "startup_task_config_s"),
+        startup_env_creation_s=_finite_number(row["startup_env_creation_s"], "startup_env_creation_s"),
+        startup_first_step_s=_finite_number(row["startup_first_step_s"], "startup_first_step_s"),
         artifact_path=row["artifact_path"],
     )
+    if run.startup_total_s < 0:
+        raise ValueError("startup_total_s must be non-negative")
+    _startup_metrics({phase: getattr(run, attribute) for phase, attribute in STARTUP_PHASES})
+    if not math.isclose(
+        run.startup_total_s,
+        sum(getattr(run, attribute) for _, attribute in STARTUP_PHASES),
+        rel_tol=1e-10,
+        abs_tol=1e-10,
+    ):
+        raise ValueError("startup_total_s does not equal serialized startup phases")
+    return run
+
+
+def _startup_metrics(phase_timings_s: Mapping[str, float]) -> dict[str, float]:
+    expected = {phase for phase, _ in STARTUP_PHASES}
+    if set(phase_timings_s) != expected:
+        raise ValueError("startup phases do not match canonical set")
+    values: dict[str, float] = {}
+    for phase, attribute in STARTUP_PHASES:
+        value = _finite_number(phase_timings_s[phase], f"startup phase {phase}")
+        if value < 0:
+            raise ValueError(f"startup phase {phase} must be non-negative")
+        values[attribute] = value
+    total = sum(values.values())
+    if not math.isfinite(total):
+        raise ValueError("startup total must be finite")
+    values["startup_total_s"] = total
+    return values
 
 
 def _read_mapping(path: Path) -> Mapping[str, object]:

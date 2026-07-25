@@ -25,10 +25,13 @@ from tools.benchmark_comparison.normalize import (
     TASK_MODES,
     TASK_ORDER,
     NormalizedRun,
+    _startup_metrics,
     normalize_run_set,
+    read_raw_runs_csv,
     summarize_pairs,
     task_order_for_mode,
     write_normalized_outputs,
+    write_raw_runs_csv,
 )
 from tools.benchmark_comparison.validate import attempt_identity
 
@@ -38,6 +41,13 @@ LAB3_SHA = "b" * 40
 LAB2_IMAGE_ID = "sha256:" + "c" * 64
 LAB3_LOCK = "d" * 64
 GPU_UUID = "GPU-01234567-89ab-cdef-0123-456789abcdef"
+STARTUP = {
+    "app_launch": 2.5,
+    "python_imports": 0.2,
+    "task_config": 0.4,
+    "env_creation": 1.3,
+    "first_step": 0.01,
+}
 
 
 def test_expanded_task_order_keeps_rgb_runtime_only_and_both_anymal_terrains() -> None:
@@ -168,10 +178,82 @@ def _run(**overrides) -> NormalizedRun:
         "gpu_utilization_mean_pct": 0.0,
         "gpu_utilization_sample_count": 8,
         "elapsed_time_s": 12.5,
+        "startup_total_s": 4.41,
+        "startup_app_launch_s": 2.5,
+        "startup_python_imports_s": 0.2,
+        "startup_task_config_s": 0.4,
+        "startup_env_creation_s": 1.3,
+        "startup_first_step_s": 0.01,
         "artifact_path": "final/example/success",
     }
     values.update(overrides)
     return NormalizedRun(**values)
+
+
+def test_normalization_preserves_startup_components_and_computed_total(tmp_path: Path) -> None:
+    attempt = _attempts().attempts[0]
+    expansion = replace(_attempts(), attempts=(attempt,), pairs=())
+    payloads = _payloads(attempt, collection_fps=100.0, utilization=40.0)
+    payloads["schema"]["runtime"]["startup_time_s"] = STARTUP
+    finalize_attempt(tmp_path, attempt, **payloads)
+
+    runs, failures = normalize_run_set(tmp_path, expansion, _manifest())
+
+    assert failures == ()
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.startup_app_launch_s == 2.5
+    assert run.startup_python_imports_s == 0.2
+    assert run.startup_task_config_s == 0.4
+    assert run.startup_env_creation_s == 1.3
+    assert run.startup_first_step_s == 0.01
+    assert run.startup_total_s == pytest.approx(4.41)
+    path = write_raw_runs_csv(tmp_path / "raw_runs.csv", runs)
+    assert read_raw_runs_csv(path) == runs
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("missing", "startup phases do not match canonical set"),
+        ("unexpected", "startup phases do not match canonical set"),
+        ("negative", "startup phase app_launch must be non-negative"),
+    ],
+)
+def test_normalization_rejects_noncanonical_startup_metrics(tmp_path: Path, mutation: str, reason: str) -> None:
+    attempt = _attempts().attempts[0]
+    expansion = replace(_attempts(), attempts=(attempt,), pairs=())
+    payloads = _payloads(attempt, collection_fps=100.0, utilization=40.0)
+    startup = payloads["schema"]["runtime"]["startup_time_s"]
+    if mutation == "missing":
+        startup.pop("first_step")
+    elif mutation == "unexpected":
+        startup["other"] = 1.0
+    else:
+        startup["app_launch"] = -1.0
+    finalize_attempt(tmp_path, attempt, **payloads)
+
+    runs, failures = normalize_run_set(tmp_path, expansion, _manifest())
+
+    assert runs == ()
+    assert len(failures) == 1
+    assert failures[0].failure_kind == "invalid_success"
+    assert reason in failures[0].reason
+
+
+def test_startup_metrics_rejects_non_finite_phase() -> None:
+    startup = dict(STARTUP)
+    startup["app_launch"] = math.inf
+
+    with pytest.raises(ValueError, match="startup phase app_launch must be finite"):
+        _startup_metrics(startup)
+
+
+def test_startup_metrics_rejects_non_finite_total() -> None:
+    startup = {phase: 1e308 for phase in STARTUP}
+
+    with pytest.raises(ValueError, match="startup total must be finite"):
+        _startup_metrics(startup)
 
 
 def test_normalization_writes_one_stably_ordered_row_per_success_and_preserves_failures(tmp_path: Path) -> None:
