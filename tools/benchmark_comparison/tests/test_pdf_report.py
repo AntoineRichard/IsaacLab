@@ -12,10 +12,13 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from tools.benchmark_comparison import pdf_report as pdf_report_module
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
-from tools.benchmark_comparison.normalize import NormalizedRun, write_normalized_outputs
+from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
 from tools.benchmark_comparison.pdf_report import validate_pdf, write_pdf_report
 from tools.benchmark_comparison.plot import PLOT_BASENAMES
 from tools.benchmark_comparison.report import ReportAudit
@@ -113,6 +116,15 @@ def _inputs(
     return normalized, _manifest(), audit, _plot_paths(tmp_path / "plots")
 
 
+def _pdf_pages(path: Path) -> tuple[str, ...]:
+    text = subprocess.run(["pdftotext", str(path), "-"], check=True, text=True, capture_output=True).stdout
+    return tuple(page for page in text.split("\f") if page.strip())
+
+
+def _page_title(page: str) -> str:
+    return next(line.strip() for line in page.splitlines() if line.strip())
+
+
 def test_pdf_contains_large_report_and_regenerates_byte_identically(tmp_path: Path) -> None:
     normalized, manifest, audit, plots = _inputs(tmp_path)
     first = write_pdf_report(
@@ -140,7 +152,41 @@ def test_pdf_contains_large_report_and_regenerates_byte_identically(tmp_path: Pa
     validate_pdf(first, ("final", "a" * 40, "b" * 40, "Startup"))
 
 
-def test_pdf_paginates_large_run_table_and_contains_first_and_last_attempts(tmp_path: Path) -> None:
+def test_pdf_is_independent_of_and_preserves_ambient_font_settings(tmp_path: Path) -> None:
+    import matplotlib
+
+    normalized, manifest, audit, plots = _inputs(tmp_path)
+    with matplotlib.rc_context():
+        matplotlib.rcParams["font.family"] = ["DejaVu Sans"]
+        sans_settings = tuple(matplotlib.rcParams["font.family"])
+        first = write_pdf_report(
+            normalized["raw_runs"],
+            normalized["paired_summary"],
+            normalized["failures"],
+            plots,
+            tmp_path / "sans.pdf",
+            manifest=manifest,
+            audit=audit,
+        )
+        assert tuple(matplotlib.rcParams["font.family"]) == sans_settings
+
+        matplotlib.rcParams["font.family"] = ["DejaVu Serif"]
+        serif_settings = tuple(matplotlib.rcParams["font.family"])
+        second = write_pdf_report(
+            normalized["raw_runs"],
+            normalized["paired_summary"],
+            normalized["failures"],
+            plots,
+            tmp_path / "serif.pdf",
+            manifest=manifest,
+            audit=audit,
+        )
+        assert tuple(matplotlib.rcParams["font.family"]) == serif_settings
+
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_pdf_paginates_large_run_table_and_uses_fixed_page_order(tmp_path: Path) -> None:
     runs = tuple(
         replace(
             _run("lab2" if index % 2 == 0 else "lab3", 100.0 + index),
@@ -150,20 +196,136 @@ def test_pdf_paginates_large_run_table_and_contains_first_and_last_attempts(tmp_
         for index in range(40)
     )
     normalized, manifest, audit, plots = _inputs(tmp_path, runs)
+    shuffled_plots = tuple(reversed(plots))
+    assert tuple(path.stem for path in shuffled_plots) != PLOT_BASENAMES
     report = write_pdf_report(
         normalized["raw_runs"],
         normalized["paired_summary"],
         normalized["failures"],
-        plots,
+        shuffled_plots,
         tmp_path / "large.pdf",
         manifest=manifest,
         audit=audit,
     )
 
+    pages = _pdf_pages(report)
+    page_titles = tuple(_page_title(page) for page in pages)
+    expected_titles = (
+        "Isaac Lab Startup and Runtime Benchmark Report",
+        "Methodology",
+        "Pinned revisions and execution identities",
+        "Hardware and software inventory",
+        "Task mapping",
+        "runtime-100: Startup comparison",
+        "runtime-1000: Startup comparison",
+        "training-100: Startup comparison",
+        "runtime-100: Runtime and resource comparison",
+        "runtime-1000: Runtime and resource comparison",
+        "training-100: Runtime and resource comparison",
+        "Successful individual-run appendix (1/3)",
+        "Successful individual-run appendix (2/3)",
+        "Successful individual-run appendix (3/3)",
+        "Failures and missing attempts",
+        "Artifact integrity audit",
+        "Collection FPS",
+        "Mean GPU Memory",
+        "Peak GPU Memory",
+        "Mean GPU Utilization",
+        "Total Startup Time",
+        "Startup Phase Breakdown",
+    )
+    assert page_titles == expected_titles
+
     info = subprocess.run(["pdfinfo", str(report)], check=True, text=True, capture_output=True).stdout
     page_match = re.search(r"^Pages:\s+([1-9][0-9]*)$", info, re.MULTILINE)
     assert page_match is not None
-    assert int(page_match.group(1)) > 1
-    text = subprocess.run(["pdftotext", str(report), "-"], check=True, text=True, capture_output=True).stdout
-    assert "attempt-000" in text
-    assert "attempt-039" in text
+    assert int(page_match.group(1)) == len(expected_titles)
+
+    appendix_pages = tuple(page for page in pages if _page_title(page).startswith("Successful individual-run"))
+    expected_appendix_page_count = (len(runs) + 18 - 1) // 18
+    assert expected_appendix_page_count == 3
+    assert len(appendix_pages) == expected_appendix_page_count
+    assert all("Mode" in page and "Attempt identity" in page for page in appendix_pages)
+    assert "attempt-000" in appendix_pages[0]
+    assert "attempt-039" in appendix_pages[-1]
+
+    empty_summary_page = pages[6]
+    assert all(
+        header in empty_summary_page for header in ("Task", "Metric", "Pairs", "Lab2 mean", "Lab3 mean", "Delta")
+    )
+    empty_failures_page = pages[14]
+    assert all(header in empty_failures_page for header in ("Mode", "Classification", "Reason", "Attempt identity"))
+
+
+def test_pdf_contains_failure_and_audit_content(tmp_path: Path) -> None:
+    runs = (_run("lab2", 100.0), _run("lab3", 125.0))
+    failure = FailureRow(
+        version="lab2",
+        logical_task="cartpole",
+        concrete_task="Isaac-Cartpole-v0",
+        mode="runtime-100",
+        bound=100,
+        bound_unit="steps",
+        seed=43,
+        num_envs=4096,
+        attempt_number=1,
+        failure_kind="timeout",
+        reason="forced timeout",
+        artifact_path="final/failed-attempt/attempt-0001-timeout",
+    )
+    normalized = write_normalized_outputs(tmp_path / "normalized", runs, (failure,))
+    audit = ReportAudit(
+        successful_attempts=2,
+        failed_or_missing_attempts=1,
+        raw_file_count=31,
+        generated_file_count=19,
+        raw_hash_manifest_sha256="f" * 64,
+    )
+    report = write_pdf_report(
+        normalized["raw_runs"],
+        normalized["paired_summary"],
+        normalized["failures"],
+        _plot_paths(tmp_path / "plots"),
+        tmp_path / "failures.pdf",
+        manifest=_manifest(),
+        audit=audit,
+    )
+
+    pages = _pdf_pages(report)
+    failure_page = next(page for page in pages if _page_title(page) == "Failures and missing attempts")
+    assert all(token in failure_page for token in ("timeout", "forced timeout", "failed-attempt"))
+    audit_page = next(page for page in pages if _page_title(page) == "Artifact integrity audit")
+    assert all(
+        token in audit_page
+        for token in (
+            "Successful attempts: 2",
+            "Failed or missing attempts: 1",
+            "Raw files: 31",
+            "Generated files: 19",
+            "f" * 64,
+        )
+    )
+
+
+def test_pdf_validation_failure_preserves_existing_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    normalized, manifest, audit, plots = _inputs(tmp_path)
+    destination = tmp_path / "report.pdf"
+    destination.write_bytes(b"preserved report")
+
+    def reject_validation(_path: Path, _expected_tokens: object) -> None:
+        raise ValueError("forced validation failure")
+
+    monkeypatch.setattr(pdf_report_module, "validate_pdf", reject_validation)
+    with pytest.raises(ValueError, match="forced validation failure"):
+        write_pdf_report(
+            normalized["raw_runs"],
+            normalized["paired_summary"],
+            normalized["failures"],
+            plots,
+            destination,
+            manifest=manifest,
+            audit=audit,
+        )
+
+    assert destination.read_bytes() == b"preserved report"
+    assert not destination.with_suffix(".pdf.tmp").exists()

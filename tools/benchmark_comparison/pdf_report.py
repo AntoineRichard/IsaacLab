@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+import matplotlib
 from matplotlib.backends.backend_pdf import PdfPages
 
 from .manifest import RunSetManifest, validate_manifest
@@ -37,6 +38,10 @@ _PDF_METADATA = {
     "Producer": "Isaac Lab benchmark comparison",
     "CreationDate": datetime(2026, 7, 25, tzinfo=timezone.utc),
     "ModDate": datetime(2026, 7, 25, tzinfo=timezone.utc),
+}
+_PDF_RCPARAMS = {
+    "font.family": "sans-serif",
+    "font.sans-serif": ["DejaVu Sans"],
 }
 _PORTRAIT_SIZE = (8.5, 11.0)
 _LANDSCAPE_SIZE = (11.0, 8.5)
@@ -74,7 +79,26 @@ def write_pdf_report(
     manifest: RunSetManifest,
     audit: ReportAudit,
 ) -> Path:
-    """Write the deterministic paginated benchmark report PDF."""
+    """Write the deterministic paginated benchmark report PDF.
+
+    Args:
+        raw_runs_path: Normalized successful-run CSV path.
+        paired_summary_path: Normalized paired-summary CSV path.
+        failures_path: Normalized failed-or-missing-attempt CSV path.
+        plot_paths: Paths to the six required benchmark PNG figures.
+        output_path: Destination PDF path.
+        manifest: Run-set identity, inventory, and matrix expansion.
+        audit: Artifact counts and raw-hash integrity values.
+
+    Returns:
+        The destination PDF path after successful validation and publication.
+
+    Raises:
+        ValueError: If inputs are invalid or the rendered PDF fails validation.
+        RuntimeError: If a required host PDF validation executable is unavailable.
+        subprocess.CalledProcessError: If a host PDF validation command fails.
+        OSError: If an input cannot be read or the PDF cannot be written or published.
+    """
     expected_manifest = validate_manifest(manifest)
     runs = read_raw_runs_csv(raw_runs_path)
     summaries = _read_csv(paired_summary_path, PAIRED_SUMMARY_FIELDS)
@@ -85,7 +109,7 @@ def write_pdf_report(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(".pdf.tmp")
     try:
-        with PdfPages(temporary, metadata=_PDF_METADATA) as pdf:
+        with matplotlib.rc_context(_PDF_RCPARAMS), PdfPages(temporary, metadata=_PDF_METADATA) as pdf:
             _text_page(
                 pdf,
                 "Isaac Lab Startup and Runtime Benchmark Report",
@@ -221,7 +245,18 @@ def write_pdf_report(
 
 
 def validate_pdf(path: Path, expected_tokens: Sequence[str]) -> None:
-    """Validate the PDF header, page count, and expected extracted text."""
+    """Validate the PDF header, page count, and expected extracted text.
+
+    Args:
+        path: PDF path to validate.
+        expected_tokens: Text tokens that must occur in the extracted PDF text.
+
+    Raises:
+        ValueError: If the PDF header, page count, or expected text is invalid.
+        RuntimeError: If ``pdfinfo`` or ``pdftotext`` is unavailable.
+        subprocess.CalledProcessError: If ``pdfinfo`` or ``pdftotext`` fails.
+        OSError: If the PDF cannot be read.
+    """
     if not path.read_bytes().startswith(b"%PDF-"):
         raise ValueError("report PDF header is invalid")
     for executable in ("pdfinfo", "pdftotext"):
