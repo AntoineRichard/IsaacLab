@@ -22,6 +22,7 @@ from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import (
     RAW_RUN_FIELDS,
+    SUMMARY_METRICS,
     TASK_MODES,
     TASK_ORDER,
     NormalizedRun,
@@ -386,6 +387,12 @@ def test_paired_summaries_use_only_valid_pairs_and_compute_exact_signed_deltas()
             concrete_task="Isaac-Cartpole",
             seed=42,
             collection_fps=125.0,
+            startup_total_s=5.0,
+            startup_app_launch_s=3.0,
+            startup_python_imports_s=0.25,
+            startup_task_config_s=0.5,
+            startup_env_creation_s=1.2,
+            startup_first_step_s=0.05,
             artifact_path="final/lab3/success",
         ),
         _run(seed=43, collection_fps=120.0, artifact_path="final/lab2-43/success"),
@@ -393,7 +400,9 @@ def test_paired_summaries_use_only_valid_pairs_and_compute_exact_signed_deltas()
 
     summaries = summarize_pairs(runs)
     throughput = next(row for row in summaries if row.metric == "collection_fps")
+    startup = next(row for row in summaries if row.metric == "startup_total_s")
 
+    assert {row.metric for row in summaries} == set(SUMMARY_METRICS)
     assert throughput.paired_seed_count == 1
     assert throughput.lab2_mean == 100.0
     assert throughput.lab2_std == 0.0
@@ -402,6 +411,7 @@ def test_paired_summaries_use_only_valid_pairs_and_compute_exact_signed_deltas()
     assert throughput.absolute_delta == 25.0
     assert throughput.percent_delta == 25.0
     assert throughput.percent_delta_status == "available"
+    assert startup.absolute_delta == pytest.approx(0.59)
 
 
 def test_zero_lab2_baseline_has_explicit_undefined_percent_semantics() -> None:

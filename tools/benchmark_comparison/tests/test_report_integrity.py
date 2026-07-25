@@ -110,6 +110,24 @@ def test_report_rejects_paired_summary_not_derived_from_raw_runs(tmp_path: Path)
         )
 
 
+def test_report_omits_integrity_appendix_without_audit(tmp_path: Path) -> None:
+    normalized = write_normalized_outputs(
+        tmp_path / "normalized",
+        (_run("lab2", 100.0), _run("lab3", 125.0)),
+        (),
+    )
+
+    report_path = write_markdown_report(
+        normalized["raw_runs"],
+        normalized["paired_summary"],
+        normalized["failures"],
+        tmp_path / "report.md",
+        manifest=_manifest(),
+    )
+
+    assert "## Artifact integrity" not in report_path.read_text(encoding="utf-8")
+
+
 def test_report_rejects_failure_from_another_run_set(tmp_path: Path) -> None:
     failure = FailureRow(
         version="lab2",

@@ -11,6 +11,8 @@ import csv
 import json
 import os
 import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .manifest import RunSetManifest, read_manifest, resolve_manifest_expansion, validate_manifest
@@ -18,6 +20,7 @@ from .models import ExecutionProvenance, MatrixExpansion
 from .normalize import (
     FAILURE_FIELDS,
     PAIRED_SUMMARY_FIELDS,
+    STARTUP_METRICS,
     expansion_orders,
     read_raw_runs_csv,
     summarize_pairs,
@@ -31,7 +34,24 @@ _METRIC_LABELS = {
     "gpu_utilization_mean_pct": "Mean GPU utilization [%]",
     "gpu_utilization_sample_count": "GPU utilization samples",
     "elapsed_time_s": "Elapsed time [s]",
+    "startup_total_s": "Total startup [s]",
+    "startup_app_launch_s": "App launch [s]",
+    "startup_python_imports_s": "Python imports [s]",
+    "startup_task_config_s": "Task configuration [s]",
+    "startup_env_creation_s": "Environment creation [s]",
+    "startup_first_step_s": "First step [s]",
 }
+
+
+@dataclass(frozen=True)
+class ReportAudit:
+    """Non-circular integrity values rendered inside human-readable reports."""
+
+    successful_attempts: int
+    failed_or_missing_attempts: int
+    raw_file_count: int
+    generated_file_count: int
+    raw_hash_manifest_sha256: str
 
 
 def write_markdown_report(
@@ -42,6 +62,7 @@ def write_markdown_report(
     *,
     manifest: RunSetManifest | Path,
     artifact_root: Path | None = None,
+    audit: ReportAudit | None = None,
 ) -> Path:
     """Write a deterministic report without reading simulator logs or schemas."""
     runs = read_raw_runs_csv(raw_runs_path)
@@ -134,42 +155,30 @@ def write_markdown_report(
         lines.extend(["", f"## {mode}", ""])
         mode_runs = [run for run in runs if run.mode == mode]
         mode_summaries = [row for row in summaries if row.get("mode") == mode]
-        if mode_summaries:
-            lines.extend(
-                [
-                    "| Task | Metric | Paired seeds | Lab 2 mean ± std | Lab 3 mean ± std | "
-                    "Lab 3 - Lab 2 | Delta [%] |",
-                    "|---|---|---:|---:|---:|---:|---:|",
-                ]
-            )
-            for row in mode_summaries:
-                delta_pct = (
-                    f"{float(row['percent_delta']):+.3f}%"
-                    if row.get("percent_delta_status") == "available" and row.get("percent_delta")
-                    else "undefined (zero Lab 2 baseline)"
-                )
-                lines.append(
-                    f"| `{_escape(row['logical_task'])}` | {_METRIC_LABELS.get(row['metric'], row['metric'])} "
-                    f"| {row['paired_seed_count']} | {_number(row['lab2_mean'])} ± {_number(row['lab2_std'])} "
-                    f"| {_number(row['lab3_mean'])} ± {_number(row['lab3_std'])} "
-                    f"| {float(row['absolute_delta']):+.3f} | {delta_pct} |"
-                )
-        else:
-            lines.append("No valid paired results.")
+        startup_summaries = [row for row in mode_summaries if row["metric"] in STARTUP_METRICS]
+        runtime_summaries = [row for row in mode_summaries if row["metric"] not in STARTUP_METRICS]
+        lines.extend(["", "### Startup comparison", ""])
+        lines.extend(_paired_summary_table(startup_summaries))
+        lines.extend(["", "### Runtime and resource comparison", ""])
+        lines.extend(_paired_summary_table(runtime_summaries))
 
         lines.extend(["", "Successful individual runs:", ""])
         if mode_runs:
             lines.extend(
                 [
-                    "| Task | Version | Seed | Collection FPS | Mean GPU memory [MiB] | "
-                    "Peak GPU memory [MiB] | Mean GPU utilization [%] | GPU utilization samples | "
-                    "Elapsed [s] | Artifact |",
-                    "|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+                    "| Task | Version | Seed | Total startup [s] | App launch [s] | Python imports [s] | "
+                    "Task configuration [s] | Environment creation [s] | First step [s] | Collection FPS | "
+                    "Mean GPU memory [MiB] | Peak GPU memory [MiB] | Mean GPU utilization [%] | "
+                    "GPU utilization samples | Elapsed [s] | Artifact |",
+                    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
                 ]
             )
             for run in mode_runs:
                 lines.append(
                     f"| `{_escape(run.logical_task)}` | {run.version} | {run.seed} "
+                    f"| {run.startup_total_s:.3f} | {run.startup_app_launch_s:.3f} "
+                    f"| {run.startup_python_imports_s:.3f} | {run.startup_task_config_s:.3f} "
+                    f"| {run.startup_env_creation_s:.3f} | {run.startup_first_step_s:.3f} "
                     f"| {run.collection_fps:.3f} | {run.gpu_memory_mean_mib:.3f} "
                     f"| {run.gpu_memory_peak_mib:.3f} | {run.gpu_utilization_mean_pct:.3f} "
                     f"| {run.gpu_utilization_sample_count} | {run.elapsed_time_s:.3f} "
@@ -200,6 +209,22 @@ def write_markdown_report(
             )
     else:
         lines.append("No failed or missing attempts were recorded.")
+
+    if audit is not None:
+        lines.extend(
+            [
+                "",
+                "## Artifact integrity",
+                "",
+                "| Item | Value |",
+                "|---|---|",
+                f"| Successful attempts | {audit.successful_attempts} |",
+                f"| Failed or missing attempts | {audit.failed_or_missing_attempts} |",
+                f"| Raw files | {audit.raw_file_count} |",
+                f"| Generated files | {audit.generated_file_count} |",
+                f"| Raw hash manifest SHA-256 | `{audit.raw_hash_manifest_sha256}` |",
+            ]
+        )
 
     _write_text_atomic(output_path, "\n".join(lines) + "\n")
     return output_path
@@ -363,6 +388,30 @@ def _validate_failures(
             valid_terminal = terminal is not None and _FAILED_ARTIFACT_DIRECTORY.fullmatch(terminal) is not None
         if not valid_terminal:
             raise ValueError("artifact path terminal does not match failure classification: " + artifact_path)
+
+
+def _paired_summary_table(rows: Sequence[Mapping[str, str]]) -> list[str]:
+    """Return the paired-summary Markdown table for one metric group."""
+    if not rows:
+        return ["No valid paired results."]
+
+    lines = [
+        "| Task | Metric | Paired seeds | Lab 2 mean ± std | Lab 3 mean ± std | Lab 3 - Lab 2 | Delta [%] |",
+        "|---|---|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        delta_pct = (
+            f"{float(row['percent_delta']):+.3f}%"
+            if row.get("percent_delta_status") == "available" and row.get("percent_delta")
+            else "undefined (zero Lab 2 baseline)"
+        )
+        lines.append(
+            f"| `{_escape(row['logical_task'])}` | {_METRIC_LABELS.get(row['metric'], row['metric'])} "
+            f"| {row['paired_seed_count']} | {_number(row['lab2_mean'])} ± {_number(row['lab2_std'])} "
+            f"| {_number(row['lab3_mean'])} ± {_number(row['lab3_std'])} "
+            f"| {float(row['absolute_delta']):+.3f} | {delta_pct} |"
+        )
+    return lines
 
 
 def _methodology(manifest: RunSetManifest) -> tuple[str, ...]:

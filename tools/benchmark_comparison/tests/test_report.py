@@ -16,7 +16,7 @@ from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, So
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
-from tools.benchmark_comparison.report import read_provenance, write_markdown_report, write_provenance
+from tools.benchmark_comparison.report import ReportAudit, read_provenance, write_markdown_report, write_provenance
 
 
 def _provenance() -> ExecutionProvenance:
@@ -124,12 +124,20 @@ def test_report_contains_methodology_inventory_mapping_modes_deltas_samples_and_
         ),
     )
     normalized = write_normalized_outputs(tmp_path / "normalized", runs, failures)
+    audit = ReportAudit(
+        successful_attempts=2,
+        failed_or_missing_attempts=1,
+        raw_file_count=25,
+        generated_file_count=17,
+        raw_hash_manifest_sha256="e" * 64,
+    )
     report_path = write_markdown_report(
         normalized["raw_runs"],
         normalized["paired_summary"],
         normalized["failures"],
         tmp_path / "report" / "report.md",
         manifest=_manifest(),
+        audit=audit,
     )
 
     text = report_path.read_text(encoding="utf-8")
@@ -142,6 +150,17 @@ def test_report_contains_methodology_inventory_mapping_modes_deltas_samples_and_
         "## Task mapping",
         "## runtime-100",
         "## Failures and missing attempts",
+        "### Startup comparison",
+        "Total startup [s]",
+        "App launch [s]",
+        "Python imports [s]",
+        "Task configuration [s]",
+        "Environment creation [s]",
+        "First step [s]",
+        "### Runtime and resource comparison",
+        "## Artifact integrity",
+        "Raw files | 25",
+        f"`{'e' * 64}`",
     ):
         assert heading in text
     assert "informational" in text
@@ -150,6 +169,28 @@ def test_report_contains_methodology_inventory_mapping_modes_deltas_samples_and_
     assert "GPU utilization samples" in text
     assert "attempt-0001-out_of_memory" in text
     assert "not imputed" in text
+    assert "generated hash manifest SHA" not in text
+    startup_section, runtime_section = text.split("### Startup comparison", 1)[1].split(
+        "### Runtime and resource comparison", 1
+    )
+    runtime_section = runtime_section.split("Successful individual runs:", 1)[0]
+    for startup_label in (
+        "Total startup [s]",
+        "App launch [s]",
+        "Python imports [s]",
+        "Task configuration [s]",
+        "Environment creation [s]",
+        "First step [s]",
+    ):
+        assert startup_label in startup_section
+        assert startup_label not in runtime_section
+    assert (
+        "| Task | Version | Seed | Total startup [s] | App launch [s] | Python imports [s] | "
+        "Task configuration [s] | Environment creation [s] | First step [s] | Collection FPS"
+    ) in text
+    individual_rows = [line for line in text.splitlines() if "| `cartpole` | lab" in line]
+    assert len(individual_rows) == 2
+    assert all("| 4.410 |" in line for line in individual_rows)
 
 
 def test_report_renders_partial_data_without_inventing_missing_values(tmp_path: Path) -> None:
