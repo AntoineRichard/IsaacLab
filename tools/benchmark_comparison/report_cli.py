@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             artifact_root, run_set, output_directory, excluded_roots=(staging,)
         )
         if final_raw_hash_contents != raw_hash_contents or final_raw_file_count != raw_file_count:
-            raise ValueError("raw artifacts changed during normalization")
+            raise ValueError("raw artifacts changed during report generation")
         _publish(staging, output_directory)
     finally:
         shutil.rmtree(staging, ignore_errors=True)

@@ -18,6 +18,14 @@ from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.report_cli import _publish, main
 
 
+def _snapshot_files(directory: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(directory).as_posix(): path.read_bytes()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
 def _manifest() -> RunSetManifest:
     software = SoftwareIdentity("2.3.2", "5.1", "3.11", "2.7", "5.0")
     return RunSetManifest(
@@ -42,7 +50,7 @@ def _manifest() -> RunSetManifest:
     )
 
 
-def test_report_cli_rejects_raw_changes_during_normalization(
+def test_report_cli_rejects_raw_changes_during_report_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -62,7 +70,7 @@ def test_report_cli_rejects_raw_changes_during_normalization(
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", write_placeholder_pdf)
 
-    with pytest.raises(ValueError, match="changed during normalization"):
+    with pytest.raises(ValueError, match="changed during report generation"):
         main(
             [
                 "--artifact_root",
@@ -113,11 +121,18 @@ def test_report_cli_preserves_previous_report_when_pdf_generation_fails(
 ) -> None:
     root = tmp_path / "artifacts"
     write_manifest(root / "canary" / "manifest.json", _manifest())
+    raw_artifacts = root / "canary" / "raw-artifact"
+    (raw_artifacts / "nested").mkdir(parents=True)
+    (raw_artifacts / "measurements.json").write_bytes(b'{"fps": 123.0}\n')
+    (raw_artifacts / "nested" / "stdout.log").write_bytes(b"raw log bytes\n")
     output = root / "canary" / "report"
-    output.mkdir()
-    previous_report = b"previous report bytes"
-    (output / "report.md").write_bytes(previous_report)
+    (output / "legacy").mkdir(parents=True)
+    (output / "report.md").write_bytes(b"previous report bytes")
+    (output / "report.pdf").write_bytes(b"previous PDF bytes")
     (output / "stale.txt").write_text("stale", encoding="utf-8")
+    (output / "legacy" / "plot.svg").write_bytes(b"<svg>legacy</svg>\n")
+    published_before = _snapshot_files(output)
+    raw_before = _snapshot_files(raw_artifacts)
 
     def fail_pdf(*_args, **_kwargs):
         raise RuntimeError("injected PDF failure")
@@ -138,5 +153,6 @@ def test_report_cli_preserves_previous_report_when_pdf_generation_fails(
             ]
         )
 
-    assert (output / "report.md").read_bytes() == previous_report
-    assert (output / "stale.txt").read_text(encoding="utf-8") == "stale"
+    assert _snapshot_files(output) == published_before
+    assert _snapshot_files(raw_artifacts) == raw_before
+    assert not tuple(output.parent.glob(f".{output.name}.*"))
