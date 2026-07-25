@@ -19,8 +19,9 @@ from pathlib import Path
 from .manifest import manifest_path, read_manifest, resolve_manifest_expansion
 from .models import RunSet
 from .normalize import normalize_run_set, write_normalized_outputs
+from .pdf_report import write_pdf_report
 from .plot import generate_plots
-from .report import write_markdown_report
+from .report import ReportAudit, write_markdown_report
 
 _NORMALIZED_FILES = ("raw_runs.csv", "paired_summary.csv", "failures.csv")
 
@@ -56,6 +57,15 @@ def main(argv: list[str] | None = None) -> int:
     staging = Path(tempfile.mkdtemp(prefix=f".{output_directory.name}.", dir=output_directory.parent))
     try:
         normalized = write_normalized_outputs(staging, runs, failures, expansion=expansion)
+        plots = generate_plots(normalized["raw_runs"], staging, expansion=expansion)
+        generated_file_count = len(_NORMALIZED_FILES) + len(plots) + 2  # Markdown + PDF
+        report_audit = ReportAudit(
+            successful_attempts=len(runs),
+            failed_or_missing_attempts=len(failures),
+            raw_file_count=raw_file_count,
+            generated_file_count=generated_file_count,
+            raw_hash_manifest_sha256=hashlib.sha256(raw_hash_contents.encode()).hexdigest(),
+        )
         write_markdown_report(
             normalized["raw_runs"],
             normalized["paired_summary"],
@@ -63,8 +73,17 @@ def main(argv: list[str] | None = None) -> int:
             staging / "report.md",
             manifest=manifest,
             artifact_root=artifact_root,
+            audit=report_audit,
         )
-        generate_plots(normalized["raw_runs"], staging, expansion=expansion)
+        write_pdf_report(
+            normalized["raw_runs"],
+            normalized["paired_summary"],
+            normalized["failures"],
+            tuple(path for path in plots if path.suffix == ".png"),
+            staging / "report.pdf",
+            manifest=manifest,
+            audit=report_audit,
+        )
         _write_text(staging / "raw_artifact_hashes.sha256", raw_hash_contents)
 
         generated = tuple(
@@ -72,24 +91,25 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     *[staging / name for name in _NORMALIZED_FILES],
                     staging / "report.md",
-                    *staging.glob("*.png"),
-                    *staging.glob("*.svg"),
+                    staging / "report.pdf",
+                    *plots,
                 ),
                 key=lambda path: path.name,
             )
         )
+        assert len(generated) == generated_file_count
         generated_hash_contents = _hash_lines(generated, staging)
         _write_text(staging / "generated_hashes.sha256", generated_hash_contents)
         audit = {
             "schema_version": "1.0",
             "run_set": run_set.value,
             "phase": manifest.phase,
-            "successful_attempts": len(runs),
-            "failed_or_missing_attempts": len(failures),
-            "raw_file_count": raw_file_count,
-            "generated_file_count": len(generated),
+            "successful_attempts": report_audit.successful_attempts,
+            "failed_or_missing_attempts": report_audit.failed_or_missing_attempts,
+            "raw_file_count": report_audit.raw_file_count,
+            "generated_file_count": report_audit.generated_file_count,
             "manifest_sha256": _sha256(manifest_path(artifact_root, run_set)),
-            "raw_hash_manifest_sha256": hashlib.sha256(raw_hash_contents.encode()).hexdigest(),
+            "raw_hash_manifest_sha256": report_audit.raw_hash_manifest_sha256,
             "generated_hash_manifest_sha256": hashlib.sha256(generated_hash_contents.encode()).hexdigest(),
         }
         _write_text(

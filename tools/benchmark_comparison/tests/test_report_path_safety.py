@@ -158,7 +158,14 @@ def test_report_cli_accepts_disjoint_external_output(
     artifact_root = tmp_path / "artifacts"
     write_manifest(artifact_root / "final" / "manifest.json", _manifest())
     output = tmp_path / "external-report"
+
+    def write_placeholder_pdf(*args, **_kwargs):
+        output_path = args[4]
+        output_path.write_bytes(b"placeholder PDF")
+        return output_path
+
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", write_placeholder_pdf)
 
     assert (
         main(

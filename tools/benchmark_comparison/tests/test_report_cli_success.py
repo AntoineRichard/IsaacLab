@@ -15,6 +15,7 @@ from tools.benchmark_comparison.artifacts import finalize_attempt
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity, write_manifest
 from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
+from tools.benchmark_comparison.pdf_report import validate_pdf
 from tools.benchmark_comparison.report_cli import main
 from tools.benchmark_comparison.validate import attempt_identity
 
@@ -111,3 +112,44 @@ def test_report_only_cli_normalizes_a_synthetic_raw_success(tmp_path: Path) -> N
         rows = tuple(csv.DictReader(file))
     assert len(rows) == 1
     assert rows[0]["isaac_sim_version"] == "5.1.0"
+    assert {
+        field: rows[0][field]
+        for field in (
+            "startup_total_s",
+            "startup_app_launch_s",
+            "startup_python_imports_s",
+            "startup_task_config_s",
+            "startup_env_creation_s",
+            "startup_first_step_s",
+        )
+    } == {
+        "startup_total_s": "4.41",
+        "startup_app_launch_s": "2.5",
+        "startup_python_imports_s": "0.2",
+        "startup_task_config_s": "0.4",
+        "startup_env_creation_s": "1.3",
+        "startup_first_step_s": "0.01",
+    }
+    expected = {
+        "raw_runs.csv",
+        "paired_summary.csv",
+        "failures.csv",
+        "report.md",
+        "report.pdf",
+        "collection_fps.png",
+        "collection_fps.svg",
+        "gpu_memory_mean_mib.png",
+        "gpu_memory_mean_mib.svg",
+        "gpu_memory_peak_mib.png",
+        "gpu_memory_peak_mib.svg",
+        "gpu_utilization_mean_pct.png",
+        "gpu_utilization_mean_pct.svg",
+        "startup_total_s.png",
+        "startup_total_s.svg",
+        "startup_phase_breakdown.png",
+        "startup_phase_breakdown.svg",
+    }
+    assert expected <= {path.name for path in output.iterdir()}
+    audit = json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))
+    assert audit["generated_file_count"] == 17
+    validate_pdf(output / "report.pdf", ("canary", "a" * 40, "b" * 40, "Startup"))

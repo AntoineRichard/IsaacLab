@@ -53,8 +53,14 @@ def test_report_cli_rejects_raw_changes_during_normalization(
         (root / "canary" / "late-raw-file").write_text("changed", encoding="utf-8")
         return (), ()
 
+    def write_placeholder_pdf(*args, **_kwargs):
+        output_path = args[4]
+        output_path.write_bytes(b"placeholder PDF")
+        return output_path
+
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.normalize_run_set", normalize_then_mutate)
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", write_placeholder_pdf)
 
     with pytest.raises(ValueError, match="changed during normalization"):
         main(
@@ -99,3 +105,38 @@ def test_report_directory_publication_rolls_back_and_removes_stale_files(
     _publish(staging, output)
     assert (output / "report.md").read_text(encoding="utf-8") == "new"
     assert not (output / "stale.txt").exists()
+
+
+def test_report_cli_preserves_previous_report_when_pdf_generation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "artifacts"
+    write_manifest(root / "canary" / "manifest.json", _manifest())
+    output = root / "canary" / "report"
+    output.mkdir()
+    previous_report = b"previous report bytes"
+    (output / "report.md").write_bytes(previous_report)
+    (output / "stale.txt").write_text("stale", encoding="utf-8")
+
+    def fail_pdf(*_args, **_kwargs):
+        raise RuntimeError("injected PDF failure")
+
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", fail_pdf)
+
+    with pytest.raises(RuntimeError, match="injected PDF failure"):
+        main(
+            [
+                "--artifact_root",
+                str(root),
+                "--run_set",
+                "canary",
+                "--phase",
+                "measured",
+                "--output_dir",
+                str(output),
+            ]
+        )
+
+    assert (output / "report.md").read_bytes() == previous_report
+    assert (output / "stale.txt").read_text(encoding="utf-8") == "stale"

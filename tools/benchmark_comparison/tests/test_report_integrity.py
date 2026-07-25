@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -246,3 +247,37 @@ def test_report_rejects_failure_csv_with_unexpected_columns(tmp_path: Path) -> N
             tmp_path / "report.md",
             manifest=_manifest(),
         )
+
+
+def test_report_only_cli_hashes_all_generated_files(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    manifest = replace(_manifest(), run_set=RunSet.CANARY, expansion=expand_canary_matrix(load_matrix()))
+    write_manifest(artifact_root / "canary" / "manifest.json", manifest)
+    output = artifact_root / "canary" / "report"
+
+    assert (
+        main(
+            [
+                "--artifact_root",
+                str(artifact_root),
+                "--run_set",
+                "canary",
+                "--phase",
+                "measured",
+                "--output_dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    entries = {}
+    for line in (output / "generated_hashes.sha256").read_text(encoding="utf-8").splitlines():
+        digest, relative_path = line.split("  ", maxsplit=1)
+        entries[relative_path] = digest
+    assert len(entries) == 17
+    assert "report.pdf" in entries
+    assert all(
+        hashlib.sha256((output / relative_path).read_bytes()).hexdigest() == digest
+        for relative_path, digest in entries.items()
+    )
