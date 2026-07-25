@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 from .executors import ExecutorConfig, Lab2DockerExecutor, Lab3UvExecutor, ProcessLauncher, run_preflight
+from .import_results import import_completed_attempts
 from .manifest import write_manifest
 from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
 from .models import RunSet
@@ -38,9 +39,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lab3_sha", required=True)
     parser.add_argument("--lab2_image", required=True)
     parser.add_argument("--lab2_image_id", required=True)
+    parser.add_argument("--import_from_artifact_root", type=Path)
+    parser.add_argument("--prepare_only", action="store_true")
     parser.add_argument("--retry_failures", action="store_true")
     parser.add_argument("--idle_timeout_s", type=float, default=3600)
     args = parser.parse_args(argv)
+    if args.prepare_only and args.import_from_artifact_root is None:
+        parser.error("--prepare_only requires --import_from_artifact_root")
 
     config = ExecutorConfig(
         lab2_root=args.lab2_root.resolve(),
@@ -64,6 +69,10 @@ def _run_locked(config: ExecutorConfig, args: argparse.Namespace) -> int:
         config.artifact_root / run_set.value / "manifest.json",
         preflight.manifest(run_set, args.phase, expansion),
     )
+    if args.import_from_artifact_root is not None:
+        import_completed_attempts(args.import_from_artifact_root.resolve(), config.artifact_root, run_set)
+    if args.prepare_only:
+        return 0
     owned_process_groups = OwnedProcessGroups()
     launcher = ProcessLauncher(owned_process_groups=owned_process_groups)
     idle_gate = HostIdleGate(

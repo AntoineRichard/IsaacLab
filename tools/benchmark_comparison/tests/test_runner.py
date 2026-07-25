@@ -18,8 +18,10 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark_comparison.cli import main as controller_main
+from tools.benchmark_comparison.import_results import import_completed_attempts
+from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity, write_manifest
 from tools.benchmark_comparison.matrix import expand_canary_matrix, expand_final_matrix, load_matrix
-from tools.benchmark_comparison.models import ExecutionProvenance
+from tools.benchmark_comparison.models import ExecutionProvenance, MatrixExpansion, RunSet
 from tools.benchmark_comparison.runner import (
     AttemptExecution,
     BenchmarkRunner,
@@ -139,6 +141,42 @@ def _runner(tmp_path: Path, executors, gate=None) -> BenchmarkRunner:
     return runner
 
 
+def _manifest(expansion: MatrixExpansion) -> RunSetManifest:
+    software = SoftwareIdentity(
+        isaac_lab="2.3.2",
+        isaac_sim="4.5.0",
+        python="3.10.15",
+        pytorch="2.5.1",
+        rsl_rl="2.2.4",
+    )
+    return RunSetManifest(
+        schema_version="2.0",
+        run_set=RunSet.CANARY,
+        phase="measured",
+        provenance=ExecutionProvenance(
+            lab2_sha=LAB2_SHA,
+            lab3_sha=LAB3_SHA,
+            lab2_image_id=LAB2_IMAGE_ID,
+            uv_lock_sha256=LAB3_LOCK,
+        ),
+        host=HostIdentity(
+            hostname="benchmark-host",
+            os="Linux",
+            cpu_model="fixture CPU",
+            logical_cpu_count=16,
+            gpu_model="fixture GPU",
+            gpu_driver="570.0",
+            cuda_version="12.6",
+            gpu_index=0,
+            gpu_uuid=GPU_UUID,
+        ),
+        lab2=software,
+        lab3=replace(software, isaac_lab="3.0.0"),
+        cpu_power_profile="performance",
+        expansion=expansion,
+    )
+
+
 def test_runner_executes_all_136_canary_attempts_in_expanded_task_order(tmp_path: Path):
     expansion = expand_canary_matrix(load_matrix())
     lab2 = _Executor()
@@ -179,6 +217,51 @@ def test_resume_skips_only_checksum_and_semantically_valid_success(tmp_path: Pat
 
     assert resumed.attempts == []
     assert result.skipped == 1
+
+
+def test_runner_resumes_imported_successes_and_executes_only_missing_attempts(tmp_path: Path) -> None:
+    full_expansion = expand_canary_matrix(load_matrix())
+    source_expansion = replace(full_expansion, pairs=full_expansion.pairs[:1], attempts=full_expansion.attempts[:2])
+    destination_expansion = replace(
+        full_expansion,
+        pairs=full_expansion.pairs[:2],
+        attempts=full_expansion.attempts[:4],
+    )
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    write_manifest(source_root / "canary" / "manifest.json", _manifest(source_expansion))
+    write_manifest(destination_root / "canary" / "manifest.json", _manifest(destination_expansion))
+    _runner(source_root, {"lab2": _Executor(), "lab3": _Executor()}).run(source_expansion)
+    source_idle = source_root / "canary" / "idle"
+    source_idle.mkdir()
+    (source_idle / "source-idle.json").write_text("{}\n", encoding="utf-8")
+
+    audit = import_completed_attempts(source_root, destination_root, RunSet.CANARY)
+
+    assert audit.imported_attempt_count == 2
+    assert (source_idle / "source-idle.json").is_file()
+    assert not (destination_root / "canary" / "runner-state.json").exists()
+    assert not (destination_root / "canary" / "idle").exists()
+    lab2 = _Executor()
+    lab3 = _Executor()
+    gate = _Gate()
+
+    result = _runner(destination_root, {"lab2": lab2, "lab3": lab3}, gate=gate).run(destination_expansion)
+
+    missing = destination_expansion.attempts[2:]
+    imported = destination_expansion.attempts[:2]
+    assert result.status is RunStatus.COMPLETED
+    assert (result.succeeded, result.failed, result.skipped) == (2, 0, 2)
+    assert gate.identities == [attempt.identity for attempt in missing]
+    assert len(lab2.attempts) + len(lab3.attempts) == 2
+    assert {attempt.identity for attempt in (*lab2.attempts, *lab3.attempts)} == {
+        attempt.identity for attempt in missing
+    }
+    state = json.loads(result.state_path.read_text(encoding="utf-8"))
+    latest = {entry["attempt_identity"]: entry["status"] for entry in state["history"]}
+    assert len(latest) == 4
+    assert {latest[attempt.identity] for attempt in imported} == {"skipped_success"}
+    assert {latest[attempt.identity] for attempt in missing} == {"success"}
 
 
 def test_corrupt_success_is_quarantined_and_rerun_without_overwrite(tmp_path: Path):
