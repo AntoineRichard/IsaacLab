@@ -49,6 +49,36 @@ STARTUP = {
     "env_creation": 1.3,
     "first_step": 0.01,
 }
+EXPECTED_RAW_RUN_FIELDS = (
+    "version",
+    "version_sha",
+    "environment_identity",
+    "isaac_lab_version",
+    "isaac_sim_version",
+    "python_version",
+    "pytorch_version",
+    "rsl_rl_version",
+    "logical_task",
+    "concrete_task",
+    "mode",
+    "bound",
+    "bound_unit",
+    "seed",
+    "num_envs",
+    "collection_fps",
+    "gpu_memory_mean_mib",
+    "gpu_memory_peak_mib",
+    "gpu_utilization_mean_pct",
+    "gpu_utilization_sample_count",
+    "startup_total_s",
+    "startup_app_launch_s",
+    "startup_python_imports_s",
+    "startup_task_config_s",
+    "startup_env_creation_s",
+    "startup_first_step_s",
+    "elapsed_time_s",
+    "artifact_path",
+)
 
 
 def test_expanded_task_order_keeps_rgb_runtime_only_and_both_anymal_terrains() -> None:
@@ -211,6 +241,16 @@ def test_normalization_preserves_startup_components_and_computed_total(tmp_path:
     assert run.startup_total_s == pytest.approx(4.41)
     path = write_raw_runs_csv(tmp_path / "raw_runs.csv", runs)
     assert read_raw_runs_csv(path) == runs
+
+
+def test_raw_runs_csv_uses_approved_exact_header_order(tmp_path: Path) -> None:
+    path = write_raw_runs_csv(tmp_path / "raw_runs.csv", (_run(),))
+
+    with path.open(newline="", encoding="utf-8") as file:
+        fieldnames = tuple(csv.DictReader(file).fieldnames or ())
+
+    assert RAW_RUN_FIELDS == EXPECTED_RAW_RUN_FIELDS
+    assert fieldnames == EXPECTED_RAW_RUN_FIELDS
 
 
 @pytest.mark.parametrize(

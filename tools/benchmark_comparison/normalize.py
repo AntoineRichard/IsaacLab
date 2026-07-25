@@ -70,13 +70,13 @@ RAW_RUN_FIELDS = (
     "gpu_memory_peak_mib",
     "gpu_utilization_mean_pct",
     "gpu_utilization_sample_count",
-    "elapsed_time_s",
     "startup_total_s",
     "startup_app_launch_s",
     "startup_python_imports_s",
     "startup_task_config_s",
     "startup_env_creation_s",
     "startup_first_step_s",
+    "elapsed_time_s",
     "artifact_path",
 )
 PAIRED_SUMMARY_FIELDS = (
@@ -154,13 +154,13 @@ class NormalizedRun:
     gpu_memory_peak_mib: float
     gpu_utilization_mean_pct: float
     gpu_utilization_sample_count: int
-    elapsed_time_s: float
     startup_total_s: float
     startup_app_launch_s: float
     startup_python_imports_s: float
     startup_task_config_s: float
     startup_env_creation_s: float
     startup_first_step_s: float
+    elapsed_time_s: float
     artifact_path: str
     isaac_lab_version: str = ""
     isaac_sim_version: str = ""
@@ -191,13 +191,13 @@ class NormalizedRun:
             "gpu_memory_peak_mib": _format_float(self.gpu_memory_peak_mib),
             "gpu_utilization_mean_pct": _format_float(self.gpu_utilization_mean_pct),
             "gpu_utilization_sample_count": str(self.gpu_utilization_sample_count),
-            "elapsed_time_s": _format_float(self.elapsed_time_s),
             "startup_total_s": _format_float(self.startup_total_s),
             "startup_app_launch_s": _format_float(self.startup_app_launch_s),
             "startup_python_imports_s": _format_float(self.startup_python_imports_s),
             "startup_task_config_s": _format_float(self.startup_task_config_s),
             "startup_env_creation_s": _format_float(self.startup_env_creation_s),
             "startup_first_step_s": _format_float(self.startup_first_step_s),
+            "elapsed_time_s": _format_float(self.elapsed_time_s),
             "artifact_path": self.artifact_path,
         }
 
@@ -741,13 +741,13 @@ def _run_from_csv(row: Mapping[str, str]) -> NormalizedRun:
             "gpu_utilization_mean_pct",
         ),
         gpu_utilization_sample_count=int(row["gpu_utilization_sample_count"]),
-        elapsed_time_s=_finite_number(row["elapsed_time_s"], "elapsed_time_s"),
         startup_total_s=_finite_number(row["startup_total_s"], "startup_total_s"),
         startup_app_launch_s=_finite_number(row["startup_app_launch_s"], "startup_app_launch_s"),
         startup_python_imports_s=_finite_number(row["startup_python_imports_s"], "startup_python_imports_s"),
         startup_task_config_s=_finite_number(row["startup_task_config_s"], "startup_task_config_s"),
         startup_env_creation_s=_finite_number(row["startup_env_creation_s"], "startup_env_creation_s"),
         startup_first_step_s=_finite_number(row["startup_first_step_s"], "startup_first_step_s"),
+        elapsed_time_s=_finite_number(row["elapsed_time_s"], "elapsed_time_s"),
         artifact_path=row["artifact_path"],
     )
     if run.startup_total_s < 0:

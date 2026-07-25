@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -157,6 +159,13 @@ def test_report_cli_accepts_disjoint_external_output(
 ) -> None:
     artifact_root = tmp_path / "artifacts"
     write_manifest(artifact_root / "final" / "manifest.json", _manifest())
+    raw_artifact = artifact_root / "final" / "retained-raw" / "payload.bin"
+    raw_artifact.parent.mkdir(parents=True)
+    raw_artifact.write_bytes(b"immutable raw payload")
+    canonical_report = artifact_root / "final" / "report"
+    (canonical_report / "legacy").mkdir(parents=True)
+    (canonical_report / "report.md").write_text("previous canonical report", encoding="utf-8")
+    (canonical_report / "legacy" / "plot.svg").write_bytes(b"<svg>previous</svg>\n")
     output = tmp_path / "external-report"
 
     def write_placeholder_pdf(*args, **_kwargs):
@@ -183,6 +192,14 @@ def test_report_cli_accepts_disjoint_external_output(
         == 0
     )
     assert (output / "report.md").is_file()
+    raw_hash_lines = (output / "raw_artifact_hashes.sha256").read_text(encoding="utf-8").splitlines()
+    assert not any("  final/report/" in line for line in raw_hash_lines)
+    assert raw_hash_lines == [
+        f"{hashlib.sha256(raw_artifact.read_bytes()).hexdigest()}  final/retained-raw/payload.bin"
+    ]
+    audit = json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))
+    assert audit["raw_file_count"] == 1
+    assert (canonical_report / "report.md").read_text(encoding="utf-8") == "previous canonical report"
 
 
 @pytest.mark.parametrize(

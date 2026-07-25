@@ -149,6 +149,11 @@ def test_pdf_contains_large_report_and_regenerates_byte_identically(tmp_path: Pa
     assert first.stat().st_size > 10_000
     assert first.read_bytes() == second.read_bytes()
     assert not first.with_suffix(".pdf.tmp").exists()
+    exact_title = "Isaac Lab Startup and Runtime Benchmark Report"
+    info = subprocess.run(["pdfinfo", str(first)], check=True, text=True, capture_output=True).stdout
+    text = subprocess.run(["pdftotext", str(first), "-"], check=True, text=True, capture_output=True).stdout
+    assert re.search(rf"^Title:\s+{re.escape(exact_title)}$", info, re.MULTILINE)
+    assert exact_title in text
     validate_pdf(first, ("final", "a" * 40, "b" * 40, "Startup"))
 
 
@@ -329,3 +334,43 @@ def test_pdf_validation_failure_preserves_existing_destination(tmp_path: Path, m
 
     assert destination.read_bytes() == b"preserved report"
     assert not destination.with_suffix(".pdf.tmp").exists()
+
+
+@pytest.mark.parametrize("corruption", ("metadata", "text"))
+def test_pdf_title_validation_failure_preserves_existing_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    normalized, manifest, audit, plots = _inputs(tmp_path)
+    destination = tmp_path / "report.pdf"
+    destination.write_bytes(b"preserved report")
+    exact_title = "Isaac Lab Startup and Runtime Benchmark Report"
+    original_text_page = pdf_report_module._text_page
+
+    with monkeypatch.context() as patch:
+        if corruption == "metadata":
+            patch.setitem(pdf_report_module._PDF_METADATA, "Title", "Incorrect benchmark report")
+        else:
+
+            def write_incorrect_cover_title(pdf, title: str, lines) -> None:
+                rendered_title = "Isaac Lab Startup and Runtime Benchmark Results" if title == exact_title else title
+                original_text_page(pdf, rendered_title, lines)
+
+            patch.setattr(pdf_report_module, "_text_page", write_incorrect_cover_title)
+
+        with pytest.raises(ValueError, match=r"report PDF .*title is invalid"):
+            write_pdf_report(
+                normalized["raw_runs"],
+                normalized["paired_summary"],
+                normalized["failures"],
+                plots,
+                destination,
+                manifest=manifest,
+                audit=audit,
+            )
+
+    assert destination.read_bytes() == b"preserved report"
+    assert not destination.with_suffix(".pdf.tmp").exists()
+    assert pdf_report_module._PDF_METADATA["Title"] == exact_title
+    assert pdf_report_module._text_page is original_text_page

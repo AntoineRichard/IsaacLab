@@ -31,8 +31,9 @@ from .normalize import (
 from .plot import PLOT_BASENAMES
 from .report import ReportAudit
 
+_REPORT_TITLE = "Isaac Lab Startup and Runtime Benchmark Report"
 _PDF_METADATA = {
-    "Title": "Isaac Lab Startup and Runtime Benchmark Report",
+    "Title": _REPORT_TITLE,
     "Author": "The Isaac Lab Project Developers",
     "Creator": "Isaac Lab benchmark comparison",
     "Producer": "Isaac Lab benchmark comparison",
@@ -112,7 +113,7 @@ def write_pdf_report(
         with matplotlib.rc_context(_PDF_RCPARAMS), PdfPages(temporary, metadata=_PDF_METADATA) as pdf:
             _text_page(
                 pdf,
-                "Isaac Lab Startup and Runtime Benchmark Report",
+                _REPORT_TITLE,
                 (
                     "Informational paired benchmark report; it defines no performance acceptance threshold.",
                     f"Run set: {expected_manifest.run_set.value}",
@@ -245,14 +246,14 @@ def write_pdf_report(
 
 
 def validate_pdf(path: Path, expected_tokens: Sequence[str]) -> None:
-    """Validate the PDF header, page count, and expected extracted text.
+    """Validate the PDF header, exact title, page count, and expected extracted text.
 
     Args:
         path: PDF path to validate.
         expected_tokens: Text tokens that must occur in the extracted PDF text.
 
     Raises:
-        ValueError: If the PDF header, page count, or expected text is invalid.
+        ValueError: If the PDF header, title, page count, or expected text is invalid.
         RuntimeError: If ``pdfinfo`` or ``pdftotext`` is unavailable.
         subprocess.CalledProcessError: If ``pdfinfo`` or ``pdftotext`` fails.
         OSError: If the PDF cannot be read.
@@ -263,9 +264,14 @@ def validate_pdf(path: Path, expected_tokens: Sequence[str]) -> None:
         if shutil.which(executable) is None:
             raise RuntimeError(f"report PDF validation requires {executable}")
     info = subprocess.run(["pdfinfo", str(path)], check=True, text=True, capture_output=True).stdout
+    metadata_title = re.search(r"^Title:\s*(.*)$", info, re.MULTILINE)
+    if metadata_title is None or metadata_title.group(1).strip() != _REPORT_TITLE:
+        raise ValueError("report PDF metadata title is invalid")
     if not re.search(r"^Pages:\s+[1-9][0-9]*$", info, re.MULTILINE):
         raise ValueError("report PDF has no pages")
     text = subprocess.run(["pdftotext", str(path), "-"], check=True, text=True, capture_output=True).stdout
+    if _REPORT_TITLE not in text:
+        raise ValueError("report PDF extracted title is invalid")
     missing = [token for token in expected_tokens if token not in text]
     if missing:
         raise ValueError(f"report PDF is missing expected text: {missing}")

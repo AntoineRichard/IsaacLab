@@ -149,7 +149,12 @@ def _raw_hash_manifest(
     excluded_roots: tuple[Path, ...] = (),
 ) -> tuple[str, int]:
     run_set_root = artifact_root / run_set.value
-    excluded = (output_directory.resolve(), *(path.resolve() for path in excluded_roots))
+    canonical_report = (run_set_root / "report").resolve()
+    excluded = (
+        canonical_report,
+        output_directory.resolve(),
+        *(path.resolve() for path in excluded_roots),
+    )
     files: list[Path] = []
     for path in run_set_root.rglob("*"):
         if not path.is_file():
