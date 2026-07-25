@@ -137,7 +137,7 @@ def test_schema_two_manifest_round_trips_exact_expansion_and_selected_gpu(tmp_pa
     document = json.loads(path.read_text(encoding="utf-8"))
     assert document["host"]["gpu_index"] == 0
     assert document["host"]["gpu_uuid"] == "GPU-01234567-89ab-cdef-0123-456789abcdef"
-    assert len(document["run_set_identity"]["attempts"]) == 228
+    assert len(document["run_set_identity"]["attempts"]) == 408
     assert len(document["run_set_identity"]["sha256"]) == 64
 
 

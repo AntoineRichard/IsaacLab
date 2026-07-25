@@ -56,6 +56,14 @@ class RunSet(str, Enum):
     CANARY = "canary"
 
 
+class TaskCategory(str, Enum):
+    """Readability group used by benchmark reports."""
+
+    CLASSIC = "classic"
+    LOCOMOTION = "locomotion"
+    MANIPULATION = "manipulation"
+
+
 class BoundUnit(str, Enum):
     """Unit used to bound a benchmark mode."""
 
@@ -78,6 +86,7 @@ class BenchmarkTask:
     alias: str
     lab2_id: str
     lab3_id: str
+    category: TaskCategory
     supported_modes: tuple[str, ...] | None = None
     enable_cameras: bool = False
     lab3_presets: tuple[str, ...] = ()

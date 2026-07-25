@@ -22,31 +22,62 @@ from .models import (
     BoundUnit,
     MatrixExpansion,
     RunSet,
+    TaskCategory,
     Version,
 )
 
-FINAL_LOGICAL_PAIR_COUNT = 114
-FINAL_ATTEMPT_COUNT = 228
-CANARY_LOGICAL_PAIR_COUNT = 38
-CANARY_ATTEMPT_COUNT = 76
+FINAL_LOGICAL_PAIR_COUNT = 204
+FINAL_ATTEMPT_COUNT = 408
+CANARY_LOGICAL_PAIR_COUNT = 68
+CANARY_ATTEMPT_COUNT = 136
 
 _MATRIX_PATH = Path(__file__).with_name("matrix.toml")
 _FINAL_SEEDS = (42, 43, 44)
 _CANARY_SEEDS = (42,)
 _TASK_IDENTIFIERS = (
-    ("cartpole", "Isaac-Cartpole-v0", "Isaac-Cartpole"),
-    ("cartpole_rgb_kit", "Isaac-Cartpole-RGB-v0", "Isaac-Cartpole-Camera"),
-    ("cartpole_direct", "Isaac-Cartpole-Direct-v0", "Isaac-Cartpole-Direct"),
-    ("ant", "Isaac-Ant-v0", "Isaac-Ant"),
-    ("ant_direct", "Isaac-Ant-Direct-v0", "Isaac-Ant-Direct"),
-    ("humanoid_manager", "Isaac-Humanoid-v0", "Isaac-Humanoid"),
-    ("humanoid_direct", "Isaac-Humanoid-Direct-v0", "Isaac-Humanoid-Direct"),
-    ("anymal_d_flat", "Isaac-Velocity-Flat-Anymal-D-v0", "Isaac-Velocity-Flat-AnymalD"),
-    ("anymal_d_rough", "Isaac-Velocity-Rough-Anymal-D-v0", "Isaac-Velocity-Rough-AnymalD"),
-    ("g1_flat", "Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
-    ("cassie_flat", "Isaac-Velocity-Flat-Cassie-v0", "Isaac-Velocity-Flat-Cassie"),
-    ("allegro_cube", "Isaac-Repose-Cube-Allegro-v0", "Isaac-Reorient-Cube-Allegro"),
-    ("franka_reach", "Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
+    ("cartpole", TaskCategory.CLASSIC, "Isaac-Cartpole-v0", "Isaac-Cartpole"),
+    ("cartpole_rgb_kit", TaskCategory.CLASSIC, "Isaac-Cartpole-RGB-v0", "Isaac-Cartpole-Camera"),
+    ("cartpole_direct", TaskCategory.CLASSIC, "Isaac-Cartpole-Direct-v0", "Isaac-Cartpole-Direct"),
+    ("ant", TaskCategory.CLASSIC, "Isaac-Ant-v0", "Isaac-Ant"),
+    ("ant_direct", TaskCategory.CLASSIC, "Isaac-Ant-Direct-v0", "Isaac-Ant-Direct"),
+    ("humanoid_manager", TaskCategory.CLASSIC, "Isaac-Humanoid-v0", "Isaac-Humanoid"),
+    ("humanoid_direct", TaskCategory.CLASSIC, "Isaac-Humanoid-Direct-v0", "Isaac-Humanoid-Direct"),
+    ("anymal_d_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-Anymal-D-v0", "Isaac-Velocity-Flat-AnymalD"),
+    ("anymal_d_rough", TaskCategory.LOCOMOTION, "Isaac-Velocity-Rough-Anymal-D-v0", "Isaac-Velocity-Rough-AnymalD"),
+    ("g1_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
+    ("g1_rough", TaskCategory.LOCOMOTION, "Isaac-Velocity-Rough-G1-v0", "Isaac-Velocity-Rough-G1"),
+    ("cassie_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-Cassie-v0", "Isaac-Velocity-Flat-Cassie"),
+    ("digit_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-Digit-v0", "Isaac-Velocity-Flat-Digit"),
+    ("digit_rough", TaskCategory.LOCOMOTION, "Isaac-Velocity-Rough-Digit-v0", "Isaac-Velocity-Rough-Digit"),
+    (
+        "go1_flat",
+        TaskCategory.LOCOMOTION,
+        "Isaac-Velocity-Flat-Unitree-Go1-v0",
+        "IsaacContrib-Velocity-Flat-UnitreeGo1",
+    ),
+    (
+        "go1_rough",
+        TaskCategory.LOCOMOTION,
+        "Isaac-Velocity-Rough-Unitree-Go1-v0",
+        "IsaacContrib-Velocity-Rough-UnitreeGo1",
+    ),
+    ("go2_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-Unitree-Go2-v0", "Isaac-Velocity-Flat-UnitreeGo2"),
+    ("go2_rough", TaskCategory.LOCOMOTION, "Isaac-Velocity-Rough-Unitree-Go2-v0", "Isaac-Velocity-Rough-UnitreeGo2"),
+    ("allegro_cube", TaskCategory.MANIPULATION, "Isaac-Repose-Cube-Allegro-v0", "Isaac-Reorient-Cube-Allegro"),
+    ("franka_reach", TaskCategory.MANIPULATION, "Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
+    (
+        "franka_cabinet_direct",
+        TaskCategory.MANIPULATION,
+        "Isaac-Franka-Cabinet-Direct-v0",
+        "Isaac-Open-Drawer-Franka-Direct",
+    ),
+    (
+        "kuka_allegro_reorient",
+        TaskCategory.MANIPULATION,
+        "Isaac-Dexsuite-Kuka-Allegro-Reorient-v0",
+        "Isaac-Reorient-KukaAllegro",
+    ),
+    ("kuka_allegro_lift", TaskCategory.MANIPULATION, "Isaac-Dexsuite-Kuka-Allegro-Lift-v0", "Isaac-Lift-KukaAllegro"),
 )
 _MODE_IDS = ("runtime-100", "runtime-1000", "training-100")
 _MODE_DEFINITIONS = (
@@ -66,6 +97,15 @@ _LEGACY_SCHEMA_1_TASK_IDENTIFIERS = (
     ("g1_flat", "Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
     ("allegro_cube", "Isaac-Repose-Cube-Allegro-v0", "Isaac-Reorient-Cube-Allegro"),
     ("franka_reach", "Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
+)
+
+_LEGACY_SCHEMA_1_CATEGORIES = (
+    TaskCategory.CLASSIC,
+    TaskCategory.CLASSIC,
+    TaskCategory.LOCOMOTION,
+    TaskCategory.LOCOMOTION,
+    TaskCategory.MANIPULATION,
+    TaskCategory.MANIPULATION,
 )
 
 
@@ -106,6 +146,40 @@ def expand_canary_matrix(matrix: BenchmarkMatrix) -> MatrixExpansion:
     return _expand_matrix(matrix, RunSet.CANARY, _CANARY_SEEDS)
 
 
+def task_aliases_by_category(expansion: MatrixExpansion) -> dict[TaskCategory, tuple[str, ...]]:
+    """Return current configured task aliases grouped for a supplied expansion.
+
+    Args:
+        expansion: Expanded current-schema matrix whose represented aliases are selected.
+
+    Returns:
+        Configured category groups in :class:`TaskCategory` definition order.
+
+    Raises:
+        ValueError: If the expansion contains an unconfigured alias or the configured
+            category assignments are incomplete or duplicated.
+    """
+    matrix = load_matrix()
+    configured_aliases = tuple(task.alias for task in matrix.tasks)
+    expansion_aliases = {pair.logical_task for pair in expansion.pairs}
+    unknown_aliases = expansion_aliases - set(configured_aliases)
+    if unknown_aliases:
+        raise ValueError("expansion contains task aliases absent from the current matrix")
+
+    grouped_aliases = {
+        category: tuple(task.alias for task in matrix.tasks if task.category is category) for category in TaskCategory
+    }
+    assigned_aliases = tuple(alias for aliases in grouped_aliases.values() for alias in aliases)
+    if len(assigned_aliases) != len(set(assigned_aliases)):
+        raise ValueError("duplicate task category assignment")
+    if set(assigned_aliases) != set(configured_aliases):
+        raise ValueError("missing task category assignment")
+    return {
+        category: tuple(alias for alias in aliases if alias in expansion_aliases)
+        for category, aliases in grouped_aliases.items()
+    }
+
+
 def expand_legacy_schema_1_matrix(run_set: RunSet) -> MatrixExpansion:
     """Return the immutable six-task expansion used by schema-1 manifests."""
     modes = tuple(
@@ -119,7 +193,10 @@ def expand_legacy_schema_1_matrix(run_set: RunSet) -> MatrixExpansion:
     )
     matrix = BenchmarkMatrix(
         tasks=tuple(
-            BenchmarkTask(alias, lab2_id, lab3_id) for alias, lab2_id, lab3_id in _LEGACY_SCHEMA_1_TASK_IDENTIFIERS
+            BenchmarkTask(alias, lab2_id, lab3_id, category)
+            for (alias, lab2_id, lab3_id), category in zip(
+                _LEGACY_SCHEMA_1_TASK_IDENTIFIERS, _LEGACY_SCHEMA_1_CATEGORIES, strict=True
+            )
         ),
         modes=modes,
         seeds=_FINAL_SEEDS,
@@ -148,6 +225,7 @@ def _parse_task(data: Any) -> BenchmarkTask:
         alias=_as_str(task.get("alias"), "task.alias"),
         lab2_id=_as_str(task.get("lab2_id"), "task.lab2_id"),
         lab3_id=_as_str(task.get("lab3_id"), "task.lab3_id"),
+        category=TaskCategory(_as_str(task.get("category"), "task.category")),
         supported_modes=supported_modes,
         enable_cameras=_as_bool(task.get("enable_cameras", False), "task.enable_cameras"),
         lab3_presets=tuple(
@@ -289,15 +367,26 @@ def _validate_matrix(matrix: BenchmarkMatrix) -> None:
     aliases = tuple(task.alias for task in matrix.tasks)
     if len(aliases) != len(set(aliases)):
         raise ValueError("duplicate task alias")
-    if len(matrix.tasks) != 13 or len(matrix.modes) != 3:
-        raise ValueError("expected 13 tasks and 3 modes")
+    if len(matrix.tasks) != 23 or len(matrix.modes) != 3:
+        raise ValueError("expected 23 tasks and 3 modes")
 
     for version in Version:
         task_ids = tuple(task.concrete_id(version) for task in matrix.tasks)
         if len(task_ids) != len(set(task_ids)):
             raise ValueError("duplicate concrete task ID")
-    if tuple((task.alias, task.lab2_id, task.lab3_id) for task in matrix.tasks) != _TASK_IDENTIFIERS:
-        raise ValueError("unexpected task aliases or concrete task IDs")
+    if tuple((task.alias, task.category, task.lab2_id, task.lab3_id) for task in matrix.tasks) != _TASK_IDENTIFIERS:
+        raise ValueError("unexpected task aliases, categories, or concrete task IDs")
+
+    category_aliases = {
+        category: tuple(task.alias for task in matrix.tasks if task.category is category) for category in TaskCategory
+    }
+    assigned_aliases = tuple(alias for aliases in category_aliases.values() for alias in aliases)
+    if len(assigned_aliases) != len(set(assigned_aliases)):
+        raise ValueError("duplicate task category assignment")
+    if set(assigned_aliases) != set(aliases):
+        raise ValueError("missing task category assignment")
+    if assigned_aliases != aliases:
+        raise ValueError("unexpected task category block order")
 
     mode_ids = tuple(mode.id for mode in matrix.modes)
     if len(mode_ids) != len(set(mode_ids)):

@@ -14,6 +14,7 @@ import pytest
 
 from tools.benchmark_comparison.matrix import (
     CANARY_ATTEMPT_COUNT,
+    CANARY_LOGICAL_PAIR_COUNT,
     FINAL_ATTEMPT_COUNT,
     FINAL_LOGICAL_PAIR_COUNT,
     RunSet,
@@ -21,7 +22,9 @@ from tools.benchmark_comparison.matrix import (
     expand_canary_matrix,
     expand_final_matrix,
     load_matrix,
+    task_aliases_by_category,
 )
+from tools.benchmark_comparison.models import TaskCategory
 
 _EXPECTED_TASK_ALIASES = {
     "cartpole": ("Isaac-Cartpole-v0", "Isaac-Cartpole"),
@@ -34,10 +37,65 @@ _EXPECTED_TASK_ALIASES = {
     "anymal_d_flat": ("Isaac-Velocity-Flat-Anymal-D-v0", "Isaac-Velocity-Flat-AnymalD"),
     "anymal_d_rough": ("Isaac-Velocity-Rough-Anymal-D-v0", "Isaac-Velocity-Rough-AnymalD"),
     "g1_flat": ("Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
+    "g1_rough": ("Isaac-Velocity-Rough-G1-v0", "Isaac-Velocity-Rough-G1"),
     "cassie_flat": ("Isaac-Velocity-Flat-Cassie-v0", "Isaac-Velocity-Flat-Cassie"),
+    "digit_flat": ("Isaac-Velocity-Flat-Digit-v0", "Isaac-Velocity-Flat-Digit"),
+    "digit_rough": ("Isaac-Velocity-Rough-Digit-v0", "Isaac-Velocity-Rough-Digit"),
+    "go1_flat": ("Isaac-Velocity-Flat-Unitree-Go1-v0", "IsaacContrib-Velocity-Flat-UnitreeGo1"),
+    "go1_rough": ("Isaac-Velocity-Rough-Unitree-Go1-v0", "IsaacContrib-Velocity-Rough-UnitreeGo1"),
+    "go2_flat": ("Isaac-Velocity-Flat-Unitree-Go2-v0", "Isaac-Velocity-Flat-UnitreeGo2"),
+    "go2_rough": ("Isaac-Velocity-Rough-Unitree-Go2-v0", "Isaac-Velocity-Rough-UnitreeGo2"),
     "allegro_cube": ("Isaac-Repose-Cube-Allegro-v0", "Isaac-Reorient-Cube-Allegro"),
     "franka_reach": ("Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
+    "franka_cabinet_direct": ("Isaac-Franka-Cabinet-Direct-v0", "Isaac-Open-Drawer-Franka-Direct"),
+    "kuka_allegro_reorient": ("Isaac-Dexsuite-Kuka-Allegro-Reorient-v0", "Isaac-Reorient-KukaAllegro"),
+    "kuka_allegro_lift": ("Isaac-Dexsuite-Kuka-Allegro-Lift-v0", "Isaac-Lift-KukaAllegro"),
 }
+
+_EXPECTED_CATEGORIES = {
+    "classic": (
+        "cartpole",
+        "cartpole_rgb_kit",
+        "cartpole_direct",
+        "ant",
+        "ant_direct",
+        "humanoid_manager",
+        "humanoid_direct",
+    ),
+    "locomotion": (
+        "anymal_d_flat",
+        "anymal_d_rough",
+        "g1_flat",
+        "g1_rough",
+        "cassie_flat",
+        "digit_flat",
+        "digit_rough",
+        "go1_flat",
+        "go1_rough",
+        "go2_flat",
+        "go2_rough",
+    ),
+    "manipulation": (
+        "allegro_cube",
+        "franka_reach",
+        "franka_cabinet_direct",
+        "kuka_allegro_reorient",
+        "kuka_allegro_lift",
+    ),
+}
+
+_NEW_TASK_ALIASES = (
+    "g1_rough",
+    "digit_flat",
+    "digit_rough",
+    "go1_flat",
+    "go1_rough",
+    "go2_flat",
+    "go2_rough",
+    "franka_cabinet_direct",
+    "kuka_allegro_reorient",
+    "kuka_allegro_lift",
+)
 
 
 def _write_invalid_matrix(tmp_path: Path, old: str, new: str) -> Path:
@@ -55,6 +113,17 @@ def test_load_matrix_parses_explicit_task_aliases_and_run_parameters() -> None:
     tasks = {task.alias: task for task in matrix.tasks}
 
     assert {alias: (task.lab2_id, task.lab3_id) for alias, task in tasks.items()} == _EXPECTED_TASK_ALIASES
+    assert {task.alias: task.category for task in matrix.tasks} == {
+        alias: TaskCategory(category) for category, aliases in _EXPECTED_CATEGORIES.items() for alias in aliases
+    }
+    category_groups = tuple(_EXPECTED_CATEGORIES.values())
+    assert all(
+        set(left).isdisjoint(right)
+        for index, left in enumerate(category_groups)
+        for right in category_groups[index + 1 :]
+    )
+    assert set().union(*map(set, category_groups)) == set(_EXPECTED_TASK_ALIASES)
+    assert tuple(alias for aliases in category_groups for alias in aliases) == tuple(tasks)
     assert tasks["cartpole_rgb_kit"].supported_modes == ("runtime-100", "runtime-1000")
     assert tasks["cartpole_rgb_kit"].enable_cameras is True
     assert tasks["cartpole_rgb_kit"].lab3_presets == ("rgb",)
@@ -71,14 +140,14 @@ def test_load_matrix_parses_explicit_task_aliases_and_run_parameters() -> None:
 
 
 def test_final_matrix_expands_counterbalanced_pairs_in_deterministic_order() -> None:
-    """Final runs expand to 114 pairs and 228 version attempts in the configured order."""
+    """Final runs expand to 204 pairs and 408 version attempts in the configured order."""
     expansion = expand_final_matrix(load_matrix())
 
     assert expansion.run_set is RunSet.FINAL
-    assert len(expansion.pairs) == FINAL_LOGICAL_PAIR_COUNT == 114
-    assert len(expansion.attempts) == FINAL_ATTEMPT_COUNT == 228
-    assert tuple(pair.pair_order for pair in expansion.pairs) == tuple(range(114))
-    assert tuple(attempt.attempt_order for attempt in expansion.attempts) == tuple(range(228))
+    assert len(expansion.pairs) == FINAL_LOGICAL_PAIR_COUNT == 204
+    assert len(expansion.attempts) == FINAL_ATTEMPT_COUNT == 408
+    assert tuple(pair.pair_order for pair in expansion.pairs) == tuple(range(204))
+    assert tuple(attempt.attempt_order for attempt in expansion.attempts) == tuple(range(408))
 
     expected_versions = {
         42: (Version.LAB2, Version.LAB3),
@@ -104,8 +173,8 @@ def test_canary_matrix_has_separate_identities_and_reduced_bounds() -> None:
     canary = expand_canary_matrix(matrix)
 
     assert canary.run_set is RunSet.CANARY
-    assert len(canary.pairs) == 38
-    assert len(canary.attempts) == CANARY_ATTEMPT_COUNT == 76
+    assert len(canary.pairs) == CANARY_LOGICAL_PAIR_COUNT == 68
+    assert len(canary.attempts) == CANARY_ATTEMPT_COUNT == 136
     assert {pair.seed for pair in canary.pairs} == {42}
     assert {attempt.num_envs for attempt in canary.attempts} == {4096}
     assert {attempt.framework for attempt in canary.attempts} == {"rsl_rl"}
@@ -140,6 +209,32 @@ def test_rgb_cartpole_expands_runtime_only_while_other_tasks_expand_all_modes() 
     }
 
 
+def test_new_tasks_expand_all_modes_with_expected_final_and_canary_attempt_counts() -> None:
+    """Each new task contributes all modes across the expected final and canary seeds."""
+    final = expand_final_matrix(load_matrix())
+    canary = expand_canary_matrix(load_matrix())
+
+    for alias in _NEW_TASK_ALIASES:
+        assert {pair.mode.id for pair in final.pairs if pair.logical_task == alias} == {
+            "runtime-100",
+            "runtime-1000",
+            "training-100",
+        }
+        assert sum(attempt.logical_task == alias for attempt in final.attempts) == 18
+        assert sum(attempt.logical_task == alias for attempt in canary.attempts) == 6
+
+
+def test_task_aliases_by_category_filters_a_supplied_expansion_in_configured_order() -> None:
+    """Category aliases retain matrix order while omitting tasks absent from an expansion."""
+    aliases = task_aliases_by_category(expand_final_matrix(load_matrix()))
+
+    assert aliases == {
+        TaskCategory.CLASSIC: _EXPECTED_CATEGORIES["classic"],
+        TaskCategory.LOCOMOTION: _EXPECTED_CATEGORIES["locomotion"],
+        TaskCategory.MANIPULATION: _EXPECTED_CATEGORIES["manipulation"],
+    }
+
+
 def test_matrix_models_are_immutable() -> None:
     """Expanded matrix data is safe to reuse across controller stages."""
     attempt = expand_final_matrix(load_matrix()).attempts[0]
@@ -153,7 +248,7 @@ def test_matrix_models_are_immutable() -> None:
     [
         ('alias = "ant"', 'alias = "cartpole"', "duplicate task alias"),
         ('lab3_id = "Isaac-Ant"', 'lab3_id = "Isaac-Cartpole"', "duplicate concrete task ID"),
-        ("seeds = [42, 43, 44]", "seeds = [42, 43]", "expected 114 logical pairs"),
+        ("seeds = [42, 43, 44]", "seeds = [42, 43]", "expected 204 logical pairs"),
     ],
 )
 def test_load_matrix_rejects_duplicate_ids_and_incorrect_final_counts(
@@ -188,6 +283,24 @@ def test_load_matrix_rejects_duplicate_ids_and_incorrect_final_counts(
 )
 def test_load_matrix_rejects_invalid_task_mode_subsets(tmp_path: Path, old: str, new: str, message: str) -> None:
     """Task mode subsets must select distinct configured benchmark modes."""
+    path = _write_invalid_matrix(tmp_path, old, new)
+
+    with pytest.raises(ValueError, match=message):
+        load_matrix(path)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ('category = "classic"\n', "", "task.category must be a string"),
+        ('category = "classic"', 'category = "unknown"', "'unknown' is not a valid TaskCategory"),
+        ('alias = "ant"', 'alias = "cartpole"', "duplicate task alias"),
+    ],
+)
+def test_load_matrix_rejects_missing_unknown_and_duplicate_task_categories(
+    tmp_path: Path, old: str, new: str, message: str
+) -> None:
+    """Every configured alias has one recognized category assignment."""
     path = _write_invalid_matrix(tmp_path, old, new)
 
     with pytest.raises(ValueError, match=message):

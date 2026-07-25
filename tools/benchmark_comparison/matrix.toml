@@ -9,11 +9,13 @@ seeds = [42, 43, 44]
 
 [[task]]
 alias = "cartpole"
+category = "classic"
 lab2_id = "Isaac-Cartpole-v0"
 lab3_id = "Isaac-Cartpole"
 
 [[task]]
 alias = "cartpole_rgb_kit"
+category = "classic"
 lab2_id = "Isaac-Cartpole-RGB-v0"
 lab3_id = "Isaac-Cartpole-Camera"
 supported_modes = ["runtime-100", "runtime-1000"]
@@ -22,58 +24,129 @@ lab3_presets = ["rgb"]
 
 [[task]]
 alias = "cartpole_direct"
+category = "classic"
 lab2_id = "Isaac-Cartpole-Direct-v0"
 lab3_id = "Isaac-Cartpole-Direct"
 
 [[task]]
 alias = "ant"
+category = "classic"
 lab2_id = "Isaac-Ant-v0"
 lab3_id = "Isaac-Ant"
 
 [[task]]
 alias = "ant_direct"
+category = "classic"
 lab2_id = "Isaac-Ant-Direct-v0"
 lab3_id = "Isaac-Ant-Direct"
 
 [[task]]
 alias = "humanoid_manager"
+category = "classic"
 lab2_id = "Isaac-Humanoid-v0"
 lab3_id = "Isaac-Humanoid"
 
 [[task]]
 alias = "humanoid_direct"
+category = "classic"
 lab2_id = "Isaac-Humanoid-Direct-v0"
 lab3_id = "Isaac-Humanoid-Direct"
 
 [[task]]
 alias = "anymal_d_flat"
+category = "locomotion"
 lab2_id = "Isaac-Velocity-Flat-Anymal-D-v0"
 lab3_id = "Isaac-Velocity-Flat-AnymalD"
 
 [[task]]
 alias = "anymal_d_rough"
+category = "locomotion"
 lab2_id = "Isaac-Velocity-Rough-Anymal-D-v0"
 lab3_id = "Isaac-Velocity-Rough-AnymalD"
 
 [[task]]
 alias = "g1_flat"
+category = "locomotion"
 lab2_id = "Isaac-Velocity-Flat-G1-v0"
 lab3_id = "Isaac-Velocity-Flat-G1"
 
 [[task]]
+alias = "g1_rough"
+category = "locomotion"
+lab2_id = "Isaac-Velocity-Rough-G1-v0"
+lab3_id = "Isaac-Velocity-Rough-G1"
+
+[[task]]
 alias = "cassie_flat"
+category = "locomotion"
 lab2_id = "Isaac-Velocity-Flat-Cassie-v0"
 lab3_id = "Isaac-Velocity-Flat-Cassie"
 
 [[task]]
+alias = "digit_flat"
+category = "locomotion"
+lab2_id = "Isaac-Velocity-Flat-Digit-v0"
+lab3_id = "Isaac-Velocity-Flat-Digit"
+
+[[task]]
+alias = "digit_rough"
+category = "locomotion"
+lab2_id = "Isaac-Velocity-Rough-Digit-v0"
+lab3_id = "Isaac-Velocity-Rough-Digit"
+
+[[task]]
+alias = "go1_flat"
+category = "locomotion"
+lab2_id = "Isaac-Velocity-Flat-Unitree-Go1-v0"
+lab3_id = "IsaacContrib-Velocity-Flat-UnitreeGo1"
+
+[[task]]
+alias = "go1_rough"
+category = "locomotion"
+lab2_id = "Isaac-Velocity-Rough-Unitree-Go1-v0"
+lab3_id = "IsaacContrib-Velocity-Rough-UnitreeGo1"
+
+[[task]]
+alias = "go2_flat"
+category = "locomotion"
+lab2_id = "Isaac-Velocity-Flat-Unitree-Go2-v0"
+lab3_id = "Isaac-Velocity-Flat-UnitreeGo2"
+
+[[task]]
+alias = "go2_rough"
+category = "locomotion"
+lab2_id = "Isaac-Velocity-Rough-Unitree-Go2-v0"
+lab3_id = "Isaac-Velocity-Rough-UnitreeGo2"
+
+[[task]]
 alias = "allegro_cube"
+category = "manipulation"
 lab2_id = "Isaac-Repose-Cube-Allegro-v0"
 lab3_id = "Isaac-Reorient-Cube-Allegro"
 
 [[task]]
 alias = "franka_reach"
+category = "manipulation"
 lab2_id = "Isaac-Reach-Franka-v0"
 lab3_id = "Isaac-Reach-Franka"
+
+[[task]]
+alias = "franka_cabinet_direct"
+category = "manipulation"
+lab2_id = "Isaac-Franka-Cabinet-Direct-v0"
+lab3_id = "Isaac-Open-Drawer-Franka-Direct"
+
+[[task]]
+alias = "kuka_allegro_reorient"
+category = "manipulation"
+lab2_id = "Isaac-Dexsuite-Kuka-Allegro-Reorient-v0"
+lab3_id = "Isaac-Reorient-KukaAllegro"
+
+[[task]]
+alias = "kuka_allegro_lift"
+category = "manipulation"
+lab2_id = "Isaac-Dexsuite-Kuka-Allegro-Lift-v0"
+lab3_id = "Isaac-Lift-KukaAllegro"
 
 [[mode]]
 id = "runtime-100"
