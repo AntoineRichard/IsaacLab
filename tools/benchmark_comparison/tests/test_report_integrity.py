@@ -250,14 +250,16 @@ def test_report_rejects_failure_csv_with_unexpected_columns(tmp_path: Path) -> N
 
 
 def test_report_only_cli_hashes_all_generated_files(tmp_path: Path) -> None:
-    plot_basenames = {
+    plot_categories = ("classic", "locomotion", "manipulation")
+    plot_metrics = (
         "collection_fps",
         "gpu_memory_mean_mib",
         "gpu_memory_peak_mib",
         "gpu_utilization_mean_pct",
         "startup_total_s",
         "startup_phase_breakdown",
-    }
+    )
+    plot_basenames = {f"{category}_{metric}" for category in plot_categories for metric in plot_metrics}
     expected_generated_files = {
         "raw_runs.csv",
         "paired_summary.csv",
@@ -266,7 +268,7 @@ def test_report_only_cli_hashes_all_generated_files(tmp_path: Path) -> None:
         "report.pdf",
     }
     expected_generated_files.update(f"{basename}.{suffix}" for basename in plot_basenames for suffix in ("png", "svg"))
-    assert len(expected_generated_files) == 17
+    assert len(expected_generated_files) == 41
     artifact_root = tmp_path / "artifacts"
     manifest = replace(_manifest(), run_set=RunSet.CANARY, expansion=expand_canary_matrix(load_matrix()))
     write_manifest(artifact_root / "canary" / "manifest.json", manifest)
@@ -288,10 +290,12 @@ def test_report_only_cli_hashes_all_generated_files(tmp_path: Path) -> None:
         == 0
     )
 
+    manifest_lines = (output / "generated_hashes.sha256").read_text(encoding="utf-8").splitlines()
     entries = {}
-    for line in (output / "generated_hashes.sha256").read_text(encoding="utf-8").splitlines():
+    for line in manifest_lines:
         digest, relative_path = line.split("  ", maxsplit=1)
         entries[relative_path] = digest
+    assert len(manifest_lines) == len(entries) == 41
     assert set(entries) == expected_generated_files
     assert all(
         hashlib.sha256((output / relative_path).read_bytes()).hexdigest() == digest

@@ -110,7 +110,7 @@ def _inputs(
         successful_attempts=len(selected_runs),
         failed_or_missing_attempts=0,
         raw_file_count=25,
-        generated_file_count=17,
+        generated_file_count=41,
         raw_hash_manifest_sha256="e" * 64,
     )
     return normalized, _manifest(), audit, _plot_paths(tmp_path / "plots")
@@ -232,12 +232,24 @@ def test_pdf_paginates_large_run_table_and_uses_fixed_page_order(tmp_path: Path)
         "Successful individual-run appendix (3/3)",
         "Failures and missing attempts",
         "Artifact integrity audit",
-        "Collection FPS",
-        "Mean GPU Memory",
-        "Peak GPU Memory",
-        "Mean GPU Utilization",
-        "Total Startup Time",
-        "Startup Phase Breakdown",
+        "Classic: Collection FPS",
+        "Classic: Mean GPU Memory",
+        "Classic: Peak GPU Memory",
+        "Classic: Mean GPU Utilization",
+        "Classic: Total Startup Time",
+        "Classic: Startup Phase Breakdown",
+        "Locomotion: Collection FPS",
+        "Locomotion: Mean GPU Memory",
+        "Locomotion: Peak GPU Memory",
+        "Locomotion: Mean GPU Utilization",
+        "Locomotion: Total Startup Time",
+        "Locomotion: Startup Phase Breakdown",
+        "Manipulation: Collection FPS",
+        "Manipulation: Mean GPU Memory",
+        "Manipulation: Peak GPU Memory",
+        "Manipulation: Mean GPU Utilization",
+        "Manipulation: Total Startup Time",
+        "Manipulation: Startup Phase Breakdown",
     )
     assert page_titles == expected_titles
 
@@ -283,7 +295,7 @@ def test_pdf_contains_failure_and_audit_content(tmp_path: Path) -> None:
         successful_attempts=2,
         failed_or_missing_attempts=1,
         raw_file_count=31,
-        generated_file_count=19,
+        generated_file_count=41,
         raw_hash_manifest_sha256="f" * 64,
     )
     report = write_pdf_report(
@@ -306,10 +318,53 @@ def test_pdf_contains_failure_and_audit_content(tmp_path: Path) -> None:
             "Successful attempts: 2",
             "Failed or missing attempts: 1",
             "Raw files: 31",
-            "Generated files: 19",
+            "Generated files: 41",
             "f" * 64,
         )
     )
+
+
+@pytest.mark.parametrize(
+    "invalid_input",
+    ("missing_category_plot", "duplicate_basename", "ungrouped_basename", "non_png", "invalid_image_bytes"),
+)
+def test_pdf_rejects_invalid_plot_inputs_atomically(tmp_path: Path, invalid_input: str) -> None:
+    normalized, manifest, audit, plots = _inputs(tmp_path)
+    invalid_plots = list(plots)
+    if invalid_input == "missing_category_plot":
+        invalid_plots.remove(next(path for path in invalid_plots if path.stem == "locomotion_collection_fps"))
+    elif invalid_input == "duplicate_basename":
+        duplicate = tmp_path / "duplicate" / f"{plots[0].stem}.png"
+        duplicate.parent.mkdir()
+        duplicate.write_bytes(plots[0].read_bytes())
+        invalid_plots.append(duplicate)
+    elif invalid_input == "ungrouped_basename":
+        ungrouped = tmp_path / "collection_fps.png"
+        ungrouped.write_bytes(plots[0].read_bytes())
+        invalid_plots[0] = ungrouped
+    elif invalid_input == "non_png":
+        non_png = tmp_path / f"{plots[0].stem}.jpg"
+        non_png.write_bytes(plots[0].read_bytes())
+        invalid_plots[0] = non_png
+    else:
+        invalid_plots[0].write_bytes(b"not a PNG image\n")
+
+    destination = tmp_path / "report.pdf"
+    destination.write_bytes(b"preserved report")
+
+    with pytest.raises(ValueError):
+        write_pdf_report(
+            normalized["raw_runs"],
+            normalized["paired_summary"],
+            normalized["failures"],
+            tuple(invalid_plots),
+            destination,
+            manifest=manifest,
+            audit=audit,
+        )
+
+    assert destination.read_bytes() == b"preserved report"
+    assert not destination.with_suffix(".pdf.tmp").exists()
 
 
 def test_pdf_validation_failure_preserves_existing_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

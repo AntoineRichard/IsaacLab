@@ -17,6 +17,16 @@ from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.report_cli import _publish, main
 
+_PLOT_CATEGORIES = ("classic", "locomotion", "manipulation")
+_PLOT_METRICS = (
+    "collection_fps",
+    "gpu_memory_mean_mib",
+    "gpu_memory_peak_mib",
+    "gpu_utilization_mean_pct",
+    "startup_total_s",
+    "startup_phase_breakdown",
+)
+
 
 def _snapshot_files(directory: Path) -> dict[str, bytes]:
     return {
@@ -24,6 +34,26 @@ def _snapshot_files(directory: Path) -> dict[str, bytes]:
         for path in sorted(directory.rglob("*"))
         if path.is_file()
     }
+
+
+def _write_previous_41_file_report(output: Path) -> None:
+    generated_paths = {
+        "raw_runs.csv",
+        "paired_summary.csv",
+        "failures.csv",
+        "report.md",
+        "report.pdf",
+    }
+    generated_paths.update(
+        f"{category}_{metric}.{suffix}"
+        for category in _PLOT_CATEGORIES
+        for metric in _PLOT_METRICS
+        for suffix in ("png", "svg")
+    )
+    assert len(generated_paths) == 41
+    output.mkdir(parents=True)
+    for relative_path in sorted(generated_paths):
+        (output / relative_path).write_bytes(f"previous {relative_path}\n".encode())
 
 
 def _manifest() -> RunSetManifest:
@@ -115,9 +145,11 @@ def test_report_directory_publication_rolls_back_and_removes_stale_files(
     assert not (output / "stale.txt").exists()
 
 
-def test_report_cli_preserves_previous_report_when_pdf_generation_fails(
+@pytest.mark.parametrize("failure_boundary", ("grouped_plots", "pdf"))
+def test_report_cli_preserves_previous_41_file_report_when_generation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    failure_boundary: str,
 ) -> None:
     root = tmp_path / "artifacts"
     write_manifest(root / "canary" / "manifest.json", _manifest())
@@ -126,20 +158,26 @@ def test_report_cli_preserves_previous_report_when_pdf_generation_fails(
     (raw_artifacts / "measurements.json").write_bytes(b'{"fps": 123.0}\n')
     (raw_artifacts / "nested" / "stdout.log").write_bytes(b"raw log bytes\n")
     output = root / "canary" / "report"
-    (output / "legacy").mkdir(parents=True)
-    (output / "report.md").write_bytes(b"previous report bytes")
-    (output / "report.pdf").write_bytes(b"previous PDF bytes")
-    (output / "stale.txt").write_text("stale", encoding="utf-8")
-    (output / "legacy" / "plot.svg").write_bytes(b"<svg>legacy</svg>\n")
+    _write_previous_41_file_report(output)
     published_before = _snapshot_files(output)
+    assert len(published_before) == 41
     raw_before = _snapshot_files(raw_artifacts)
 
-    def fail_pdf(*_args, **_kwargs):
-        raise RuntimeError("injected PDF failure")
+    if failure_boundary == "grouped_plots":
 
-    monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", fail_pdf)
+        def fail_plots(_raw_runs: Path, staging: Path, **_kwargs):
+            (staging / "classic_collection_fps.png").write_bytes(b"partial grouped plot")
+            raise RuntimeError("injected grouped plots failure")
 
-    with pytest.raises(RuntimeError, match="injected PDF failure"):
+        monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", fail_plots)
+    else:
+
+        def fail_pdf(*_args, **_kwargs):
+            raise RuntimeError("injected PDF failure")
+
+        monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", fail_pdf)
+
+    with pytest.raises(RuntimeError, match="injected .* failure"):
         main(
             [
                 "--artifact_root",

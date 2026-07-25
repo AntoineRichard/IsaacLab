@@ -60,7 +60,7 @@ _METRIC_LABELS = {
     "startup_env_creation_s": "Environment creation [s]",
     "startup_first_step_s": "First step [s]",
 }
-_PLOT_TITLES = {
+_METRIC_TITLES = {
     "collection_fps": "Collection FPS",
     "gpu_memory_mean_mib": "Mean GPU Memory",
     "gpu_memory_peak_mib": "Peak GPU Memory",
@@ -86,7 +86,7 @@ def write_pdf_report(
         raw_runs_path: Normalized successful-run CSV path.
         paired_summary_path: Normalized paired-summary CSV path.
         failures_path: Normalized failed-or-missing-attempt CSV path.
-        plot_paths: Paths to the six required benchmark PNG figures.
+        plot_paths: Paths to the 18 required category benchmark PNG figures.
         output_path: Destination PDF path.
         manifest: Run-set identity, inventory, and matrix expansion.
         audit: Artifact counts and raw-hash integrity values.
@@ -227,7 +227,7 @@ def write_pdf_report(
                 ),
             )
             for basename, path in zip(PLOT_BASENAMES, ordered_plots, strict=True):
-                _plot_page(pdf, _PLOT_TITLES[basename], path)
+                _plot_page(pdf, _plot_title(basename), path)
 
         validate_pdf(
             temporary,
@@ -354,7 +354,10 @@ def _plot_page(pdf: PdfPages, title: str, path: Path) -> None:
     import matplotlib.image as mpimg
     import matplotlib.pyplot as plt
 
-    image = mpimg.imread(path)
+    try:
+        image = mpimg.imread(path)
+    except (OSError, SyntaxError, ValueError) as error:
+        raise ValueError(f"invalid benchmark PNG: {path}") from error
     figure, axis = plt.subplots(figsize=_LANDSCAPE_SIZE, dpi=100)
     try:
         figure.patch.set_facecolor("white")
@@ -391,8 +394,14 @@ def _ordered_plot_paths(plot_paths: Sequence[Path]) -> tuple[Path, ...]:
         paths_by_basename[path.stem] = path
     if set(paths_by_basename) != set(PLOT_BASENAMES):
         missing = [basename for basename in PLOT_BASENAMES if basename not in paths_by_basename]
-        raise ValueError(f"benchmark PDF requires exactly the six PNG plots; missing: {missing}")
+        raise ValueError(f"benchmark PDF requires exactly the 18 PNG plots; missing: {missing}")
     return tuple(paths_by_basename[basename] for basename in PLOT_BASENAMES)
+
+
+def _plot_title(basename: str) -> str:
+    """Return the category and metric display title for an allowed plot basename."""
+    category, metric = basename.split("_", maxsplit=1)
+    return f"{category.title()}: {_METRIC_TITLES[metric]}"
 
 
 def _methodology_lines(manifest: RunSetManifest) -> tuple[str, ...]:

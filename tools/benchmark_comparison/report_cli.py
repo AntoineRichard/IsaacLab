@@ -58,12 +58,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         normalized = write_normalized_outputs(staging, runs, failures, expansion=expansion)
         plots = generate_plots(normalized["raw_runs"], staging, expansion=expansion)
-        generated_file_count = len(_NORMALIZED_FILES) + len(plots) + 2  # Markdown + PDF
+        generated = tuple(
+            sorted(
+                (
+                    *[staging / name for name in _NORMALIZED_FILES],
+                    staging / "report.md",
+                    staging / "report.pdf",
+                    *plots,
+                ),
+                key=lambda path: path.name,
+            )
+        )
         report_audit = ReportAudit(
             successful_attempts=len(runs),
             failed_or_missing_attempts=len(failures),
             raw_file_count=raw_file_count,
-            generated_file_count=generated_file_count,
+            generated_file_count=len(generated),
             raw_hash_manifest_sha256=hashlib.sha256(raw_hash_contents.encode()).hexdigest(),
         )
         write_markdown_report(
@@ -86,18 +96,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         _write_text(staging / "raw_artifact_hashes.sha256", raw_hash_contents)
 
-        generated = tuple(
-            sorted(
-                (
-                    *[staging / name for name in _NORMALIZED_FILES],
-                    staging / "report.md",
-                    staging / "report.pdf",
-                    *plots,
-                ),
-                key=lambda path: path.name,
-            )
-        )
-        assert len(generated) == generated_file_count
         generated_hash_contents = _hash_lines(generated, staging)
         _write_text(staging / "generated_hashes.sha256", generated_hash_contents)
         audit = {
