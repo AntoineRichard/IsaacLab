@@ -334,6 +334,117 @@ def test_import_completed_attempts_rejects_symlinked_destination_run_set_without
     assert not tuple(target.glob(".import-staging-*"))
 
 
+def test_import_completed_attempts_anchors_destination_run_set_during_parent_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root, destination_root, source_expansion, _ = _create_import_fixture(tmp_path)
+    destination_run_set = destination_root / "canary"
+    relocated_run_set = tmp_path / "relocated-canary"
+    external_run_set = tmp_path / "external" / "canary"
+    external_run_set.mkdir(parents=True)
+    (external_run_set / "sentinel.txt").write_text("external bytes\n", encoding="utf-8")
+    source_before = _inventory(source_root)
+    external_before = _inventory(external_run_set)
+    real_mkdtemp = import_results.tempfile.mkdtemp
+    swapped = False
+
+    def swap_before_staging(*args: Any, **kwargs: Any) -> str:
+        nonlocal swapped
+        if not swapped:
+            destination_run_set.rename(relocated_run_set)
+            destination_run_set.symlink_to(external_run_set, target_is_directory=True)
+            swapped = True
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(import_results.tempfile, "mkdtemp", swap_before_staging)
+
+    audit = import_completed_attempts(source_root, destination_root, RunSet.CANARY)
+
+    assert swapped
+    assert audit.imported_attempt_count == len(source_expansion.attempts)
+    assert _inventory(source_root) == source_before
+    assert _inventory(external_run_set) == external_before
+    for attempt in source_expansion.attempts:
+        source_bytes = (source_root / attempt.run_directory / "success" / "stdout.log").read_bytes()
+        relocated_bytes = (relocated_run_set / Path(attempt.run_directory).name / "success" / "stdout.log").read_bytes()
+        assert relocated_bytes == source_bytes
+    assert (relocated_run_set / "import_audit.json").is_file()
+    assert not tuple(relocated_run_set.glob(".import-staging-*"))
+    assert not tuple(external_run_set.glob(".import-staging-*"))
+
+
+def test_import_completed_attempts_copies_from_anchored_source_after_attempt_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root, destination_root, source_expansion, _ = _create_import_fixture(tmp_path)
+    attempt = source_expansion.attempts[0]
+    source_attempt = source_root / attempt.run_directory
+    source_marker = source_attempt / "marker.txt"
+    source_marker.write_text("source bytes\n", encoding="utf-8")
+    external_attempt = tmp_path / "external-attempt"
+    shutil.copytree(source_attempt, external_attempt)
+    (external_attempt / "marker.txt").write_text("external bytes\n", encoding="utf-8")
+    detached_source_attempt = tmp_path / "detached-source-attempt"
+    source_before = _inventory(source_attempt)
+    external_before = _inventory(external_attempt)
+    real_validate_tree = import_results._validate_attempt_tree
+    swapped = False
+
+    def swap_after_aggregate_validation(root: Path, location: str) -> None:
+        nonlocal swapped
+        real_validate_tree(root, location)
+        if not swapped and location == "aggregate":
+            source_attempt.rename(detached_source_attempt)
+            source_attempt.symlink_to(external_attempt, target_is_directory=True)
+            swapped = True
+
+    monkeypatch.setattr(import_results, "_validate_attempt_tree", swap_after_aggregate_validation)
+
+    import_completed_attempts(source_root, destination_root, RunSet.CANARY)
+
+    destination_marker = destination_root / attempt.run_directory / "marker.txt"
+    assert swapped
+    assert _inventory(detached_source_attempt) == source_before
+    assert _inventory(external_attempt) == external_before
+    assert source_attempt.is_symlink()
+    assert detached_source_attempt.joinpath("marker.txt").read_bytes() == b"source bytes\n"
+    assert destination_marker.read_bytes() == b"source bytes\n"
+
+
+def test_import_completed_attempts_hashes_the_parsed_manifest_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root, destination_root, _, _ = _create_import_fixture(tmp_path)
+    source_manifest = source_root / "canary" / "manifest.json"
+    parsed_bytes = source_manifest.read_bytes()
+    replacement_bytes = parsed_bytes + b"\n"
+    parsed_manifest = tmp_path / "parsed-source-manifest.json"
+    real_read_manifest = import_results.read_manifest
+    replaced = False
+
+    def replace_after_parse(path: Path) -> RunSetManifest:
+        nonlocal replaced
+        manifest = real_read_manifest(path)
+        if not replaced:
+            source_manifest.rename(parsed_manifest)
+            source_manifest.write_bytes(replacement_bytes)
+            replaced = True
+        return manifest
+
+    monkeypatch.setattr(import_results, "read_manifest", replace_after_parse)
+
+    audit = import_completed_attempts(source_root, destination_root, RunSet.CANARY)
+
+    assert replaced
+    assert parsed_manifest.read_bytes() == parsed_bytes
+    assert source_manifest.read_bytes() == replacement_bytes
+    assert audit.source_manifest_sha256 == hashlib.sha256(parsed_bytes).hexdigest()
+    assert audit.source_manifest_sha256 != hashlib.sha256(replacement_bytes).hexdigest()
+
+
 @pytest.mark.parametrize(
     "difference",
     ["run_set", "phase", "provenance", "host", "gpu", "lab2", "lab3", "cpu_power_profile"],
@@ -493,6 +604,70 @@ def test_import_completed_attempts_rejects_destination_conflicts(tmp_path: Path,
         assert not (destination_root / source_expansion.attempts[1].run_directory).exists()
         assert not tuple((destination_root / "canary").glob(".import-staging-*"))
         assert not (destination_root / "canary" / "import_audit.json").exists()
+
+
+def test_import_completed_attempts_does_not_replace_racing_attempt_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root, destination_root, source_expansion, _ = _create_import_fixture(tmp_path)
+    destination_attempt = destination_root / source_expansion.attempts[0].run_directory
+    real_publish = import_results._publish_attempt_root
+    injected = False
+    writer_inode = None
+
+    def create_conflict_before_publish(staged: Path, destination: Path) -> None:
+        nonlocal injected, writer_inode
+        if not injected:
+            destination.mkdir()
+            writer_inode = destination.stat().st_ino
+            injected = True
+        real_publish(staged, destination)
+
+    monkeypatch.setattr(import_results, "_publish_attempt_root", create_conflict_before_publish)
+    conflict_error = None
+    try:
+        import_completed_attempts(source_root, destination_root, RunSet.CANARY)
+    except FileExistsError as error:
+        conflict_error = error
+
+    assert injected
+    assert writer_inode is not None
+    assert destination_attempt.stat().st_ino == writer_inode
+    assert not tuple(destination_attempt.iterdir())
+    assert not (destination_root / "canary" / "import_audit.json").exists()
+    assert conflict_error is not None
+
+
+def test_import_completed_attempts_does_not_replace_racing_audit_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root, destination_root, source_expansion, _ = _create_import_fixture(tmp_path)
+    audit_path = destination_root / "canary" / "import_audit.json"
+    writer_bytes = b"writer audit bytes\n"
+    real_write_audit = import_results._write_audit_atomic
+    injected = False
+
+    def create_conflict_before_audit_publish(path: Path, audit) -> None:
+        nonlocal injected
+        if not injected:
+            path.write_bytes(writer_bytes)
+            injected = True
+        real_write_audit(path, audit)
+
+    monkeypatch.setattr(import_results, "_write_audit_atomic", create_conflict_before_audit_publish)
+    conflict_error = None
+    try:
+        import_completed_attempts(source_root, destination_root, RunSet.CANARY)
+    except FileExistsError as error:
+        conflict_error = error
+
+    assert injected
+    assert audit_path.read_bytes() == writer_bytes
+    assert not any((destination_root / attempt.run_directory).exists() for attempt in source_expansion.attempts)
+    assert not tuple((destination_root / "canary").glob(".import-staging-*"))
+    assert conflict_error is not None
 
 
 def test_import_completed_attempts_rolls_back_copy2_failure(
