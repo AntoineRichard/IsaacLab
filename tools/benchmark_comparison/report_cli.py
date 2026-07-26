@@ -60,12 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         normalized = write_normalized_outputs(staging, runs, failures, expansion=expansion)
         aggregate_deltas = aggregate_paired_summary(normalized["paired_summary"], expansion)
         plots = generate_plots(normalized["raw_runs"], aggregate_deltas, staging, expansion=expansion)
-        if (
-            len(plots) != 2 * len(PLOT_BASENAMES)
-            or tuple(path.stem for path in plots[::2]) != PLOT_BASENAMES
-            or tuple(path.stem for path in plots[1::2]) != PLOT_BASENAMES
-            or tuple(path.suffix for path in plots) != (".png", ".svg") * len(PLOT_BASENAMES)
-        ):
+        expected_plots = tuple(
+            staging / f"{basename}.{suffix}" for basename in PLOT_BASENAMES for suffix in ("png", "svg")
+        )
+        if plots != expected_plots:
             raise ValueError("generated plots must be canonical PNG/SVG pairs")
         generated = tuple(
             sorted(

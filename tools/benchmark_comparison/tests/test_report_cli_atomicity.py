@@ -49,6 +49,7 @@ def _snapshot_files(directory: Path) -> dict[str, bytes]:
 
 
 def _write_placeholder_plots(staging: Path) -> tuple[Path, ...]:
+    staging.mkdir(parents=True, exist_ok=True)
     plots = []
     for basename in PLOT_BASENAMES:
         for suffix in ("png", "svg"):
@@ -180,7 +181,17 @@ def test_report_directory_publication_rolls_back_and_removes_stale_files(
     assert not (output / "stale.txt").exists()
 
 
-@pytest.mark.parametrize("invalid_inventory", ("out_of_order", "missing_svg", "reversed_suffix_pair"))
+@pytest.mark.parametrize(
+    "invalid_inventory",
+    (
+        "out_of_order",
+        "missing_svg",
+        "reversed_suffix_pair",
+        "duplicate_entry",
+        "nested_paths",
+        "external_paths",
+    ),
+)
 def test_report_cli_rejects_noncanonical_plot_pairs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -188,22 +199,44 @@ def test_report_cli_rejects_noncanonical_plot_pairs(
 ) -> None:
     root = tmp_path / "artifacts"
     write_manifest(root / "canary" / "manifest.json", _manifest())
+    raw_artifacts = root / "canary" / "raw-artifact"
+    (raw_artifacts / "nested").mkdir(parents=True)
+    (raw_artifacts / "measurements.json").write_bytes(b'{"fps": 123.0}\n')
+    (raw_artifacts / "nested" / "stdout.log").write_bytes(b"raw log bytes\n")
     output = root / "canary" / "report"
+    _write_previous_57_file_report(output)
+    published_before = _snapshot_files(output)
+    raw_before = _snapshot_files(raw_artifacts)
+    writer_calls = []
 
-    def generate_out_of_order_plots(_raw_runs: Path, _aggregate_deltas, staging: Path, **_kwargs):
+    def generate_invalid_plots(_raw_runs: Path, _aggregate_deltas, staging: Path, **_kwargs):
         plots = _write_placeholder_plots(staging)
         if invalid_inventory == "out_of_order":
             return tuple((*plots[2:4], *plots[:2], *plots[4:]))
         if invalid_inventory == "missing_svg":
             return plots[:-1]
-        return tuple((plots[1], plots[0], *plots[2:]))
+        if invalid_inventory == "reversed_suffix_pair":
+            return tuple((plots[1], plots[0], *plots[2:]))
+        if invalid_inventory == "duplicate_entry":
+            return tuple((*plots[:-1], plots[-2]))
+        if invalid_inventory == "nested_paths":
+            return _write_placeholder_plots(staging / "nested")
+        return _write_placeholder_plots(tmp_path / "outside")
+
+    def write_placeholder_markdown(*args, **_kwargs):
+        writer_calls.append("markdown")
+        output_path = args[3]
+        output_path.write_text("placeholder Markdown\n", encoding="utf-8")
+        return output_path
 
     def write_placeholder_pdf(*args, **_kwargs):
+        writer_calls.append("pdf")
         output_path = args[4]
         output_path.write_bytes(b"placeholder PDF")
         return output_path
 
-    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", generate_out_of_order_plots)
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", generate_invalid_plots)
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_markdown_report", write_placeholder_markdown)
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", write_placeholder_pdf)
 
     with pytest.raises(ValueError, match="canonical PNG/SVG pairs"):
@@ -220,7 +253,9 @@ def test_report_cli_rejects_noncanonical_plot_pairs(
             ]
         )
 
-    assert not output.exists()
+    assert writer_calls == []
+    assert _snapshot_files(output) == published_before
+    assert _snapshot_files(raw_artifacts) == raw_before
     assert not tuple(output.parent.glob(f".{output.name}.*"))
 
 
