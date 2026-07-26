@@ -17,6 +17,7 @@ from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, So
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
+from tools.benchmark_comparison.plot import PLOT_BASENAMES
 from tools.benchmark_comparison.report import write_markdown_report
 from tools.benchmark_comparison.report_cli import _validate_output_directory, main
 
@@ -176,9 +177,18 @@ def test_report_cli_accepts_disjoint_external_output(
         output_path.write_bytes(b"placeholder PDF")
         return output_path
 
+    def write_placeholder_plots(_raw_runs: Path, _aggregate_deltas, staging: Path, **_kwargs):
+        plots = []
+        for basename in PLOT_BASENAMES:
+            for suffix in ("png", "svg"):
+                path = staging / f"{basename}.{suffix}"
+                path.write_bytes(f"placeholder {basename}.{suffix}\n".encode())
+                plots.append(path)
+        return tuple(plots)
+
     monkeypatch.setattr(
         "tools.benchmark_comparison.report_cli.generate_plots",
-        lambda _raw_runs, _aggregate_deltas, _staging, **_kwargs: (),
+        write_placeholder_plots,
     )
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", write_placeholder_pdf)
 

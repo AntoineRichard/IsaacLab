@@ -21,7 +21,7 @@ from .manifest import manifest_path, read_manifest, resolve_manifest_expansion
 from .models import RunSet
 from .normalize import normalize_run_set, write_normalized_outputs
 from .pdf_report import write_pdf_report
-from .plot import generate_plots
+from .plot import PLOT_BASENAMES, generate_plots
 from .report import ReportAudit, write_markdown_report
 
 _NORMALIZED_FILES = ("raw_runs.csv", "paired_summary.csv", "failures.csv")
@@ -60,6 +60,13 @@ def main(argv: list[str] | None = None) -> int:
         normalized = write_normalized_outputs(staging, runs, failures, expansion=expansion)
         aggregate_deltas = aggregate_paired_summary(normalized["paired_summary"], expansion)
         plots = generate_plots(normalized["raw_runs"], aggregate_deltas, staging, expansion=expansion)
+        if (
+            len(plots) != 2 * len(PLOT_BASENAMES)
+            or tuple(path.stem for path in plots[::2]) != PLOT_BASENAMES
+            or tuple(path.stem for path in plots[1::2]) != PLOT_BASENAMES
+            or tuple(path.suffix for path in plots) != (".png", ".svg") * len(PLOT_BASENAMES)
+        ):
+            raise ValueError("generated plots must be canonical PNG/SVG pairs")
         generated = tuple(
             sorted(
                 (

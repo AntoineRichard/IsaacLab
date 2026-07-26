@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -265,24 +266,23 @@ def test_report_only_cli_hashes_all_generated_files(tmp_path: Path) -> None:
     manifest = replace(_manifest(), run_set=RunSet.CANARY, expansion=expand_canary_matrix(load_matrix()))
     write_manifest(artifact_root / "canary" / "manifest.json", manifest)
     output = artifact_root / "canary" / "report"
+    report_args = [
+        "--artifact_root",
+        str(artifact_root),
+        "--run_set",
+        "canary",
+        "--phase",
+        "measured",
+        "--output_dir",
+        str(output),
+    ]
 
-    assert (
-        main(
-            [
-                "--artifact_root",
-                str(artifact_root),
-                "--run_set",
-                "canary",
-                "--phase",
-                "measured",
-                "--output_dir",
-                str(output),
-            ]
-        )
-        == 0
-    )
+    assert main(report_args) == 0
 
-    manifest_lines = (output / "generated_hashes.sha256").read_text(encoding="utf-8").splitlines()
+    metadata_files = {"audit_summary.json", "raw_artifact_hashes.sha256", "generated_hashes.sha256"}
+    assert {path.name for path in output.iterdir()} == expected_generated_files | metadata_files
+    generated_manifest = (output / "generated_hashes.sha256").read_bytes()
+    manifest_lines = generated_manifest.decode().splitlines()
     entries = {}
     for line in manifest_lines:
         digest, relative_path = line.split("  ", maxsplit=1)
@@ -293,3 +293,13 @@ def test_report_only_cli_hashes_all_generated_files(tmp_path: Path) -> None:
         hashlib.sha256((output / relative_path).read_bytes()).hexdigest() == digest
         for relative_path, digest in entries.items()
     )
+    generated_before = {relative_path: (output / relative_path).read_bytes() for relative_path in entries}
+    audit = json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))
+    assert audit["generated_file_count"] == 57
+    assert audit["generated_hash_manifest_sha256"] == hashlib.sha256(generated_manifest).hexdigest()
+
+    assert main(report_args) == 0
+
+    assert (output / "generated_hashes.sha256").read_bytes() == generated_manifest
+    assert json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))["generated_file_count"] == 57
+    assert {relative_path: (output / relative_path).read_bytes() for relative_path in entries} == generated_before

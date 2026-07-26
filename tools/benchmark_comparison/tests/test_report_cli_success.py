@@ -143,20 +143,41 @@ def test_report_only_cli_normalizes_a_synthetic_raw_success(tmp_path: Path) -> N
 
     generated_manifest = (output / "generated_hashes.sha256").read_bytes()
     manifest_lines = generated_manifest.decode().splitlines()
-    generated_entries = tuple(line.split("  ", maxsplit=1)[1] for line in manifest_lines)
+    generated_hashes = {
+        relative_path: digest for digest, relative_path in (line.split("  ", maxsplit=1) for line in manifest_lines)
+    }
+    generated_entries = tuple(generated_hashes)
     assert len(generated_entries) == len(set(generated_entries)) == 57
     assert set(generated_entries) == expected_generated
+    assert all(
+        hashlib.sha256((output / relative_path).read_bytes()).hexdigest() == digest
+        for relative_path, digest in generated_hashes.items()
+    )
     generated_before = {relative_path: (output / relative_path).read_bytes() for relative_path in generated_entries}
 
     audit = json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))
     assert audit["generated_file_count"] == 57
     assert audit["generated_hash_manifest_sha256"] == hashlib.sha256(generated_manifest).hexdigest()
-    validate_pdf(output / "report.pdf", ("canary", "a" * 40, "b" * 40, "Startup"))
+    markdown = (output / "report.md").read_text(encoding="utf-8")
+    assert "![aggregate_delta_median_pct](aggregate_delta_median_pct.png)" in markdown
+    assert "![aggregate_delta_mean_pct](aggregate_delta_mean_pct.png)" in markdown
+    validate_pdf(
+        output / "report.pdf",
+        (
+            "canary",
+            "a" * 40,
+            "b" * 40,
+            "Startup",
+            "Median Task-Level Percentage Delta",
+            "Mean Task-Level Percentage Delta",
+        ),
+    )
 
     assert main(report_args) == 0
     regenerated_manifest = (output / "generated_hashes.sha256").read_bytes()
     regenerated_audit = json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))
     assert regenerated_manifest == generated_manifest
+    assert regenerated_audit["generated_file_count"] == 57
     assert regenerated_audit["generated_hash_manifest_sha256"] == audit["generated_hash_manifest_sha256"]
     assert {
         relative_path: (output / relative_path).read_bytes() for relative_path in generated_entries

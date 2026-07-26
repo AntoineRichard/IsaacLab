@@ -18,6 +18,27 @@ from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.plot import PLOT_BASENAMES
 from tools.benchmark_comparison.report_cli import _publish, main
 
+_PREVIOUS_41_PLOT_BASENAMES = (
+    "classic_collection_fps",
+    "classic_gpu_memory_mean_mib",
+    "classic_gpu_memory_peak_mib",
+    "classic_gpu_utilization_mean_pct",
+    "classic_startup_total_s",
+    "classic_startup_phase_breakdown",
+    "locomotion_collection_fps",
+    "locomotion_gpu_memory_mean_mib",
+    "locomotion_gpu_memory_peak_mib",
+    "locomotion_gpu_utilization_mean_pct",
+    "locomotion_startup_total_s",
+    "locomotion_startup_phase_breakdown",
+    "manipulation_collection_fps",
+    "manipulation_gpu_memory_mean_mib",
+    "manipulation_gpu_memory_peak_mib",
+    "manipulation_gpu_utilization_mean_pct",
+    "manipulation_startup_total_s",
+    "manipulation_startup_phase_breakdown",
+)
+
 
 def _snapshot_files(directory: Path) -> dict[str, bytes]:
     return {
@@ -27,6 +48,31 @@ def _snapshot_files(directory: Path) -> dict[str, bytes]:
     }
 
 
+def _write_placeholder_plots(staging: Path) -> tuple[Path, ...]:
+    plots = []
+    for basename in PLOT_BASENAMES:
+        for suffix in ("png", "svg"):
+            path = staging / f"{basename}.{suffix}"
+            path.write_bytes(f"placeholder {basename}.{suffix}\n".encode())
+            plots.append(path)
+    return tuple(plots)
+
+
+def _write_previous_41_file_report(output: Path) -> None:
+    generated_paths = {
+        "raw_runs.csv",
+        "paired_summary.csv",
+        "failures.csv",
+        "report.md",
+        "report.pdf",
+        *(f"{basename}.{suffix}" for basename in _PREVIOUS_41_PLOT_BASENAMES for suffix in ("png", "svg")),
+    }
+    assert len(generated_paths) == 41
+    output.mkdir(parents=True)
+    for relative_path in sorted(generated_paths):
+        (output / relative_path).write_bytes(f"previous {relative_path}\n".encode())
+
+
 def _write_previous_57_file_report(output: Path) -> None:
     generated_paths = {
         "raw_runs.csv",
@@ -34,8 +80,8 @@ def _write_previous_57_file_report(output: Path) -> None:
         "failures.csv",
         "report.md",
         "report.pdf",
+        *(f"{basename}.{suffix}" for basename in PLOT_BASENAMES for suffix in ("png", "svg")),
     }
-    generated_paths.update(f"{basename}.{suffix}" for basename in PLOT_BASENAMES for suffix in ("png", "svg"))
     assert len(generated_paths) == 57
     output.mkdir(parents=True)
     for relative_path in sorted(generated_paths):
@@ -83,7 +129,10 @@ def test_report_cli_rejects_raw_changes_during_report_generation(
         return output_path
 
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.normalize_run_set", normalize_then_mutate)
-    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        "tools.benchmark_comparison.report_cli.generate_plots",
+        lambda _raw_runs, _aggregate_deltas, staging, **_kwargs: _write_placeholder_plots(staging),
+    )
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", write_placeholder_pdf)
 
     with pytest.raises(ValueError, match="changed during report generation"):
@@ -131,10 +180,56 @@ def test_report_directory_publication_rolls_back_and_removes_stale_files(
     assert not (output / "stale.txt").exists()
 
 
-@pytest.mark.parametrize("failure_boundary", ("grouped_plots", "pdf"))
-def test_report_cli_preserves_previous_57_file_report_when_generation_fails(
+@pytest.mark.parametrize("invalid_inventory", ("out_of_order", "missing_svg", "reversed_suffix_pair"))
+def test_report_cli_rejects_noncanonical_plot_pairs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    invalid_inventory: str,
+) -> None:
+    root = tmp_path / "artifacts"
+    write_manifest(root / "canary" / "manifest.json", _manifest())
+    output = root / "canary" / "report"
+
+    def generate_out_of_order_plots(_raw_runs: Path, _aggregate_deltas, staging: Path, **_kwargs):
+        plots = _write_placeholder_plots(staging)
+        if invalid_inventory == "out_of_order":
+            return tuple((*plots[2:4], *plots[:2], *plots[4:]))
+        if invalid_inventory == "missing_svg":
+            return plots[:-1]
+        return tuple((plots[1], plots[0], *plots[2:]))
+
+    def write_placeholder_pdf(*args, **_kwargs):
+        output_path = args[4]
+        output_path.write_bytes(b"placeholder PDF")
+        return output_path
+
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", generate_out_of_order_plots)
+    monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", write_placeholder_pdf)
+
+    with pytest.raises(ValueError, match="canonical PNG/SVG pairs"):
+        main(
+            [
+                "--artifact_root",
+                str(root),
+                "--run_set",
+                "canary",
+                "--phase",
+                "measured",
+                "--output_dir",
+                str(output),
+            ]
+        )
+
+    assert not output.exists()
+    assert not tuple(output.parent.glob(f".{output.name}.*"))
+
+
+@pytest.mark.parametrize("previous_file_count", (41, 57))
+@pytest.mark.parametrize("failure_boundary", ("aggregate_plots", "detailed_plots", "pdf"))
+def test_report_cli_preserves_previous_report_when_generation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    previous_file_count: int,
     failure_boundary: str,
 ) -> None:
     root = tmp_path / "artifacts"
@@ -144,16 +239,24 @@ def test_report_cli_preserves_previous_57_file_report_when_generation_fails(
     (raw_artifacts / "measurements.json").write_bytes(b'{"fps": 123.0}\n')
     (raw_artifacts / "nested" / "stdout.log").write_bytes(b"raw log bytes\n")
     output = root / "canary" / "report"
-    _write_previous_57_file_report(output)
+    if previous_file_count == 41:
+        _write_previous_41_file_report(output)
+    else:
+        _write_previous_57_file_report(output)
     published_before = _snapshot_files(output)
-    assert len(published_before) == 57
+    assert len(published_before) == previous_file_count
     raw_before = _snapshot_files(raw_artifacts)
 
-    if failure_boundary == "grouped_plots":
+    if failure_boundary in {"aggregate_plots", "detailed_plots"}:
 
         def fail_plots(_raw_runs: Path, _aggregate_deltas, staging: Path, **_kwargs):
-            (staging / "classic_collection_fps.png").write_bytes(b"partial grouped plot")
-            raise RuntimeError("injected grouped plots failure")
+            partial_basenames = PLOT_BASENAMES[:2]
+            if failure_boundary == "detailed_plots":
+                partial_basenames = PLOT_BASENAMES[:3]
+            for basename in partial_basenames:
+                for suffix in ("png", "svg"):
+                    (staging / f"{basename}.{suffix}").write_bytes(b"partial plot")
+            raise RuntimeError(f"injected {failure_boundary} failure")
 
         monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", fail_plots)
     else:
