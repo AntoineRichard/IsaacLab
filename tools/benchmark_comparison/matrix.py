@@ -42,27 +42,37 @@ _TASK_IDENTIFIERS = (
     ("ant_direct", TaskCategory.CLASSIC, "Isaac-Ant-Direct-v0", "Isaac-Ant-Direct"),
     ("humanoid_manager", TaskCategory.CLASSIC, "Isaac-Humanoid-v0", "Isaac-Humanoid"),
     ("humanoid_direct", TaskCategory.CLASSIC, "Isaac-Humanoid-Direct-v0", "Isaac-Humanoid-Direct"),
-    ("anymal_d_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-Anymal-D-v0", "Isaac-Velocity-Flat-AnymalD"),
-    ("anymal_d_rough", TaskCategory.LOCOMOTION, "Isaac-Velocity-Rough-Anymal-D-v0", "Isaac-Velocity-Rough-AnymalD"),
-    ("g1_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
-    ("g1_rough", TaskCategory.LOCOMOTION, "Isaac-Velocity-Rough-G1-v0", "Isaac-Velocity-Rough-G1"),
-    ("cassie_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-Cassie-v0", "Isaac-Velocity-Flat-Cassie"),
-    ("digit_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-Digit-v0", "Isaac-Velocity-Flat-Digit"),
-    ("digit_rough", TaskCategory.LOCOMOTION, "Isaac-Velocity-Rough-Digit-v0", "Isaac-Velocity-Rough-Digit"),
+    ("anymal_d_flat", TaskCategory.LOCOMOTION_FLAT, "Isaac-Velocity-Flat-Anymal-D-v0", "Isaac-Velocity-Flat-AnymalD"),
+    (
+        "anymal_d_rough",
+        TaskCategory.LOCOMOTION_ROUGH,
+        "Isaac-Velocity-Rough-Anymal-D-v0",
+        "Isaac-Velocity-Rough-AnymalD",
+    ),
+    ("g1_flat", TaskCategory.LOCOMOTION_FLAT, "Isaac-Velocity-Flat-G1-v0", "Isaac-Velocity-Flat-G1"),
+    ("g1_rough", TaskCategory.LOCOMOTION_ROUGH, "Isaac-Velocity-Rough-G1-v0", "Isaac-Velocity-Rough-G1"),
+    ("cassie_flat", TaskCategory.LOCOMOTION_FLAT, "Isaac-Velocity-Flat-Cassie-v0", "Isaac-Velocity-Flat-Cassie"),
+    ("digit_flat", TaskCategory.LOCOMOTION_FLAT, "Isaac-Velocity-Flat-Digit-v0", "Isaac-Velocity-Flat-Digit"),
+    ("digit_rough", TaskCategory.LOCOMOTION_ROUGH, "Isaac-Velocity-Rough-Digit-v0", "Isaac-Velocity-Rough-Digit"),
     (
         "go1_flat",
-        TaskCategory.LOCOMOTION,
+        TaskCategory.LOCOMOTION_FLAT,
         "Isaac-Velocity-Flat-Unitree-Go1-v0",
         "IsaacContrib-Velocity-Flat-UnitreeGo1",
     ),
     (
         "go1_rough",
-        TaskCategory.LOCOMOTION,
+        TaskCategory.LOCOMOTION_ROUGH,
         "Isaac-Velocity-Rough-Unitree-Go1-v0",
         "IsaacContrib-Velocity-Rough-UnitreeGo1",
     ),
-    ("go2_flat", TaskCategory.LOCOMOTION, "Isaac-Velocity-Flat-Unitree-Go2-v0", "Isaac-Velocity-Flat-UnitreeGo2"),
-    ("go2_rough", TaskCategory.LOCOMOTION, "Isaac-Velocity-Rough-Unitree-Go2-v0", "Isaac-Velocity-Rough-UnitreeGo2"),
+    ("go2_flat", TaskCategory.LOCOMOTION_FLAT, "Isaac-Velocity-Flat-Unitree-Go2-v0", "Isaac-Velocity-Flat-UnitreeGo2"),
+    (
+        "go2_rough",
+        TaskCategory.LOCOMOTION_ROUGH,
+        "Isaac-Velocity-Rough-Unitree-Go2-v0",
+        "Isaac-Velocity-Rough-UnitreeGo2",
+    ),
     ("allegro_cube", TaskCategory.MANIPULATION, "Isaac-Repose-Cube-Allegro-v0", "Isaac-Reorient-Cube-Allegro"),
     ("franka_reach", TaskCategory.MANIPULATION, "Isaac-Reach-Franka-v0", "Isaac-Reach-Franka"),
     (
@@ -102,8 +112,8 @@ _LEGACY_SCHEMA_1_TASK_IDENTIFIERS = (
 _LEGACY_SCHEMA_1_CATEGORIES = (
     TaskCategory.CLASSIC,
     TaskCategory.CLASSIC,
-    TaskCategory.LOCOMOTION,
-    TaskCategory.LOCOMOTION,
+    TaskCategory.LOCOMOTION_FLAT,
+    TaskCategory.LOCOMOTION_FLAT,
     TaskCategory.MANIPULATION,
     TaskCategory.MANIPULATION,
 )
@@ -385,8 +395,9 @@ def _validate_matrix(matrix: BenchmarkMatrix) -> None:
         raise ValueError("duplicate task category assignment")
     if set(assigned_aliases) != set(aliases):
         raise ValueError("missing task category assignment")
-    if assigned_aliases != aliases:
-        raise ValueError("unexpected task category block order")
+    for category, grouped_aliases in category_aliases.items():
+        if grouped_aliases != tuple(alias for alias in aliases if alias in grouped_aliases):
+            raise ValueError("unexpected task category relative order")
 
     mode_ids = tuple(mode.id for mode in matrix.modes)
     if len(mode_ids) != len(set(mode_ids)):

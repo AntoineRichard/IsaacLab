@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -62,17 +63,19 @@ _EXPECTED_CATEGORIES = {
         "humanoid_manager",
         "humanoid_direct",
     ),
-    "locomotion": (
+    "locomotion_flat": (
         "anymal_d_flat",
-        "anymal_d_rough",
         "g1_flat",
-        "g1_rough",
         "cassie_flat",
         "digit_flat",
-        "digit_rough",
         "go1_flat",
-        "go1_rough",
         "go2_flat",
+    ),
+    "locomotion_rough": (
+        "anymal_d_rough",
+        "g1_rough",
+        "digit_rough",
+        "go1_rough",
         "go2_rough",
     ),
     "manipulation": (
@@ -122,8 +125,25 @@ def test_load_matrix_parses_explicit_task_aliases_and_run_parameters() -> None:
         for index, left in enumerate(category_groups)
         for right in category_groups[index + 1 :]
     )
+    flat_aliases = set(_EXPECTED_CATEGORIES["locomotion_flat"])
+    rough_aliases = set(_EXPECTED_CATEGORIES["locomotion_rough"])
+    assert flat_aliases.isdisjoint(rough_aliases)
+    assert flat_aliases | rough_aliases == {
+        "anymal_d_flat",
+        "anymal_d_rough",
+        "g1_flat",
+        "g1_rough",
+        "cassie_flat",
+        "digit_flat",
+        "digit_rough",
+        "go1_flat",
+        "go1_rough",
+        "go2_flat",
+        "go2_rough",
+    }
     assert set().union(*map(set, category_groups)) == set(_EXPECTED_TASK_ALIASES)
-    assert tuple(alias for aliases in category_groups for alias in aliases) == tuple(tasks)
+    assert tuple(tasks) == tuple(_EXPECTED_TASK_ALIASES)
+    assert tuple(alias for aliases in category_groups for alias in aliases) != tuple(tasks)
     assert tasks["cartpole_rgb_kit"].supported_modes == ("runtime-100", "runtime-1000")
     assert tasks["cartpole_rgb_kit"].enable_cameras is True
     assert tasks["cartpole_rgb_kit"].lab3_presets == ("rgb",)
@@ -148,6 +168,15 @@ def test_final_matrix_expands_counterbalanced_pairs_in_deterministic_order() -> 
     assert len(expansion.attempts) == FINAL_ATTEMPT_COUNT == 408
     assert tuple(pair.pair_order for pair in expansion.pairs) == tuple(range(204))
     assert tuple(attempt.attempt_order for attempt in expansion.attempts) == tuple(range(408))
+    assert expansion.attempts[0].identity == (
+        "final--cartpole--runtime-100--steps-100--seed-42--repeat-0--envs-4096--rsl_rl--lab2--version-order-0"
+    )
+    assert expansion.attempts[-1].identity == (
+        "final--kuka_allegro_lift--training-100--iterations-100--seed-44--repeat-2--envs-4096--rsl_rl"
+        "--lab3--version-order-1"
+    )
+    payload = "\n".join(attempt.identity for attempt in expansion.attempts).encode()
+    assert hashlib.sha256(payload).hexdigest() == "8aba004dc8d09539e0fab0e8f07eb6a026f12059375a3e37e84c250c5c1c32e7"
 
     expected_versions = {
         42: (Version.LAB2, Version.LAB3),
@@ -228,11 +257,21 @@ def test_task_aliases_by_category_filters_a_supplied_expansion_in_configured_ord
     """Category aliases retain matrix order while omitting tasks absent from an expansion."""
     aliases = task_aliases_by_category(expand_final_matrix(load_matrix()))
 
+    assert tuple(aliases) == (
+        TaskCategory.CLASSIC,
+        TaskCategory.LOCOMOTION_FLAT,
+        TaskCategory.LOCOMOTION_ROUGH,
+        TaskCategory.MANIPULATION,
+    )
     assert aliases == {
         TaskCategory.CLASSIC: _EXPECTED_CATEGORIES["classic"],
-        TaskCategory.LOCOMOTION: _EXPECTED_CATEGORIES["locomotion"],
+        TaskCategory.LOCOMOTION_FLAT: _EXPECTED_CATEGORIES["locomotion_flat"],
+        TaskCategory.LOCOMOTION_ROUGH: _EXPECTED_CATEGORIES["locomotion_rough"],
         TaskCategory.MANIPULATION: _EXPECTED_CATEGORIES["manipulation"],
     }
+    matrix_aliases = tuple(task.alias for task in load_matrix().tasks)
+    for category_aliases in aliases.values():
+        assert tuple(alias for alias in matrix_aliases if alias in category_aliases) == category_aliases
 
 
 def test_matrix_models_are_immutable() -> None:

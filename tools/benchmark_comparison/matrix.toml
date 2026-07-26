@@ -54,67 +54,67 @@ lab3_id = "Isaac-Humanoid-Direct"
 
 [[task]]
 alias = "anymal_d_flat"
-category = "locomotion"
+category = "locomotion_flat"
 lab2_id = "Isaac-Velocity-Flat-Anymal-D-v0"
 lab3_id = "Isaac-Velocity-Flat-AnymalD"
 
 [[task]]
 alias = "anymal_d_rough"
-category = "locomotion"
+category = "locomotion_rough"
 lab2_id = "Isaac-Velocity-Rough-Anymal-D-v0"
 lab3_id = "Isaac-Velocity-Rough-AnymalD"
 
 [[task]]
 alias = "g1_flat"
-category = "locomotion"
+category = "locomotion_flat"
 lab2_id = "Isaac-Velocity-Flat-G1-v0"
 lab3_id = "Isaac-Velocity-Flat-G1"
 
 [[task]]
 alias = "g1_rough"
-category = "locomotion"
+category = "locomotion_rough"
 lab2_id = "Isaac-Velocity-Rough-G1-v0"
 lab3_id = "Isaac-Velocity-Rough-G1"
 
 [[task]]
 alias = "cassie_flat"
-category = "locomotion"
+category = "locomotion_flat"
 lab2_id = "Isaac-Velocity-Flat-Cassie-v0"
 lab3_id = "Isaac-Velocity-Flat-Cassie"
 
 [[task]]
 alias = "digit_flat"
-category = "locomotion"
+category = "locomotion_flat"
 lab2_id = "Isaac-Velocity-Flat-Digit-v0"
 lab3_id = "Isaac-Velocity-Flat-Digit"
 
 [[task]]
 alias = "digit_rough"
-category = "locomotion"
+category = "locomotion_rough"
 lab2_id = "Isaac-Velocity-Rough-Digit-v0"
 lab3_id = "Isaac-Velocity-Rough-Digit"
 
 [[task]]
 alias = "go1_flat"
-category = "locomotion"
+category = "locomotion_flat"
 lab2_id = "Isaac-Velocity-Flat-Unitree-Go1-v0"
 lab3_id = "IsaacContrib-Velocity-Flat-UnitreeGo1"
 
 [[task]]
 alias = "go1_rough"
-category = "locomotion"
+category = "locomotion_rough"
 lab2_id = "Isaac-Velocity-Rough-Unitree-Go1-v0"
 lab3_id = "IsaacContrib-Velocity-Rough-UnitreeGo1"
 
 [[task]]
 alias = "go2_flat"
-category = "locomotion"
+category = "locomotion_flat"
 lab2_id = "Isaac-Velocity-Flat-Unitree-Go2-v0"
 lab3_id = "Isaac-Velocity-Flat-UnitreeGo2"
 
 [[task]]
 alias = "go2_rough"
-category = "locomotion"
+category = "locomotion_rough"
 lab2_id = "Isaac-Velocity-Rough-Unitree-Go2-v0"
 lab3_id = "Isaac-Velocity-Rough-UnitreeGo2"
 

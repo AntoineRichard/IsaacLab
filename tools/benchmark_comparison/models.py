@@ -60,7 +60,8 @@ class TaskCategory(str, Enum):
     """Readability group used by benchmark reports."""
 
     CLASSIC = "classic"
-    LOCOMOTION = "locomotion"
+    LOCOMOTION_FLAT = "locomotion_flat"
+    LOCOMOTION_ROUGH = "locomotion_rough"
     MANIPULATION = "manipulation"
 
 
