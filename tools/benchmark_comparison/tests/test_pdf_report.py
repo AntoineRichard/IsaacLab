@@ -20,7 +20,7 @@ from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
 from tools.benchmark_comparison.pdf_report import validate_pdf, write_pdf_report
-from tools.benchmark_comparison.plot import PLOT_BASENAMES
+from tools.benchmark_comparison.plot import DETAIL_PLOT_BASENAMES
 from tools.benchmark_comparison.report import ReportAudit
 
 
@@ -90,7 +90,7 @@ def _plot_paths(directory: Path) -> tuple[Path, ...]:
 
     directory.mkdir(parents=True)
     paths: list[Path] = []
-    for index, basename in enumerate(PLOT_BASENAMES):
+    for index, basename in enumerate(DETAIL_PLOT_BASENAMES):
         figure, axis = plt.subplots(figsize=(2, 1), dpi=80)
         axis.plot((0, 1), (index, index + 1))
         axis.set_title(basename)
@@ -202,7 +202,7 @@ def test_pdf_paginates_large_run_table_and_uses_fixed_page_order(tmp_path: Path)
     )
     normalized, manifest, audit, plots = _inputs(tmp_path, runs)
     shuffled_plots = tuple(reversed(plots))
-    assert tuple(path.stem for path in shuffled_plots) != PLOT_BASENAMES
+    assert tuple(path.stem for path in shuffled_plots) != DETAIL_PLOT_BASENAMES
     report = write_pdf_report(
         normalized["raw_runs"],
         normalized["paired_summary"],

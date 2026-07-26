@@ -135,7 +135,10 @@ def test_report_cli_rejects_final_output_inside_canary(
     canary_marker = artifact_root / "canary" / "raw-marker"
     canary_marker.parent.mkdir(parents=True)
     canary_marker.write_text("must survive", encoding="utf-8")
-    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        "tools.benchmark_comparison.report_cli.generate_plots",
+        lambda _raw_runs, _aggregate_deltas, _staging, **_kwargs: (),
+    )
 
     with pytest.raises(ValueError, match="overlaps benchmark artifact root"):
         main(
@@ -173,7 +176,10 @@ def test_report_cli_accepts_disjoint_external_output(
         output_path.write_bytes(b"placeholder PDF")
         return output_path
 
-    monkeypatch.setattr("tools.benchmark_comparison.report_cli.generate_plots", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        "tools.benchmark_comparison.report_cli.generate_plots",
+        lambda _raw_runs, _aggregate_deltas, _staging, **_kwargs: (),
+    )
     monkeypatch.setattr("tools.benchmark_comparison.report_cli.write_pdf_report", write_placeholder_pdf)
 
     assert (

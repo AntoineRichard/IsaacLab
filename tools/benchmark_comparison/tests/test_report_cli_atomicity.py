@@ -15,17 +15,8 @@ import pytest
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity, write_manifest
 from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
+from tools.benchmark_comparison.plot import PLOT_BASENAMES
 from tools.benchmark_comparison.report_cli import _publish, main
-
-_PLOT_CATEGORIES = ("classic", "locomotion_flat", "locomotion_rough", "manipulation")
-_PLOT_METRICS = (
-    "collection_fps",
-    "gpu_memory_mean_mib",
-    "gpu_memory_peak_mib",
-    "gpu_utilization_mean_pct",
-    "startup_total_s",
-    "startup_phase_breakdown",
-)
 
 
 def _snapshot_files(directory: Path) -> dict[str, bytes]:
@@ -36,7 +27,7 @@ def _snapshot_files(directory: Path) -> dict[str, bytes]:
     }
 
 
-def _write_previous_53_file_report(output: Path) -> None:
+def _write_previous_57_file_report(output: Path) -> None:
     generated_paths = {
         "raw_runs.csv",
         "paired_summary.csv",
@@ -44,13 +35,8 @@ def _write_previous_53_file_report(output: Path) -> None:
         "report.md",
         "report.pdf",
     }
-    generated_paths.update(
-        f"{category}_{metric}.{suffix}"
-        for category in _PLOT_CATEGORIES
-        for metric in _PLOT_METRICS
-        for suffix in ("png", "svg")
-    )
-    assert len(generated_paths) == 53
+    generated_paths.update(f"{basename}.{suffix}" for basename in PLOT_BASENAMES for suffix in ("png", "svg"))
+    assert len(generated_paths) == 57
     output.mkdir(parents=True)
     for relative_path in sorted(generated_paths):
         (output / relative_path).write_bytes(f"previous {relative_path}\n".encode())
@@ -146,7 +132,7 @@ def test_report_directory_publication_rolls_back_and_removes_stale_files(
 
 
 @pytest.mark.parametrize("failure_boundary", ("grouped_plots", "pdf"))
-def test_report_cli_preserves_previous_53_file_report_when_generation_fails(
+def test_report_cli_preserves_previous_57_file_report_when_generation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure_boundary: str,
@@ -158,14 +144,14 @@ def test_report_cli_preserves_previous_53_file_report_when_generation_fails(
     (raw_artifacts / "measurements.json").write_bytes(b'{"fps": 123.0}\n')
     (raw_artifacts / "nested" / "stdout.log").write_bytes(b"raw log bytes\n")
     output = root / "canary" / "report"
-    _write_previous_53_file_report(output)
+    _write_previous_57_file_report(output)
     published_before = _snapshot_files(output)
-    assert len(published_before) == 53
+    assert len(published_before) == 57
     raw_before = _snapshot_files(raw_artifacts)
 
     if failure_boundary == "grouped_plots":
 
-        def fail_plots(_raw_runs: Path, staging: Path, **_kwargs):
+        def fail_plots(_raw_runs: Path, _aggregate_deltas, staging: Path, **_kwargs):
             (staging / "classic_collection_fps.png").write_bytes(b"partial grouped plot")
             raise RuntimeError("injected grouped plots failure")
 

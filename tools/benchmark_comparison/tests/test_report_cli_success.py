@@ -17,19 +17,11 @@ from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, So
 from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.pdf_report import validate_pdf
+from tools.benchmark_comparison.plot import PLOT_BASENAMES
 from tools.benchmark_comparison.report_cli import main
 from tools.benchmark_comparison.validate import attempt_identity
 
 _FIXTURES = Path(__file__).parent / "fixtures"
-_PLOT_CATEGORIES = ("classic", "locomotion_flat", "locomotion_rough", "manipulation")
-_PLOT_METRICS = (
-    "collection_fps",
-    "gpu_memory_mean_mib",
-    "gpu_memory_peak_mib",
-    "gpu_utilization_mean_pct",
-    "startup_total_s",
-    "startup_phase_breakdown",
-)
 
 
 def test_report_only_cli_normalizes_a_synthetic_raw_success(tmp_path: Path) -> None:
@@ -143,25 +135,21 @@ def test_report_only_cli_normalizes_a_synthetic_raw_success(tmp_path: Path) -> N
         "report.md",
         "report.pdf",
     }
-    expected_generated.update(
-        f"{category}_{metric}.{suffix}"
-        for category in _PLOT_CATEGORIES
-        for metric in _PLOT_METRICS
-        for suffix in ("png", "svg")
-    )
-    assert len(expected_generated) == 53
+    expected_generated.update(f"{basename}.{suffix}" for basename in PLOT_BASENAMES for suffix in ("png", "svg"))
+    assert len(PLOT_BASENAMES) == 26
+    assert len(expected_generated) == 57
     metadata_files = {"audit_summary.json", "raw_artifact_hashes.sha256", "generated_hashes.sha256"}
     assert {path.name for path in output.iterdir()} == expected_generated | metadata_files
 
     generated_manifest = (output / "generated_hashes.sha256").read_bytes()
     manifest_lines = generated_manifest.decode().splitlines()
     generated_entries = tuple(line.split("  ", maxsplit=1)[1] for line in manifest_lines)
-    assert len(generated_entries) == len(set(generated_entries)) == 53
+    assert len(generated_entries) == len(set(generated_entries)) == 57
     assert set(generated_entries) == expected_generated
     generated_before = {relative_path: (output / relative_path).read_bytes() for relative_path in generated_entries}
 
     audit = json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))
-    assert audit["generated_file_count"] == 53
+    assert audit["generated_file_count"] == 57
     assert audit["generated_hash_manifest_sha256"] == hashlib.sha256(generated_manifest).hexdigest()
     validate_pdf(output / "report.pdf", ("canary", "a" * 40, "b" * 40, "Startup"))
 

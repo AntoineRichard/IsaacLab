@@ -82,6 +82,7 @@ def test_report_only_cli_is_deterministic_self_contained_and_simulator_free(tmp_
     second = _snapshot(output)
 
     assert first == second
+    assert len(PLOT_BASENAMES) == 26
     assert {
         "raw_runs.csv",
         "paired_summary.csv",

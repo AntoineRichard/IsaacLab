@@ -29,7 +29,7 @@ from .normalize import (
     expansion_orders,
     read_raw_runs_csv,
 )
-from .plot import PLOT_BASENAMES
+from .plot import DETAIL_PLOT_BASENAMES
 from .report import ReportAudit
 
 _REPORT_TITLE = "Isaac Lab Startup and Runtime Benchmark Report"
@@ -227,7 +227,7 @@ def write_pdf_report(
                     f"Raw hash manifest SHA-256: {audit.raw_hash_manifest_sha256}",
                 ),
             )
-            for basename, path in zip(PLOT_BASENAMES, ordered_plots, strict=True):
+            for basename, path in zip(DETAIL_PLOT_BASENAMES, ordered_plots, strict=True):
                 _plot_page(pdf, _plot_title(basename), path)
 
         validate_pdf(
@@ -390,13 +390,13 @@ def _read_csv(path: Path, expected_fields: tuple[str, ...]) -> tuple[dict[str, s
 def _ordered_plot_paths(plot_paths: Sequence[Path]) -> tuple[Path, ...]:
     paths_by_basename: dict[str, Path] = {}
     for path in plot_paths:
-        if path.suffix.lower() != ".png" or path.stem not in PLOT_BASENAMES or path.stem in paths_by_basename:
+        if path.suffix.lower() != ".png" or path.stem not in DETAIL_PLOT_BASENAMES or path.stem in paths_by_basename:
             raise ValueError(f"unexpected benchmark plot path: {path}")
         paths_by_basename[path.stem] = path
-    if set(paths_by_basename) != set(PLOT_BASENAMES):
-        missing = [basename for basename in PLOT_BASENAMES if basename not in paths_by_basename]
+    if set(paths_by_basename) != set(DETAIL_PLOT_BASENAMES):
+        missing = [basename for basename in DETAIL_PLOT_BASENAMES if basename not in paths_by_basename]
         raise ValueError(f"benchmark PDF requires exactly the 24 PNG plots; missing: {missing}")
-    return tuple(paths_by_basename[basename] for basename in PLOT_BASENAMES)
+    return tuple(paths_by_basename[basename] for basename in DETAIL_PLOT_BASENAMES)
 
 
 def _plot_title(basename: str) -> str:

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Generate deterministic comparison plots from ``raw_runs.csv`` alone."""
+"""Generate deterministic comparison plots from normalized inputs."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import statistics
 from collections.abc import Sequence
 from pathlib import Path
 
+from .aggregate import AGGREGATE_METRICS, AGGREGATE_STATISTICS, AggregateDelta, AggregateStatistic
 from .matrix import expand_legacy_schema_1_matrix, task_aliases_by_category
 from .models import MatrixExpansion, RunSet, TaskCategory
 from .normalize import (
@@ -50,15 +51,42 @@ _PHASE_LABELS = {
     "startup_env_creation_s": "Environment creation",
     "startup_first_step_s": "First step",
 }
-PLOT_BASENAMES = tuple(
+CATEGORY_LABELS = {
+    TaskCategory.CLASSIC: "Classic",
+    TaskCategory.LOCOMOTION_FLAT: "Locomotion Flat",
+    TaskCategory.LOCOMOTION_ROUGH: "Locomotion Rough",
+    TaskCategory.MANIPULATION: "Manipulation",
+}
+_AGGREGATE_METRIC_LABELS = {
+    "collection_fps": "Collection FPS",
+    "startup_total_s": "Total startup time [s]",
+    "gpu_memory_mean_mib": "Mean GPU memory [MiB]",
+    "gpu_memory_peak_mib": "Peak GPU memory [MiB]",
+    "gpu_utilization_mean_pct": "Mean GPU utilization [%]",
+}
+_AGGREGATE_TITLES = {
+    AggregateStatistic.MEDIAN: "Median Task-Level Percentage Delta",
+    AggregateStatistic.MEAN: "Mean Task-Level Percentage Delta",
+}
+_AGGREGATE_BASENAMES = {
+    AggregateStatistic.MEDIAN: "aggregate_delta_median_pct",
+    AggregateStatistic.MEAN: "aggregate_delta_mean_pct",
+}
+AGGREGATE_PLOT_BASENAMES = tuple(_AGGREGATE_BASENAMES.values())
+DETAIL_PLOT_BASENAMES = tuple(
     f"{category.value}_{metric}" for category in TaskCategory for metric in (*PLOT_METRICS, "startup_phase_breakdown")
 )
+PLOT_BASENAMES = AGGREGATE_PLOT_BASENAMES + DETAIL_PLOT_BASENAMES
 
 
 def generate_plots(
-    raw_runs_path: Path, output_directory: Path, *, expansion: MatrixExpansion | None = None
+    raw_runs_path: Path,
+    aggregate_deltas: Sequence[AggregateDelta],
+    output_directory: Path,
+    *,
+    expansion: MatrixExpansion | None = None,
 ) -> tuple[Path, ...]:
-    """Generate 18 fixed PNG/SVG figures using normalized successful runs.
+    """Generate 26 fixed PNG/SVG figures from normalized CSV inputs.
 
     Matplotlib is imported only when plotting is requested. This keeps the
     comparison controller's non-plotting commands dependency-free.
@@ -68,6 +96,8 @@ def generate_plots(
     plot_expansion = expansion if expansion is not None else expand_legacy_schema_1_matrix(RunSet.FINAL)
     _task_order, mode_order, _task_modes = expansion_orders(plot_expansion)
     category_aliases = task_aliases_by_category(plot_expansion)
+    cells = tuple(aggregate_deltas)
+    _validate_aggregate_deltas(cells, mode_order)
     output_directory.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     with matplotlib.rc_context(
@@ -81,6 +111,7 @@ def generate_plots(
             "svg.hashsalt": "isaaclab-benchmark-comparison",
         }
     ):
+        generated.extend(_generate_aggregate_heatmaps(plt, matplotlib, cells, output_directory, mode_order))
         for category, category_tasks in category_aliases.items():
             for metric, (attribute, title, y_label) in PLOT_METRICS.items():
                 generated.extend(
@@ -111,6 +142,82 @@ def generate_plots(
                     plot_expansion,
                 )
             )
+    return tuple(generated)
+
+
+def _validate_aggregate_deltas(cells: tuple[AggregateDelta, ...], mode_order: tuple[str, ...]) -> None:
+    """Validate exact aggregate-cell uniqueness and rendering order."""
+    expected = tuple(
+        (statistic, category, mode, metric)
+        for statistic in AGGREGATE_STATISTICS
+        for category in TaskCategory
+        for mode in mode_order
+        for metric in AGGREGATE_METRICS
+    )
+    actual = tuple((cell.statistic, cell.category, cell.mode, cell.metric) for cell in cells)
+    if actual != expected:
+        raise ValueError(
+            f"aggregate deltas must contain exactly {len(expected)} unique cells in statistic, category, mode, "
+            "and metric order"
+        )
+
+
+def _aggregate_color_norm(cells: Sequence[AggregateDelta]):
+    """Return a shared symmetric color normalization for aggregate cells."""
+    _plt, matplotlib = _matplotlib()
+    available = [abs(cell.value) for cell in cells if cell.value is not None]
+    color_limit = max(available, default=1.0)
+    if color_limit == 0.0:
+        color_limit = 1.0
+    return matplotlib.colors.TwoSlopeNorm(vmin=-color_limit, vcenter=0.0, vmax=color_limit)
+
+
+def _generate_aggregate_heatmaps(
+    plt,
+    matplotlib,
+    cells: tuple[AggregateDelta, ...],
+    output_directory: Path,
+    mode_order: tuple[str, ...],
+) -> tuple[Path, ...]:
+    """Generate median and mean aggregate percentage-delta heatmaps."""
+    import numpy as np
+
+    norm = _aggregate_color_norm(cells)
+    colormap = matplotlib.colormaps["RdBu_r"].copy()
+    colormap.set_bad("#F2F2F2")
+    generated: list[Path] = []
+    row_labels = tuple(f"{CATEGORY_LABELS[category]} — {mode}" for category in TaskCategory for mode in mode_order)
+    metric_labels = tuple(_AGGREGATE_METRIC_LABELS[metric] for metric in AGGREGATE_METRICS)
+    cells_per_statistic = len(row_labels) * len(AGGREGATE_METRICS)
+    for statistic_index, statistic in enumerate(AGGREGATE_STATISTICS):
+        statistic_cells = cells[statistic_index * cells_per_statistic : (statistic_index + 1) * cells_per_statistic]
+        values = np.ma.masked_all((len(row_labels), len(AGGREGATE_METRICS)), dtype=float)
+        for cell_index, cell in enumerate(statistic_cells):
+            if cell.value is not None:
+                values[cell_index // len(AGGREGATE_METRICS), cell_index % len(AGGREGATE_METRICS)] = cell.value
+
+        figure, axis = plt.subplots(figsize=(12, 8), dpi=150)
+        image = axis.imshow(values, cmap=colormap, norm=norm, aspect="auto")
+        axis.grid(False)
+        axis.set_title(_AGGREGATE_TITLES[statistic], fontsize=14, pad=16)
+        axis.set_xticks(
+            range(len(metric_labels)),
+            metric_labels,
+            rotation=20,
+            ha="right",
+            rotation_mode="anchor",
+        )
+        axis.set_yticks(range(len(row_labels)), row_labels)
+        for cell_index, cell in enumerate(statistic_cells):
+            row_index, column_index = divmod(cell_index, len(AGGREGATE_METRICS))
+            annotation = "N/A" if cell.value is None else f"{cell.value:+.1f}%\n(n={cell.task_count})"
+            color = "white" if cell.value is not None and abs(cell.value) > norm.vmax * 0.55 else "black"
+            axis.text(column_index, row_index, annotation, ha="center", va="center", fontsize=8, color=color)
+        colorbar = figure.colorbar(image, ax=axis, orientation="horizontal", pad=0.14, fraction=0.06)
+        colorbar.set_label("Isaac Lab 3 - Isaac Lab 2 [%]")
+        figure.subplots_adjust(left=0.24, right=0.98, bottom=0.2, top=0.91)
+        generated.extend(_save_figure(figure, output_directory, _AGGREGATE_BASENAMES[statistic]))
+        plt.close(figure)
     return tuple(generated)
 
 

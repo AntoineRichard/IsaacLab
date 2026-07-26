@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import csv
 import statistics
 import struct
 from dataclasses import replace
@@ -14,10 +15,18 @@ from pathlib import Path
 
 import pytest
 from matplotlib import image as matplotlib_image
+from matplotlib.axes import Axes
 
+import tools.benchmark_comparison.plot as plot_module
+from tools.benchmark_comparison.aggregate import AggregateDelta, aggregate_paired_summary
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix, task_aliases_by_category
-from tools.benchmark_comparison.models import TaskCategory
-from tools.benchmark_comparison.normalize import STARTUP_PHASES, NormalizedRun, write_raw_runs_csv
+from tools.benchmark_comparison.models import MatrixExpansion, TaskCategory
+from tools.benchmark_comparison.normalize import (
+    PAIRED_SUMMARY_FIELDS,
+    STARTUP_PHASES,
+    NormalizedRun,
+    write_raw_runs_csv,
+)
 from tools.benchmark_comparison.plot import PLOT_BASENAMES, _startup_phase_means, generate_plots
 
 
@@ -64,6 +73,42 @@ def _png_dimensions(path: Path) -> tuple[int, int]:
     return struct.unpack(">II", data[16:24])
 
 
+def _paired_summary_row(task: str, metric: str, percent_delta: float) -> dict[str, str]:
+    lab2_mean = 100.0
+    lab3_mean = lab2_mean + percent_delta
+    return {
+        "logical_task": task,
+        "mode": "runtime-100",
+        "metric": metric,
+        "paired_seed_count": "3",
+        "lab2_mean": str(lab2_mean),
+        "lab2_std": "1.0",
+        "lab3_mean": str(lab3_mean),
+        "lab3_std": "2.0",
+        "absolute_delta": str(percent_delta),
+        "percent_delta": str(percent_delta),
+        "percent_delta_status": "available",
+    }
+
+
+def _aggregate_deltas(path: Path, expansion: MatrixExpansion) -> tuple[AggregateDelta, ...]:
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=PAIRED_SUMMARY_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(
+            (
+                _paired_summary_row("cartpole", "collection_fps", 10.0),
+                _paired_summary_row("cartpole_direct", "collection_fps", 10.0),
+                _paired_summary_row("ant", "collection_fps", 10.0),
+                _paired_summary_row("cartpole", "startup_total_s", -20.0),
+                _paired_summary_row("cartpole", "gpu_memory_mean_mib", 10.0),
+                _paired_summary_row("cartpole_direct", "gpu_memory_mean_mib", 10.0),
+                _paired_summary_row("ant", "gpu_memory_mean_mib", 70.0),
+            )
+        )
+    return aggregate_paired_summary(path, expansion)
+
+
 def _category_from_plot_basename(basename: str) -> TaskCategory:
     """Return the longest matching report category prefix from a plot basename."""
     for category in sorted(TaskCategory, key=lambda category: len(category.value), reverse=True):
@@ -72,7 +117,9 @@ def _category_from_plot_basename(basename: str) -> TaskCategory:
     raise ValueError(f"plot basename has no category prefix: {basename}")
 
 
-def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_path: Path) -> None:
+def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     expansion = expand_final_matrix(load_matrix())
     category_aliases = task_aliases_by_category(expansion)
     rows = tuple(
@@ -91,21 +138,68 @@ def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_p
         )
     )
     csv_path = write_raw_runs_csv(tmp_path / "raw_runs.csv", rows)
+    aggregate_deltas = _aggregate_deltas(tmp_path / "paired_summary.csv", expansion)
+    color_norms: list[tuple[float, float, float]] = []
+    original_imshow = Axes.imshow
 
-    first = generate_plots(csv_path, tmp_path / "first", expansion=expansion)
-    second = generate_plots(csv_path, tmp_path / "second", expansion=expansion)
+    def record_color_norm(axis, *args, **kwargs):
+        norm = kwargs["norm"]
+        color_norms.append((norm.vmin, norm.vcenter, norm.vmax))
+        return original_imshow(axis, *args, **kwargs)
 
-    expected_names = {f"{basename}.{extension}" for basename in PLOT_BASENAMES for extension in ("png", "svg")}
-    assert {path.name for path in first} == expected_names
-    assert len(PLOT_BASENAMES) == 24
-    assert len(first) == 48
+    monkeypatch.setattr(Axes, "imshow", record_color_norm)
+
+    first = generate_plots(csv_path, aggregate_deltas, tmp_path / "first", expansion=expansion)
+    second = generate_plots(csv_path, aggregate_deltas, tmp_path / "second", expansion=expansion)
+
+    expected_names = tuple(f"{basename}.{extension}" for basename in PLOT_BASENAMES for extension in ("png", "svg"))
+    assert tuple(path.name for path in first) == expected_names
+    assert {path.name for path in first} == set(expected_names)
+    assert len(PLOT_BASENAMES) == 26
+    assert len(first) == 52
     assert all(path.stat().st_size > 1000 for path in first)
-    assert {_png_dimensions(path) for path in first if path.suffix == ".png"} == {(1800, 1000)}
-    assert all(b"Missing" in path.read_bytes() for path in first if path.suffix == ".svg")
-    assert all(b"rotate(-45)" in path.read_bytes() for path in first if path.suffix == ".svg")
+    aggregate_names = {
+        f"{basename}.{extension}"
+        for basename in ("aggregate_delta_median_pct", "aggregate_delta_mean_pct")
+        for extension in ("png", "svg")
+    }
+    assert {path.name for path in first if path.stem.startswith("aggregate_")} == aggregate_names
+    assert {_png_dimensions(path) for path in first if path.suffix == ".png" and path.name in aggregate_names} == {
+        (1800, 1200)
+    }
+    assert {_png_dimensions(path) for path in first if path.suffix == ".png" and path.name not in aggregate_names} == {
+        (1800, 1000)
+    }
+    detail_svgs = tuple(path for path in first if path.suffix == ".svg" and path.name not in aggregate_names)
+    assert all(b"Missing" in path.read_bytes() for path in detail_svgs)
+    assert all(b"rotate(-45)" in path.read_bytes() for path in detail_svgs)
     assert {path.name: path.read_bytes() for path in first} == {path.name: path.read_bytes() for path in second}
+    assert color_norms == [(-30.0, 0.0, 30.0)] * 4
+
+    row_labels = tuple(
+        f"{category} — {mode}"
+        for category in ("Classic", "Locomotion Flat", "Locomotion Rough", "Manipulation")
+        for mode in ("runtime-100", "runtime-1000", "training-100")
+    )
+    metric_labels = (
+        "Collection FPS",
+        "Total startup time [s]",
+        "Mean GPU memory [MiB]",
+        "Peak GPU memory [MiB]",
+        "Mean GPU utilization [%]",
+    )
+    for basename in ("aggregate_delta_median_pct", "aggregate_delta_mean_pct"):
+        svg = (tmp_path / "first" / f"{basename}.svg").read_text(encoding="utf-8")
+        label_positions = tuple(svg.index(f"<!-- {label} -->") for label in row_labels)
+        assert label_positions == tuple(sorted(label_positions))
+        assert all(f"<!-- {label} -->" in svg for label in metric_labels)
+        assert all(annotation in svg for annotation in ("+10.0%", "-20.0%", "(n=3)", "N/A"))
+        image = matplotlib_image.imread(tmp_path / "first" / f"{basename}.png")
+        assert bool((image[[0, -1], :, :3] == 1.0).all())
+        assert bool((image[:, [0, -1], :3] == 1.0).all())
+
     assert b"Total startup time [s]" in (tmp_path / "first" / "classic_startup_total_s.svg").read_bytes()
-    for basename in PLOT_BASENAMES:
+    for basename in plot_module.DETAIL_PLOT_BASENAMES:
         category = _category_from_plot_basename(basename)
         svg = (tmp_path / "first" / f"{basename}.svg").read_bytes()
         aliases = category_aliases[category]
@@ -133,6 +227,28 @@ def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_p
     )
     assert b"Isaac Lab 2" in breakdown
     assert b"Isaac Lab 3" in breakdown
+
+
+def test_aggregate_color_norm_is_symmetric_and_zero_centered(tmp_path: Path) -> None:
+    expansion = expand_final_matrix(load_matrix())
+    cells = _aggregate_deltas(tmp_path / "paired_summary.csv", expansion)
+
+    norm = plot_module._aggregate_color_norm(cells)
+
+    assert norm.vcenter == 0.0
+    assert norm.vmin == -norm.vmax == -30.0
+
+
+def test_plots_reject_aggregate_cells_out_of_order(tmp_path: Path) -> None:
+    expansion = expand_final_matrix(load_matrix())
+    cells = _aggregate_deltas(tmp_path / "paired_summary.csv", expansion)
+    reordered = (cells[1], cells[0], *cells[2:])
+    raw_runs_path = write_raw_runs_csv(tmp_path / "raw_runs.csv", ())
+
+    with pytest.raises(ValueError, match="exactly 120 unique cells.*order"):
+        generate_plots(raw_runs_path, reordered, tmp_path / "plots", expansion=expansion)
+
+    assert not (tmp_path / "plots").exists()
 
 
 def test_startup_phase_means_sum_to_total_bar_height() -> None:
@@ -179,8 +295,9 @@ def test_collection_fps_y_axis_label_does_not_touch_left_png_boundary(
         tmp_path / "raw_runs.csv",
         tuple(_run(task, "runtime-100", 42, version, collection_fps) for version in ("lab2", "lab3")),
     )
+    aggregate_deltas = _aggregate_deltas(tmp_path / "paired_summary.csv", expansion)
 
-    generate_plots(csv_path, tmp_path / "plots", expansion=expansion)
+    generate_plots(csv_path, aggregate_deltas, tmp_path / "plots", expansion=expansion)
 
     image = matplotlib_image.imread(tmp_path / "plots" / f"{category.value}_collection_fps.png")
     assert bool((image[:, 0, :3] == 1.0).all())
@@ -195,7 +312,10 @@ def test_plot_basenames_include_startup_figures() -> None:
         "startup_total_s",
         "startup_phase_breakdown",
     )
-    assert (
-        tuple(f"{category.value}_{metric}" for category in TaskCategory for metric in metric_basenames)
-        == PLOT_BASENAMES
+    detail_basenames = tuple(f"{category.value}_{metric}" for category in TaskCategory for metric in metric_basenames)
+    assert plot_module.AGGREGATE_PLOT_BASENAMES == (
+        "aggregate_delta_median_pct",
+        "aggregate_delta_mean_pct",
     )
+    assert detail_basenames == plot_module.DETAIL_PLOT_BASENAMES
+    assert plot_module.AGGREGATE_PLOT_BASENAMES + detail_basenames == PLOT_BASENAMES

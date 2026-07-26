@@ -16,11 +16,12 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from .aggregate import aggregate_paired_summary
 from .manifest import manifest_path, read_manifest, resolve_manifest_expansion
 from .models import RunSet
 from .normalize import normalize_run_set, write_normalized_outputs
 from .pdf_report import write_pdf_report
-from .plot import generate_plots
+from .plot import DETAIL_PLOT_BASENAMES, generate_plots
 from .report import ReportAudit, write_markdown_report
 
 _NORMALIZED_FILES = ("raw_runs.csv", "paired_summary.csv", "failures.csv")
@@ -57,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     staging = Path(tempfile.mkdtemp(prefix=f".{output_directory.name}.", dir=output_directory.parent))
     try:
         normalized = write_normalized_outputs(staging, runs, failures, expansion=expansion)
-        plots = generate_plots(normalized["raw_runs"], staging, expansion=expansion)
+        aggregate_deltas = aggregate_paired_summary(normalized["paired_summary"], expansion)
+        plots = generate_plots(normalized["raw_runs"], aggregate_deltas, staging, expansion=expansion)
         generated = tuple(
             sorted(
                 (
@@ -89,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             normalized["raw_runs"],
             normalized["paired_summary"],
             normalized["failures"],
-            tuple(path for path in plots if path.suffix == ".png"),
+            tuple(path for path in plots if path.suffix == ".png" and path.stem in DETAIL_PLOT_BASENAMES),
             staging / "report.pdf",
             manifest=manifest,
             audit=report_audit,
