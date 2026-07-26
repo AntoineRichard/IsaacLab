@@ -29,7 +29,7 @@ from .normalize import (
     expansion_orders,
     read_raw_runs_csv,
 )
-from .plot import DETAIL_PLOT_BASENAMES
+from .plot import CATEGORY_LABELS, DETAIL_PLOT_BASENAMES, PLOT_BASENAMES
 from .report import ReportAudit
 
 _REPORT_TITLE = "Isaac Lab Startup and Runtime Benchmark Report"
@@ -69,6 +69,11 @@ _METRIC_TITLES = {
     "startup_total_s": "Total Startup Time",
     "startup_phase_breakdown": "Startup Phase Breakdown",
 }
+_AGGREGATE_TITLES = {
+    "aggregate_delta_median_pct": "Median Task-Level Percentage Delta",
+    "aggregate_delta_mean_pct": "Mean Task-Level Percentage Delta",
+}
+_PLOT_INPUT_REQUIREMENT = "benchmark PDF needs exactly 26 PNG plots"
 
 
 def write_pdf_report(
@@ -87,7 +92,7 @@ def write_pdf_report(
         raw_runs_path: Normalized successful-run CSV path.
         paired_summary_path: Normalized paired-summary CSV path.
         failures_path: Normalized failed-or-missing-attempt CSV path.
-        plot_paths: Paths to the 24 required category benchmark PNG figures.
+        plot_paths: Paths to all 26 required benchmark PNG figures.
         output_path: Destination PDF path.
         manifest: Run-set identity, inventory, and matrix expansion.
         audit: Artifact counts and raw-hash integrity values.
@@ -120,12 +125,18 @@ def write_pdf_report(
                     f"Run set: {expected_manifest.run_set.value}",
                     f"Phase: {expected_manifest.phase}",
                     "Startup and runtime/resource measurements are reported separately.",
+                    *_methodology_lines(expected_manifest),
                 ),
             )
-            _text_page(pdf, "Methodology", _methodology_lines(expected_manifest))
+            plot_paths_by_basename = dict(zip(PLOT_BASENAMES, ordered_plots, strict=True))
+            for basename in _AGGREGATE_TITLES:
+                _plot_page(pdf, _plot_title(basename), plot_paths_by_basename[basename])
+            for basename in DETAIL_PLOT_BASENAMES:
+                _plot_page(pdf, _plot_title(basename), plot_paths_by_basename[basename])
+
             _table_pages(
                 pdf,
-                "Pinned revisions and execution identities",
+                "Appendix: Pinned revisions and execution identities",
                 ("Version", "Exact Git SHA", "Environment identity"),
                 (
                     (
@@ -143,14 +154,14 @@ def write_pdf_report(
             )
             _table_pages(
                 pdf,
-                "Hardware and software inventory",
+                "Appendix: Hardware and software inventory",
                 ("Item", "Isaac Lab 2 / host", "Isaac Lab 3"),
                 _inventory_rows(expected_manifest),
                 rows_per_page=24,
             )
             _table_pages(
                 pdf,
-                "Task mapping",
+                "Appendix: Task mapping",
                 ("Logical task", "Isaac Lab 2 task", "Isaac Lab 3 task"),
                 _task_mapping_rows(runs, failures, task_order),
                 rows_per_page=24,
@@ -159,7 +170,7 @@ def write_pdf_report(
             for mode in mode_order:
                 _table_pages(
                     pdf,
-                    f"{mode}: Startup comparison",
+                    f"Appendix: {mode}: Startup comparison",
                     _summary_headers(),
                     _summary_rows(summaries, mode, startup=True),
                     rows_per_page=22,
@@ -167,7 +178,7 @@ def write_pdf_report(
             for mode in mode_order:
                 _table_pages(
                     pdf,
-                    f"{mode}: Runtime and resource comparison",
+                    f"Appendix: {mode}: Runtime and resource comparison",
                     _summary_headers(),
                     _summary_rows(summaries, mode, startup=False),
                     rows_per_page=22,
@@ -175,7 +186,7 @@ def write_pdf_report(
 
             _table_pages(
                 pdf,
-                "Successful individual-run appendix",
+                "Appendix: Successful individual-run appendix",
                 (
                     "Mode",
                     "Task",
@@ -211,14 +222,14 @@ def write_pdf_report(
             )
             _table_pages(
                 pdf,
-                "Failures and missing attempts",
+                "Appendix: Failures and missing attempts",
                 ("Mode", "Task", "Ver", "Seed", "Classification", "Reason", "Attempt identity"),
                 _failure_rows(failures),
                 rows_per_page=20,
             )
             _text_page(
                 pdf,
-                "Artifact integrity audit",
+                "Appendix: Artifact integrity audit",
                 (
                     f"Successful attempts: {audit.successful_attempts}",
                     f"Failed or missing attempts: {audit.failed_or_missing_attempts}",
@@ -227,9 +238,6 @@ def write_pdf_report(
                     f"Raw hash manifest SHA-256: {audit.raw_hash_manifest_sha256}",
                 ),
             )
-            for basename, path in zip(DETAIL_PLOT_BASENAMES, ordered_plots, strict=True):
-                _plot_page(pdf, _plot_title(basename), path)
-
         validate_pdf(
             temporary,
             (
@@ -358,7 +366,7 @@ def _plot_page(pdf: PdfPages, title: str, path: Path) -> None:
     try:
         image = mpimg.imread(path)
     except (OSError, SyntaxError, ValueError) as error:
-        raise ValueError(f"invalid benchmark PNG: {path}") from error
+        raise ValueError(f"{_PLOT_INPUT_REQUIREMENT}; invalid image: {path}") from error
     figure, axis = plt.subplots(figsize=_LANDSCAPE_SIZE, dpi=100)
     try:
         figure.patch.set_facecolor("white")
@@ -389,24 +397,27 @@ def _read_csv(path: Path, expected_fields: tuple[str, ...]) -> tuple[dict[str, s
 
 def _ordered_plot_paths(plot_paths: Sequence[Path]) -> tuple[Path, ...]:
     paths_by_basename: dict[str, Path] = {}
+    if len(plot_paths) != len(PLOT_BASENAMES):
+        raise ValueError(f"{_PLOT_INPUT_REQUIREMENT}; received {len(plot_paths)}")
     for path in plot_paths:
-        if path.suffix.lower() != ".png" or path.stem not in DETAIL_PLOT_BASENAMES or path.stem in paths_by_basename:
-            raise ValueError(f"unexpected benchmark plot path: {path}")
+        if path.suffix.lower() != ".png" or path.stem not in PLOT_BASENAMES or path.stem in paths_by_basename:
+            raise ValueError(f"{_PLOT_INPUT_REQUIREMENT}; unexpected path: {path}")
         paths_by_basename[path.stem] = path
-    if set(paths_by_basename) != set(DETAIL_PLOT_BASENAMES):
-        missing = [basename for basename in DETAIL_PLOT_BASENAMES if basename not in paths_by_basename]
-        raise ValueError(f"benchmark PDF requires exactly the 24 PNG plots; missing: {missing}")
-    return tuple(paths_by_basename[basename] for basename in DETAIL_PLOT_BASENAMES)
+    if set(paths_by_basename) != set(PLOT_BASENAMES):
+        missing = [basename for basename in PLOT_BASENAMES if basename not in paths_by_basename]
+        raise ValueError(f"{_PLOT_INPUT_REQUIREMENT}; missing: {missing}")
+    return tuple(paths_by_basename[basename] for basename in PLOT_BASENAMES)
 
 
 def _plot_title(basename: str) -> str:
     """Return the category and metric display title for an allowed plot basename."""
-    for category in sorted(TaskCategory, key=lambda category: len(category.value), reverse=True):
+    if basename in _AGGREGATE_TITLES:
+        return _AGGREGATE_TITLES[basename]
+    for category in TaskCategory:
         prefix = f"{category.value}_"
         if basename.startswith(prefix):
-            metric = basename.removeprefix(prefix)
-            return f"{category.value.replace('_', ' ').title()}: {_METRIC_TITLES[metric]}"
-    raise ValueError(f"plot basename has no category prefix: {basename}")
+            return f"{CATEGORY_LABELS[category]}: {_METRIC_TITLES[basename.removeprefix(prefix)]}"
+    raise ValueError(f"unknown benchmark plot basename: {basename}")
 
 
 def _methodology_lines(manifest: RunSetManifest) -> tuple[str, ...]:
@@ -425,7 +436,9 @@ def _methodology_lines(manifest: RunSetManifest) -> tuple[str, ...]:
         "Only complete Lab 2/Lab 3 seed pairs contribute to paired statistics. Failures and missing attempts "
         "are not imputed. Sample standard deviations describe repeat variability.",
         "The signed delta is Isaac Lab 3 - Isaac Lab 2; the percentage delta is "
-        "(Lab 3 - Lab 2) / Lab 2 x 100. A zero Lab 2 baseline is undefined.",
+        "(Lab 3 - Lab 2) / Lab 2 x 100. A task with a zero Lab 2 baseline is excluded from the percentage "
+        "aggregate.",
+        "Median and mean aggregate summaries apply equal task weighting. Each task is weighted equally.",
         "Positive collection-FPS deltas mean higher throughput; resource deltas are not labeled as inherently "
         "better or worse.",
     )

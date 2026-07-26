@@ -20,7 +20,7 @@ from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
 from tools.benchmark_comparison.pdf_report import validate_pdf, write_pdf_report
-from tools.benchmark_comparison.plot import DETAIL_PLOT_BASENAMES
+from tools.benchmark_comparison.plot import PLOT_BASENAMES
 from tools.benchmark_comparison.report import ReportAudit
 
 
@@ -90,7 +90,7 @@ def _plot_paths(directory: Path) -> tuple[Path, ...]:
 
     directory.mkdir(parents=True)
     paths: list[Path] = []
-    for index, basename in enumerate(DETAIL_PLOT_BASENAMES):
+    for index, basename in enumerate(PLOT_BASENAMES):
         figure, axis = plt.subplots(figsize=(2, 1), dpi=80)
         axis.plot((0, 1), (index, index + 1))
         axis.set_title(basename)
@@ -110,7 +110,7 @@ def _inputs(
         successful_attempts=len(selected_runs),
         failed_or_missing_attempts=0,
         raw_file_count=25,
-        generated_file_count=53,
+        generated_file_count=57,
         raw_hash_manifest_sha256="e" * 64,
     )
     return normalized, _manifest(), audit, _plot_paths(tmp_path / "plots")
@@ -202,7 +202,7 @@ def test_pdf_paginates_large_run_table_and_uses_fixed_page_order(tmp_path: Path)
     )
     normalized, manifest, audit, plots = _inputs(tmp_path, runs)
     shuffled_plots = tuple(reversed(plots))
-    assert tuple(path.stem for path in shuffled_plots) != DETAIL_PLOT_BASENAMES
+    assert tuple(path.stem for path in shuffled_plots) != PLOT_BASENAMES
     report = write_pdf_report(
         normalized["raw_runs"],
         normalized["paired_summary"],
@@ -217,21 +217,8 @@ def test_pdf_paginates_large_run_table_and_uses_fixed_page_order(tmp_path: Path)
     page_titles = tuple(_page_title(page) for page in pages)
     expected_titles = (
         "Isaac Lab Startup and Runtime Benchmark Report",
-        "Methodology",
-        "Pinned revisions and execution identities",
-        "Hardware and software inventory",
-        "Task mapping",
-        "runtime-100: Startup comparison",
-        "runtime-1000: Startup comparison",
-        "training-100: Startup comparison",
-        "runtime-100: Runtime and resource comparison",
-        "runtime-1000: Runtime and resource comparison",
-        "training-100: Runtime and resource comparison",
-        "Successful individual-run appendix (1/3)",
-        "Successful individual-run appendix (2/3)",
-        "Successful individual-run appendix (3/3)",
-        "Failures and missing attempts",
-        "Artifact integrity audit",
+        "Median Task-Level Percentage Delta",
+        "Mean Task-Level Percentage Delta",
         "Classic: Collection FPS",
         "Classic: Mean GPU Memory",
         "Classic: Peak GPU Memory",
@@ -256,15 +243,48 @@ def test_pdf_paginates_large_run_table_and_uses_fixed_page_order(tmp_path: Path)
         "Manipulation: Mean GPU Utilization",
         "Manipulation: Total Startup Time",
         "Manipulation: Startup Phase Breakdown",
+        "Appendix: Pinned revisions and execution identities",
+        "Appendix: Hardware and software inventory",
+        "Appendix: Task mapping",
+        "Appendix: runtime-100: Startup comparison",
+        "Appendix: runtime-1000: Startup comparison",
+        "Appendix: training-100: Startup comparison",
+        "Appendix: runtime-100: Runtime and resource comparison",
+        "Appendix: runtime-1000: Runtime and resource comparison",
+        "Appendix: training-100: Runtime and resource comparison",
+        "Appendix: Successful individual-run appendix (1/3)",
+        "Appendix: Successful individual-run appendix (2/3)",
+        "Appendix: Successful individual-run appendix (3/3)",
+        "Appendix: Failures and missing attempts",
+        "Appendix: Artifact integrity audit",
     )
     assert page_titles == expected_titles
+    cover_page = pages[0]
+    assert all(
+        token in cover_page
+        for token in (
+            "Informational paired benchmark report",
+            "Only complete Lab 2/Lab 3 seed pairs contribute",
+            "equal task weighting",
+            "Median and mean",
+            "zero Lab 2 baseline",
+            "not imputed",
+        )
+    )
+
+    last_detail_page = page_titles.index("Manipulation: Startup Phase Breakdown")
+    appendix_page_indices = tuple(index for index, title in enumerate(page_titles) if title.startswith("Appendix: "))
+    assert appendix_page_indices
+    assert min(appendix_page_indices) > last_detail_page
 
     info = subprocess.run(["pdfinfo", str(report)], check=True, text=True, capture_output=True).stdout
     page_match = re.search(r"^Pages:\s+([1-9][0-9]*)$", info, re.MULTILINE)
     assert page_match is not None
     assert int(page_match.group(1)) == len(expected_titles)
 
-    appendix_pages = tuple(page for page in pages if _page_title(page).startswith("Successful individual-run"))
+    appendix_pages = tuple(
+        page for page in pages if _page_title(page).startswith("Appendix: Successful individual-run")
+    )
     expected_appendix_page_count = (len(runs) + 18 - 1) // 18
     assert expected_appendix_page_count == 3
     assert len(appendix_pages) == expected_appendix_page_count
@@ -272,11 +292,13 @@ def test_pdf_paginates_large_run_table_and_uses_fixed_page_order(tmp_path: Path)
     assert "attempt-000" in appendix_pages[0]
     assert "attempt-039" in appendix_pages[-1]
 
-    empty_summary_page = pages[6]
+    empty_summary_page = next(
+        page for page in pages if _page_title(page) == "Appendix: runtime-1000: Startup comparison"
+    )
     assert all(
         header in empty_summary_page for header in ("Task", "Metric", "Pairs", "Lab2 mean", "Lab3 mean", "Delta")
     )
-    empty_failures_page = pages[14]
+    empty_failures_page = pages[-2]
     assert all(header in empty_failures_page for header in ("Mode", "Classification", "Reason", "Attempt identity"))
 
 
@@ -301,7 +323,7 @@ def test_pdf_contains_failure_and_audit_content(tmp_path: Path) -> None:
         successful_attempts=2,
         failed_or_missing_attempts=1,
         raw_file_count=31,
-        generated_file_count=53,
+        generated_file_count=57,
         raw_hash_manifest_sha256="f" * 64,
     )
     report = write_pdf_report(
@@ -315,16 +337,16 @@ def test_pdf_contains_failure_and_audit_content(tmp_path: Path) -> None:
     )
 
     pages = _pdf_pages(report)
-    failure_page = next(page for page in pages if _page_title(page) == "Failures and missing attempts")
+    failure_page = next(page for page in pages if _page_title(page) == "Appendix: Failures and missing attempts")
     assert all(token in failure_page for token in ("timeout", "forced timeout", "failed-attempt"))
-    audit_page = next(page for page in pages if _page_title(page) == "Artifact integrity audit")
+    audit_page = next(page for page in pages if _page_title(page) == "Appendix: Artifact integrity audit")
     assert all(
         token in audit_page
         for token in (
             "Successful attempts: 2",
             "Failed or missing attempts: 1",
             "Raw files: 31",
-            "Generated files: 53",
+            "Generated files: 57",
             "f" * 64,
         )
     )
@@ -332,22 +354,22 @@ def test_pdf_contains_failure_and_audit_content(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "invalid_input",
-    ("missing_category_plot", "duplicate_basename", "ungrouped_basename", "non_png", "invalid_image_bytes"),
+    ("missing_median_heatmap", "duplicate_heatmap", "unknown_basename", "non_png", "invalid_image_bytes"),
 )
 def test_pdf_rejects_invalid_plot_inputs_atomically(tmp_path: Path, invalid_input: str) -> None:
     normalized, manifest, audit, plots = _inputs(tmp_path)
     invalid_plots = list(plots)
-    if invalid_input == "missing_category_plot":
-        invalid_plots.remove(next(path for path in invalid_plots if path.stem == "locomotion_flat_collection_fps"))
-    elif invalid_input == "duplicate_basename":
-        duplicate = tmp_path / "duplicate" / f"{plots[0].stem}.png"
+    if invalid_input == "missing_median_heatmap":
+        invalid_plots.remove(next(path for path in invalid_plots if path.stem == "aggregate_delta_median_pct"))
+    elif invalid_input == "duplicate_heatmap":
+        duplicate = tmp_path / "duplicate" / "aggregate_delta_median_pct.png"
         duplicate.parent.mkdir()
         duplicate.write_bytes(plots[0].read_bytes())
         invalid_plots.append(duplicate)
-    elif invalid_input == "ungrouped_basename":
-        ungrouped = tmp_path / "collection_fps.png"
-        ungrouped.write_bytes(plots[0].read_bytes())
-        invalid_plots[0] = ungrouped
+    elif invalid_input == "unknown_basename":
+        unknown = tmp_path / "unknown_benchmark_plot.png"
+        unknown.write_bytes(plots[0].read_bytes())
+        invalid_plots[0] = unknown
     elif invalid_input == "non_png":
         non_png = tmp_path / f"{plots[0].stem}.jpg"
         non_png.write_bytes(plots[0].read_bytes())
@@ -358,7 +380,7 @@ def test_pdf_rejects_invalid_plot_inputs_atomically(tmp_path: Path, invalid_inpu
     destination = tmp_path / "report.pdf"
     destination.write_bytes(b"preserved report")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="PDF needs exactly 26 PNG plots"):
         write_pdf_report(
             normalized["raw_runs"],
             normalized["paired_summary"],

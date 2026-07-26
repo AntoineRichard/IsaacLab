@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.benchmark_comparison import report_cli as report_cli_module
 from tools.benchmark_comparison.manifest import (
     HostIdentity,
     RunSetManifest,
@@ -58,7 +59,9 @@ def _snapshot(directory: Path) -> dict[str, bytes]:
     }
 
 
-def test_report_only_cli_is_deterministic_self_contained_and_simulator_free(tmp_path: Path) -> None:
+def test_report_only_cli_is_deterministic_self_contained_and_simulator_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     artifact_root = tmp_path / "artifacts"
     output = artifact_root / "canary" / "report"
     write_manifest(artifact_root / "canary" / "manifest.json", _manifest())
@@ -75,6 +78,14 @@ def test_report_only_cli_is_deterministic_self_contained_and_simulator_free(tmp_
     simulator_modules_before = {
         name for name in sys.modules if name == "isaacsim" or name.startswith(("isaacsim.", "omni.", "docker"))
     }
+    plot_inputs: list[tuple[str, ...]] = []
+    original_write_pdf_report = report_cli_module.write_pdf_report
+
+    def capture_pdf_plot_inputs(*args, **kwargs):
+        plot_inputs.append(tuple(path.stem for path in args[3]))
+        return original_write_pdf_report(*args, **kwargs)
+
+    monkeypatch.setattr(report_cli_module, "write_pdf_report", capture_pdf_plot_inputs)
 
     assert main(argv) == 0
     first = _snapshot(output)
@@ -94,6 +105,7 @@ def test_report_only_cli_is_deterministic_self_contained_and_simulator_free(tmp_
     }.issubset(first)
     assert len([name for name in first if name.endswith(".png")]) == len(PLOT_BASENAMES)
     assert len([name for name in first if name.endswith(".svg")]) == len(PLOT_BASENAMES)
+    assert plot_inputs == [PLOT_BASENAMES, PLOT_BASENAMES]
     assert simulator_modules_before == {
         name for name in sys.modules if name == "isaacsim" or name.startswith(("isaacsim.", "omni.", "docker"))
     }
