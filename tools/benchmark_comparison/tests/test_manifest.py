@@ -91,15 +91,19 @@ def _fail_if_call_blocks(call) -> None:
     def deadline_expired(_signal_number, _frame) -> None:
         raise TimeoutError("special-file validation blocked")
 
-    previous_handler = signal.signal(signal.SIGALRM, deadline_expired)
-    signal.setitimer(signal.ITIMER_REAL, 0.5)
     started = time.monotonic()
+    previous_handler = signal.signal(signal.SIGALRM, deadline_expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0.5)
     try:
         with pytest.raises(ValueError, match="regular file"):
             call()
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_handler)
+        previous_delay, previous_interval = previous_timer
+        if previous_delay > 0:
+            previous_delay = max(previous_delay - (time.monotonic() - started), 1e-6)
+        signal.setitimer(signal.ITIMER_REAL, previous_delay, previous_interval)
     assert time.monotonic() - started < 0.5
 
 
@@ -140,12 +144,18 @@ def test_manifest_allows_identical_rewrite_and_rejects_conflict_atomically(tmp_p
 
 
 @pytest.mark.parametrize("leaf", ("lock", "manifest"))
-def test_manifest_publication_rejects_symlink_leaf_without_touching_source(tmp_path: Path, leaf: str) -> None:
+@pytest.mark.parametrize("target_exists", (True, False))
+def test_manifest_publication_rejects_symlink_leaf_without_touching_source(
+    tmp_path: Path,
+    leaf: str,
+    target_exists: bool,
+) -> None:
     canonical_path = write_manifest(tmp_path / "canonical" / "manifest.json", manifest())
     source_root = tmp_path / "source"
     source_root.mkdir()
     source_file = source_root / "immutable.json"
-    source_file.write_bytes(canonical_path.read_bytes())
+    if target_exists:
+        source_file.write_bytes(canonical_path.read_bytes())
     source_before = _inventory(source_root)
     destination_path = tmp_path / "destination" / "manifest.json"
     destination_path.parent.mkdir()
@@ -167,6 +177,20 @@ def test_manifest_publication_rejects_fifo_leaf_without_blocking(tmp_path: Path,
     os.mkfifo(leaf_path)
 
     _fail_if_call_blocks(lambda: write_manifest(destination_path, manifest()))
+
+
+def test_fifo_deadline_helper_restores_preexisting_alarm_timer() -> None:
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 10.0, 2.0)
+
+        _fail_if_call_blocks(lambda: (_ for _ in ()).throw(ValueError("regular file")))
+
+        delay, interval = signal.getitimer(signal.ITIMER_REAL)
+        assert 9.0 < delay <= 10.0
+        assert interval == 2.0
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 def test_manifest_concurrent_publication_has_one_complete_winner(tmp_path: Path) -> None:

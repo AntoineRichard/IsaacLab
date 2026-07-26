@@ -396,15 +396,20 @@ def test_prepare_only_anchors_destination_writes_against_path_swaps(
     assert events == ["preflight", "manifest_written"]
 
 
-@pytest.mark.parametrize("leaf_kind", ("symlink", "fifo"))
+@pytest.mark.parametrize(
+    ("leaf_kind", "target_exists"),
+    (("symlink", True), ("symlink", False), ("fifo", False)),
+)
 def test_controller_lock_rejects_non_regular_leaf_without_touching_source(
     tmp_path: Path,
     leaf_kind: str,
+    target_exists: bool,
 ) -> None:
     source_root = tmp_path / "source"
     source_root.mkdir()
     source_file = source_root / "immutable.txt"
-    source_file.write_bytes(b"immutable source bytes\n")
+    if target_exists:
+        source_file.write_bytes(b"immutable source bytes\n")
     source_before = _inventory(source_root)
     destination_root = tmp_path / "destination"
     destination_root.mkdir()
@@ -482,6 +487,57 @@ def test_prepare_only_import_stays_on_retained_destination_after_post_config_swa
     assert all((relocated_destination / attempt.run_directory / "success").is_dir() for attempt in expansion.attempts)
     assert not (destination_root / "canary" / "import_audit.json").exists()
     assert all(not (destination_root / attempt.run_directory).exists() for attempt in expansion.attempts)
+    assert _inventory(source_root) == source_before
+
+
+@pytest.mark.parametrize("replacement", ("decoy_directory", "source_symlink"))
+def test_import_and_run_revalidates_canonical_destination_after_post_import_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    expansion = _single_pair_expansion()
+    expected_manifest = _import_manifest(expansion)
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    (destination_root / "canary").mkdir(parents=True)
+    write_manifest(source_root / "canary" / "manifest.json", expected_manifest)
+    for attempt in expansion.attempts:
+        finalize_attempt(source_root, attempt, **_successful_payloads(attempt))
+    source_before = _inventory(source_root)
+    original_inode = destination_root.stat().st_ino
+    relocated_destination = tmp_path / "original-destination"
+    real_import_completed_attempts = cli.import_completed_attempts
+
+    class Preflight:
+        def manifest(self, _run_set, _phase, _expansion):
+            return expected_manifest
+
+    def run_preflight(config, *, artifact_root_for_writes=None):
+        assert config.artifact_root == destination_root.resolve()
+        assert artifact_root_for_writes is not None
+        return Preflight()
+
+    def import_then_swap(source: Path, destination: Path, run_set: RunSet) -> ImportAudit:
+        audit = real_import_completed_attempts(source, destination, run_set)
+        destination_root.rename(relocated_destination)
+        if replacement == "decoy_directory":
+            destination_root.mkdir()
+        else:
+            destination_root.symlink_to(source_root, target_is_directory=True)
+        return audit
+
+    monkeypatch.setattr(cli, "run_preflight", run_preflight)
+    monkeypatch.setattr(cli, "import_completed_attempts", import_then_swap)
+    _forbid_measured_construction(monkeypatch)
+    arguments = _filesystem_arguments(tmp_path, source_root, destination_root)
+    arguments.remove("--prepare_only")
+
+    with pytest.raises(ValueError, match="measured artifact root"):
+        cli.main(arguments)
+
+    assert relocated_destination.stat().st_ino == original_inode
+    assert (relocated_destination / "canary" / "import_audit.json").is_file()
     assert _inventory(source_root) == source_before
 
 

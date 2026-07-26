@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.benchmark_comparison import runner as runner_module
 from tools.benchmark_comparison.cli import main as controller_main
 from tools.benchmark_comparison.import_results import import_completed_attempts
 from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, SoftwareIdentity, write_manifest
@@ -509,6 +510,52 @@ def test_controller_lock_is_released_after_exception(tmp_path: Path) -> None:
 
     with ControllerLock(tmp_path):
         pass
+
+
+def test_controller_lock_closes_file_after_unexpected_flock_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_files = []
+    real_fdopen = runner_module.os.fdopen
+
+    def tracked_fdopen(*args, **kwargs):
+        file = real_fdopen(*args, **kwargs)
+        opened_files.append(file)
+        return file
+
+    def fail_flock(*_args, **_kwargs):
+        raise OSError("unexpected flock failure")
+
+    monkeypatch.setattr(runner_module.os, "fdopen", tracked_fdopen)
+    monkeypatch.setattr(runner_module.fcntl, "flock", fail_flock)
+
+    with pytest.raises(OSError, match="unexpected flock failure"):
+        with ControllerLock(tmp_path):
+            pass
+
+    assert len(opened_files) == 1
+    assert opened_files[0].closed
+
+
+def test_controller_lock_closes_file_after_flock_release_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock = ControllerLock(tmp_path)
+    lock_file = None
+
+    def fail_flock(*_args, **_kwargs):
+        raise OSError("unexpected flock release failure")
+
+    with pytest.raises(OSError, match="unexpected flock release failure"):
+        with lock:
+            lock_file = lock._file
+            monkeypatch.setattr(runner_module.fcntl, "flock", fail_flock)
+
+    assert lock_file is not None
+    assert lock_file.closed
+    assert lock._file is None
 
 
 def test_controller_acquires_global_lock_before_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

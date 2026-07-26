@@ -107,6 +107,8 @@ def _run_locked(
         import_completed_attempts(import_source_root, import_destination_root, run_set)
     if args.prepare_only:
         return 0
+    if import_destination_root is not None:
+        _validate_measured_artifact_root(config.artifact_root, import_destination_root)
     owned_process_groups = OwnedProcessGroups()
     launcher = ProcessLauncher(owned_process_groups=owned_process_groups)
     idle_gate = HostIdleGate(
@@ -139,6 +141,34 @@ def _run_locked(
     )
     result = runner.run(expansion, retry_failures=args.retry_failures)
     return 0 if result.failed == 0 and result.status.value == "completed" else 1
+
+
+def _validate_measured_artifact_root(canonical_root: Path, retained_root: Path) -> None:
+    """Require the executor-facing root to remain the retained destination inode."""
+    try:
+        canonical_descriptor = os.open(
+            canonical_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise ValueError(f"measured artifact root is unavailable, replaced, or symlinked: {canonical_root}") from error
+    try:
+        try:
+            retained_descriptor = os.open(retained_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        except OSError as error:
+            raise ValueError(f"retained measured artifact root is unavailable: {retained_root}") from error
+        try:
+            canonical_metadata = os.fstat(canonical_descriptor)
+            retained_metadata = os.fstat(retained_descriptor)
+        finally:
+            os.close(retained_descriptor)
+    finally:
+        os.close(canonical_descriptor)
+    if (canonical_metadata.st_dev, canonical_metadata.st_ino) != (
+        retained_metadata.st_dev,
+        retained_metadata.st_ino,
+    ):
+        raise ValueError("measured artifact root changed after import")
 
 
 if __name__ == "__main__":

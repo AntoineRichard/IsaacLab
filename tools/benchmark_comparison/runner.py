@@ -80,15 +80,21 @@ class ControllerLock:
             raise ControllerLockError(
                 f"another benchmark controller is already active for artifact root: {self.display_artifact_root}"
             ) from error
+        except BaseException:
+            lock_file.close()
+            raise
         self._file = lock_file
         return self
 
     def __exit__(self, _exception_type: object, _exception: object, _traceback: object) -> None:
         """Release the controller lock after normal or exceptional completion."""
         if self._file is not None:
-            fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
-            self._file.close()
+            lock_file = self._file
             self._file = None
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
 
 
 def _is_descriptor_path(path: Path) -> bool:
