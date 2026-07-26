@@ -77,7 +77,13 @@ class _AttemptImport:
 
 @dataclass(frozen=True)
 class ImportPreflightPaths:
-    """Descriptor-anchored paths retained across controller preparation."""
+    """Descriptor-anchored paths retained across controller preparation.
+
+    The source root and destination directories remain pinned. The importer
+    deliberately reopens and revalidates the source run-set beneath that source
+    root, so replacement of that child by the immutable-source owner is outside
+    the retained-inode guarantee between preflight and import.
+    """
 
     source_root: Path
     destination_root: Path

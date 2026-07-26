@@ -8,6 +8,10 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import stat
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -64,6 +68,41 @@ def manifest(run_set: RunSet = RunSet.FINAL) -> RunSetManifest:
     )
 
 
+def _inventory(root: Path) -> dict[str, tuple[int, int, int, int, bytes | None]]:
+    """Capture source bytes and metadata without following symlinks."""
+    inventory = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        metadata = path.lstat()
+        contents = path.read_bytes() if stat.S_ISREG(metadata.st_mode) else None
+        relative = path.relative_to(root).as_posix() or "."
+        inventory[relative] = (
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ino,
+            contents,
+        )
+    return inventory
+
+
+def _fail_if_call_blocks(call) -> None:
+    """Require a regular-file rejection before a short process-local deadline."""
+
+    def deadline_expired(_signal_number, _frame) -> None:
+        raise TimeoutError("special-file validation blocked")
+
+    previous_handler = signal.signal(signal.SIGALRM, deadline_expired)
+    signal.setitimer(signal.ITIMER_REAL, 0.5)
+    started = time.monotonic()
+    try:
+        with pytest.raises(ValueError, match="regular file"):
+            call()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+    assert time.monotonic() - started < 0.5
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -98,6 +137,36 @@ def test_manifest_allows_identical_rewrite_and_rejects_conflict_atomically(tmp_p
     with pytest.raises(ValueError, match="different benchmark manifest"):
         write_manifest(path, replace(expected, phase="rerun"))
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("leaf", ("lock", "manifest"))
+def test_manifest_publication_rejects_symlink_leaf_without_touching_source(tmp_path: Path, leaf: str) -> None:
+    canonical_path = write_manifest(tmp_path / "canonical" / "manifest.json", manifest())
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_file = source_root / "immutable.json"
+    source_file.write_bytes(canonical_path.read_bytes())
+    source_before = _inventory(source_root)
+    destination_path = tmp_path / "destination" / "manifest.json"
+    destination_path.parent.mkdir()
+    leaf_path = destination_path.with_suffix(".json.lock") if leaf == "lock" else destination_path
+    leaf_path.symlink_to(source_file)
+
+    with pytest.raises(ValueError, match="regular file|symlink"):
+        write_manifest(destination_path, manifest())
+
+    assert leaf_path.is_symlink()
+    assert _inventory(source_root) == source_before
+
+
+@pytest.mark.parametrize("leaf", ("lock", "manifest"))
+def test_manifest_publication_rejects_fifo_leaf_without_blocking(tmp_path: Path, leaf: str) -> None:
+    destination_path = tmp_path / "destination" / "manifest.json"
+    destination_path.parent.mkdir()
+    leaf_path = destination_path.with_suffix(".json.lock") if leaf == "lock" else destination_path
+    os.mkfifo(leaf_path)
+
+    _fail_if_call_blocks(lambda: write_manifest(destination_path, manifest()))
 
 
 def test_manifest_concurrent_publication_has_one_complete_winner(tmp_path: Path) -> None:

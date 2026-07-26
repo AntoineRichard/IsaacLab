@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -290,24 +291,81 @@ def write_manifest(path: Path, manifest: RunSetManifest) -> Path:
     validated = validate_manifest(manifest)
     contents = json.dumps(validated.to_json(), indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with lock_path.open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if path.exists():
-            if path.read_bytes() != contents.encode():
-                raise ValueError(f"refusing to replace different benchmark manifest: {path}")
-            return path
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-                file.write(contents)
-                file.flush()
-                os.fsync(file.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+    parent_descriptor = _open_manifest_parent(path.parent)
+    parent_view = Path("/proc/self/fd") / str(parent_descriptor)
+    try:
+        lock_descriptor = _open_manifest_leaf(
+            parent_descriptor,
+            path.with_suffix(path.suffix + ".lock").name,
+            os.O_NOFOLLOW | os.O_CLOEXEC | os.O_CREAT | os.O_RDWR,
+            "benchmark manifest lock",
+        )
+        with os.fdopen(lock_descriptor, "r+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            existing_descriptor = _open_manifest_leaf(
+                parent_descriptor,
+                path.name,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                "existing benchmark manifest",
+                allow_missing=True,
+            )
+            if existing_descriptor is not None:
+                with os.fdopen(existing_descriptor, "rb") as existing:
+                    if existing.read() != contents.encode():
+                        raise ValueError(f"refusing to replace different benchmark manifest: {path}")
+                return path
+            descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=parent_view)
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                    file.write(contents)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.replace(temporary, parent_view / path.name)
+            finally:
+                temporary.unlink(missing_ok=True)
+    finally:
+        os.close(parent_descriptor)
     return path
+
+
+def _open_manifest_parent(path: Path) -> int:
+    """Open the manifest parent without following its final directory entry."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if not _is_descriptor_path(path):
+        flags |= os.O_NOFOLLOW
+    try:
+        return os.open(path, flags)
+    except OSError as error:
+        raise ValueError(f"benchmark manifest parent must be an available, symlink-free directory: {error}") from error
+
+
+def _open_manifest_leaf(
+    parent_descriptor: int,
+    name: str,
+    flags: int,
+    description: str,
+    *,
+    allow_missing: bool = False,
+) -> int | None:
+    """Open one no-follow regular-file leaf relative to a retained parent."""
+    try:
+        descriptor = os.open(name, flags, 0o666, dir_fd=parent_descriptor)
+    except FileNotFoundError:
+        if allow_missing:
+            return None
+        raise
+    except OSError as error:
+        raise ValueError(f"{description} must be an available, symlink-free regular file: {error}") from error
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ValueError(f"{description} must be a regular file")
+    return descriptor
+
+
+def _is_descriptor_path(path: Path) -> bool:
+    """Return whether ``path`` is a direct Linux procfs descriptor view."""
+    return path.parent == Path("/proc/self/fd") and path.name.isdecimal()
 
 
 def _manifest_from_mapping(value: Mapping[str, object]) -> RunSetManifest:

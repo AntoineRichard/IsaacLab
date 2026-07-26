@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
                     args,
                     run_set,
                     import_source_root=import_paths.source_root,
+                    import_destination_root=import_paths.destination_root,
                     manifest_path=import_paths.destination_run_set / "manifest.json",
                     preflight_artifact_root=import_paths.destination_root,
                 )
@@ -85,6 +86,7 @@ def _run_locked(
     run_set: RunSet,
     *,
     import_source_root: Path | None = None,
+    import_destination_root: Path | None = None,
     manifest_path: Path | None = None,
     preflight_artifact_root: Path | None = None,
 ) -> int:
@@ -100,9 +102,9 @@ def _run_locked(
         preflight.manifest(run_set, args.phase, expansion),
     )
     if args.import_from_artifact_root is not None:
-        if import_source_root is None:
-            raise RuntimeError("validated import source is missing")
-        import_completed_attempts(import_source_root, config.artifact_root, run_set)
+        if import_source_root is None or import_destination_root is None:
+            raise RuntimeError("validated import paths are missing")
+        import_completed_attempts(import_source_root, import_destination_root, run_set)
     if args.prepare_only:
         return 0
     owned_process_groups = OwnedProcessGroups()

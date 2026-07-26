@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -38,19 +39,46 @@ class ControllerLock:
 
     def __init__(self, artifact_root: Path):
         self.artifact_root = artifact_root if _is_descriptor_path(artifact_root) else artifact_root.resolve()
-        self.path = self.artifact_root / ".benchmark-controller.lock"
+        self.display_artifact_root = self.artifact_root.resolve()
+        self.path = self.display_artifact_root / ".benchmark-controller.lock"
         self._file = None
 
     def __enter__(self) -> ControllerLock:
         """Acquire the artifact-root lock or fail without waiting."""
         self.artifact_root.mkdir(parents=True, exist_ok=True)
-        lock_file = self.path.open("a+b")
+        root_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        if not _is_descriptor_path(self.artifact_root):
+            root_flags |= os.O_NOFOLLOW
+        try:
+            root_descriptor = os.open(self.artifact_root, root_flags)
+        except OSError as error:
+            raise ControllerLockError(
+                f"cannot safely open artifact root for controller lock: {self.display_artifact_root}: {error}"
+            ) from error
+        try:
+            try:
+                lock_descriptor = os.open(
+                    ".benchmark-controller.lock",
+                    os.O_NOFOLLOW | os.O_CLOEXEC | os.O_CREAT | os.O_RDWR,
+                    0o666,
+                    dir_fd=root_descriptor,
+                )
+            except OSError as error:
+                raise ControllerLockError(
+                    f"controller lock must be an available, symlink-free regular file: {self.path}: {error}"
+                ) from error
+        finally:
+            os.close(root_descriptor)
+        if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+            os.close(lock_descriptor)
+            raise ControllerLockError(f"controller lock must be a regular file: {self.path}")
+        lock_file = os.fdopen(lock_descriptor, "r+b")
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             lock_file.close()
             raise ControllerLockError(
-                f"another benchmark controller is already active for artifact root: {self.artifact_root}"
+                f"another benchmark controller is already active for artifact root: {self.display_artifact_root}"
             ) from error
         self._file = lock_file
         return self
