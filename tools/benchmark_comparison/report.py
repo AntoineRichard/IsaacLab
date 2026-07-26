@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .manifest import RunSetManifest, read_manifest, resolve_manifest_expansion, validate_manifest
-from .models import ExecutionProvenance, MatrixExpansion
+from .models import ExecutionProvenance, MatrixExpansion, TaskCategory
 from .normalize import (
     FAILURE_FIELDS,
     PAIRED_SUMMARY_FIELDS,
@@ -25,6 +25,7 @@ from .normalize import (
     read_raw_runs_csv,
     summarize_pairs,
 )
+from .plot import AGGREGATE_PLOT_BASENAMES, CATEGORY_LABELS, DETAIL_PLOT_BASENAMES
 from .report_paths import validate_artifact_path
 
 _METRIC_LABELS = {
@@ -88,18 +89,43 @@ def write_markdown_report(
         "",
         "Only complete Lab 2/Lab 3 seed pairs contribute to paired statistics. Failures and missing "
         "attempts are not imputed. Sample standard deviations describe repeat variability (a single "
-        "pair has a displayed standard deviation of zero).",
+        "pair has a displayed standard deviation of zero). Each eligible task receives equal task "
+        "weighting in median and mean task-level percentage-delta summaries.",
         "",
         "The signed delta is `Isaac Lab 3 - Isaac Lab 2`; the percentage delta is "
-        "`(Lab 3 - Lab 2) / Lab 2 × 100`. A zero Lab 2 baseline is reported as undefined rather "
-        "than infinity. Positive collection-FPS deltas mean higher throughput; resource deltas are "
-        "not labeled as inherently better or worse.",
+        "`(Lab 3 - Lab 2) / Lab 2 × 100`. A zero Lab 2 baseline is excluded from percentage-delta "
+        "summaries rather than treated as infinity. Positive collection-FPS deltas mean higher "
+        "throughput; resource deltas are not labeled as inherently better or worse. Results have an "
+        "informational-only interpretation and define no performance acceptance threshold.",
         "",
-        "## Pinned revisions and execution identities",
+        "## Median task-level delta",
         "",
-        "| Version | Exact Git SHA | Environment identity |",
-        "|---|---|---|",
+        _plot_image(AGGREGATE_PLOT_BASENAMES[0]),
+        "",
+        "## Mean task-level delta",
+        "",
+        _plot_image(AGGREGATE_PLOT_BASENAMES[1]),
+        "",
+        "## Detailed grouped figures",
+        "",
     ]
+    for category in TaskCategory:
+        category_prefix = f"{category.value}_"
+        lines.extend([f"### {_category_label(category)}", ""])
+        lines.extend(
+            _plot_image(basename) for basename in DETAIL_PLOT_BASENAMES if basename.startswith(category_prefix)
+        )
+        lines.append("")
+    lines.extend(
+        [
+            "## Appendix",
+            "",
+            "### Pinned revisions and execution identities",
+            "",
+            "| Version | Exact Git SHA | Environment identity |",
+            "|---|---|---|",
+        ]
+    )
     for version in ("lab2", "lab3"):
         lines.append(
             f"| {version} | `{expected_provenance.version_sha(version)}` "
@@ -111,7 +137,7 @@ def write_markdown_report(
     lines.extend(
         [
             "",
-            "## Hardware and software inventory",
+            "### Hardware and software inventory",
             "",
             "| Host item | Value |",
             "|---|---|",
@@ -140,7 +166,9 @@ def write_markdown_report(
             ]
         )
 
-    lines.extend(["", "## Task mapping", "", "| Logical task | Isaac Lab 2 task | Isaac Lab 3 task |", "|---|---|---|"])
+    lines.extend(
+        ["", "### Task mapping", "", "| Logical task | Isaac Lab 2 task | Isaac Lab 3 task |", "|---|---|---|"]
+    )
     mappings = _task_mappings(runs, failures)
     for task in _ordered_tasks(set(mappings), task_order):
         versions = mappings[task]
@@ -151,15 +179,16 @@ def write_markdown_report(
     if not mappings:
         lines.append("| unavailable | missing | missing |")
 
+    lines.extend(["", "### Detailed per-task results", ""])
     for mode in mode_order:
-        lines.extend(["", f"## {mode}", ""])
+        lines.extend([f"#### {mode}", ""])
         mode_runs = [run for run in runs if run.mode == mode]
         mode_summaries = [row for row in summaries if row.get("mode") == mode]
         startup_summaries = [row for row in mode_summaries if row["metric"] in STARTUP_METRICS]
         runtime_summaries = [row for row in mode_summaries if row["metric"] not in STARTUP_METRICS]
-        lines.extend(["", "### Startup comparison", ""])
+        lines.extend(["##### Startup comparison", ""])
         lines.extend(_paired_summary_table(startup_summaries))
-        lines.extend(["", "### Runtime and resource comparison", ""])
+        lines.extend(["##### Runtime and resource comparison", ""])
         lines.extend(_paired_summary_table(runtime_summaries))
 
         lines.extend(["", "Successful individual runs:", ""])
@@ -187,7 +216,7 @@ def write_markdown_report(
         else:
             lines.append("No successful runs.")
 
-    lines.extend(["", "## Failures and missing attempts", ""])
+    lines.extend(["", "### Failures and missing attempts", ""])
     if failures:
         lines.extend(
             [
@@ -214,7 +243,7 @@ def write_markdown_report(
         lines.extend(
             [
                 "",
-                "## Artifact integrity",
+                "### Artifact integrity",
                 "",
                 "| Item | Value |",
                 "|---|---|",
@@ -412,6 +441,16 @@ def _paired_summary_table(rows: Sequence[Mapping[str, str]]) -> list[str]:
             f"| {float(row['absolute_delta']):+.3f} | {delta_pct} |"
         )
     return lines
+
+
+def _plot_image(basename: str) -> str:
+    """Return a relative Markdown image reference for a report figure."""
+    return f"![{basename}]({basename}.png)"
+
+
+def _category_label(category: TaskCategory) -> str:
+    """Return the shared human-readable label for a task category."""
+    return CATEGORY_LABELS[category]
 
 
 def _methodology(manifest: RunSetManifest) -> tuple[str, ...]:

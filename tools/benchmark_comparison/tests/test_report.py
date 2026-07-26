@@ -16,6 +16,7 @@ from tools.benchmark_comparison.manifest import HostIdentity, RunSetManifest, So
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.normalize import FailureRow, NormalizedRun, write_normalized_outputs
+from tools.benchmark_comparison.plot import AGGREGATE_PLOT_BASENAMES, DETAIL_PLOT_BASENAMES
 from tools.benchmark_comparison.report import ReportAudit, read_provenance, write_markdown_report, write_provenance
 
 
@@ -142,36 +143,72 @@ def test_report_contains_methodology_inventory_mapping_modes_deltas_samples_and_
 
     text = report_path.read_text(encoding="utf-8")
     assert report_path.name == "report.md"
-    for heading in (
+    ordered_tokens = (
         "# Isaac Lab Paired Benchmark Report",
         "## Methodology",
-        "## Pinned revisions and execution identities",
-        "## Hardware and software inventory",
-        "## Task mapping",
-        "## runtime-100",
-        "## Failures and missing attempts",
-        "### Startup comparison",
+        "## Median task-level delta",
+        "aggregate_delta_median_pct.png",
+        "## Mean task-level delta",
+        "aggregate_delta_mean_pct.png",
+        "## Detailed grouped figures",
+        "### Classic",
+        "### Locomotion Flat",
+        "### Locomotion Rough",
+        "### Manipulation",
+        "## Appendix",
+        "### Pinned revisions and execution identities",
+        "### Hardware and software inventory",
+        "### Task mapping",
+        "### Detailed per-task results",
+        "### Failures and missing attempts",
+        "### Artifact integrity",
+    )
+    assert tuple(text.index(token) for token in ordered_tokens) == tuple(
+        sorted(text.index(token) for token in ordered_tokens)
+    )
+    appendix = text[text.index("## Appendix") :]
+    assert "|---" not in text[: text.index("## Appendix")]
+    plot_filenames = tuple(f"{basename}.png" for basename in (*AGGREGATE_PLOT_BASENAMES, *DETAIL_PLOT_BASENAMES))
+    assert len(plot_filenames) == 26
+    assert all(text.count(filename) == 1 for filename in plot_filenames)
+    assert tuple(text.index(filename) for filename in plot_filenames) == tuple(
+        sorted(text.index(filename) for filename in plot_filenames)
+    )
+    methodology = text[text.index("## Methodology") : text.index("## Median task-level delta")].lower()
+    for statement in (
+        "equal task weighting",
+        "median and mean",
+        "zero lab 2 baseline",
+        "not imputed",
+        "informational-only interpretation",
+    ):
+        assert statement in methodology
+    for heading in (
+        "### Pinned revisions and execution identities",
+        "### Hardware and software inventory",
+        "### Task mapping",
+        "#### runtime-100",
+        "##### Startup comparison",
         "Total startup [s]",
         "App launch [s]",
         "Python imports [s]",
         "Task configuration [s]",
         "Environment creation [s]",
         "First step [s]",
-        "### Runtime and resource comparison",
-        "## Artifact integrity",
+        "##### Runtime and resource comparison",
+        "### Artifact integrity",
         "Raw files | 25",
         f"`{'e' * 64}`",
     ):
-        assert heading in text
+        assert heading in appendix
     assert "informational" in text
-    assert "Isaac-Cartpole-v0" in text and "Isaac-Cartpole" in text
-    assert "+25.000%" in text
-    assert "GPU utilization samples" in text
-    assert "attempt-0001-out_of_memory" in text
-    assert "not imputed" in text
-    assert "generated hash manifest SHA" not in text
-    startup_section, runtime_section = text.split("### Startup comparison", 1)[1].split(
-        "### Runtime and resource comparison", 1
+    assert "Isaac-Cartpole-v0" in appendix and "Isaac-Cartpole" in appendix
+    assert "+25.000%" in appendix
+    assert "GPU utilization samples" in appendix
+    assert "attempt-0001-out_of_memory" in appendix
+    assert "generated hash manifest SHA" not in appendix
+    startup_section, runtime_section = appendix.split("##### Startup comparison", 1)[1].split(
+        "##### Runtime and resource comparison", 1
     )
     runtime_section = runtime_section.split("Successful individual runs:", 1)[0]
     for startup_label in (
@@ -188,7 +225,7 @@ def test_report_contains_methodology_inventory_mapping_modes_deltas_samples_and_
         "| Task | Version | Seed | Total startup [s] | App launch [s] | Python imports [s] | "
         "Task configuration [s] | Environment creation [s] | First step [s] | Collection FPS"
     ) in text
-    individual_rows = [line for line in text.splitlines() if "| `cartpole` | lab" in line]
+    individual_rows = [line for line in appendix.splitlines() if "| `cartpole` | lab" in line]
     assert len(individual_rows) == 2
     assert all("| 4.410 |" in line for line in individual_rows)
 
