@@ -17,7 +17,7 @@ from tools.benchmark_comparison.matrix import expand_canary_matrix, load_matrix
 from tools.benchmark_comparison.models import ExecutionProvenance, RunSet
 from tools.benchmark_comparison.report_cli import _publish, main
 
-_PLOT_CATEGORIES = ("classic", "locomotion", "manipulation")
+_PLOT_CATEGORIES = ("classic", "locomotion_flat", "locomotion_rough", "manipulation")
 _PLOT_METRICS = (
     "collection_fps",
     "gpu_memory_mean_mib",
@@ -36,7 +36,7 @@ def _snapshot_files(directory: Path) -> dict[str, bytes]:
     }
 
 
-def _write_previous_41_file_report(output: Path) -> None:
+def _write_previous_53_file_report(output: Path) -> None:
     generated_paths = {
         "raw_runs.csv",
         "paired_summary.csv",
@@ -50,7 +50,7 @@ def _write_previous_41_file_report(output: Path) -> None:
         for metric in _PLOT_METRICS
         for suffix in ("png", "svg")
     )
-    assert len(generated_paths) == 41
+    assert len(generated_paths) == 53
     output.mkdir(parents=True)
     for relative_path in sorted(generated_paths):
         (output / relative_path).write_bytes(f"previous {relative_path}\n".encode())
@@ -146,7 +146,7 @@ def test_report_directory_publication_rolls_back_and_removes_stale_files(
 
 
 @pytest.mark.parametrize("failure_boundary", ("grouped_plots", "pdf"))
-def test_report_cli_preserves_previous_41_file_report_when_generation_fails(
+def test_report_cli_preserves_previous_53_file_report_when_generation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure_boundary: str,
@@ -158,9 +158,9 @@ def test_report_cli_preserves_previous_41_file_report_when_generation_fails(
     (raw_artifacts / "measurements.json").write_bytes(b'{"fps": 123.0}\n')
     (raw_artifacts / "nested" / "stdout.log").write_bytes(b"raw log bytes\n")
     output = root / "canary" / "report"
-    _write_previous_41_file_report(output)
+    _write_previous_53_file_report(output)
     published_before = _snapshot_files(output)
-    assert len(published_before) == 41
+    assert len(published_before) == 53
     raw_before = _snapshot_files(raw_artifacts)
 
     if failure_boundary == "grouped_plots":

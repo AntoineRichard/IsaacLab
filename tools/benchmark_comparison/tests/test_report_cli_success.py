@@ -21,7 +21,7 @@ from tools.benchmark_comparison.report_cli import main
 from tools.benchmark_comparison.validate import attempt_identity
 
 _FIXTURES = Path(__file__).parent / "fixtures"
-_PLOT_CATEGORIES = ("classic", "locomotion", "manipulation")
+_PLOT_CATEGORIES = ("classic", "locomotion_flat", "locomotion_rough", "manipulation")
 _PLOT_METRICS = (
     "collection_fps",
     "gpu_memory_mean_mib",
@@ -149,19 +149,19 @@ def test_report_only_cli_normalizes_a_synthetic_raw_success(tmp_path: Path) -> N
         for metric in _PLOT_METRICS
         for suffix in ("png", "svg")
     )
-    assert len(expected_generated) == 41
+    assert len(expected_generated) == 53
     metadata_files = {"audit_summary.json", "raw_artifact_hashes.sha256", "generated_hashes.sha256"}
     assert {path.name for path in output.iterdir()} == expected_generated | metadata_files
 
     generated_manifest = (output / "generated_hashes.sha256").read_bytes()
     manifest_lines = generated_manifest.decode().splitlines()
     generated_entries = tuple(line.split("  ", maxsplit=1)[1] for line in manifest_lines)
-    assert len(generated_entries) == len(set(generated_entries)) == 41
+    assert len(generated_entries) == len(set(generated_entries)) == 53
     assert set(generated_entries) == expected_generated
     generated_before = {relative_path: (output / relative_path).read_bytes() for relative_path in generated_entries}
 
     audit = json.loads((output / "audit_summary.json").read_text(encoding="utf-8"))
-    assert audit["generated_file_count"] == 41
+    assert audit["generated_file_count"] == 53
     assert audit["generated_hash_manifest_sha256"] == hashlib.sha256(generated_manifest).hexdigest()
     validate_pdf(output / "report.pdf", ("canary", "a" * 40, "b" * 40, "Startup"))
 

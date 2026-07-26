@@ -110,7 +110,7 @@ def _inputs(
         successful_attempts=len(selected_runs),
         failed_or_missing_attempts=0,
         raw_file_count=25,
-        generated_file_count=41,
+        generated_file_count=53,
         raw_hash_manifest_sha256="e" * 64,
     )
     return normalized, _manifest(), audit, _plot_paths(tmp_path / "plots")
@@ -238,12 +238,18 @@ def test_pdf_paginates_large_run_table_and_uses_fixed_page_order(tmp_path: Path)
         "Classic: Mean GPU Utilization",
         "Classic: Total Startup Time",
         "Classic: Startup Phase Breakdown",
-        "Locomotion: Collection FPS",
-        "Locomotion: Mean GPU Memory",
-        "Locomotion: Peak GPU Memory",
-        "Locomotion: Mean GPU Utilization",
-        "Locomotion: Total Startup Time",
-        "Locomotion: Startup Phase Breakdown",
+        "Locomotion Flat: Collection FPS",
+        "Locomotion Flat: Mean GPU Memory",
+        "Locomotion Flat: Peak GPU Memory",
+        "Locomotion Flat: Mean GPU Utilization",
+        "Locomotion Flat: Total Startup Time",
+        "Locomotion Flat: Startup Phase Breakdown",
+        "Locomotion Rough: Collection FPS",
+        "Locomotion Rough: Mean GPU Memory",
+        "Locomotion Rough: Peak GPU Memory",
+        "Locomotion Rough: Mean GPU Utilization",
+        "Locomotion Rough: Total Startup Time",
+        "Locomotion Rough: Startup Phase Breakdown",
         "Manipulation: Collection FPS",
         "Manipulation: Mean GPU Memory",
         "Manipulation: Peak GPU Memory",
@@ -295,7 +301,7 @@ def test_pdf_contains_failure_and_audit_content(tmp_path: Path) -> None:
         successful_attempts=2,
         failed_or_missing_attempts=1,
         raw_file_count=31,
-        generated_file_count=41,
+        generated_file_count=53,
         raw_hash_manifest_sha256="f" * 64,
     )
     report = write_pdf_report(
@@ -318,7 +324,7 @@ def test_pdf_contains_failure_and_audit_content(tmp_path: Path) -> None:
             "Successful attempts: 2",
             "Failed or missing attempts: 1",
             "Raw files: 31",
-            "Generated files: 41",
+            "Generated files: 53",
             "f" * 64,
         )
     )
@@ -332,7 +338,7 @@ def test_pdf_rejects_invalid_plot_inputs_atomically(tmp_path: Path, invalid_inpu
     normalized, manifest, audit, plots = _inputs(tmp_path)
     invalid_plots = list(plots)
     if invalid_input == "missing_category_plot":
-        invalid_plots.remove(next(path for path in invalid_plots if path.stem == "locomotion_collection_fps"))
+        invalid_plots.remove(next(path for path in invalid_plots if path.stem == "locomotion_flat_collection_fps"))
     elif invalid_input == "duplicate_basename":
         duplicate = tmp_path / "duplicate" / f"{plots[0].stem}.png"
         duplicate.parent.mkdir()

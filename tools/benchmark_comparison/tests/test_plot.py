@@ -64,6 +64,14 @@ def _png_dimensions(path: Path) -> tuple[int, int]:
     return struct.unpack(">II", data[16:24])
 
 
+def _category_from_plot_basename(basename: str) -> TaskCategory:
+    """Return the longest matching report category prefix from a plot basename."""
+    for category in sorted(TaskCategory, key=lambda category: len(category.value), reverse=True):
+        if basename.startswith(f"{category.value}_"):
+            return category
+    raise ValueError(f"plot basename has no category prefix: {basename}")
+
+
 def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_path: Path) -> None:
     expansion = expand_final_matrix(load_matrix())
     category_aliases = task_aliases_by_category(expansion)
@@ -89,7 +97,8 @@ def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_p
 
     expected_names = {f"{basename}.{extension}" for basename in PLOT_BASENAMES for extension in ("png", "svg")}
     assert {path.name for path in first} == expected_names
-    assert len(first) == 36
+    assert len(PLOT_BASENAMES) == 24
+    assert len(first) == 48
     assert all(path.stat().st_size > 1000 for path in first)
     assert {_png_dimensions(path) for path in first if path.suffix == ".png"} == {(1800, 1000)}
     assert all(b"Missing" in path.read_bytes() for path in first if path.suffix == ".svg")
@@ -97,7 +106,7 @@ def test_plots_have_fixed_names_dimensions_and_byte_identical_regeneration(tmp_p
     assert {path.name: path.read_bytes() for path in first} == {path.name: path.read_bytes() for path in second}
     assert b"Total startup time [s]" in (tmp_path / "first" / "classic_startup_total_s.svg").read_bytes()
     for basename in PLOT_BASENAMES:
-        category = TaskCategory(basename.split("_", maxsplit=1)[0])
+        category = _category_from_plot_basename(basename)
         svg = (tmp_path / "first" / f"{basename}.svg").read_bytes()
         aliases = category_aliases[category]
         assert all(f"<!-- {task.replace('_', ' ')} -->".encode() in svg for task in aliases)
@@ -157,7 +166,8 @@ def test_startup_phase_means_sum_to_total_bar_height() -> None:
 @pytest.mark.parametrize(
     ("category", "task", "collection_fps"),
     (
-        (TaskCategory.LOCOMOTION, "anymal_d_flat", 350_000.0),
+        (TaskCategory.LOCOMOTION_FLAT, "anymal_d_flat", 350_000.0),
+        (TaskCategory.LOCOMOTION_ROUGH, "anymal_d_rough", 350_000.0),
         (TaskCategory.MANIPULATION, "allegro_cube", 700_000.0),
     ),
 )

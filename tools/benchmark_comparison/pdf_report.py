@@ -21,6 +21,7 @@ import matplotlib
 from matplotlib.backends.backend_pdf import PdfPages
 
 from .manifest import RunSetManifest, validate_manifest
+from .models import TaskCategory
 from .normalize import (
     FAILURE_FIELDS,
     PAIRED_SUMMARY_FIELDS,
@@ -86,7 +87,7 @@ def write_pdf_report(
         raw_runs_path: Normalized successful-run CSV path.
         paired_summary_path: Normalized paired-summary CSV path.
         failures_path: Normalized failed-or-missing-attempt CSV path.
-        plot_paths: Paths to the 18 required category benchmark PNG figures.
+        plot_paths: Paths to the 24 required category benchmark PNG figures.
         output_path: Destination PDF path.
         manifest: Run-set identity, inventory, and matrix expansion.
         audit: Artifact counts and raw-hash integrity values.
@@ -394,14 +395,18 @@ def _ordered_plot_paths(plot_paths: Sequence[Path]) -> tuple[Path, ...]:
         paths_by_basename[path.stem] = path
     if set(paths_by_basename) != set(PLOT_BASENAMES):
         missing = [basename for basename in PLOT_BASENAMES if basename not in paths_by_basename]
-        raise ValueError(f"benchmark PDF requires exactly the 18 PNG plots; missing: {missing}")
+        raise ValueError(f"benchmark PDF requires exactly the 24 PNG plots; missing: {missing}")
     return tuple(paths_by_basename[basename] for basename in PLOT_BASENAMES)
 
 
 def _plot_title(basename: str) -> str:
     """Return the category and metric display title for an allowed plot basename."""
-    category, metric = basename.split("_", maxsplit=1)
-    return f"{category.title()}: {_METRIC_TITLES[metric]}"
+    for category in sorted(TaskCategory, key=lambda category: len(category.value), reverse=True):
+        prefix = f"{category.value}_"
+        if basename.startswith(prefix):
+            metric = basename.removeprefix(prefix)
+            return f"{category.value.replace('_', ' ').title()}: {_METRIC_TITLES[metric]}"
+    raise ValueError(f"plot basename has no category prefix: {basename}")
 
 
 def _methodology_lines(manifest: RunSetManifest) -> tuple[str, ...]:
