@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from matplotlib import image as matplotlib_image
 
 from tools.benchmark_comparison.matrix import expand_final_matrix, load_matrix, task_aliases_by_category
 from tools.benchmark_comparison.models import TaskCategory
@@ -151,6 +152,28 @@ def test_startup_phase_means_sum_to_total_bar_height() -> None:
     assert sum(phase_means.values()) == pytest.approx(
         statistics.fmean(run.startup_total_s for run in runs if run.version == "lab2")
     )
+
+
+@pytest.mark.parametrize(
+    ("category", "task", "collection_fps"),
+    (
+        (TaskCategory.LOCOMOTION, "anymal_d_flat", 350_000.0),
+        (TaskCategory.MANIPULATION, "allegro_cube", 700_000.0),
+    ),
+)
+def test_collection_fps_y_axis_label_does_not_touch_left_png_boundary(
+    tmp_path: Path, category: TaskCategory, task: str, collection_fps: float
+) -> None:
+    expansion = expand_final_matrix(load_matrix())
+    csv_path = write_raw_runs_csv(
+        tmp_path / "raw_runs.csv",
+        tuple(_run(task, "runtime-100", 42, version, collection_fps) for version in ("lab2", "lab3")),
+    )
+
+    generate_plots(csv_path, tmp_path / "plots", expansion=expansion)
+
+    image = matplotlib_image.imread(tmp_path / "plots" / f"{category.value}_collection_fps.png")
+    assert bool((image[:, 0, :3] == 1.0).all())
 
 
 def test_plot_basenames_include_startup_figures() -> None:

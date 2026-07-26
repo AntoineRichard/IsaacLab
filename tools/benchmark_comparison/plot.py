@@ -162,7 +162,7 @@ def _generate_scalar_metric(
         for version in VERSION_ORDER
     ]
     figure.legend(handles=handles, loc="upper center", ncols=2, bbox_to_anchor=(0.5, 0.955), frameon=False)
-    figure.subplots_adjust(left=0.06, right=0.99, bottom=0.22, top=0.88, wspace=0.28)
+    figure.subplots_adjust(left=0.07, right=0.99, bottom=0.22, top=0.88, wspace=0.28)
     paths = _save_figure(figure, output_directory, f"{category.value}_{metric}")
     plt.close(figure)
     return paths
