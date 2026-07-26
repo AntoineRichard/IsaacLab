@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 
 from .executors import ExecutorConfig, Lab2DockerExecutor, Lab3UvExecutor, ProcessLauncher, run_preflight
-from .import_results import import_completed_attempts
+from .import_results import import_completed_attempts, preflight_import_paths
 from .manifest import write_manifest
 from .matrix import expand_canary_matrix, expand_final_matrix, load_matrix
 from .models import RunSet
@@ -47,30 +47,62 @@ def main(argv: list[str] | None = None) -> int:
     if args.prepare_only and args.import_from_artifact_root is None:
         parser.error("--prepare_only requires --import_from_artifact_root")
 
-    config = ExecutorConfig(
+    run_set = RunSet(args.run_set)
+    if args.import_from_artifact_root is not None:
+        with preflight_import_paths(args.import_from_artifact_root, args.artifact_root, run_set) as import_paths:
+            with ControllerLock(import_paths.destination_root):
+                config = _executor_config(args, import_paths.destination_root.resolve())
+                return _run_locked(
+                    config,
+                    args,
+                    run_set,
+                    import_source_root=import_paths.source_root,
+                    manifest_path=import_paths.destination_run_set / "manifest.json",
+                    preflight_artifact_root=import_paths.destination_root,
+                )
+
+    config = _executor_config(args, args.artifact_root.resolve())
+    with ControllerLock(config.artifact_root):
+        return _run_locked(config, args, run_set)
+
+
+def _executor_config(args: argparse.Namespace, artifact_root: Path) -> ExecutorConfig:
+    """Build executor configuration around the selected artifact-root view."""
+    return ExecutorConfig(
         lab2_root=args.lab2_root.resolve(),
         lab3_root=args.lab3_root.resolve(),
-        artifact_root=args.artifact_root.resolve(),
+        artifact_root=artifact_root,
         lab2_sha=args.lab2_sha,
         lab3_sha=args.lab3_sha,
         lab2_image=args.lab2_image,
         lab2_image_id=args.lab2_image_id,
     )
-    with ControllerLock(config.artifact_root):
-        return _run_locked(config, args)
 
 
-def _run_locked(config: ExecutorConfig, args: argparse.Namespace) -> int:
+def _run_locked(
+    config: ExecutorConfig,
+    args: argparse.Namespace,
+    run_set: RunSet,
+    *,
+    import_source_root: Path | None = None,
+    manifest_path: Path | None = None,
+    preflight_artifact_root: Path | None = None,
+) -> int:
     """Run preflight and the selected matrix while holding the controller lock."""
-    preflight = run_preflight(config)
-    run_set = RunSet(args.run_set)
+    preflight = (
+        run_preflight(config)
+        if preflight_artifact_root is None
+        else run_preflight(config, artifact_root_for_writes=preflight_artifact_root)
+    )
     expansion = expand_canary_matrix(load_matrix()) if run_set is RunSet.CANARY else expand_final_matrix(load_matrix())
     write_manifest(
-        config.artifact_root / run_set.value / "manifest.json",
+        manifest_path or config.artifact_root / run_set.value / "manifest.json",
         preflight.manifest(run_set, args.phase, expansion),
     )
     if args.import_from_artifact_root is not None:
-        import_completed_attempts(args.import_from_artifact_root.resolve(), config.artifact_root, run_set)
+        if import_source_root is None:
+            raise RuntimeError("validated import source is missing")
+        import_completed_attempts(import_source_root, config.artifact_root, run_set)
     if args.prepare_only:
         return 0
     owned_process_groups = OwnedProcessGroups()

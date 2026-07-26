@@ -515,10 +515,23 @@ def run_preflight(
     *,
     launcher: ProcessLauncher | None = None,
     min_free_bytes: int = 10 * 1024**3,
+    artifact_root_for_writes: Path | None = None,
 ) -> PreflightResult:
-    """Validate all immutable inputs before any measured attempt."""
+    """Validate all immutable inputs before any measured attempt.
+
+    Args:
+        config: Pinned executor paths and identities.
+        commands: Optional deterministic command runner.
+        launcher: Optional process launcher for registration probes.
+        min_free_bytes: Minimum free artifact storage [B].
+        artifact_root_for_writes: Optional descriptor-anchored artifact root used only for write validation.
+
+    Returns:
+        Validated host, software, provenance, and idle-memory identities.
+    """
     command_runner = commands or SystemCommandRunner()
     process_launcher = launcher or ProcessLauncher(commands=command_runner)
+    writable_artifact_root = artifact_root_for_writes or config.artifact_root
     for root, expected_sha, name in (
         (config.lab2_root, config.lab2_sha, "lab2"),
         (config.lab3_root, config.lab3_sha, "lab3"),
@@ -558,10 +571,10 @@ def run_preflight(
     )
     gpu_model, gpu_driver, idle_memory, gpu_uuid = _parse_nvidia_identity(nvidia.stdout)
     try:
-        config.artifact_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=config.artifact_root):
+        writable_artifact_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=writable_artifact_root):
             pass
-        free_disk = shutil.disk_usage(config.artifact_root).free
+        free_disk = shutil.disk_usage(writable_artifact_root).free
     except OSError as error:
         raise PreflightError(f"preflight artifact root is not writable: {error}") from error
     if free_disk < min_free_bytes:

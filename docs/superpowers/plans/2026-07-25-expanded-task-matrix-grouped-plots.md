@@ -721,7 +721,7 @@ Expected normalized inventory:
 ```text
 raw_runs.csv data rows: 408
 failures.csv data rows: 0
-paired_summary.csv data rows: 2448
+paired_summary.csv data rows: 816
 generated files in generated_hashes.sha256: 41
 plot files: 36
 plot families: 18
@@ -746,7 +746,7 @@ Reconcile:
 - latest runner state for all 408 identities;
 - 408 valid success directories;
 - 408 unique normalized rows;
-- 204 logical pairs and 2,448 paired metric rows;
+- 204 logical pairs, 816 seed-aggregated paired metric rows, and 2,448 seed-metric contributions;
 - header-only failures CSV;
 - all raw hash entries and `raw_file_count`;
 - exact 41 generated hash entries and `generated_file_count`;

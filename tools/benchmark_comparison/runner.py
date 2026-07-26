@@ -37,7 +37,7 @@ class ControllerLock:
     """Nonblocking process lock shared by every run set under one artifact root."""
 
     def __init__(self, artifact_root: Path):
-        self.artifact_root = artifact_root.resolve()
+        self.artifact_root = artifact_root if _is_descriptor_path(artifact_root) else artifact_root.resolve()
         self.path = self.artifact_root / ".benchmark-controller.lock"
         self._file = None
 
@@ -61,6 +61,11 @@ class ControllerLock:
             fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
             self._file.close()
             self._file = None
+
+
+def _is_descriptor_path(path: Path) -> bool:
+    """Return whether ``path`` is a direct Linux procfs descriptor view."""
+    return path.parent == Path("/proc/self/fd") and path.name.isdecimal()
 
 
 @dataclass(frozen=True)

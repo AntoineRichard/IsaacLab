@@ -17,7 +17,7 @@ import shutil
 import stat
 import tempfile
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -75,6 +75,89 @@ class _AttemptImport:
     destination_name: str
 
 
+@dataclass(frozen=True)
+class ImportPreflightPaths:
+    """Descriptor-anchored paths retained across controller preparation."""
+
+    source_root: Path
+    destination_root: Path
+    destination_run_set: Path
+
+
+@contextmanager
+def preflight_import_paths(
+    source_root: Path,
+    destination_root: Path,
+    run_set: RunSet,
+) -> Iterator[ImportPreflightPaths]:
+    """Validate import topology without writes, then anchor preparation paths.
+
+    Args:
+        source_root: Existing artifact root containing immutable source attempts.
+        destination_root: Independent artifact root to prepare.
+        run_set: Run-set subset that will be imported.
+
+    Yields:
+        Descriptor paths that remain attached to the validated directories.
+
+    Raises:
+        ValueError: If roots overlap or any existing root/run-set entry is unsafe.
+    """
+    selected_run_set = RunSet(run_set)
+    source_path = _absolute_path(source_root)
+    destination_path = _absolute_path(destination_root)
+    _resolve_independent_roots(source_path, destination_path)
+    _validate_root_entry(source_path, "source root")
+    destination_ancestor, missing_destination_parts = _nearest_existing_ancestor(destination_path)
+
+    with ExitStack() as stack:
+        source_descriptor = stack.enter_context(_open_directory(source_path, "source root"))
+        source_run_set_descriptor = stack.enter_context(
+            _open_directory_at(source_descriptor, selected_run_set.value, "source run-set directory")
+        )
+        destination_ancestor_descriptor = stack.enter_context(
+            _open_directory(destination_ancestor, "destination ancestor")
+        )
+        anchored_destination = (
+            _descriptor_path(destination_ancestor_descriptor).resolve().joinpath(*missing_destination_parts)
+        )
+        _reject_overlapping_roots(_descriptor_path(source_descriptor).resolve(), anchored_destination)
+
+        # All checks above are read-only. Create only a destination already proven
+        # independent, relative to the retained no-follow ancestor descriptor.
+        destination_descriptor = destination_ancestor_descriptor
+        for part in missing_destination_parts:
+            with suppress(FileExistsError):
+                os.mkdir(part, mode=0o755, dir_fd=destination_descriptor)
+            destination_descriptor = stack.enter_context(
+                _open_directory_at(destination_descriptor, part, "destination root")
+            )
+
+        destination_run_set_metadata = _directory_entry_metadata(
+            destination_descriptor,
+            selected_run_set.value,
+            "destination run-set directory",
+        )
+        if destination_run_set_metadata is None:
+            os.mkdir(selected_run_set.value, mode=0o755, dir_fd=destination_descriptor)
+        destination_run_set_descriptor = stack.enter_context(
+            _open_directory_at(destination_descriptor, selected_run_set.value, "destination run-set directory")
+        )
+        source_run_set_metadata = os.fstat(source_run_set_descriptor)
+        destination_run_set_metadata = os.fstat(destination_run_set_descriptor)
+        if (source_run_set_metadata.st_dev, source_run_set_metadata.st_ino) == (
+            destination_run_set_metadata.st_dev,
+            destination_run_set_metadata.st_ino,
+        ):
+            raise ValueError("source and destination run-set directories overlap")
+
+        yield ImportPreflightPaths(
+            source_root=_descriptor_path(source_descriptor),
+            destination_root=_descriptor_path(destination_descriptor),
+            destination_run_set=_descriptor_path(destination_run_set_descriptor),
+        )
+
+
 def import_completed_attempts(
     source_root: Path,
     destination_root: Path,
@@ -101,8 +184,8 @@ def import_completed_attempts(
     _validate_run_set_directory(destination, selected_run_set, "destination")
 
     with ExitStack() as stack:
-        source_descriptor = stack.enter_context(_open_directory(source, "source root"))
-        destination_descriptor = stack.enter_context(_open_directory(destination, "destination root"))
+        source_descriptor = stack.enter_context(_open_directory(source_root, "source root"))
+        destination_descriptor = stack.enter_context(_open_directory(destination_root, "destination root"))
         source_run_set_descriptor = stack.enter_context(
             _open_directory_at(source_descriptor, selected_run_set.value, "source run-set directory")
         )
@@ -210,9 +293,62 @@ def _resolve_independent_roots(source_root: Path, destination_root: Path) -> tup
     """Resolve roots and reject equality or containment in either direction."""
     source = source_root.resolve()
     destination = destination_root.resolve()
+    _reject_overlapping_roots(source, destination)
+    return source, destination
+
+
+def _reject_overlapping_roots(source: Path, destination: Path) -> None:
+    """Reject equality or containment in either direction."""
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError("source and destination roots overlap")
-    return source, destination
+
+
+def _absolute_path(path: Path) -> Path:
+    """Return an absolute lexical path without following symlinks."""
+    return Path(os.path.abspath(path))
+
+
+def _validate_root_entry(path: Path, name: str) -> None:
+    """Require an existing non-symlink directory root."""
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ValueError(f"{name} must be an available, symlink-free directory: {error}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{name} must be an available, symlink-free directory: {path}")
+
+
+def _nearest_existing_ancestor(path: Path) -> tuple[Path, tuple[str, ...]]:
+    """Return a safe existing ancestor and missing direct-child names."""
+    candidate = path
+    missing = []
+    while True:
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            if candidate == candidate.parent:
+                raise ValueError(f"destination root has no available ancestor: {path}")
+            missing.append(candidate.name)
+            candidate = candidate.parent
+            continue
+        except OSError as error:
+            raise ValueError(f"destination root is unavailable: {error}") from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"destination root must be below a symlink-free directory: {candidate}")
+        return candidate, tuple(reversed(missing))
+
+
+def _directory_entry_metadata(parent_descriptor: int, name: str, description: str) -> os.stat_result | None:
+    """Inspect one direct child without following it."""
+    try:
+        metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ValueError(f"{description} is unavailable: {error}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{description} must be a symlink-free directory")
+    return metadata
 
 
 def _descriptor_path(descriptor: int) -> Path:
