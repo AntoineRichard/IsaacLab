@@ -142,12 +142,13 @@ def _source_assignments_from_clone_mask(
     for cfg_id, rows in cfg_rows.items():
         local_source_slots = slots_by_rows.get(rows)
         if local_source_slots is None:
-            selected_mask = host_mask[torch.tensor(rows, dtype=torch.long)]
-            if (selected_mask.sum(dim=0) > 1).any():
-                raise ValueError("A cfg cannot assign multiple source rows to the same clone column.")
             local_source_slots = torch.full((host_mask.shape[1],), -1, dtype=torch.long)
-            active_columns = selected_mask.any(dim=0)
-            local_source_slots[active_columns] = selected_mask.to(dtype=torch.int64).argmax(dim=0)[active_columns]
+            if rows:
+                selected_mask = host_mask[torch.tensor(rows, dtype=torch.long)]
+                if (selected_mask.sum(dim=0) > 1).any():
+                    raise ValueError("A cfg cannot assign multiple source rows to the same clone column.")
+                active_columns = selected_mask.any(dim=0)
+                local_source_slots[active_columns] = selected_mask.to(dtype=torch.int64).argmax(dim=0)[active_columns]
             slots_by_rows[rows] = local_source_slots
         local_source_slots_by_cfg[cfg_id] = local_source_slots
     return _source_assignments_from_local_slots(cfg_rows, local_source_slots_by_cfg)
@@ -454,7 +455,7 @@ def make_clone_plan(
     for cfg, _, _, count in groups:
         cfg_rows[id(cfg)] = tuple(range(row, row + count))
         row += count
-    local_source_slots = chosen_cpu.T.contiguous()
+    local_source_slots = chosen_cpu.T.clone(memory_format=torch.contiguous_format)
     source_assignments = _source_assignments_from_local_slots(
         cfg_rows,
         {id(cfg): local_source_slots[index] for index, (cfg, _, _, _) in enumerate(groups)},

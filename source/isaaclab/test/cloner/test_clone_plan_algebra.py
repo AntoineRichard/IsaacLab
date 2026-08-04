@@ -695,6 +695,65 @@ def test_clone_plan_source_assignment_metadata_marks_all_missing_columns() -> No
     assert torch.equal(assignment.local_source_slots, torch.full((3,), -1, dtype=torch.long))
 
 
+def test_clone_plan_source_assignment_metadata_handles_empty_cfg_rows() -> None:
+    """An empty cfg row mapping has no source slots and remains absent from every clone column."""
+
+    class _Cfg:
+        pass
+
+    cfg = _Cfg()
+    plan = ClonePlan(
+        sources=("/World/envs/env_0/Asset",),
+        destinations=("/World/envs/env_{}/Asset",),
+        clone_mask=torch.ones((1, 3), dtype=torch.bool),
+        cfg_rows={id(cfg): ()},
+    )
+
+    assignment = plan._source_assignments[id(cfg)]
+    assert torch.equal(assignment.used_rows, torch.empty(0, dtype=torch.long))
+    assert torch.equal(assignment.representative_columns, torch.empty(0, dtype=torch.long))
+    assert torch.equal(assignment.local_source_slots, torch.full((3,), -1, dtype=torch.long))
+
+
+def test_make_clone_plan_owns_cpu_metadata_without_mutating_assignment_inputs() -> None:
+    """Metadata owns its compact CPU slots rather than aliasing strategy or valid-set tensors."""
+    cfg = type("Cfg", (), {})()
+    cfg.prim_path = "/World/envs/env_.*/Object"
+    cfg.spawn = sim_utils.MultiAssetSpawnerCfg(
+        assets_cfg=[sim_utils.ConeCfg(radius=0.1, height=0.2), sim_utils.SphereCfg(radius=0.1)]
+    )
+    valid_set = torch.tensor([[1]], dtype=torch.long)
+    valid_set_before = valid_set.clone()
+    strategy_result = torch.tensor([[1], [-1], [1], [-1]], dtype=torch.long)
+    strategy_result_before = strategy_result.clone()
+
+    def strategy(combinations, num_clones, device):
+        assert combinations.data_ptr() == valid_set.data_ptr()
+        assert num_clones == 4
+        assert device == "cpu"
+        return strategy_result
+
+    plan = make_clone_plan(
+        cfgs=(cfg,),
+        num_clones=4,
+        env_spacing=1.0,
+        device="cpu",
+        clone_strategy=strategy,
+        valid_set=valid_set,
+    )
+
+    assignment = plan._source_assignments[id(cfg)]
+    expected_slots = torch.tensor([0, -1, 0, -1], dtype=torch.long)
+    assert torch.equal(valid_set, valid_set_before)
+    assert torch.equal(strategy_result, strategy_result_before)
+    assert assignment.local_source_slots.data_ptr() != valid_set.data_ptr()
+    assert assignment.local_source_slots.data_ptr() != strategy_result.data_ptr()
+
+    valid_set.fill_(-1)
+    strategy_result.fill_(-1)
+    assert torch.equal(assignment.local_source_slots, expected_slots)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required to verify requested-device construction")
 def test_make_clone_plan_keeps_cuda_strategy_assignment_and_metadata_on_their_contract_devices() -> None:
     """Heterogeneous CUDA construction keeps strategy/mask on CUDA and metadata on CPU."""
