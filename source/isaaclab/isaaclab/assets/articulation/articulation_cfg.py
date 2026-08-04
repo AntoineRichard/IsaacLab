@@ -108,6 +108,9 @@ class ArticulationCfg(AssetBaseCfg):
     """Print the resolution of actuator final value when input cfg is different from USD value, Defaults to False
     """
 
+    actuator_debug_validation: bool = False
+    """Whether actuator selector writes perform synchronized diagnostic validation. Defaults to False."""
+
     def _post_spawn(self, stage: Any) -> None:
         """Author ``NewtonActuator`` USD prims from :attr:`actuators` after spawn.
 

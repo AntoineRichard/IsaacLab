@@ -25,7 +25,7 @@ from isaaclab.utils.warp.launch_cache import _WarpLaunchCache
 from . import actuator_kernels
 from .actuator_base import ActuatorBase
 from .actuator_base_cfg import ActuatorBaseCfg
-from .actuator_control import ActuatorControl
+from .actuator_control import ActuatorControl, _ActuatorParameterWrite
 from .actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
 from .actuator_storage import (
     _ArticulationLayout,
@@ -354,6 +354,14 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._joint_indices = torch.tensor(
                 type_layout.compact_joint_indices, dtype=torch.int32, device=binding.registration.control.device
             )
+            self._csr_offsets, self._csr_slots = store.mapping_proxies(type_layout)
+            self._max_csr_fanout = max(
+                end - start
+                for start, end in zip(
+                    type_layout.articulation_to_compact_offsets,
+                    type_layout.articulation_to_compact_offsets[1:],
+                )
+            )
             self._group_slices = {group.name: group.type_slice for group in group_layouts}
             self._num_instances = type_layout.num_worlds
             schema = actuator_type._parameter_schema()
@@ -414,6 +422,50 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             """Contiguous mutable parameter arrays exposed through a read-only mapping."""
             self._require_current_generation()
             return self._parameters
+
+        def set_parameter_index(
+            self,
+            name: str,
+            value: float | torch.Tensor | wp.array | Sequence[float],
+            *,
+            env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+            joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        ) -> None:
+            """Set one parameter using Cartesian articulation index selectors."""
+            self._facade._write_scoped_parameter_index(
+                scope="type",
+                name=name,
+                value=value,
+                target=self._parameters.get(name),
+                scope_joint_ids=self._joint_indices,
+                csr_offsets=self._csr_offsets,
+                csr_slots=self._csr_slots,
+                max_csr_fanout=self._max_csr_fanout,
+                actuator_type=self._actuator_type,
+                group_binding=None,
+                env_ids=env_ids,
+                joint_ids=joint_ids,
+            )
+
+        def set_parameter_mask(
+            self,
+            name: str,
+            value: float | torch.Tensor | wp.array | Sequence[float],
+            *,
+            env_mask: torch.Tensor | wp.array | None = None,
+            joint_mask: torch.Tensor | wp.array | None = None,
+        ) -> None:
+            """Set one parameter using full-articulation masks and compact values."""
+            self._facade._write_scoped_parameter_mask(
+                scope="type",
+                name=name,
+                value=value,
+                target=self._parameters.get(name),
+                scope_joint_ids=self._joint_indices,
+                actuator_type=self._actuator_type,
+                env_mask=env_mask,
+                joint_mask=joint_mask,
+            )
 
     class ArticulationView(dict[str, ActuatorBase]):
         """Guarded dictionary facade owned by one collection generation."""
@@ -599,6 +651,361 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 for actuator_type in binding.layout.type_layouts
             }
             self._by_type = ActuatorCollection._GuardedMapping(self, type_views)
+            device = binding.registration.control.device
+            self._all_env_ids = torch.arange(binding.layout.num_worlds, dtype=torch.int32, device=device)
+            self._all_env_mask = torch.ones(binding.layout.num_worlds, dtype=torch.bool, device=device)
+            self._all_joint_mask = torch.ones(binding.layout.num_joints, dtype=torch.bool, device=device)
+            self._debug_validation = binding.registration.debug_validation
+            self._control = binding.registration.control
+            self._backend_owner_slots: dict[tuple[type[ActuatorBase], str], torch.Tensor] = {}
+            for actuator_type, type_layout in binding.layout.type_layouts.items():
+                if not issubclass(actuator_type, ImplicitActuator):
+                    continue
+                for field_name in ("stiffness", "damping"):
+                    owners = torch.full((binding.layout.num_joints,), -1, dtype=torch.int32, device=device)
+                    for group_layout in binding.layout.group_layouts:
+                        if group_layout.actuator_type is not actuator_type:
+                            continue
+                        local_slots = torch.arange(
+                            group_layout.type_slice.start,
+                            group_layout.type_slice.stop,
+                            dtype=torch.int32,
+                            device=device,
+                        )
+                        owners[torch.tensor(group_layout.joint_indices, dtype=torch.long, device=device)] = local_slots
+                    self._backend_owner_slots[(actuator_type, field_name)] = owners
+
+        def _write_group_parameter_index(
+            self,
+            group: ActuatorBase,
+            name: str,
+            value: float | torch.Tensor | wp.array | Sequence[float],
+            env_ids: Sequence[int] | torch.Tensor | wp.array | None,
+            joint_ids: Sequence[int] | torch.Tensor | wp.array | None,
+        ) -> None:
+            """Route one logical group parameter index write through canonical typed storage."""
+            binding = group.__dict__.get("_parameter_binding")
+            if binding is None or binding.parameter_proxies is None:
+                raise RuntimeError("Actuator group does not have managed parameter storage.")
+            self._write_scoped_parameter_index(
+                scope="group",
+                name=name,
+                value=value,
+                target=binding.parameter_proxies.get(name),
+                scope_joint_ids=binding.joint_indices,
+                csr_offsets=None,
+                csr_slots=None,
+                max_csr_fanout=0,
+                actuator_type=type(group),
+                group_binding=binding,
+                env_ids=env_ids,
+                joint_ids=joint_ids,
+            )
+
+        def _write_group_parameter_mask(
+            self,
+            group: ActuatorBase,
+            name: str,
+            value: float | torch.Tensor | wp.array | Sequence[float],
+            env_mask: torch.Tensor | wp.array | None,
+            joint_mask: torch.Tensor | wp.array | None,
+        ) -> None:
+            """Route one logical group parameter mask write through canonical typed storage."""
+            binding = group.__dict__.get("_parameter_binding")
+            if binding is None or binding.parameter_proxies is None:
+                raise RuntimeError("Actuator group does not have managed parameter storage.")
+            self._write_scoped_parameter_mask(
+                scope="group",
+                name=name,
+                value=value,
+                target=binding.parameter_proxies.get(name),
+                scope_joint_ids=binding.joint_indices,
+                actuator_type=type(group),
+                env_mask=env_mask,
+                joint_mask=joint_mask,
+            )
+
+        def _write_scoped_parameter_index(
+            self,
+            *,
+            scope: str,
+            name: str,
+            value: float | torch.Tensor | wp.array | Sequence[float],
+            target: ProxyArray | None,
+            scope_joint_ids: torch.Tensor,
+            csr_offsets: ProxyArray | None,
+            csr_slots: ProxyArray | None,
+            max_csr_fanout: int,
+            actuator_type: type[ActuatorBase],
+            group_binding: _GroupBinding | None,
+            env_ids: Sequence[int] | torch.Tensor | wp.array | None,
+            joint_ids: Sequence[int] | torch.Tensor | wp.array | None,
+        ) -> None:
+            """Validate metadata and launch the synchronization-free indexed parameter writer."""
+            self._require_execution_ready()
+            if target is None:
+                raise KeyError(f"Unknown parameter {name!r} for {scope} actuator facade.")
+            env_selector = self._normalize_index_selector(env_ids, "env_ids", self._all_env_ids, scope)
+            explicit_joint_ids = joint_ids is not None
+            default_joint_ids = self._default_scope_joint_ids(scope_joint_ids)
+            joint_selector = self._normalize_index_selector(joint_ids, "joint_ids", default_joint_ids, scope)
+            source, value_mode = self._normalize_index_value(
+                value, env_selector.shape[0], joint_selector.shape[0], target
+            )
+            if self._debug_validation:
+                self._validate_index_contents(
+                    scope, name, env_selector, joint_selector, scope_joint_ids, explicit_joint_ids
+                )
+            if env_selector.shape[0] == 0 or joint_selector.shape[0] == 0:
+                return
+            source_wp = wp.from_torch(source.contiguous(), dtype=wp.float32)
+            env_selector_wp = wp.from_torch(
+                env_selector.contiguous(), dtype=wp.int32 if env_selector.dtype is torch.int32 else wp.int64
+            )
+            joint_selector_wp = wp.from_torch(
+                joint_selector.contiguous(), dtype=wp.int32 if joint_selector.dtype is torch.int32 else wp.int64
+            )
+            scope_joint_ids_wp = wp.from_torch(scope_joint_ids.contiguous(), dtype=wp.int32)
+            type_scope = csr_offsets is not None and csr_slots is not None
+            num_candidates = max_csr_fanout if explicit_joint_ids and type_scope else scope_joint_ids.shape[0]
+            if not explicit_joint_ids:
+                num_candidates = 1
+            wp.launch(
+                actuator_kernels.write_scoped_parameter_index,
+                dim=(env_selector.shape[0], joint_selector.shape[0], num_candidates),
+                inputs=[
+                    source_wp,
+                    env_selector_wp,
+                    joint_selector_wp,
+                    scope_joint_ids_wp,
+                    None if csr_offsets is None else csr_offsets.warp,
+                    None if csr_slots is None else csr_slots.warp,
+                    self._all_env_ids.shape[0],
+                    self._all_joint_mask.shape[0],
+                    explicit_joint_ids,
+                    type_scope,
+                    value_mode,
+                ],
+                outputs=[target.warp],
+                device=target.warp.device,
+            )
+            self._route_parameter_side_effect(
+                actuator_type,
+                scope,
+                name,
+                target.torch,
+                env_selector,
+                joint_selector if explicit_joint_ids else None,
+                csr_offsets,
+                csr_slots,
+                group_binding,
+            )
+
+        def _write_scoped_parameter_mask(
+            self,
+            *,
+            scope: str,
+            name: str,
+            value: float | torch.Tensor | wp.array | Sequence[float],
+            target: ProxyArray | None,
+            scope_joint_ids: torch.Tensor,
+            actuator_type: type[ActuatorBase],
+            env_mask: torch.Tensor | wp.array | None,
+            joint_mask: torch.Tensor | wp.array | None,
+        ) -> None:
+            """Validate metadata and launch the synchronization-free masked parameter writer."""
+            self._require_execution_ready()
+            if target is None:
+                raise KeyError(f"Unknown parameter {name!r} for {scope} actuator facade.")
+            env_selector = self._normalize_mask_selector(env_mask, "env_mask", self._all_env_mask, scope)
+            joint_selector = self._normalize_mask_selector(joint_mask, "joint_mask", self._all_joint_mask, scope)
+            source, value_mode = self._normalize_mask_value(value, scope_joint_ids.shape[0], target)
+            source_wp = wp.from_torch(source.contiguous(), dtype=wp.float32)
+            env_selector_wp = wp.from_torch(env_selector.contiguous(), dtype=wp.bool)
+            joint_selector_wp = wp.from_torch(joint_selector.contiguous(), dtype=wp.bool)
+            scope_joint_ids_wp = wp.from_torch(scope_joint_ids.contiguous(), dtype=wp.int32)
+            wp.launch(
+                actuator_kernels.write_scoped_parameter_mask,
+                dim=(self._all_env_ids.shape[0], scope_joint_ids.shape[0]),
+                inputs=[source_wp, env_selector_wp, joint_selector_wp, scope_joint_ids_wp, value_mode],
+                outputs=[target.warp],
+                device=target.warp.device,
+            )
+            if issubclass(actuator_type, ImplicitActuator) and name in {"stiffness", "damping"}:
+                owner_slots = self._backend_owner_slots.get((actuator_type, name))
+                if owner_slots is not None:
+                    self._control.write_actuator_parameter(
+                        name,
+                        _ActuatorParameterWrite(
+                            value=source,
+                            env_mask=env_selector,
+                            joint_mask=joint_selector,
+                            backend_owner_slots=owner_slots,
+                        ),
+                    )
+
+        @staticmethod
+        def _as_torch(value: float | torch.Tensor | wp.array | Sequence[float], target: ProxyArray) -> torch.Tensor:
+            """Convert compatibility inputs without copying device-resident selector contents to the host."""
+            if isinstance(value, ProxyArray):
+                value = value.torch
+            elif isinstance(value, wp.array):
+                value = wp.to_torch(value)
+            elif not isinstance(value, torch.Tensor):
+                value = torch.as_tensor(value, device=target.torch.device)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError("Parameter values must be floating tensors, Warp arrays, scalars, or sequences.")
+            if value.device != target.torch.device:
+                raise ValueError("Parameter values must be on the same device as the actuator facade.")
+            if value.dtype is not torch.float32:
+                raise TypeError("Parameter values must have float32 dtype.")
+            return value
+
+        @staticmethod
+        def _as_index_torch(
+            value: torch.Tensor | wp.array | Sequence[int], target: torch.Tensor, name: str
+        ) -> torch.Tensor:
+            """Convert an index compatibility input while validating host-visible metadata only."""
+            if isinstance(value, ProxyArray):
+                value = value.torch
+            elif isinstance(value, wp.array):
+                value = wp.to_torch(value)
+            elif not isinstance(value, torch.Tensor):
+                value = torch.as_tensor(value, dtype=torch.int32, device=target.device)
+            if not isinstance(value, torch.Tensor) or value.ndim != 1:
+                raise ValueError(f"{name} must be one-dimensional.")
+            if value.device != target.device:
+                raise ValueError(f"{name} must be on the actuator facade device.")
+            if value.dtype not in (torch.int32, torch.int64):
+                raise TypeError(f"{name} must have a signed integer dtype.")
+            return value
+
+        def _normalize_index_selector(
+            self,
+            value: Sequence[int] | torch.Tensor | wp.array | None,
+            name: str,
+            default: torch.Tensor,
+            scope: str,
+        ) -> torch.Tensor:
+            del scope
+            return default if value is None else self._as_index_torch(value, default, name)
+
+        def _default_scope_joint_ids(self, scope_joint_ids: torch.Tensor) -> torch.Tensor:
+            """Return a pointer-stable compact selector owned by this facade."""
+            selectors = self.__dict__.setdefault("_parameter_default_joint_ids", {})
+            key = scope_joint_ids.data_ptr()
+            selector = selectors.get(key)
+            if selector is None:
+                selector = torch.arange(scope_joint_ids.shape[0], dtype=torch.int32, device=scope_joint_ids.device)
+                selectors[key] = selector
+            return selector
+
+        def _normalize_mask_selector(
+            self,
+            value: torch.Tensor | wp.array | None,
+            name: str,
+            default: torch.Tensor,
+            scope: str,
+        ) -> torch.Tensor:
+            del scope
+            if value is None:
+                return default
+            if isinstance(value, ProxyArray):
+                value = value.torch
+            elif isinstance(value, wp.array):
+                value = wp.to_torch(value)
+            if not isinstance(value, torch.Tensor) or value.ndim != 1:
+                raise ValueError(f"{name} must be a one-dimensional boolean tensor.")
+            if value.device != default.device:
+                raise ValueError(f"{name} must be on the actuator facade device.")
+            if value.dtype is not torch.bool:
+                raise TypeError(f"{name} must have boolean dtype.")
+            if value.shape != default.shape:
+                raise ValueError(f"{name} must have shape {tuple(default.shape)}.")
+            return value
+
+        def _normalize_index_value(
+            self,
+            value: float | torch.Tensor | wp.array | Sequence[float],
+            num_envs: int,
+            num_joints: int,
+            target: ProxyArray,
+        ) -> tuple[torch.Tensor, int]:
+            source = self._as_torch(value, target)
+            if source.ndim == 0:
+                return source.reshape(1, 1), 0
+            if source.ndim == 1 and source.shape[0] == num_joints:
+                return source.reshape(1, num_joints), 1
+            if source.ndim == 2 and source.shape == (num_envs, num_joints):
+                return source, 2
+            raise ValueError("Parameter index values must be scalar, compact 1-D, or world-by-compact 2-D.")
+
+        def _normalize_mask_value(
+            self, value: float | torch.Tensor | wp.array | Sequence[float], num_slots: int, target: ProxyArray
+        ) -> tuple[torch.Tensor, int]:
+            source = self._as_torch(value, target)
+            if source.ndim == 0:
+                return source.reshape(1, 1), 0
+            if source.ndim == 1 and source.shape[0] == num_slots:
+                return source.reshape(1, num_slots), 1
+            if source.ndim == 2 and source.shape == (self._all_env_ids.shape[0], num_slots):
+                return source, 2
+            raise ValueError("Parameter mask values must be scalar, compact 1-D, or world-by-compact 2-D.")
+
+        def _validate_index_contents(
+            self,
+            scope: str,
+            name: str,
+            env_ids: torch.Tensor,
+            joint_ids: torch.Tensor,
+            scope_joint_ids: torch.Tensor,
+            explicit_joint_ids: bool,
+        ) -> None:
+            """Perform opt-in synchronized bounds, ownership, and duplicate diagnostics."""
+            env_values = env_ids.detach().cpu().tolist()
+            joint_values = joint_ids.detach().cpu().tolist()
+            if len(set(env_values)) != len(env_values) or len(set(joint_values)) != len(joint_values):
+                raise ValueError(f"{name!r} {scope} selector contains duplicate ids.")
+            if any(env_id < 0 or env_id >= self._all_env_ids.shape[0] for env_id in env_values):
+                raise ValueError(f"{name!r} {scope} selector contains an out-of-range environment id.")
+            if not explicit_joint_ids:
+                return
+            scope_values = set(scope_joint_ids.detach().cpu().tolist())
+            if any(joint_id < 0 or joint_id >= self._all_joint_mask.shape[0] for joint_id in joint_values):
+                raise ValueError(f"{name!r} {scope} selector contains an out-of-range joint id.")
+            if scope == "group" and any(joint_id not in scope_values for joint_id in joint_values):
+                raise ValueError(f"{name!r} group selector addresses a joint outside its ownership.")
+
+        def _route_parameter_side_effect(
+            self,
+            actuator_type: type[ActuatorBase],
+            scope: str,
+            name: str,
+            value: torch.Tensor,
+            env_ids: torch.Tensor,
+            joint_ids: torch.Tensor | None,
+            csr_offsets: ProxyArray | None,
+            csr_slots: ProxyArray | None,
+            group_binding: _GroupBinding | None,
+        ) -> None:
+            """Forward implicit drive writes through their configuration-order owner slots."""
+            if not issubclass(actuator_type, ImplicitActuator) or name not in {"stiffness", "damping"}:
+                return
+            owner_slots = self._backend_owner_slots.get((actuator_type, name))
+            if owner_slots is None:
+                return
+            self._control.write_actuator_parameter(
+                name,
+                _ActuatorParameterWrite(
+                    value=value,
+                    env_ids=env_ids,
+                    joint_ids=joint_ids,
+                    group_binding=group_binding,
+                    type_csr_offsets=csr_offsets,
+                    type_csr_slots=csr_slots,
+                    backend_owner_slots=owner_slots,
+                ),
+            )
 
         def _publish(self, generation: int) -> None:
             self._generation = generation

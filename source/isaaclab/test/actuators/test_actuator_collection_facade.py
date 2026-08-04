@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import warp as wp
 
 from isaaclab.actuators import ActuatorCollection
 from isaaclab.actuators.actuator_base import ActuatorBase
@@ -27,11 +28,11 @@ class _CustomIdealPD(IdealPDActuator):
 
 
 class _Simulation:
-    def __init__(self) -> None:
+    def __init__(self, device: str = "cpu") -> None:
         self._clone_plan = ClonePlan(
             sources=("/World/envs/env_0",),
             destinations=("/World/envs/env_{}",),
-            clone_mask=torch.ones((1, 2), dtype=torch.bool),
+            clone_mask=torch.ones((1, 2), dtype=torch.bool, device=device),
             cfg_rows={1: (0,)},
         )
 
@@ -40,8 +41,9 @@ class _Simulation:
 
 
 class _Control:
-    def __init__(self) -> None:
+    def __init__(self, device: str = "cpu") -> None:
         self._joint_names = ("hip", "knee", "ankle")
+        self._device = device
 
     @property
     def num_instances(self) -> int:
@@ -53,7 +55,7 @@ class _Control:
 
     @property
     def device(self) -> str:
-        return "cpu"
+        return self._device
 
     def discover_native_actuators(self, cfgs) -> set[str]:
         del cfgs
@@ -66,7 +68,7 @@ class _Control:
 
     def get_default_joint_properties(self, joint_ids):
         count = self.num_joints if isinstance(joint_ids, slice) else len(joint_ids)
-        values = torch.zeros((self.num_instances, count))
+        values = torch.zeros((self.num_instances, count), device=self.device)
         return ActuatorJointProperties(
             stiffness=values,
             damping=values,
@@ -122,15 +124,15 @@ def _dc_cfg(joint_names: list[str]) -> DCMotorCfg:
     return cfg
 
 
-def make_finalized_robot(*, groups=None):
-    collection = ActuatorCollection(_Simulation())
+def make_finalized_robot(*, groups=None, device: str = "cpu", debug_validation: bool = False):
+    collection = ActuatorCollection(_Simulation(device))
     cfgs = groups or {"hip": _ideal_cfg(["hip", "knee"]), "knee": _dc_cfg(["knee"]), "ankle": _ideal_cfg(["ankle"])}
     view = collection.register_articulation(
         key="robot",
         cfgs=cfgs,
-        control=_Control(),
+        control=_Control(device),
         replication_cfg_id=1,
-        debug_validation=False,
+        debug_validation=debug_validation,
         debug_value_resolution=False,
     )
     collection.finalize()
@@ -771,3 +773,158 @@ def test_every_facade_read_and_snapshot_route_checks_generation(read) -> None:
 
     with pytest.raises(RuntimeError, match="stale actuator view"):
         read(facade)
+
+
+def _available_devices() -> tuple[str, ...]:
+    return ("cpu", "cuda") if torch.cuda.is_available() else ("cpu",)
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("scope", ("group", "type"))
+def test_parameter_index_uses_cartesian_articulation_selectors(scope: str, device: str) -> None:
+    """Catch a selector implementation that treats selected joint ids as compact columns."""
+    robot = make_finalized_robot(device=device)
+    view = robot.actuators["hip"] if scope == "group" else robot.actuators.by_type[IdealPDActuator]
+    before = view.parameters["stiffness"].torch.clone()
+
+    view.set_parameter_index(
+        "stiffness",
+        torch.tensor([[10.0, 11.0], [20.0, 21.0]], device=device),
+        env_ids=torch.tensor([1, 0], device=device),
+        joint_ids=torch.tensor([1, 0], device=device),
+    )
+
+    expected = before
+    expected[1, 1] = 10.0
+    expected[1, 0] = 11.0
+    expected[0, 1] = 20.0
+    expected[0, 0] = 21.0
+    torch.testing.assert_close(view.parameters["stiffness"].torch[:, :2], expected[:, :2])
+
+
+def test_parameter_index_filters_out_of_scope_joint_columns() -> None:
+    """Catch an implementation that shifts values after filtering an out-of-scope joint."""
+    group = make_finalized_robot(groups={"hip": _ideal_cfg(["hip", "knee"])}).actuators["hip"]
+
+    group.set_parameter_index("damping", torch.tensor([10.0, 20.0, 30.0]), joint_ids=torch.tensor([1, 2, 0]))
+
+    torch.testing.assert_close(group.parameters["damping"].torch, torch.tensor([[30.0, 10.0], [30.0, 10.0]]))
+
+
+def test_parameter_index_duplicate_ids_use_last_cartesian_value() -> None:
+    """Catch a parallel write race that does not give duplicate selectors last-write semantics."""
+    group = make_finalized_robot(groups={"hip": _ideal_cfg(["hip", "knee"])}).actuators["hip"]
+
+    group.set_parameter_index(
+        "damping",
+        torch.tensor([[2.0, 3.0], [5.0, 7.0]]),
+        env_ids=torch.tensor([0, 0]),
+        joint_ids=torch.tensor([1, 1]),
+    )
+
+    assert group.parameters["damping"].torch[0, 1] == 7.0
+
+
+def test_type_parameter_index_fans_out_overlapping_articulation_dofs() -> None:
+    """Catch a type selector that updates only the first compact occurrence of a joint."""
+    view = make_finalized_robot(
+        groups={"first": _ideal_cfg(["hip", "knee"]), "second": _ideal_cfg(["knee", "ankle"])}
+    ).actuators.by_type[IdealPDActuator]
+
+    view.set_parameter_index("stiffness", torch.tensor([13.0]), joint_ids=torch.tensor([1]))
+
+    torch.testing.assert_close(view.parameters["stiffness"].torch[:, [1, 2]], torch.full((2, 2), 13.0))
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_type_parameter_mask_keeps_values_in_compact_slot_order(device: str) -> None:
+    """Catch a mask selector that compacts values by the number of true articulation joints."""
+    view = make_finalized_robot(
+        device=device, groups={"first": _ideal_cfg(["hip", "knee"]), "second": _ideal_cfg(["knee", "ankle"])}
+    ).actuators.by_type[IdealPDActuator]
+
+    view.set_parameter_mask(
+        "stiffness",
+        torch.tensor([1.0, 11.0, 22.0, 3.0], device=device),
+        joint_mask=torch.tensor([False, True, False], device=device),
+    )
+
+    torch.testing.assert_close(
+        view.parameters["stiffness"].torch[:, [1, 2]], torch.tensor([[11.0, 22.0]] * 2, device=device)
+    )
+
+
+def test_unknown_parameter_fails_before_a_parameter_write() -> None:
+    """Catch an unknown-field path that silently writes or launches before validation."""
+    group = make_finalized_robot().actuators["hip"]
+    before = group.parameters["stiffness"].torch.clone()
+
+    with pytest.raises(KeyError, match="unknown"):
+        group.set_parameter_index("unknown", 1.0)
+
+    torch.testing.assert_close(group.parameters["stiffness"].torch, before)
+
+
+def test_parameter_index_invalid_ids_are_ignored_without_debug_validation() -> None:
+    """Catch normal-mode validation that reads device selector values or rejects ignored ids."""
+    group = make_finalized_robot().actuators["hip"]
+    before = group.parameters["stiffness"].torch.clone()
+
+    group.set_parameter_index("stiffness", torch.tensor([17.0, 19.0]), joint_ids=torch.tensor([-1, 9]))
+
+    torch.testing.assert_close(group.parameters["stiffness"].torch, before)
+
+
+def test_parameter_index_invalid_ids_raise_with_debug_validation() -> None:
+    """Catch the absence of opt-in, value-dependent selector validation."""
+    group = make_finalized_robot(debug_validation=True).actuators["hip"]
+
+    with pytest.raises(ValueError, match="stiffness.*group"):
+        group.set_parameter_index("stiffness", torch.tensor([-1.0]), joint_ids=torch.tensor([-1]))
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_parameter_selectors_do_not_read_device_values_in_normal_mode(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """Catch a normal selector path that synchronizes to inspect device-resident selector contents."""
+    view = make_finalized_robot(device=device).actuators.by_type[IdealPDActuator]
+
+    def _read_forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("normal selector path read a device tensor")
+
+    monkeypatch.setattr(torch.Tensor, "cpu", _read_forbidden)
+    monkeypatch.setattr(torch.Tensor, "tolist", _read_forbidden)
+    if device == "cuda":
+        monkeypatch.setattr(torch.cuda, "synchronize", _read_forbidden)
+        monkeypatch.setattr(wp, "synchronize_device", _read_forbidden)
+
+    view.set_parameter_index(
+        "stiffness",
+        torch.tensor([[5.0], [7.0]], device=device),
+        env_ids=torch.tensor([0, 1], device=device),
+        joint_ids=torch.tensor([1], device=device),
+    )
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_parameter_empty_and_all_false_selections_leave_values_unchanged(device: str) -> None:
+    """Catch selector kernels that mutate canonical storage for no-op selections."""
+    view = make_finalized_robot(device=device).actuators.by_type[IdealPDActuator]
+    before = view.parameters["stiffness"].torch.clone()
+
+    view.set_parameter_index(
+        "stiffness",
+        torch.empty((0, 0), dtype=torch.float32, device=device),
+        env_ids=torch.empty(0, dtype=torch.int32, device=device),
+        joint_ids=torch.empty(0, dtype=torch.int32, device=device),
+    )
+    view.set_parameter_mask(
+        "stiffness",
+        11.0,
+        env_mask=torch.zeros(2, dtype=torch.bool, device=device),
+        joint_mask=torch.zeros(3, dtype=torch.bool, device=device),
+    )
+
+    torch.testing.assert_close(view.parameters["stiffness"].torch, before)

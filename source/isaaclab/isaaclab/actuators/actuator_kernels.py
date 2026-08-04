@@ -63,6 +63,95 @@ def write_2d_float_with_mask(
 
 
 @wp.kernel(enable_backward=False)
+def write_scoped_parameter_index(
+    source: wp.array2d(dtype=wp.float32),
+    env_ids: wp.array(dtype=Any),
+    joint_ids: wp.array(dtype=Any),
+    scope_joint_ids: wp.array(dtype=wp.int32),
+    csr_offsets: wp.array(dtype=wp.int32),
+    csr_slots: wp.array(dtype=wp.int32),
+    num_worlds: int,
+    num_articulation_joints: int,
+    explicit_joint_ids: bool,
+    type_scope: bool,
+    value_mode: int,
+    target: wp.array2d(dtype=wp.float32),
+):
+    """Write a scoped parameter using Cartesian articulation index selectors.
+
+    The final dimension is the stable compact slot. Every candidate thread checks
+    later Cartesian entries for the same destination, making duplicate selectors
+    deterministic without atomics on both CPU and CUDA.
+    """
+    env_i, joint_i, candidate_i = wp.tid()
+    env_id = env_ids[env_i]
+    if env_id < 0 or env_id >= num_worlds:
+        return
+
+    if explicit_joint_ids:
+        articulation_joint_id = joint_ids[joint_i]
+        if articulation_joint_id < 0 or articulation_joint_id >= num_articulation_joints:
+            return
+        if type_scope:
+            csr_joint_id = wp.int32(articulation_joint_id)
+            compact_i = csr_offsets[csr_joint_id] + candidate_i
+            if compact_i >= csr_offsets[csr_joint_id + wp.int32(1)]:
+                return
+            slot = csr_slots[compact_i]
+        else:
+            slot = candidate_i
+            if scope_joint_ids[slot] != articulation_joint_id:
+                return
+    else:
+        if candidate_i != 0:
+            return
+        slot = joint_i
+
+    is_last = bool(True)
+    for later_env_i in range(env_i, env_ids.shape[0]):
+        if env_ids[later_env_i] != env_id:
+            continue
+        first_joint_i = joint_i + 1 if later_env_i == env_i else 0
+        for later_joint_i in range(first_joint_i, joint_ids.shape[0]):
+            if explicit_joint_ids:
+                later_joint_id = joint_ids[later_joint_i]
+                if later_joint_id == scope_joint_ids[slot]:
+                    is_last = False
+            elif later_joint_i == slot:
+                is_last = False
+    if not is_last:
+        return
+
+    if value_mode == 0:
+        target[env_id, slot] = source[0, 0]
+    elif value_mode == 1:
+        target[env_id, slot] = source[0, joint_i]
+    else:
+        target[env_id, slot] = source[env_i, joint_i]
+
+
+@wp.kernel(enable_backward=False)
+def write_scoped_parameter_mask(
+    source: wp.array2d(dtype=wp.float32),
+    env_mask: wp.array(dtype=wp.bool),
+    joint_mask: wp.array(dtype=wp.bool),
+    scope_joint_ids: wp.array(dtype=wp.int32),
+    value_mode: int,
+    target: wp.array2d(dtype=wp.float32),
+):
+    """Write a scoped parameter using full-articulation masks and compact values."""
+    env_id, slot = wp.tid()
+    if not env_mask[env_id] or not joint_mask[scope_joint_ids[slot]]:
+        return
+    if value_mode == 0:
+        target[env_id, slot] = source[0, 0]
+    elif value_mode == 1:
+        target[env_id, slot] = source[0, slot]
+    else:
+        target[env_id, slot] = source[env_id, slot]
+
+
+@wp.kernel(enable_backward=False)
 def scatter_processed_targets(
     source_pos: wp.array2d(dtype=wp.float32),
     source_vel: wp.array2d(dtype=wp.float32),

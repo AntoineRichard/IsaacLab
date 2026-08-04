@@ -12,6 +12,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
+import warp as wp
 
 import isaaclab.utils.string as string_utils
 from isaaclab.utils.types import ArticulationActions
@@ -512,6 +513,50 @@ class ActuatorBase(ABC):
         view = self.__dict__.get("_facade_view")
         if view is not None:
             view._require_execution_ready()
+
+    def set_parameter_index(
+        self,
+        name: str,
+        value: float | torch.Tensor | wp.array | Sequence[float],
+        *,
+        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+    ) -> None:
+        """Set one managed parameter using Cartesian articulation index selectors.
+
+        Args:
+            name: Managed parameter name.
+            value: Scalar, compact per-joint values, or Cartesian world-by-joint values.
+            env_ids: Articulation environment indices. Defaults to every environment.
+            joint_ids: Articulation joint indices. Defaults to this group's compact slots.
+        """
+        self._require_facade_execution_ready()
+        view = self.__dict__.get("_facade_view")
+        if view is None:
+            raise RuntimeError("Actuator group is not bound to a scoped facade.")
+        view._write_group_parameter_index(self, name, value, env_ids, joint_ids)
+
+    def set_parameter_mask(
+        self,
+        name: str,
+        value: float | torch.Tensor | wp.array | Sequence[float],
+        *,
+        env_mask: torch.Tensor | wp.array | None = None,
+        joint_mask: torch.Tensor | wp.array | None = None,
+    ) -> None:
+        """Set one managed parameter using full-articulation masks.
+
+        Args:
+            name: Managed parameter name.
+            value: Scalar, compact per-joint values, or world-by-compact values.
+            env_mask: Full-articulation environment mask. Defaults to every environment.
+            joint_mask: Full-articulation joint mask. Defaults to every joint.
+        """
+        self._require_facade_execution_ready()
+        view = self.__dict__.get("_facade_view")
+        if view is None:
+            raise RuntimeError("Actuator group is not bound to a scoped facade.")
+        view._write_group_parameter_mask(self, name, value, env_mask, joint_mask)
 
     def _get_compatibility_sidecar(self, name: str) -> torch.Tensor:
         """Return a lazy solver-only compatibility buffer for a bound group."""
