@@ -190,10 +190,24 @@ class _SelectorState:
             # Gains are universal solver semantics, including on exact neural
             # classes whose typed parameter schema deliberately omits them.
             schema_factory = getattr(group_layout.actuator_type, "_parameter_schema", None)
+            # Every ActuatorBaseCfg owns the common backend-facing properties,
+            # including a direct third-party ActuatorBase subclass that has not
+            # opted into the managed schema seam.  A later opaque group must
+            # therefore clear an earlier native route for these fields.  The
+            # optional schema contributes actuator-specific fields such as the
+            # DC motor saturation effort.
             semantic_fields = (frozenset() if schema_factory is None else schema_factory().parameter_names) | {
                 "stiffness",
                 "damping",
+                "effort_limit",
+                "velocity_limit",
             }
+            # Configuration is the extensible declaration of a group's
+            # semantic ownership.  This matters for a schema-less custom class
+            # configured with a first-party cfg that exposes a routed
+            # actuator-specific field (for example saturation effort).
+            cfg = binding.registration.cfgs[group_layout.name]
+            semantic_fields |= {field for field in winner_by_field if hasattr(cfg, field)}
             routed_fields: set[str] = set()
             if issubclass(group_layout.actuator_type, ImplicitActuator):
                 routed_fields.update(("stiffness", "damping"))
@@ -663,11 +677,35 @@ class _CollectionGeneration:
             if getattr(binding.registration.control, "resolved_solver_property_transport", lambda: "device")()
             == "device"
         )
-        self.solver_store.prepare_device_assignments(
-            tuple(binding.layout for binding in self.bindings),
-            device=self.bindings[0].registration.control.device,
+        gain_staging_bindings = tuple(
+            binding
+            for binding in self.bindings
+            if torch.device(binding.registration.control.device).type == "cuda"
+            and any(
+                route in self.selector_states[binding.registration.key]._active_backend_routes
+                and issubclass(route[0], ImplicitActuator)
+                and route[1] in {"stiffness", "damping"}
+                for route in self.selector_states[binding.registration.key]._backend_owner_slots
+            )
         )
+        solver_device = self.bindings[0].registration.control.device
+        consumer_list: list[_ArticulationBinding] = []
+        for binding in (*device_bindings, *gain_staging_bindings):
+            if not any(binding is existing for existing in consumer_list):
+                consumer_list.append(binding)
+        consumers = tuple(consumer_list)
+        if consumers:
+            self.solver_store.prepare_device_assignments(
+                tuple(binding.layout for binding in consumers), device=solver_device
+            )
+            for field_name in ("stiffness", "damping"):
+                self.solver_store._prepare_device_source_rows(
+                    tuple(binding.layout for binding in consumers), field_name, device=solver_device
+                )
         if device_bindings:
+            # CPU solver transports consume compact source rows directly.  Do
+            # not upload their clone assignment merely because another
+            # articulation has a device solver target.
             self.solver_store.materialize_device_targets(
                 tuple(binding.layout for binding in device_bindings),
                 device=device_bindings[0].registration.control.device,

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import copy
 import warnings
-from types import SimpleNamespace
+from dataclasses import replace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 import torch
@@ -849,6 +850,103 @@ def test_typed_store_records_cuda_initialization_tensors_before_release(monkeypa
     assert store._initialization_buffers == []
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for construction-stream coverage")
+def test_construction_stream_orders_torch_producers_and_releases_on_its_exact_stream() -> None:
+    """Typed and solver construction consume a delayed caller Torch producer without a host wait."""
+    typed_stream = wp.Stream("cuda:0")
+    solver_stream = wp.Stream("cuda:0")
+    producer_stream = torch.cuda.Stream()
+    typed_source = torch.tensor([[73.0]], dtype=torch.float32, device="cuda:0")
+    solver_source = torch.tensor([[91.0]], dtype=torch.float32, device="cuda:0")
+    typed_layout = _cpu_source_layout(1)
+    typed_group = replace(typed_layout.group_layouts[0], prototype_values=MappingProxyType({"stiffness": typed_source}))
+    typed_layout = replace(typed_layout, group_layouts=(typed_group,))
+    solver_layout = replace(
+        _cpu_source_layout(1),
+        solver_default_values=MappingProxyType(
+            {name: solver_source.clone() for name in actuator_storage._SolverPropertyStore._FIELD_NAMES}
+        ),
+    )
+    typed_store = actuator_storage._TypedStore(IdealPDActuator)
+    solver_store = actuator_storage._SolverPropertyStore()
+
+    with wp.ScopedStream(typed_stream):
+        with torch.cuda.stream(producer_stream):
+            torch.cuda._sleep(100_000_000)
+            typed_store.allocate((typed_layout,), device="cuda:0")
+    with torch.cuda.stream(producer_stream):
+        torch.cuda._sleep(100_000_000)
+        solver_store.allocate((solver_layout,), device="cuda:0")
+    with wp.ScopedStream(solver_stream):
+        solver_store.materialize_device_targets((solver_layout,), device="cuda:0")
+
+    torch.cuda.synchronize()
+    assert typed_store.type_proxy(typed_layout.type_layouts[IdealPDActuator], "stiffness").torch.item() == 73.0
+    assert solver_store.articulation_proxy("stiffness", solver_layout).torch.item() == 91.0
+
+    recorded_streams: set[int] = set()
+    original_record_stream = torch.Tensor.record_stream
+
+    def _record_stream(tensor: torch.Tensor, stream: torch.cuda.Stream) -> None:
+        if tensor.is_cuda:
+            recorded_streams.add(stream.cuda_stream)
+        original_record_stream(tensor, stream)
+
+    try:
+        torch.Tensor.record_stream = _record_stream
+        with wp.ScopedStream(wp.Stream("cuda:0")):
+            typed_store._release_initialization_buffers()
+            solver_store._release_initialization_buffers()
+    finally:
+        torch.Tensor.record_stream = original_record_stream
+
+    assert typed_stream.cuda_stream in recorded_streams
+    assert solver_stream.cuda_stream in recorded_streams
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for solver source-transfer coverage")
+def test_solver_store_packs_multi_layout_source_rows_once_per_field_and_reuses_gain_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two device layouts use one assignment and one source H2D per solver field."""
+    layouts = (_cpu_source_layout(1), _cpu_source_layout(1))
+    store = actuator_storage._SolverPropertyStore()
+    store.allocate(layouts, device="cuda")
+    transfers: list[tuple[int, ...]] = []
+    original_to = torch.Tensor.to
+
+    def _record_to(tensor: torch.Tensor, *args, **kwargs):
+        requested_device = kwargs.get("device", args[0] if args else None)
+        if (
+            requested_device is not None
+            and tensor.device.type == "cpu"
+            and torch.device(requested_device).type == "cuda"
+        ):
+            transfers.append(tuple(tensor.shape))
+        return original_to(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", _record_to)
+    launches = 0
+    original_launch = wp.launch
+
+    def _record_launch(kernel, *args, **kwargs):
+        nonlocal launches
+        if kernel is actuator_storage._expand_prototype_field:
+            launches += 1
+        return original_launch(kernel, *args, **kwargs)
+
+    monkeypatch.setattr(wp, "launch", _record_launch)
+    store.prepare_device_assignments(layouts, device="cuda")
+    store.materialize_device_targets(layouts, device="cuda")
+    before_staging = list(transfers)
+    staging_target = ProxyArray(wp.empty((1, 1), dtype=wp.float32, device="cuda"))
+    store.expand_source_rows_into(staging_target, "stiffness", layouts[0])
+
+    assert len(before_staging) == 1 + len(store._FIELD_NAMES)
+    assert transfers == before_staging
+    assert launches == len(store._FIELD_NAMES)
+
+
 @pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
 def test_backend_parameter_staging_patches_only_owned_indexed_joints_without_reallocation(device: str) -> None:
     """Stage canonical compact values into their configuration-owned backend joints.
@@ -967,33 +1065,49 @@ def test_backend_parameter_staging_uses_type_canonical_values_for_group_writes(d
 
 
 @pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
-def test_backend_parameter_staging_reuses_candidate_owned_default_selectors(device: str) -> None:
+def test_backend_parameter_staging_reuses_candidate_owned_default_selectors(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Use persistent all-world/all-joint selectors when a write omits both selectors.
 
     This fails if the steady path synthesizes temporary selector tensors or
     leaves unselected owner slots stale when the public API passes ``None``.
     """
     canonical = ProxyArray(
-        wp.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=device), dtype=wp.float32)
+        wp.from_torch(
+            torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]], dtype=torch.float32, device=device),
+            dtype=wp.float32,
+        )
     )
     staging = actuator_storage._BackendParameterStaging(
-        num_worlds=2,
-        num_joints=3,
+        num_worlds=4,
+        num_joints=2,
         device=device,
-        owner_slots={(IdealPDActuator, "stiffness"): torch.tensor([1, -1, 0], dtype=torch.int32, device=device)},
+        owner_slots={(IdealPDActuator, "stiffness"): torch.tensor([1, 0], dtype=torch.int32, device=device)},
     )
     write = _ActuatorParameterWrite(value=canonical.torch, canonical=canonical)
     env_ids = staging._all_env_ids
     joint_ids = staging._all_joint_ids
 
+    aliases = 0
+    original_from_torch = wp.from_torch
+
+    def _count_alias(*args, **kwargs):
+        nonlocal aliases
+        aliases += 1
+        return original_from_torch(*args, **kwargs)
+
+    monkeypatch.setattr(wp, "from_torch", _count_alias)
+    staging.patch_write(actuator_type=IdealPDActuator, name="stiffness", write=write)
     staging.patch_write(actuator_type=IdealPDActuator, name="stiffness", write=write)
 
     assert staging._all_env_ids is env_ids
     assert staging._all_joint_ids is joint_ids
     torch.testing.assert_close(
         staging.target(IdealPDActuator, "stiffness").torch,
-        torch.tensor([[2.0, 0.0, 1.0], [4.0, 0.0, 3.0]], device=device),
+        torch.tensor([[2.0, 1.0], [4.0, 3.0], [6.0, 5.0], [8.0, 7.0]], device=device),
     )
+    assert aliases == 0
 
 
 @pytest.mark.skipif(not wp.get_cuda_devices(), reason="CUDA is required to validate cross-device backend staging.")

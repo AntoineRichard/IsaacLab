@@ -165,7 +165,7 @@ class _VariantSimulation:
             sources=("/World/envs/env_0", "/World/envs/env_1"),
             destinations=("/World/envs/env_{}", "/World/envs/env_{}"),
             clone_mask=torch.tensor([[True, False, True, False], [False, True, False, True]]),
-            cfg_rows={1: (0, 1)},
+            cfg_rows={1: (0, 1), 2: (0, 1)},
         )
 
     def get_clone_plan(self) -> ClonePlan:
@@ -584,6 +584,34 @@ def test_second_completion_failure_rolls_back_first_completed_asset(monkeypatch)
         _ = first.command
     with pytest.raises(RuntimeError, match="finalization failed"):
         _ = second.command
+
+
+def test_routed_implicit_staging_survives_invalidation_then_closes_after_second_completion_failure() -> None:
+    """Rollback keeps a routed staging target live for invalidation and releases it afterward."""
+    collection = ActuatorCollection(_VariantSimulation())
+    first_control = _RoutedSourceControl({"drive": (0, 1)})
+    second_control = _RoutedSourceControl({"drive": (0, 1)})
+    second_control.complete_error = RuntimeError("second routed completion")
+    cfg = ImplicitActuatorCfg(
+        class_type=ImplicitActuator,
+        joint_names_expr=["drive"],
+        stiffness=None,
+        damping=None,
+        effort_limit=None,
+        velocity_limit=None,
+        effort_limit_sim=None,
+        velocity_limit_sim=None,
+    )
+    _register_managed(collection, "first", first_control, {"drive": cfg})
+    _register_managed(collection, "second", second_control, {"drive": cfg})
+
+    with pytest.raises(RuntimeError, match="second routed completion"):
+        collection.finalize()
+
+    assert first_control.staging_alive_during_invalidation
+    assert second_control.staging_alive_during_invalidation
+    assert first_control.bound_staging._all_env_ids is None
+    assert second_control.bound_staging._all_env_ids is None
 
 
 def test_completion_preserves_structured_exception_and_adds_binding_context() -> None:
@@ -1214,7 +1242,11 @@ def test_backend_owner_slots_use_the_last_cross_type_config_group(cfgs, winner_t
     ("first_type", "second_type", "fields"),
     [
         (IdealPDActuator, IdealPDActuator, ("stiffness", "damping", "effort_limit", "velocity_limit")),
-        (DCMotor, DCMotor, ("saturation_effort",)),
+        (
+            DCMotor,
+            DCMotor,
+            ("stiffness", "damping", "effort_limit", "velocity_limit", "saturation_effort"),
+        ),
     ],
 )
 def test_later_non_native_group_blocks_every_semantically_owned_backend_field(first_type, second_type, fields) -> None:
@@ -1237,6 +1269,79 @@ def test_later_non_native_group_blocks_every_semantically_owned_backend_field(fi
     owners = collection._active_generation.selector_states["first"]._backend_owner_slots
     for field in fields:
         torch.testing.assert_close(owners[(first_type, field)], torch.full((2,), -1, dtype=torch.int32))
+
+
+def test_direct_schema_less_opaque_group_blocks_common_native_routes_but_not_unrelated_saturation() -> None:
+    """A later direct opaque group owns the ActuatorBaseCfg fields it exposes.
+
+    ``_OpaqueIdealPD`` deliberately has no exact-class managed schema.  It must
+    still clear the common backend properties of a preceding native DC motor,
+    while its lack of ``saturation_effort`` leaves that unrelated DC-specific
+    route intact.
+    """
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _RoutedSourceControl({"native": (0, 1), "opaque": (0, 1)})
+    control.native_groups = {"native"}
+    cfgs = {
+        "native": DCMotorCfg(
+            class_type=DCMotor,
+            joint_names_expr=["native"],
+            stiffness=None,
+            damping=None,
+            effort_limit=100.0,
+            velocity_limit=20.0,
+            saturation_effort=10.0,
+        ),
+        "opaque": IdealPDActuatorCfg(
+            class_type=_OpaqueIdealPD,
+            joint_names_expr=["opaque"],
+            stiffness=None,
+            damping=None,
+            effort_limit=None,
+            velocity_limit=None,
+        ),
+    }
+    _register_managed(collection, "first", control, cfgs)
+
+    collection.finalize()
+
+    owners = collection._active_generation.selector_states["first"]._backend_owner_slots
+    for field in ("stiffness", "damping", "effort_limit", "velocity_limit"):
+        torch.testing.assert_close(owners[(DCMotor, field)], torch.full((2,), -1, dtype=torch.int32))
+    assert torch.all(owners[(DCMotor, "saturation_effort")] >= 0)
+
+
+def test_direct_schema_less_opaque_group_uses_its_cfg_to_block_native_saturation() -> None:
+    """An opaque group configured with a DC schema owns its routed saturation field."""
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _RoutedSourceControl({"native": (0, 1), "opaque": (0, 1)})
+    control.native_groups = {"native"}
+    cfgs = {
+        "native": DCMotorCfg(
+            class_type=DCMotor,
+            joint_names_expr=["native"],
+            stiffness=None,
+            damping=None,
+            effort_limit=100.0,
+            velocity_limit=20.0,
+            saturation_effort=10.0,
+        ),
+        "opaque": DCMotorCfg(
+            class_type=_OpaqueIdealPD,
+            joint_names_expr=["opaque"],
+            stiffness=None,
+            damping=None,
+            effort_limit=100.0,
+            velocity_limit=20.0,
+            saturation_effort=20.0,
+        ),
+    }
+    _register_managed(collection, "first", control, cfgs)
+
+    collection.finalize()
+
+    owners = collection._active_generation.selector_states["first"]._backend_owner_slots
+    torch.testing.assert_close(owners[(DCMotor, "saturation_effort")], torch.full((2,), -1, dtype=torch.int32))
 
 
 def test_failed_retry_then_stop_invalidates_every_registration() -> None:

@@ -26,6 +26,33 @@ if TYPE_CHECKING:
     from .actuator_base import ActuatorBase
 
 
+def _construction_stream(device: str) -> tuple[wp.Stream | None, torch.cuda.Stream | None, torch.cuda.Stream | None]:
+    """Return a Warp stream ordered after the caller's current Torch stream.
+
+    The caller may have just produced source tensors on a non-default Torch
+    stream.  Warp cannot infer that dependency from a raw tensor pointer, so
+    make it explicit before the first Warp consumer launch.  The caller stream
+    is returned too, allowing the construction method to publish its Warp
+    writes without a host synchronization.
+    """
+    if torch.device(device).type != "cuda":
+        return None, None, None
+    caller_stream = torch.cuda.current_stream(device)
+    stream = wp.get_stream(device)
+    torch_stream = wp.stream_to_torch(stream)
+    if torch_stream.cuda_stream != caller_stream.cuda_stream:
+        torch_stream.wait_stream(caller_stream)
+    return stream, torch_stream, caller_stream
+
+
+def _publish_construction_stream(
+    torch_stream: torch.cuda.Stream | None, caller_stream: torch.cuda.Stream | None
+) -> None:
+    """Make Warp construction writes visible to the caller's Torch stream."""
+    if torch_stream is not None and caller_stream is not None and torch_stream.cuda_stream != caller_stream.cuda_stream:
+        caller_stream.wait_stream(torch_stream)
+
+
 class _GuardedIterator(Iterator[Any]):
     """Iterator that revalidates its owning generation on every operation."""
 
@@ -315,6 +342,12 @@ class _BackendParameterStaging:
             if all_joint_mask_wp is not None
             else wp.from_torch(self._all_joint_mask, dtype=wp.bool),
         }
+        # The ordinary ``None`` selector path is intentionally a direct route:
+        # it neither builds selector keys nor performs a dictionary lookup.
+        self._all_env_ids_wp = self._selector_aliases[self._selector_key(self._all_env_ids)]
+        self._all_joint_ids_wp = self._selector_aliases[self._selector_key(self._all_joint_ids)]
+        self._all_env_mask_wp = self._selector_aliases[self._selector_key(self._all_env_mask)]
+        self._all_joint_mask_wp = self._selector_aliases[self._selector_key(self._all_joint_mask)]
         if (
             self._all_env_ids.shape != (num_worlds,)
             or self._all_joint_ids.shape != (num_joints,)
@@ -431,6 +464,25 @@ class _BackendParameterStaging:
             return
         env_ids = getattr(write, "env_ids", None)
         joint_ids = getattr(write, "joint_ids", None)
+        if env_ids is None and joint_ids is None:
+            route = (actuator_type, name)
+            target = self._targets[name]
+            self._validate_canonical(canonical, target)
+            wp.launch(
+                actuator_kernels.patch_backend_parameter_index,
+                dim=(self._num_worlds, self._num_joints),
+                inputs=[
+                    canonical.warp,
+                    self._all_env_ids_wp,
+                    self._all_joint_ids_wp,
+                    self._owner_slots[route].warp,
+                    self._num_worlds,
+                    self._num_joints,
+                ],
+                outputs=[target.warp],
+                device=target.warp.device,
+            )
+            return
         self.patch_index(
             actuator_type=actuator_type,
             name=name,
@@ -447,6 +499,10 @@ class _BackendParameterStaging:
         self._all_joint_ids = None
         self._all_env_mask = None
         self._all_joint_mask = None
+        self._all_env_ids_wp = None
+        self._all_joint_ids_wp = None
+        self._all_env_mask_wp = None
+        self._all_joint_mask_wp = None
         self._selector_aliases.clear()
 
     def _index_warp(self, ids: torch.Tensor | wp.array, target: ProxyArray, name: str) -> wp.array:
@@ -592,8 +648,9 @@ def _build_articulation_layout(  # noqa: C901
 ) -> _ArticulationLayout:
     """Build one articulation layout from source-prototype registrations.
 
-    The clone assignment remains a device tensor. Python work is bounded by the
-    number of source prototypes, logical groups, and articulation joints.
+    The clone assignment remains host topology until matching consumers pack it
+    into one device slab. Python work is bounded by the number of source
+    prototypes, logical groups, and articulation joints.
     """
     if prototype_rows is None:
         prototype_rows = clone_plan.cfg_rows[replication_cfg_id]
@@ -868,9 +925,9 @@ class _TypedStore:
             # articulation before the sole H2D transfer for this exact type.
             assignment_blocks = [groups[0].prototype_assignment.to(dtype=torch.int32) for groups in groups_by_layout]
             assignment_source = torch.cat(assignment_blocks).contiguous()
-            assignment_stream = wp.get_stream(device) if torch.device(device).type == "cuda" else None
-            if torch.device(device).type == "cuda":
-                with torch.cuda.stream(wp.stream_to_torch(assignment_stream)):
+            assignment_stream, assignment_torch_stream, caller_stream = _construction_stream(device)
+            if assignment_torch_stream is not None:
+                with torch.cuda.stream(assignment_torch_stream):
                     assignments = assignment_source.to(device=device)
             else:
                 assignments = assignment_source.to(device=device)
@@ -940,10 +997,10 @@ class _TypedStore:
                 source_blocks.append(torch.cat(group_blocks, dim=1))
 
             source_values = torch.cat([block.reshape(-1) for block in source_blocks]).contiguous()
-            launch_stream = wp.get_stream(device) if torch.device(device).type == "cuda" else None
+            launch_stream, launch_torch_stream, caller_stream = _construction_stream(device)
             if source_values.device.type != torch.device(device).type or source_values.device != torch.device(device):
-                if torch.device(device).type == "cuda":
-                    with torch.cuda.stream(wp.stream_to_torch(launch_stream)):
+                if launch_torch_stream is not None:
+                    with torch.cuda.stream(launch_torch_stream):
                         source_values = source_values.to(device=device)
                 else:
                     source_values = source_values.to(device=device)
@@ -957,6 +1014,7 @@ class _TypedStore:
                 device=device,
                 **({"stream": launch_stream} if launch_stream is not None else {}),
             )
+            _publish_construction_stream(launch_torch_stream, caller_stream)
 
     def _release_initialization_buffers(self) -> None:
         """Release construction tensors after recording their final CUDA-stream use."""
@@ -1067,8 +1125,14 @@ class _SolverPropertyStore:
         self._articulation_offsets: dict[int, int] = {}
         self._articulation_proxies: dict[tuple[int, str], ProxyArray] = {}
         self._source_rows: dict[tuple[int, str], torch.Tensor] = {}
+        self._source_row_producers: dict[tuple[int, str], torch.cuda.Stream] = {}
+        self._device_source_rows: dict[tuple[int, str], torch.Tensor] = {}
+        self._device_source_slabs: dict[str, torch.Tensor] = {}
+        self._device_source_offsets: dict[tuple[int, str], int] = {}
         self._source_owner_slots: dict[int, torch.Tensor] = {}
         self._device_assignments: dict[int, torch.Tensor] = {}
+        self._device_assignment_slab: torch.Tensor | None = None
+        self._device_assignment_offsets: dict[int, int] = {}
         self._device_assignment_aliases: dict[int, wp.array] = {}
         self._initialization_buffers: list[object] = []
         self._initialization_records: list[tuple[wp.Stream, tuple[torch.Tensor, ...]]] = []
@@ -1078,7 +1142,11 @@ class _SolverPropertyStore:
         del device
         for layout in layouts:
             for field_name in self._FIELD_NAMES:
-                self._source_rows[(id(layout), field_name)] = self._merged_source_rows(field_name, layout)
+                key = (id(layout), field_name)
+                source_rows = self._merged_source_rows(field_name, layout)
+                self._source_rows[key] = source_rows
+                if source_rows.is_cuda:
+                    self._source_row_producers[key] = torch.cuda.current_stream(source_rows.device)
 
     def articulation_proxy(self, field: str, layout: _ArticulationLayout) -> ProxyArray:
         """Return the materialized device target for one property.
@@ -1123,7 +1191,99 @@ class _SolverPropertyStore:
                     )
                     proxy._torch_cache = flat.torch.as_strided(shape, (layout.num_joints, 1), storage_offset=offset)
                     self._articulation_proxies[key] = proxy
-                self._expand_source_rows(self._articulation_proxies[key], self.source_rows(field_name, layout), layout)
+        for field_name in self._FIELD_NAMES:
+            self._prepare_device_source_rows(layouts, field_name, device=device)
+            self._expand_packed_source_rows(field_name, layouts, device=device)
+
+    def _prepare_device_source_rows(
+        self, layouts: Sequence[_ArticulationLayout], field_name: str, *, device: str
+    ) -> None:
+        """Pack one source slab for a solver field without mixing source devices."""
+        missing = tuple(layout for layout in layouts if (id(layout), field_name) not in self._device_source_rows)
+        if not missing:
+            return
+        target_device = torch.device(device)
+        source_blocks = [self.source_rows(field_name, layout).reshape(-1) for layout in missing]
+        stream, torch_stream, caller_stream = _construction_stream(device)
+        cursor = 0
+        # Sources from each producer device are packed independently.  CPU
+        # rows contribute exactly one H2D slab; CUDA rows copy on the chosen
+        # construction stream and never require a device-to-host round trip.
+        by_device: dict[torch.device, list[tuple[int, torch.Tensor]]] = {}
+        for block in source_blocks:
+            by_device.setdefault(block.device, []).append((cursor, block))
+            cursor += block.numel()
+        if torch_stream is not None:
+            for layout in missing:
+                producer = self._source_row_producers.get((id(layout), field_name))
+                if producer is not None and producer.cuda_stream != torch_stream.cuda_stream:
+                    torch_stream.wait_stream(producer)
+        with torch.cuda.stream(torch_stream) if torch_stream is not None else torch.no_grad():
+            source_slab = torch.empty(sum(block.numel() for block in source_blocks), dtype=torch.float32, device=device)
+            for _source_device, blocks in by_device.items():
+                packed = torch.cat([block for _, block in blocks]).contiguous()
+                if packed.device != target_device:
+                    packed = packed.to(device=device)
+                packed_cursor = 0
+                for output_offset, block in blocks:
+                    next_cursor = packed_cursor + block.numel()
+                    source_slab[output_offset : output_offset + block.numel()].copy_(packed[packed_cursor:next_cursor])
+                    packed_cursor = next_cursor
+        cursor = 0
+        for layout in missing:
+            size = len(layout.prototype_rows) * layout.num_joints
+            self._device_source_offsets[(id(layout), field_name)] = cursor
+            self._device_source_rows[(id(layout), field_name)] = source_slab[cursor : cursor + size].view(
+                len(layout.prototype_rows), layout.num_joints
+            )
+            cursor += size
+        self._initialization_buffers.append(source_slab)
+        if field_name not in self._device_source_slabs:
+            self._device_source_slabs[field_name] = source_slab
+        self._record_launch_buffers(stream, source_slab)
+        _publish_construction_stream(torch_stream, caller_stream)
+
+    def _expand_packed_source_rows(
+        self, field_name: str, layouts: Sequence[_ArticulationLayout], *, device: str
+    ) -> None:
+        """Expand every layout of one field with one bounded Warp launch."""
+        source_slab = self._device_source_slabs[field_name]
+        assignments = self._device_assignment_slab
+        if assignments is None:
+            raise RuntimeError("Solver expansion requires an owning assignment slab.")
+        output_offsets = [self._articulation_offsets[id(layout)] for layout in layouts]
+        assignment_offsets: list[int] = []
+        prototype_offsets: list[int] = []
+        for layout in layouts:
+            assignment_offsets.append(self._device_assignment_offsets[id(layout)])
+            prototype_offsets.append(self._device_source_offsets[(id(layout), field_name)])
+        metadata = (
+            *(
+                wp.array(values, dtype=wp.int64, device=device)
+                for values in (output_offsets, assignment_offsets, prototype_offsets)
+            ),
+            *(
+                wp.array(values, dtype=wp.int32, device=device)
+                for values in ([layout.num_worlds for layout in layouts], [layout.num_joints for layout in layouts])
+            ),
+        )
+        stream, torch_stream, caller_stream = _construction_stream(device)
+        source_wp = wp.from_torch(source_slab, dtype=wp.float32)
+        assignment_wp = wp.from_torch(assignments, dtype=wp.int32)
+        self._initialization_buffers.extend((source_slab, assignments, source_wp, assignment_wp, *metadata))
+        self._record_launch_buffers(stream, source_slab, assignments)
+        wp.launch(
+            _expand_prototype_field,
+            dim=(
+                len(layouts),
+                max(layout.num_worlds for layout in layouts),
+                max(layout.num_joints for layout in layouts),
+            ),
+            inputs=[self._fields[field_name].warp, source_wp, assignment_wp, *metadata],
+            device=device,
+            **({"stream": stream} if stream is not None else {}),
+        )
+        _publish_construction_stream(torch_stream, caller_stream)
 
     def prepare_device_assignments(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
         """Pack host clone assignments once for all layouts using device expansion."""
@@ -1131,14 +1291,15 @@ class _SolverPropertyStore:
         if not layouts:
             return
         assignment_source = torch.cat([layout.prototype_assignment.to(dtype=torch.int32) for layout in layouts])
-        launch_stream = wp.get_stream(device) if torch.device(device).type == "cuda" else None
-        if launch_stream is not None:
-            with torch.cuda.stream(wp.stream_to_torch(launch_stream)):
+        launch_stream, torch_stream, caller_stream = _construction_stream(device)
+        if torch_stream is not None:
+            with torch.cuda.stream(torch_stream):
                 assignment_slab = assignment_source.to(device=device)
         else:
             assignment_slab = assignment_source.to(device=device)
         assignment_offset = 0
         for layout in layouts:
+            self._device_assignment_offsets[id(layout)] = assignment_offset
             assignment = assignment_slab[assignment_offset : assignment_offset + layout.num_worlds]
             assignment_offset += layout.num_worlds
             self._device_assignments[id(layout)] = assignment
@@ -1146,10 +1307,15 @@ class _SolverPropertyStore:
         self._initialization_buffers.extend(
             (assignment_source, assignment_slab, *self._device_assignment_aliases.values())
         )
+        if self._device_assignment_slab is None:
+            self._device_assignment_slab = assignment_slab
+        self._record_launch_buffers(launch_stream, assignment_slab)
+        _publish_construction_stream(torch_stream, caller_stream)
 
     def expand_source_rows_into(self, target: ProxyArray, field_name: str, layout: _ArticulationLayout) -> None:
         """Expand one final compact field into a caller-owned dense target."""
-        self._expand_source_rows(target, self.source_rows(field_name, layout), layout)
+        source_rows = self._device_source_rows.get((id(layout), field_name), self.source_rows(field_name, layout))
+        self._expand_source_rows(target, source_rows, layout)
 
     def _merged_source_rows(
         self,
@@ -1211,14 +1377,14 @@ class _SolverPropertyStore:
         if owners is None:
             owners = torch.arange(layout.num_joints, dtype=torch.int32, device=target.torch.device)
             self._source_owner_slots[id(layout)] = owners
-        launch_stream = wp.get_stream(str(target.torch.device)) if target.torch.device.type == "cuda" else None
+        launch_stream, torch_stream, caller_stream = _construction_stream(str(target.torch.device))
         if source_rows.device == target.torch.device:
             expansion_rows = source_rows
         elif source_rows.device.type == "cpu" and target.torch.device.type != "cpu":
             # CPU source rows are the intentional PhysX/OV construction path.
             # This H2D copy exists only for the private dense canonical target;
             # the source rows retained for the backend remain host-resident.
-            with torch.cuda.stream(wp.stream_to_torch(launch_stream)):
+            with torch.cuda.stream(torch_stream):
                 expansion_rows = source_rows.to(device=target.torch.device)
         else:
             raise ValueError("Solver source rows cannot be copied from device to the canonical target device.")
@@ -1236,6 +1402,7 @@ class _SolverPropertyStore:
             device=target.warp.device,
             **({"stream": launch_stream} if launch_stream is not None else {}),
         )
+        _publish_construction_stream(torch_stream, caller_stream)
 
     def overlay_opaque_groups(self, layout: _ArticulationLayout, groups: Mapping[str, Any]) -> None:
         """Merge eager opaque-group rows with managed rows in config order.
@@ -1310,7 +1477,10 @@ class _SolverPropertyStore:
             return
         for field_name in self._FIELD_NAMES:
             source_rows = self._merged_source_rows(field_name, layout, opaque_values)
-            self._source_rows[(id(layout), field_name)] = source_rows
+            key = (id(layout), field_name)
+            self._source_rows[key] = source_rows
+            if source_rows.is_cuda:
+                self._source_row_producers[key] = torch.cuda.current_stream(source_rows.device)
             target = self._articulation_proxies.get((id(layout), field_name))
             if target is not None:
                 self._expand_source_rows(target, source_rows, layout)
@@ -1329,8 +1499,14 @@ class _SolverPropertyStore:
         self._articulation_proxies.clear()
         self._articulation_offsets.clear()
         self._source_rows.clear()
+        self._source_row_producers.clear()
+        self._device_source_rows.clear()
+        self._device_source_slabs.clear()
+        self._device_source_offsets.clear()
         self._source_owner_slots.clear()
         self._device_assignments.clear()
+        self._device_assignment_slab = None
+        self._device_assignment_offsets.clear()
         self._device_assignment_aliases.clear()
         self._fields.clear()
 
