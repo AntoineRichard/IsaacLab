@@ -151,10 +151,11 @@ class ActuatorBase(ABC):
             state = object.__getattribute__(self, "__dict__")
             view = state.get("_facade_view")
             if view is not None:
+                token = state.get("_facade_token")
                 if name in {"compute", "reset"}:
-                    view._require_execution_ready()
+                    view._require_execution_ready(token)
                 else:
-                    view._require_current_generation()
+                    view._require_current_generation(token)
         return object.__getattribute__(self, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -163,7 +164,7 @@ class ActuatorBase(ABC):
             state = object.__getattribute__(self, "__dict__")
             view = state.get("_facade_view")
             if view is not None:
-                view._require_execution_ready()
+                view._require_execution_ready(state.get("_facade_token"))
         object.__setattr__(self, name, value)
 
     effort_limit = _ManagedParameter("effort_limit")
@@ -498,37 +499,76 @@ class ActuatorBase(ABC):
         self.__dict__["_deprecated_sidecar_warnings"] = set()
         self.__dict__["_solver_compatibility_sidecars"] = {}
 
-    def _bind_facade_view(self, view: Any) -> None:
+    def _bind_facade_view(self, view: Any, token: object) -> None:
         """Bind generation checks to the owning articulation facade."""
         self.__dict__["_facade_view"] = view
+        self.__dict__["_facade_token"] = token
 
     def _require_current_facade(self) -> None:
         """Reject public group access after its articulation generation expires."""
         view = self.__dict__.get("_facade_view")
         if view is not None:
-            view._require_current_generation()
+            view._require_current_generation(self.__dict__.get("_facade_token"))
 
     def _require_facade_execution_ready(self) -> None:
         """Reject public group writes unless its articulation can execute."""
         view = self.__dict__.get("_facade_view")
         if view is not None:
-            view._require_execution_ready()
+            view._require_execution_ready(self.__dict__.get("_facade_token"))
+
+    def _release_facade_storage(self) -> None:
+        """Detach canonical aliases while keeping stale-generation checks alive."""
+        state = self.__dict__
+        mapping = state.get("_parameter_mapping")
+        if mapping is not None:
+            mapping._values.clear()
+        binding = state.get("_parameter_binding")
+        if binding is not None and binding.parameter_proxies is not None:
+            clear = getattr(binding.parameter_proxies, "clear", None)
+            if clear is not None:
+                clear()
+        retained = {
+            name: state[name]
+            for name in ("cfg", "_num_envs", "_device", "_joint_names", "_facade_view", "_facade_token")
+            if name in state
+        }
+        state.clear()
+        state.update(retained)
 
     def set_parameter_index(
         self,
         name: str,
-        value: float | torch.Tensor | wp.array | Sequence[float],
+        value: float | torch.Tensor | wp.array(dtype=wp.float32) | Sequence[float] | Sequence[Sequence[float]],
         *,
-        env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
-        joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        env_ids: Sequence[int] | torch.Tensor | wp.array(dtype=wp.int32) | wp.array(dtype=wp.int64) | None = None,
+        joint_ids: Sequence[int] | torch.Tensor | wp.array(dtype=wp.int32) | wp.array(dtype=wp.int64) | None = None,
     ) -> None:
         """Set one managed parameter using Cartesian articulation index selectors.
 
         Args:
             name: Managed parameter name.
-            value: Scalar, compact per-joint values, or Cartesian world-by-joint values.
-            env_ids: Articulation environment indices. Defaults to every environment.
-            joint_ids: Articulation joint indices. Defaults to this group's compact slots.
+            value: Scalar, compact per-joint values, or Cartesian world-by-joint
+                values. Units follow :paramref:`name`: stiffness [N/m or N·m/rad],
+                damping [N·s/m or N·m·s/rad], effort and saturation limits
+                [N or N·m], and velocity limits [m/s or rad/s], depending on
+                joint type.
+            env_ids: Signed articulation-world indices with shape
+                ``[num_selected_worlds]``. ``None`` selects every world.
+            joint_ids: Signed articulation-DOF indices with shape
+                ``[num_selected_joints]``. ``None`` selects the group's compact
+                slots in configuration order.
+
+        Normal mode ignores out-of-range worlds and joints, as well as joints
+        outside this group's scope. With debug validation enabled, these
+        conditions, duplicate selectors, and ownership violations synchronously
+        raise instead.
+
+        Raises:
+            KeyError: If :paramref:`name` is not managed by this group.
+            TypeError: If a value or selector has an unsupported dtype.
+            ValueError: If selector/value metadata is malformed, values cannot
+                broadcast, or debug validation rejects selector contents.
+            RuntimeError: If the group is stale or its facade is not execution-ready.
         """
         self._require_facade_execution_ready()
         view = self.__dict__.get("_facade_view")
@@ -539,18 +579,34 @@ class ActuatorBase(ABC):
     def set_parameter_mask(
         self,
         name: str,
-        value: float | torch.Tensor | wp.array | Sequence[float],
+        value: float | torch.Tensor | wp.array(dtype=wp.float32) | Sequence[float] | Sequence[Sequence[float]],
         *,
-        env_mask: torch.Tensor | wp.array | None = None,
-        joint_mask: torch.Tensor | wp.array | None = None,
+        env_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
+        joint_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
     ) -> None:
         """Set one managed parameter using full-articulation masks.
 
         Args:
             name: Managed parameter name.
             value: Scalar, compact per-joint values, or world-by-compact values.
-            env_mask: Full-articulation environment mask. Defaults to every environment.
-            joint_mask: Full-articulation joint mask. Defaults to every joint.
+                Units follow :paramref:`name`: stiffness [N/m or N·m/rad], damping
+                [N·s/m or N·m·s/rad], effort and saturation limits [N or N·m],
+                and velocity limits [m/s or rad/s], depending on joint type.
+            env_mask: Boolean full-articulation world mask with shape
+                ``[num_worlds]``. ``None`` selects every world.
+            joint_mask: Boolean full-articulation DOF mask with shape
+                ``[num_joints]``. ``None`` selects every joint.
+
+        Mask entries outside this group's scope are ignored in every mode.
+        Debug validation performs value-dependent bounds, ownership, and
+        duplicate checks only for index selectors.
+
+        Raises:
+            KeyError: If :paramref:`name` is not managed by this group.
+            TypeError: If a value or mask has an unsupported dtype.
+            ValueError: If selector/value metadata is malformed or values cannot
+                broadcast.
+            RuntimeError: If the group is stale or its facade is not execution-ready.
         """
         self._require_facade_execution_ready()
         view = self.__dict__.get("_facade_view")

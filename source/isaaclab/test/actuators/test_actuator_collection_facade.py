@@ -7,14 +7,16 @@
 
 from __future__ import annotations
 
+import gc
 import warnings
+import weakref
 from types import SimpleNamespace
 
 import pytest
 import torch
 import warp as wp
 
-from isaaclab.actuators import ActuatorCollection
+from isaaclab.actuators import ActuatorCollection, actuator_kernels
 from isaaclab.actuators.actuator_base import ActuatorBase
 from isaaclab.actuators.actuator_control import ActuatorJointProperties
 from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
@@ -795,6 +797,25 @@ def _available_devices() -> tuple[str, ...]:
     return ("cpu", "cuda") if torch.cuda.is_available() else ("cpu",)
 
 
+@pytest.mark.parametrize("device", _available_devices())
+def test_opaque_group_joint_metadata_uses_packed_selector_storage(device: str) -> None:
+    """Catch opaque exact groups receiving empty joint-id slices from the packed selector layout."""
+    robot = make_finalized_robot(
+        device=device,
+        groups={"first": _custom_cfg(["hip", "knee"]), "second": _custom_cfg(["ankle"])},
+    )
+    selector_state = robot.actuators._selector_state
+    assert selector_state is not None
+    first = robot.actuators["first"]
+    second = robot.actuators["second"]
+
+    assert first.joint_indices.tolist() == [0, 1]
+    assert second.joint_indices.tolist() == [2]
+    int_storage = selector_state._int_slab.untyped_storage().data_ptr()
+    assert first.joint_indices.untyped_storage().data_ptr() == int_storage
+    assert second.joint_indices.untyped_storage().data_ptr() == int_storage
+
+
 def _parameter_scope(robot, scope: str):
     """Return the requested public parameter facade."""
     return robot.actuators["hip"] if scope == "group" else robot.actuators.by_type[IdealPDActuator]
@@ -861,6 +882,55 @@ def test_parameter_setters_accept_all_value_forms_and_default_compact_slots(scop
 
 @pytest.mark.parametrize("device", _available_devices())
 @pytest.mark.parametrize("scope", ("group", "type"))
+def test_default_parameter_index_write_uses_single_kernel_without_duplicate_staging(
+    monkeypatch: pytest.MonkeyPatch, device: str, scope: str
+) -> None:
+    """Catch default selectors that clear or record duplicate scratch despite needing no deduplication."""
+    collection = ActuatorCollection(_Simulation(device))
+    control = _Control(device)
+    facade = collection.register_articulation(
+        key="robot",
+        cfgs={"implicit": _implicit_cfg(["hip", "knee"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+    view = facade["implicit"] if scope == "group" else facade.by_type[ImplicitActuator]
+    selector_state = facade._selector_state
+    assert selector_state is not None
+    selector_state._last_env_positions_wp.fill_(17)
+    selector_state._last_joint_positions_wp.fill_(19)
+
+    launches = []
+    original_launch = wp.launch
+
+    def _record_launch(*args, **kwargs):
+        launches.append(args[0] if args else kwargs["kernel"])
+        return original_launch(*args, **kwargs)
+
+    monkeypatch.setattr(wp, "launch", _record_launch)
+    view.set_parameter_index("stiffness", 5.0)
+
+    assert launches == [actuator_kernels.write_scoped_parameter_index]
+    torch.testing.assert_close(
+        selector_state._last_env_positions,
+        torch.full_like(selector_state._last_env_positions, 17),
+    )
+    torch.testing.assert_close(
+        selector_state._last_joint_positions,
+        torch.full_like(selector_state._last_joint_positions, 19),
+    )
+    write = control.parameter_writes[-1][1]
+    assert write.env_ids is None
+    assert write.joint_ids is None
+    assert write.env_mask is None
+    assert write.joint_mask is None
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("scope", ("group", "type"))
 def test_parameter_setters_accept_python_and_warp_inputs_with_signed_indices(scope: str, device: str) -> None:
     """Catch compatibility paths that only accept contiguous Torch inputs or one signed index width."""
     view = _parameter_scope(make_finalized_robot(device=device), scope)
@@ -897,20 +967,21 @@ def test_parameter_setters_reuse_selector_allocations_after_warmup(
     view = _parameter_scope(robot, scope)
     facade = robot.actuators
     binding = robot.actuators["hip"].__dict__["_parameter_binding"]
+    selector_state = facade._selector_state
+    assert selector_state is not None
     scope_joint_ids = binding.joint_indices if scope == "group" else view._joint_indices
     slot_count = scope_joint_ids.shape[0]
-    group_inverse_pointer = facade._group_inverse_lookups_wp[id(binding)].ptr if scope == "group" else None
+    group_inverse_pointer = selector_state.group_inverse_wp(binding).ptr if scope == "group" else None
     warm_value = torch.arange(1, slot_count + 1, dtype=torch.float32, device=device)
     view.set_parameter_index("stiffness", warm_value, joint_ids=None)
     view.set_parameter_mask("damping", warm_value)
     pointers = (
-        facade._all_env_ids.data_ptr(),
-        facade._last_env_positions.data_ptr(),
-        facade._last_joint_positions.data_ptr(),
-        facade._parameter_default_joint_ids[id(scope_joint_ids)].data_ptr(),
-        facade._scope_joint_ids_wp[id(scope_joint_ids)].ptr,
-        facade._all_env_mask_wp.ptr,
-        facade._all_joint_mask_wp.ptr,
+        selector_state._int_slab.data_ptr(),
+        selector_state._bool_slab.data_ptr(),
+        selector_state._float_slab.data_ptr(),
+        selector_state._identity_ids_wp.ptr,
+        selector_state._all_env_mask_wp.ptr,
+        selector_state._all_joint_mask_wp.ptr,
         group_inverse_pointer,
     )
     noncontiguous_value = (
@@ -942,15 +1013,16 @@ def test_parameter_setters_reuse_selector_allocations_after_warmup(
     view.set_parameter_mask(
         "damping", noncontiguous_value, env_mask=noncontiguous_env_mask, joint_mask=noncontiguous_joint_mask
     )
+    torch.testing.assert_close(view.parameters["stiffness"].torch, noncontiguous_value)
+    torch.testing.assert_close(view.parameters["damping"].torch, noncontiguous_value)
     assert pointers == (
-        facade._all_env_ids.data_ptr(),
-        facade._last_env_positions.data_ptr(),
-        facade._last_joint_positions.data_ptr(),
-        facade._parameter_default_joint_ids[id(scope_joint_ids)].data_ptr(),
-        facade._scope_joint_ids_wp[id(scope_joint_ids)].ptr,
-        facade._all_env_mask_wp.ptr,
-        facade._all_joint_mask_wp.ptr,
-        facade._group_inverse_lookups_wp[id(binding)].ptr if scope == "group" else None,
+        selector_state._int_slab.data_ptr(),
+        selector_state._bool_slab.data_ptr(),
+        selector_state._float_slab.data_ptr(),
+        selector_state._identity_ids_wp.ptr,
+        selector_state._all_env_mask_wp.ptr,
+        selector_state._all_joint_mask_wp.ptr,
+        selector_state.group_inverse_wp(binding).ptr if scope == "group" else None,
     )
     monkeypatch.undo()
     robot.collection.clear_generation()
@@ -990,6 +1062,344 @@ def test_parameter_index_uses_cartesian_articulation_selectors(scope: str, devic
     expected[0, 1] = 20.0
     expected[0, 0] = 21.0
     torch.testing.assert_close(view.parameters["stiffness"].torch[:, :2], expected[:, :2])
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("scope", ("group", "type"))
+def test_parameter_index_stages_aliased_source_before_reordered_write(scope: str, device: str) -> None:
+    """Catch an indexed write that reads a target alias after an earlier destination overwrote it."""
+    view = _parameter_scope(make_finalized_robot(device=device), scope)
+    target = view.parameters["stiffness"].torch
+    slots = target.shape[1]
+    initial = torch.arange(1, 2 * slots + 1, dtype=torch.float32, device=device).reshape(2, slots)
+    target.copy_(initial)
+
+    view.set_parameter_index("stiffness", target, env_ids=torch.tensor([1, 0], device=device), joint_ids=None)
+
+    torch.testing.assert_close(target, initial.flip(0))
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("scope", ("group", "type"))
+def test_parameter_mask_stages_a_strided_raw_warp_alias_before_write(scope: str, device: str) -> None:
+    """Catch a masked write that reads a transposed raw Warp alias after overwriting it."""
+    groups = (
+        {"first": _ideal_cfg(["hip", "knee"]), "second": _ideal_cfg(["ankle"])}
+        if scope == "group"
+        else {"first": _ideal_cfg(["hip", "knee"])}
+    )
+    robot = make_finalized_robot(device=device, groups=groups)
+    view = robot.actuators["first"] if scope == "group" else robot.actuators.by_type[IdealPDActuator]
+    target = view.parameters["stiffness"].torch
+    target.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=device))
+    target_warp = view.parameters["stiffness"].warp
+    raw_warp_transpose = wp.array(
+        ptr=target_warp.ptr,
+        dtype=wp.float32,
+        shape=target_warp.shape,
+        strides=(target_warp.strides[1], target_warp.strides[0]),
+        capacity=target_warp.capacity,
+        device=target_warp.device,
+        copy=False,
+    )
+
+    view.set_parameter_mask(
+        "stiffness",
+        raw_warp_transpose,
+        env_mask=torch.tensor([True, True], device=device),
+        joint_mask=torch.tensor([True, True, False], device=device),
+    )
+
+    torch.testing.assert_close(target, torch.tensor([[1.0, 3.0], [2.0, 4.0]], device=device))
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("scope", ("group", "type"))
+def test_parameter_index_stages_a_raw_warp_alias_before_reordered_write(scope: str, device: str) -> None:
+    """Catch alias detection that misses a distinct Torch wrapper over the same Warp allocation."""
+    view = _parameter_scope(make_finalized_robot(device=device), scope)
+    target = view.parameters["stiffness"].torch
+    slots = target.shape[1]
+    initial = torch.arange(1, 2 * slots + 1, dtype=torch.float32, device=device).reshape(2, slots)
+    target.copy_(initial)
+    raw_warp_alias = view.parameters["stiffness"].warp
+
+    view.set_parameter_index("stiffness", raw_warp_alias, env_ids=torch.tensor([1, 0], device=device), joint_ids=None)
+
+    torch.testing.assert_close(target, initial.flip(0))
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("scope", ("group", "type"))
+def test_parameter_alias_staging_rejects_oversized_stride_zero_source_before_launch(
+    monkeypatch: pytest.MonkeyPatch, device: str, scope: str
+) -> None:
+    """Catch overlapping stride-zero values that exceed the bounded selector staging slab."""
+    collection = ActuatorCollection(_Simulation(device))
+    control = _Control(device)
+    facade = collection.register_articulation(
+        key="robot",
+        cfgs={"implicit": _implicit_cfg(["hip", "knee"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+    view = facade["implicit"] if scope == "group" else facade.by_type[ImplicitActuator]
+    target = view.parameters["stiffness"].torch
+    source = target[:1].expand(3, target.shape[1])
+
+    def _launch_forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("oversized aliased values launched a kernel")
+
+    def _backend_forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("oversized aliased values reached the backend bridge")
+
+    monkeypatch.setattr(wp, "launch", _launch_forbidden)
+    monkeypatch.setattr(control, "write_actuator_parameter", _backend_forbidden)
+    with pytest.raises(ValueError, match="exceed"):
+        view.set_parameter_index(
+            "stiffness",
+            source,
+            env_ids=torch.tensor([0, 1, 0], dtype=torch.int32, device=device),
+            joint_ids=None,
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
+def test_parameter_alias_staging_is_cuda_graph_safe() -> None:
+    """Catch Torch-stream alias staging that cannot capture or replay on Warp's stream."""
+    view = make_finalized_robot(device="cuda").actuators["hip"]
+    target = view.parameters["stiffness"].torch
+    slots = target.shape[1]
+    initial = torch.arange(1, 2 * slots + 1, dtype=torch.float32, device="cuda").reshape(2, slots)
+    target.copy_(initial)
+    raw_warp_alias = view.parameters["stiffness"].warp
+    env_ids = torch.tensor([1, 0], device="cuda")
+
+    with wp.ScopedCapture(device="cuda") as capture:
+        view.set_parameter_index("stiffness", raw_warp_alias, env_ids=env_ids, joint_ids=None)
+
+    replay_source = initial + 10.0
+    target.copy_(replay_source)
+    torch.cuda.synchronize()
+    wp.capture_launch(capture.graph)
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(target, replay_source.flip(0))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
+def test_explicit_duplicate_parameter_indices_are_cuda_graph_safe() -> None:
+    """Catch Torch-stream duplicate scratch clearing during CUDA graph capture."""
+    view = make_finalized_robot(device="cuda").actuators["hip"]
+    values = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda")
+    env_ids = torch.tensor([0, 0], dtype=torch.int32, device="cuda")
+    joint_ids = torch.tensor([0, 0], dtype=torch.int32, device="cuda")
+
+    with wp.ScopedCapture(device="cuda") as capture:
+        view.set_parameter_index("stiffness", values, env_ids=env_ids, joint_ids=joint_ids)
+
+    values.copy_(torch.tensor([[11.0, 12.0], [13.0, 14.0]], device="cuda"))
+    env_ids.copy_(torch.tensor([0, 1], dtype=torch.int32, device="cuda"))
+    joint_ids.copy_(torch.tensor([0, 1], dtype=torch.int32, device="cuda"))
+    view.parameters["stiffness"].torch.zero_()
+    torch.cuda.synchronize()
+    wp.capture_launch(capture.graph)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(
+        view.parameters["stiffness"].torch,
+        torch.tensor([[11.0, 12.0], [13.0, 14.0]], device="cuda"),
+    )
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_selector_metadata_owning_storage_count_does_not_scale_with_groups(device: str) -> None:
+    """Catch per-group selector tensors instead of slices into three flat slabs."""
+    owner_counts = []
+    for group_count in (1, 3, 12):
+        groups = {f"group_{index}": _ideal_cfg(["hip"]) for index in range(group_count)}
+        facade = make_finalized_robot(groups=groups, device=device).actuators
+        selector_state = facade._selector_state
+        assert selector_state is not None
+        type_view = facade.by_type[IdealPDActuator]
+        slab_storages = {
+            selector_state._int_slab.untyped_storage().data_ptr(),
+            selector_state._bool_slab.untyped_storage().data_ptr(),
+            selector_state._float_slab.untyped_storage().data_ptr(),
+        }
+        int_storage = selector_state._int_slab.untyped_storage().data_ptr()
+        selector_tensors = [value for value in vars(selector_state).values() if isinstance(value, torch.Tensor)]
+        for value in vars(selector_state).values():
+            if isinstance(value, dict):
+                selector_tensors.extend(item for item in value.values() if isinstance(item, torch.Tensor))
+        owner_counts.append({tensor.untyped_storage().data_ptr() for tensor in selector_tensors})
+        assert type_view.joint_indices.untyped_storage().data_ptr() == int_storage
+        assert selector_state.default_joint_ids(type_view.num_joints).untyped_storage().data_ptr() == int_storage
+        for group in facade.values():
+            binding = group.__dict__["_parameter_binding"]
+            assert binding.joint_indices.untyped_storage().data_ptr() == int_storage
+            assert selector_state.group_inverse_wp(binding).ptr != 0
+            assert (
+                int_storage
+                <= selector_state.group_inverse_wp(binding).ptr
+                < int_storage + selector_state._int_slab.nbytes
+            )
+        for owner_slots in selector_state._backend_owner_slots.values():
+            assert owner_slots.untyped_storage().data_ptr() == int_storage
+        for alias in (
+            selector_state._identity_ids_wp,
+            selector_state._all_env_ids_wp,
+            selector_state._all_env_mask_wp,
+            selector_state._all_joint_mask_wp,
+            selector_state._last_env_positions_wp,
+            selector_state._last_joint_positions_wp,
+            *selector_state._type_joint_ids_wp.values(),
+            *selector_state._group_joint_ids_wp.values(),
+            *selector_state._group_inverse_wp.values(),
+        ):
+            assert any(
+                slab.data_ptr() <= alias.ptr < slab.data_ptr() + slab.nbytes
+                for slab in (selector_state._int_slab, selector_state._bool_slab)
+            )
+        assert slab_storages == owner_counts[-1]
+        for old_attribute in (
+            "_parameter_default_joint_ids",
+            "_scope_joint_ids_wp",
+            "_group_inverse_lookups",
+            "_group_inverse_lookups_wp",
+        ):
+            assert not hasattr(facade, old_attribute)
+
+    assert [len(count) for count in owner_counts] == [3, 3, 3]
+
+
+def test_clear_generation_releases_selector_state_from_retained_public_views() -> None:
+    """Catch stale facade objects retaining selector slabs or canonical proxy aliases."""
+    robot = make_finalized_robot()
+    facade = robot.actuators
+    group = facade["hip"]
+    group_parameters = group.parameters
+    by_type = facade.by_type
+    type_view = by_type[IdealPDActuator]
+    type_parameters = type_view.parameters
+    selector_state = facade._selector_state
+    assert selector_state is not None
+    int_ref = weakref.ref(selector_state._int_slab)
+    bool_ref = weakref.ref(selector_state._bool_slab)
+    float_ref = weakref.ref(selector_state._float_slab)
+    active_generation = robot.collection._active_generation
+    assert active_generation is not None
+    field_proxy = active_generation.stores[IdealPDActuator]._fields["stiffness"]
+    field_proxy_ref = weakref.ref(field_proxy)
+    field_warp_ref = weakref.ref(field_proxy.warp)
+    field_torch_ref = weakref.ref(field_proxy.torch)
+    type_proxy = type_parameters["stiffness"]
+    type_proxy_ref = weakref.ref(type_proxy)
+    del active_generation, field_proxy, type_proxy
+    del selector_state
+
+    robot.collection.clear_generation()
+    gc.collect()
+
+    assert int_ref() is None
+    assert bool_ref() is None
+    assert float_ref() is None
+    assert field_proxy_ref() is None
+    assert field_warp_ref() is None
+    assert field_torch_ref() is None
+    assert type_proxy_ref() is None
+    for operation in (
+        lambda: group.parameters,
+        lambda: group_parameters["stiffness"],
+        lambda: by_type[IdealPDActuator],
+        lambda: type_view.parameters,
+        lambda: type_parameters["stiffness"],
+    ):
+        with pytest.raises(RuntimeError, match="stale actuator view"):
+            operation()
+
+
+def test_failed_finalization_does_not_revive_retained_selector_children() -> None:
+    """Catch ABA reuse when a retry republishes the same facade generation number."""
+
+    class _CompletionControl(_Control):
+        def __init__(self, *, fail: bool) -> None:
+            super().__init__()
+            self.fail = fail
+            self.view = None
+            self.children = None
+
+        def bind_actuator_view(self, view) -> None:
+            self.view = view
+
+        def complete_articulation_initialization(self) -> None:
+            if self.children is None:
+                group = self.view["hip"]
+                by_type = self.view.by_type
+                type_view = by_type[IdealPDActuator]
+                self.children = (
+                    group,
+                    by_type,
+                    type_view,
+                    group.parameters,
+                    type_view.parameters,
+                    by_type.keys(),
+                    by_type.items(),
+                )
+            if self.fail:
+                raise RuntimeError("intentional completion failure")
+
+    collection = ActuatorCollection(_Simulation())
+    first_control = _CompletionControl(fail=False)
+    second_control = _CompletionControl(fail=True)
+    first_facade = collection.register_articulation(
+        key="first",
+        cfgs={"hip": _ideal_cfg(["hip"])},
+        control=first_control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    second_facade = collection.register_articulation(
+        key="second",
+        cfgs={"hip": _ideal_cfg(["knee"])},
+        control=second_control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    with pytest.raises(RuntimeError, match="intentional completion failure"):
+        collection.finalize()
+    (
+        old_group,
+        old_by_type,
+        old_type,
+        old_group_parameters,
+        old_type_parameters,
+        old_by_type_keys,
+        old_by_type_items,
+    ) = first_control.children
+
+    second_control.fail = False
+    collection.finalize()
+    first_facade["hip"].set_parameter_index("stiffness", 7.0)
+    second_facade["hip"].set_parameter_index("stiffness", 11.0)
+
+    for operation in (
+        lambda: old_group.parameters,
+        lambda: old_group_parameters["stiffness"],
+        lambda: old_by_type[IdealPDActuator],
+        lambda: old_type.parameters,
+        lambda: old_type_parameters["stiffness"],
+        lambda: list(old_by_type_keys),
+        lambda: list(old_by_type_items),
+    ):
+        with pytest.raises(RuntimeError, match="stale actuator view"):
+            operation()
 
 
 def test_parameter_index_filters_out_of_scope_joint_columns() -> None:
@@ -1194,33 +1604,40 @@ def test_debug_parameter_index_rejects_invalid_contents_before_launch(
 
 
 @pytest.mark.parametrize("scope", ("group", "type"))
+@pytest.mark.parametrize("device", _available_devices())
 @pytest.mark.parametrize(
     "operation",
     (
-        lambda view: view.set_parameter_index("unknown", 1.0),
-        lambda view: view.set_parameter_mask("unknown", 1.0),
-        lambda view: view.set_parameter_index("stiffness", torch.ones((1, 1, 1))),
-        lambda view: view.set_parameter_mask("stiffness", torch.ones((1, 1, 1))),
-        lambda view: view.set_parameter_index("stiffness", torch.ones(1)),
-        lambda view: view.set_parameter_mask("stiffness", torch.ones(1)),
-        lambda view: view.set_parameter_index("stiffness", torch.ones(2, dtype=torch.float64)),
-        lambda view: view.set_parameter_mask("stiffness", torch.ones(2, dtype=torch.float64)),
-        lambda view: view.set_parameter_index("stiffness", torch.ones((2, 1))),
-        lambda view: view.set_parameter_mask("stiffness", torch.ones((2, 1))),
-        lambda view: view.set_parameter_index("stiffness", 1.0, env_ids=torch.ones((1, 1), dtype=torch.int32)),
-        lambda view: view.set_parameter_index("stiffness", 1.0, joint_ids=torch.tensor([0.0])),
-        lambda view: view.set_parameter_mask("stiffness", 1.0, env_mask=torch.tensor([1, 0])),
-        lambda view: view.set_parameter_mask("stiffness", 1.0, joint_mask=torch.ones((1, 1), dtype=torch.bool)),
-        lambda view: view.set_parameter_mask("stiffness", 1.0, env_mask=torch.tensor([True])),
-        lambda view: view.set_parameter_mask("stiffness", 1.0, joint_mask=torch.tensor([True, False])),
+        lambda view, device: view.set_parameter_index("unknown", 1.0),
+        lambda view, device: view.set_parameter_mask("unknown", 1.0),
+        lambda view, device: view.set_parameter_index("stiffness", torch.ones((1, 1, 1), device=device)),
+        lambda view, device: view.set_parameter_mask("stiffness", torch.ones((1, 1, 1), device=device)),
+        lambda view, device: view.set_parameter_index("stiffness", torch.ones(1, device=device)),
+        lambda view, device: view.set_parameter_mask("stiffness", torch.ones(1, device=device)),
+        lambda view, device: view.set_parameter_index("stiffness", torch.ones(2, dtype=torch.float64, device=device)),
+        lambda view, device: view.set_parameter_mask("stiffness", torch.ones(2, dtype=torch.float64, device=device)),
+        lambda view, device: view.set_parameter_index("stiffness", torch.ones((2, 1), device=device)),
+        lambda view, device: view.set_parameter_mask("stiffness", torch.ones((2, 1), device=device)),
+        lambda view, device: view.set_parameter_index(
+            "stiffness", 1.0, env_ids=torch.ones((1, 1), dtype=torch.int32, device=device)
+        ),
+        lambda view, device: view.set_parameter_index("stiffness", 1.0, joint_ids=torch.tensor([0.0], device=device)),
+        lambda view, device: view.set_parameter_mask("stiffness", 1.0, env_mask=torch.tensor([1, 0], device=device)),
+        lambda view, device: view.set_parameter_mask(
+            "stiffness", 1.0, joint_mask=torch.ones((1, 1), dtype=torch.bool, device=device)
+        ),
+        lambda view, device: view.set_parameter_mask("stiffness", 1.0, env_mask=torch.tensor([True], device=device)),
+        lambda view, device: view.set_parameter_mask(
+            "stiffness", 1.0, joint_mask=torch.tensor([True, False], device=device)
+        ),
     ),
 )
 def test_malformed_parameter_inputs_fail_before_launch_or_backend_hook(
-    monkeypatch: pytest.MonkeyPatch, scope: str, operation
+    monkeypatch: pytest.MonkeyPatch, scope: str, device: str, operation
 ) -> None:
     """Catch malformed paths that launch or notify the backend before rejecting input."""
-    collection = ActuatorCollection(_Simulation())
-    control = _Control()
+    collection = ActuatorCollection(_Simulation(device))
+    control = _Control(device)
     facade = collection.register_articulation(
         key="robot",
         cfgs={"implicit": _implicit_cfg(["hip", "knee"])},
@@ -1243,7 +1660,7 @@ def test_malformed_parameter_inputs_fail_before_launch_or_backend_hook(
     monkeypatch.setattr(wp, "launch", _launch_forbidden)
     monkeypatch.setattr(control, "write_actuator_parameter", _backend_forbidden)
     with pytest.raises((KeyError, TypeError, ValueError)):
-        operation(view)
+        operation(view, device)
 
 
 @pytest.mark.parametrize("scope", ("group", "type"))
@@ -1342,6 +1759,100 @@ def test_parameter_selectors_do_not_read_device_values_in_normal_mode(
             env_mask=torch.tensor([True, False], device=device),
             joint_mask=torch.tensor([False, True, False], device=device),
         )
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("scope", ("group", "type"))
+@pytest.mark.parametrize("method", ("index", "mask"))
+def test_backend_parameter_router_does_not_read_device_values_in_normal_mode(
+    monkeypatch: pytest.MonkeyPatch, device: str, scope: str, method: str
+) -> None:
+    """Catch a canonical backend route that synchronizes after an otherwise fast selector write."""
+    collection = ActuatorCollection(_Simulation(device))
+    control = _Control(device)
+    facade = collection.register_articulation(
+        key="robot",
+        cfgs={"implicit": _implicit_cfg(["hip", "knee"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+    view = facade["implicit"] if scope == "group" else facade.by_type[ImplicitActuator]
+
+    def _read_forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("backend parameter routing read a device tensor")
+
+    monkeypatch.setattr(torch.Tensor, "cpu", _read_forbidden)
+    monkeypatch.setattr(torch.Tensor, "tolist", _read_forbidden)
+    monkeypatch.setattr(torch.Tensor, "item", _read_forbidden)
+    if device == "cuda":
+        monkeypatch.setattr(torch.cuda, "synchronize", _read_forbidden)
+    for name in ("synchronize", "synchronize_device", "synchronize_stream"):
+        if hasattr(wp, name):
+            monkeypatch.setattr(wp, name, _read_forbidden)
+
+    if method == "index":
+        view.set_parameter_index(
+            "stiffness",
+            torch.tensor([7.0], device=device),
+            env_ids=torch.tensor([0], device=device),
+            joint_ids=torch.tensor([1], device=device),
+        )
+    else:
+        view.set_parameter_mask(
+            "stiffness",
+            torch.tensor([5.0, 7.0], device=device),
+            env_mask=torch.tensor([True, False], device=device),
+            joint_mask=torch.tensor([False, True, False], device=device),
+        )
+    assert control.parameter_writes
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("scope", ("group", "type"))
+@pytest.mark.parametrize("method", ("index", "mask"))
+def test_backend_parameter_router_forwards_normalized_explicit_selectors(device: str, scope: str, method: str) -> None:
+    """Catch backend writes that retain Python or Warp selector wrappers instead of canonical device tensors."""
+    collection = ActuatorCollection(_Simulation(device))
+    control = _Control(device)
+    facade = collection.register_articulation(
+        key="robot",
+        cfgs={"implicit": _implicit_cfg(["hip", "knee"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+    view = facade["implicit"] if scope == "group" else facade.by_type[ImplicitActuator]
+
+    if method == "index":
+        view.set_parameter_index("stiffness", [7.0], env_ids=[0], joint_ids=[1])
+        write = control.parameter_writes[-1][1]
+        assert isinstance(write.env_ids, torch.Tensor)
+        assert isinstance(write.joint_ids, torch.Tensor)
+        assert write.env_ids.dtype is torch.int32
+        assert write.joint_ids.dtype is torch.int32
+        assert write.env_ids.device.type == torch.device(device).type
+        assert write.joint_ids.device.type == torch.device(device).type
+        return
+
+    view.set_parameter_mask(
+        "stiffness",
+        wp.array([5.0, 7.0], dtype=wp.float32, device=device),
+        env_mask=wp.array([True, False], dtype=wp.bool, device=device),
+        joint_mask=wp.array([False, True, False], dtype=wp.bool, device=device),
+    )
+    write = control.parameter_writes[-1][1]
+    assert isinstance(write.env_mask, torch.Tensor)
+    assert isinstance(write.joint_mask, torch.Tensor)
+    assert write.env_mask.dtype is torch.bool
+    assert write.joint_mask.dtype is torch.bool
+    assert write.env_mask.device.type == torch.device(device).type
+    assert write.joint_mask.device.type == torch.device(device).type
 
 
 @pytest.mark.parametrize("device", _available_devices())
@@ -1449,16 +1960,17 @@ def test_group_parameter_mask_forwards_its_owner_binding_to_the_backend() -> Non
     assert control.parameter_writes[-1][1].group_binding is view["first"].__dict__["_parameter_binding"]
 
 
-def test_native_group_parameter_write_delegates_without_affecting_ordinary_groups() -> None:
-    """Catch native discovery metadata that is discarded before scoped writes reach the control bridge."""
+@pytest.mark.parametrize("device", _available_devices())
+def test_native_group_parameter_write_uses_native_owner_for_overlapping_exact_type(device: str) -> None:
+    """Catch exact-type backend routing that selects an ordinary overlapping actuator over its native owner."""
 
     class _NativeControl(_Control):
-        def __init__(self) -> None:
-            super().__init__()
-            self.backend_stiffness = torch.ones((2, 3))
+        def __init__(self, device: str) -> None:
+            super().__init__(device)
+            self.backend_stiffness = torch.ones((2, 3), device=device)
 
         def discover_native_actuators(self, cfgs) -> set[str]:
-            assert tuple(cfgs) == ("native", "ordinary")
+            assert tuple(cfgs) == ("ordinary", "native")
             return {"native"}
 
         def write_actuator_parameter(self, name, write) -> None:
@@ -1476,11 +1988,11 @@ def test_native_group_parameter_write_delegates_without_affecting_ordinary_group
                 if owner_slot >= 0:
                     self.backend_stiffness[:, articulation_slot] = write.value[:, owner_slot]
 
-    collection = ActuatorCollection(_Simulation())
-    control = _NativeControl()
+    collection = ActuatorCollection(_Simulation(device))
+    control = _NativeControl(device)
     view = collection.register_articulation(
         key="robot",
-        cfgs={"native": _ideal_cfg(["hip"]), "ordinary": _ideal_cfg(["knee"])},
+        cfgs={"ordinary": _ideal_cfg(["hip"]), "native": _ideal_cfg(["hip"])},
         control=control,
         replication_cfg_id=1,
         debug_validation=False,
@@ -1493,19 +2005,23 @@ def test_native_group_parameter_write_delegates_without_affecting_ordinary_group
     view["native"].set_parameter_index("stiffness", 7.0)
     assert control.parameter_writes[-1][0] == "stiffness"
     assert control.parameter_writes[-1][1].backend_owner_slots is not None
-    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 7.0))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
+    torch.testing.assert_close(
+        control.parameter_writes[-1][1].backend_owner_slots,
+        torch.tensor([1, -1, -1], dtype=torch.int32, device=device),
+    )
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 7.0, device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2, device=device))
     view["native"].set_parameter_mask("stiffness", 9.0)
-    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 9.0))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
-    view.by_type[IdealPDActuator].set_parameter_index("stiffness", 11.0, joint_ids=torch.tensor([0, 1]))
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 9.0, device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2, device=device))
+    view.by_type[IdealPDActuator].set_parameter_index("stiffness", 11.0, joint_ids=torch.tensor([0], device=device))
     assert control.parameter_writes[-1][0] == "stiffness"
     assert control.parameter_writes[-1][1].backend_owner_slots is not None
-    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 11.0))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 11.0, device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2, device=device))
     view.by_type[IdealPDActuator].set_parameter_mask("stiffness", 13.0)
-    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 13.0))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 13.0, device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2, device=device))
 
 
 def test_native_discovery_rejects_unknown_actuator_group() -> None:

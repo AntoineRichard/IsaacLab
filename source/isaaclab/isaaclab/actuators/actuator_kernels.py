@@ -76,6 +76,16 @@ def record_last_scoped_parameter_position(
 
 
 @wp.kernel(enable_backward=False)
+def copy_scoped_parameter_source(
+    source: wp.array2d(dtype=wp.float32),
+    target: wp.array2d(dtype=wp.float32),
+):
+    """Copy a possibly strided parameter source on Warp's current stream."""
+    row, column = wp.tid()
+    target[row, column] = source[row, column]
+
+
+@wp.kernel(enable_backward=False)
 def write_scoped_parameter_index(
     source: wp.array2d(dtype=wp.float32),
     env_ids: wp.array(dtype=Any),
@@ -88,6 +98,7 @@ def write_scoped_parameter_index(
     last_joint_positions: wp.array(dtype=wp.int32),
     num_worlds: int,
     num_articulation_joints: int,
+    explicit_env_ids: bool,
     explicit_joint_ids: bool,
     type_scope: bool,
     group_scope: bool,
@@ -96,9 +107,9 @@ def write_scoped_parameter_index(
 ):
     """Write a scoped parameter using Cartesian articulation index selectors.
 
-    The final dimension is the stable compact slot. Every candidate thread checks
-    later Cartesian entries for the same destination, making duplicate selectors
-    deterministic without atomics on both CPU and CUDA.
+    The final dimension is the stable compact slot. Precomputed last-position
+    rows gate explicitly supplied duplicate selector IDs, making the final
+    Cartesian occurrence deterministic without atomics on both CPU and CUDA.
     """
     env_i, joint_i, candidate_i = wp.tid()
     env_id = env_ids[env_i]
@@ -123,13 +134,15 @@ def write_scoped_parameter_index(
             slot = candidate_i
             if scope_joint_ids[slot] != articulation_joint_id:
                 return
-        if last_env_positions[env_id] != env_i or last_joint_positions[wp.int32(articulation_joint_id)] != joint_i:
+        if explicit_env_ids and last_env_positions[env_id] != env_i:
+            return
+        if last_joint_positions[wp.int32(articulation_joint_id)] != joint_i:
             return
     else:
         if candidate_i != 0:
             return
         slot = joint_i
-        if last_env_positions[env_id] != env_i:
+        if explicit_env_ids and last_env_positions[env_id] != env_i:
             return
 
     if value_mode == 0:

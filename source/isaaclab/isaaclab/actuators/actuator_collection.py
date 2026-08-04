@@ -89,6 +89,216 @@ class _ArticulationBinding:
     layout: _ArticulationLayout
 
 
+class _SelectorState:
+    """Pointer-stable selector metadata owned by one candidate articulation.
+
+    The three flat slabs are the only owning selector allocations. Logical group
+    and exact-type routes retain Python slices into them rather than individual
+    device tensors, which keeps allocation count independent of group count.
+    """
+
+    def __init__(self, binding: _ArticulationBinding) -> None:
+        layout = binding.layout
+        device = binding.registration.control.device
+        self.token = object()
+        self._closed = False
+        self._num_worlds = layout.num_worlds
+        self._num_joints = layout.num_joints
+        self._max_scope_dofs = max((type_layout.num_dofs for type_layout in layout.type_layouts.values()), default=0)
+        identity_size = max(layout.num_worlds, self._max_scope_dofs)
+        opaque_group_layouts = tuple(
+            group for group in layout.group_layouts if group.actuator_type not in layout.type_layouts
+        )
+        scope_size = sum(type_layout.num_dofs for type_layout in layout.type_layouts.values()) + sum(
+            len(group.joint_indices) for group in opaque_group_layouts
+        )
+        group_inverse_size = len(layout.group_layouts) * layout.num_joints
+
+        backend_routes: list[tuple[type[ActuatorBase], str]] = []
+        for actuator_type in layout.type_layouts:
+            fields: set[str] = set()
+            if issubclass(actuator_type, ImplicitActuator):
+                fields.update(("stiffness", "damping"))
+            if any(
+                group.name in binding.registration.native_group_names and group.actuator_type is actuator_type
+                for group in layout.group_layouts
+            ):
+                fields.update(actuator_type._parameter_schema().parameter_names)
+            backend_routes.extend((actuator_type, field) for field in sorted(fields))
+        owner_rows_by_policy: dict[tuple[type[ActuatorBase], str], int] = {}
+        owner_row_values: list[list[int]] = []
+        for route in backend_routes:
+            actuator_type, field = route
+            owners = [-1] * layout.num_joints
+            for group_layout in layout.group_layouts:
+                is_implicit_drive = issubclass(actuator_type, ImplicitActuator) and field in {"stiffness", "damping"}
+                is_native_field = (
+                    group_layout.name in binding.registration.native_group_names
+                    and group_layout.actuator_type is actuator_type
+                    and field in actuator_type._parameter_schema().parameter_names
+                )
+                if group_layout.actuator_type is actuator_type and (is_implicit_drive or is_native_field):
+                    for local_slot, joint_id in enumerate(group_layout.joint_indices):
+                        owners[joint_id] = group_layout.type_slice.start + local_slot
+            owner_row = next((index for index, values in enumerate(owner_row_values) if values == owners), None)
+            if owner_row is None:
+                owner_row = len(owner_row_values)
+                owner_row_values.append(owners)
+            owner_rows_by_policy[route] = owner_row
+        backend_owner_size = len(owner_row_values) * layout.num_joints
+
+        compact_values = [
+            joint_id for type_layout in layout.type_layouts.values() for joint_id in type_layout.compact_joint_indices
+        ] + [joint_id for group in opaque_group_layouts for joint_id in group.joint_indices]
+        inverse_values = [-1] * group_inverse_size
+        for group_row, group_layout in enumerate(layout.group_layouts):
+            start = group_row * layout.num_joints
+            for local_slot, joint_id in enumerate(group_layout.joint_indices):
+                inverse_values[start + joint_id] = local_slot
+
+        # Layout: identity ids, compact joint ids, group inverse rows, duplicate
+        # scratch rows, and configuration-order backend-owner rows. Constructing
+        # this host list first makes the resulting tensor the sole int32 device
+        # allocation owned by selector metadata.
+        int_values = (
+            list(range(identity_size))
+            + compact_values
+            + inverse_values
+            + [-1] * layout.num_worlds
+            + [-1] * layout.num_joints
+            + [value for row in owner_row_values for value in row]
+        )
+        self._int_slab = torch.tensor(int_values, dtype=torch.int32, device=device)
+        self._bool_slab = torch.ones(max(layout.num_worlds, layout.num_joints), dtype=torch.bool, device=device)
+        self._float_slab = torch.empty(layout.num_worlds * self._max_scope_dofs, dtype=torch.float32, device=device)
+
+        cursor = 0
+        self._identity_ids = self._int_slab[cursor : cursor + identity_size]
+        self._identity_ids_wp = wp.from_torch(self._identity_ids, dtype=wp.int32)
+        cursor += identity_size
+        self._all_env_ids = self._identity_ids[: layout.num_worlds]
+        self._all_env_ids_wp = wp.from_torch(self._all_env_ids, dtype=wp.int32)
+        self._all_env_mask = self._bool_slab[: layout.num_worlds]
+        self._all_joint_mask = self._bool_slab[: layout.num_joints]
+        self._all_env_mask_wp = wp.from_torch(self._all_env_mask, dtype=wp.bool)
+        self._all_joint_mask_wp = wp.from_torch(self._all_joint_mask, dtype=wp.bool)
+
+        self._type_joint_ids: dict[type[ActuatorBase], torch.Tensor] = {}
+        self._type_joint_ids_wp: dict[type[ActuatorBase], wp.array] = {}
+        self._group_joint_ids: dict[str, torch.Tensor] = {}
+        self._group_joint_ids_wp: dict[str, wp.array] = {}
+        compact_ids = self._int_slab[cursor : cursor + scope_size]
+        cursor += scope_size
+        compact_cursor = 0
+        for actuator_type, type_layout in layout.type_layouts.items():
+            values = compact_ids[compact_cursor : compact_cursor + type_layout.num_dofs]
+            compact_cursor += type_layout.num_dofs
+            self._type_joint_ids[actuator_type] = values
+            self._type_joint_ids_wp[actuator_type] = wp.from_torch(values, dtype=wp.int32)
+        for group_layout in layout.group_layouts:
+            if group_layout.actuator_type in self._type_joint_ids:
+                values = self._type_joint_ids[group_layout.actuator_type][group_layout.type_slice]
+            else:
+                values = compact_ids[compact_cursor : compact_cursor + len(group_layout.joint_indices)]
+                compact_cursor += len(group_layout.joint_indices)
+            self._group_joint_ids[group_layout.name] = values
+            self._group_joint_ids_wp[group_layout.name] = wp.from_torch(values, dtype=wp.int32)
+
+        inverse_rows = self._int_slab[cursor : cursor + group_inverse_size].view(
+            len(layout.group_layouts), layout.num_joints
+        )
+        cursor += group_inverse_size
+        self._group_inverse: dict[str, torch.Tensor] = {}
+        self._group_inverse_wp: dict[str, wp.array] = {}
+        self._group_name_by_binding: dict[int, str] = {}
+        for row, group_layout in enumerate(layout.group_layouts):
+            inverse = inverse_rows[row]
+            self._group_inverse[group_layout.name] = inverse
+            self._group_inverse_wp[group_layout.name] = wp.from_torch(inverse, dtype=wp.int32)
+
+        self._last_env_positions = self._int_slab[cursor : cursor + layout.num_worlds]
+        cursor += layout.num_worlds
+        self._last_joint_positions = self._int_slab[cursor : cursor + layout.num_joints]
+        cursor += layout.num_joints
+        self._last_env_positions_wp = wp.from_torch(self._last_env_positions, dtype=wp.int32)
+        self._last_joint_positions_wp = wp.from_torch(self._last_joint_positions, dtype=wp.int32)
+
+        owner_rows = self._int_slab[cursor : cursor + backend_owner_size].view(len(owner_row_values), layout.num_joints)
+        cursor += backend_owner_size
+        self._backend_owner_slots: dict[tuple[type[ActuatorBase], str], torch.Tensor] = {}
+        for route, row in owner_rows_by_policy.items():
+            self._backend_owner_slots[route] = owner_rows[row]
+
+        self._alias_staging = self._float_slab.view(layout.num_worlds, self._max_scope_dofs)
+
+    def bind_group(self, binding: _GroupBinding, group_name: str) -> None:
+        """Associate one newly created logical group binding with packed metadata."""
+        self._group_name_by_binding[id(binding)] = group_name
+
+    def group_joint_ids(self, binding: _GroupBinding) -> torch.Tensor:
+        """Return the packed joint-id view for a logical group binding."""
+        return self._group_joint_ids[self._group_name_by_binding[id(binding)]]
+
+    def group_joint_ids_wp(self, binding: _GroupBinding) -> wp.array:
+        """Return the Warp alias for a logical group joint-id view."""
+        return self._group_joint_ids_wp[self._group_name_by_binding[id(binding)]]
+
+    def group_inverse_wp(self, binding: _GroupBinding) -> wp.array:
+        """Return the Warp alias for one logical group's inverse row."""
+        return self._group_inverse_wp[self._group_name_by_binding[id(binding)]]
+
+    def type_joint_ids(self, actuator_type: type[ActuatorBase]) -> torch.Tensor:
+        """Return the packed compact joint-id view for an exact actuator type."""
+        return self._type_joint_ids[actuator_type]
+
+    def type_joint_ids_wp(self, actuator_type: type[ActuatorBase]) -> wp.array:
+        """Return the Warp alias for an exact actuator type's compact joint ids."""
+        return self._type_joint_ids_wp[actuator_type]
+
+    def default_joint_ids(self, count: int) -> torch.Tensor:
+        """Return the shared compact identity-id prefix for one scope."""
+        return self._identity_ids[:count]
+
+    def alias_staging(self, shape: torch.Size) -> torch.Tensor:
+        """Return a bounded shaped view into the preallocated float staging slab."""
+        size = 1
+        for dimension in shape:
+            size *= dimension
+        if size > self._float_slab.numel():
+            raise ValueError("Aliased parameter values exceed the facade staging capacity.")
+        return self._float_slab[:size].view(shape)
+
+    def close(self) -> None:
+        """Release all selector-owned slabs and aliases."""
+        if self._closed:
+            return
+        self._closed = True
+        self._type_joint_ids.clear()
+        self._type_joint_ids_wp.clear()
+        self._group_joint_ids.clear()
+        self._group_joint_ids_wp.clear()
+        self._group_inverse.clear()
+        self._group_inverse_wp.clear()
+        self._group_name_by_binding.clear()
+        self._backend_owner_slots.clear()
+        self._identity_ids = None
+        self._identity_ids_wp = None
+        self._all_env_ids = None
+        self._all_env_ids_wp = None
+        self._all_env_mask = None
+        self._all_joint_mask = None
+        self._all_env_mask_wp = None
+        self._all_joint_mask_wp = None
+        self._last_env_positions = None
+        self._last_joint_positions = None
+        self._last_env_positions_wp = None
+        self._last_joint_positions_wp = None
+        self._alias_staging = None
+        self._int_slab = None
+        self._bool_slab = None
+        self._float_slab = None
+
+
 class _CollectionGeneration:
     """Private, reversible collection generation prepared before publication."""
 
@@ -102,6 +312,7 @@ class _CollectionGeneration:
         self.bindings = bindings
         self.stores = stores
         self.groups: dict[object, dict[str, ActuatorBase]] = {}
+        self.selector_states: dict[object, _SelectorState] = {}
 
     @classmethod
     def build(
@@ -169,6 +380,9 @@ class _CollectionGeneration:
                 _ArticulationBinding(registration=registration, layout=layout)
                 for registration, layout in zip(registrations, layouts, strict=True)
             )
+            candidate.selector_states = {
+                binding.registration.key: _SelectorState(binding) for binding in candidate.bindings
+            }
         except Exception:
             candidate.close()
             raise
@@ -185,10 +399,11 @@ class _CollectionGeneration:
         for binding in self.bindings:
             groups: dict[str, ActuatorBase] = {}
             control = binding.registration.control
+            selector_state = self.selector_states[binding.registration.key]
             for (name, source_cfg), group_layout in zip(
                 binding.registration.cfgs.items(), binding.layout.group_layouts, strict=True
             ):
-                joint_indices = torch.tensor(group_layout.joint_indices, dtype=torch.int32, device=control.device)
+                joint_indices = selector_state._group_joint_ids[name]
                 joint_names = group_layout.joint_names
                 public_joint_indices: slice | torch.Tensor
                 if group_layout.joint_indices == tuple(range(binding.layout.num_joints)):
@@ -230,25 +445,33 @@ class _CollectionGeneration:
                         if isinstance(existing, torch.Tensor):
                             group_proxies[field.name].torch.copy_(existing)
                     type_layout = binding.layout.type_layouts[group_layout.actuator_type]
-                    actuator._bind_parameter_storage(
-                        _GroupBinding(
-                            generation=self.generation,
-                            joint_indices=joint_indices,
-                            joint_names=tuple(joint_names),
-                            type_slice=group_layout.type_slice,
-                            arrays={field.name: store.type_proxy(type_layout, field.name) for field in schema.fields},
-                            parameter_proxies={
-                                field.name: group_proxies[field.name]
-                                for field in schema.fields
-                                if field.role == "parameter"
-                            },
-                        )
+                    parameter_binding = _GroupBinding(
+                        generation=self.generation,
+                        joint_indices=joint_indices,
+                        joint_names=tuple(joint_names),
+                        type_slice=group_layout.type_slice,
+                        arrays={field.name: store.type_proxy(type_layout, field.name) for field in schema.fields},
+                        parameter_proxies={
+                            field.name: group_proxies[field.name]
+                            for field in schema.fields
+                            if field.role == "parameter"
+                        },
                     )
+                    actuator._bind_parameter_storage(parameter_binding)
+                    selector_state.bind_group(parameter_binding, name)
                 groups[name] = actuator
             self.groups[binding.registration.key] = groups
 
     def close(self) -> None:
         """Release every candidate-owned allocation and private reference."""
+        for groups in self.groups.values():
+            for group in groups.values():
+                release = getattr(group, "_release_facade_storage", None)
+                if release is not None:
+                    release()
+        for selector_state in self.selector_states.values():
+            selector_state.close()
+        self.selector_states.clear()
         for store in self.stores.values():
             store._fields.clear()
             store._type_proxies.clear()
@@ -291,46 +514,53 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
     class _GuardedMapping(Mapping[Any, Any]):
         """Read-only mapping whose owner validates each access."""
 
-        def __init__(self, owner: Any, values: Mapping[Any, Any]) -> None:
+        def __init__(self, owner: Any, values: Mapping[Any, Any], token: object | None = None) -> None:
             self._owner = owner
             self._values = values
+            self._token = token
+
+        def _require_current_generation(self) -> None:
+            if self._token is None:
+                self._owner._require_current_generation()
+            else:
+                self._owner._require_current_generation(self._token)
 
         def __getitem__(self, key: Any) -> Any:
-            self._owner._require_current_generation()
+            self._require_current_generation()
             return self._values[key]
 
         def __iter__(self) -> Iterator[Any]:
-            self._owner._require_current_generation()
-            return _GuardedIterator(self._owner._require_current_generation, iter(self._values))
+            self._require_current_generation()
+            return _GuardedIterator(self._require_current_generation, iter(self._values))
 
         def __reversed__(self) -> Iterator[Any]:
-            self._owner._require_current_generation()
-            return _GuardedIterator(self._owner._require_current_generation, reversed(self._values))
+            self._require_current_generation()
+            return _GuardedIterator(self._require_current_generation, reversed(self._values))
 
         def __len__(self) -> int:
-            self._owner._require_current_generation()
+            self._require_current_generation()
             return len(self._values)
 
         def __repr__(self) -> str:
-            self._owner._require_current_generation()
+            self._require_current_generation()
             return repr(self._values)
 
         def copy(self) -> dict[Any, Any]:
             """Return an ordinary dictionary snapshot of the guarded mapping."""
-            self._owner._require_current_generation()
+            self._require_current_generation()
             return dict(self._values)
 
         def keys(self) -> _GuardedKeysView:
-            self._owner._require_current_generation()
-            return _GuardedKeysView(self, self._owner._require_current_generation)
+            self._require_current_generation()
+            return _GuardedKeysView(self, self._require_current_generation)
 
         def items(self) -> _GuardedItemsView:
-            self._owner._require_current_generation()
-            return _GuardedItemsView(self, self._owner._require_current_generation)
+            self._require_current_generation()
+            return _GuardedItemsView(self, self._require_current_generation)
 
         def values(self) -> _GuardedValuesView:
-            self._owner._require_current_generation()
-            return _GuardedValuesView(self, self._owner._require_current_generation)
+            self._require_current_generation()
+            return _GuardedValuesView(self, self._require_current_generation)
 
     class TypeView:
         """Compact exact-class actuator view for one articulation generation."""
@@ -342,8 +572,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             binding: _ArticulationBinding,
             store: _TypedStore,
             groups: Mapping[str, ActuatorBase],
+            selector_state: _SelectorState,
         ) -> None:
             self._facade = facade
+            self._install_token = selector_state.token
             self._actuator_type = actuator_type
             type_layout = binding.layout.type_layouts[actuator_type]
             group_layouts = tuple(
@@ -352,9 +584,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._joint_names = tuple(
                 joint_name for group in group_layouts for joint_name in groups[group.name].__dict__["_joint_names"]
             )
-            self._joint_indices = torch.tensor(
-                type_layout.compact_joint_indices, dtype=torch.int32, device=binding.registration.control.device
-            )
+            self._joint_indices = selector_state.type_joint_ids(actuator_type)
             self._csr_offsets, self._csr_slots = store.mapping_proxies(type_layout)
             self._max_csr_fanout = max(
                 end - start
@@ -374,7 +604,14 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._parameters = ActuatorCollection._GuardedMapping(self, parameter_values)
 
         def _require_current_generation(self) -> None:
-            self._facade._require_current_generation()
+            self._facade._require_current_generation(self._install_token)
+
+        def _release(self) -> None:
+            """Drop canonical aliases while preserving an ABA-safe stale guard."""
+            self._parameters._values.clear()
+            self._joint_indices = None
+            self._csr_offsets = None
+            self._csr_slots = None
 
         @property
         def actuator_type(self) -> type[ActuatorBase]:
@@ -427,12 +664,38 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         def set_parameter_index(
             self,
             name: str,
-            value: float | torch.Tensor | wp.array | Sequence[float],
+            value: float | torch.Tensor | wp.array(dtype=wp.float32) | Sequence[float] | Sequence[Sequence[float]],
             *,
-            env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
-            joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+            env_ids: Sequence[int] | torch.Tensor | wp.array(dtype=wp.int32) | wp.array(dtype=wp.int64) | None = None,
+            joint_ids: Sequence[int] | torch.Tensor | wp.array(dtype=wp.int32) | wp.array(dtype=wp.int64) | None = None,
         ) -> None:
-            """Set one parameter using Cartesian articulation index selectors."""
+            """Set one parameter using Cartesian articulation index selectors.
+
+            Args:
+                name: Exact-schema parameter name.
+                value: Scalar, compact one-dimensional values, or a two-dimensional
+                    world-by-selector array. Units follow :paramref:`name`:
+                    stiffness [N/m or N·m/rad], damping [N·s/m or N·m·s/rad],
+                    effort and saturation limits [N or N·m], and velocity limits
+                    [m/s or rad/s], depending on joint type.
+                env_ids: Signed articulation-world indices, or ``None`` for every
+                    world. Shape ``[num_selected_worlds]``.
+                joint_ids: Signed articulation-DOF indices, or ``None`` for every
+                    compact type slot. Shape ``[num_selected_joints]``.
+
+            Normal mode ignores out-of-range worlds and joints, as well as joints
+            outside this exact type's scope. With debug validation enabled, these
+            conditions, duplicate selectors, and ownership violations
+            synchronously raise instead.
+
+            Raises:
+                KeyError: If :paramref:`name` is not an exact-schema parameter.
+                TypeError: If selector or value dtypes are unsupported.
+                ValueError: If metadata is malformed, values cannot broadcast, or
+                    debug validation rejects selector contents.
+                RuntimeError: If this view is stale or not execution-ready.
+            """
+            self._require_current_generation()
             self._facade._write_scoped_parameter_index(
                 scope="type",
                 name=name,
@@ -452,12 +715,36 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         def set_parameter_mask(
             self,
             name: str,
-            value: float | torch.Tensor | wp.array | Sequence[float],
+            value: float | torch.Tensor | wp.array(dtype=wp.float32) | Sequence[float] | Sequence[Sequence[float]],
             *,
-            env_mask: torch.Tensor | wp.array | None = None,
-            joint_mask: torch.Tensor | wp.array | None = None,
+            env_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
+            joint_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
         ) -> None:
-            """Set one parameter using full-articulation masks and compact values."""
+            """Set one parameter using full-articulation masks and compact values.
+
+            Args:
+                name: Exact-schema parameter name.
+                value: Scalar, compact one-dimensional values, or a two-dimensional
+                    world-by-compact array. Units follow :paramref:`name`:
+                    stiffness [N/m or N·m/rad], damping [N·s/m or N·m·s/rad],
+                    effort and saturation limits [N or N·m], and velocity limits
+                    [m/s or rad/s], depending on joint type.
+                env_mask: Boolean articulation-world mask with shape
+                    ``[num_worlds]``, or ``None`` for every world.
+                joint_mask: Boolean articulation-DOF mask with shape
+                    ``[num_joints]``, or ``None`` for every joint.
+
+            Mask entries outside this exact type's scope are ignored in every
+            mode. Debug validation performs value-dependent bounds, ownership,
+            and duplicate checks only for index selectors.
+
+            Raises:
+                KeyError: If :paramref:`name` is not an exact-schema parameter.
+                TypeError: If selector or value dtypes are unsupported.
+                ValueError: If metadata is malformed or values cannot broadcast.
+                RuntimeError: If this view is stale or not execution-ready.
+            """
+            self._require_current_generation()
             self._facade._write_scoped_parameter_mask(
                 scope="type",
                 name=name,
@@ -485,6 +772,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._generation: int | None = None
             self._failure: str = "pending actuator view"
             self._by_type: Mapping[type[ActuatorBase], ActuatorCollection.TypeView] = {}
+            self._selector_state: _SelectorState | None = None
+            self._install_token: object | None = None
 
         @property
         def generation(self) -> int:
@@ -646,54 +935,19 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             binding: _ArticulationBinding,
         ) -> None:
             groups = generation.groups[binding.registration.key]
+            selector_state = generation.selector_states[binding.registration.key]
+            self._selector_state = selector_state
+            self._install_token = selector_state.token
             dict.__init__(self, groups)
             for group in groups.values():
-                group._bind_facade_view(self)
+                group._bind_facade_view(self, selector_state.token)
             type_views = {
                 actuator_type: ActuatorCollection.TypeView(
-                    self, actuator_type, binding, generation.stores[actuator_type], groups
+                    self, actuator_type, binding, generation.stores[actuator_type], groups, selector_state
                 )
                 for actuator_type in binding.layout.type_layouts
             }
-            self._by_type = ActuatorCollection._GuardedMapping(self, type_views)
-            device = binding.registration.control.device
-            self._all_env_ids = torch.arange(binding.layout.num_worlds, dtype=torch.int32, device=device)
-            self._all_env_mask = torch.ones(binding.layout.num_worlds, dtype=torch.bool, device=device)
-            self._all_joint_mask = torch.ones(binding.layout.num_joints, dtype=torch.bool, device=device)
-            self._all_env_mask_wp = wp.from_torch(self._all_env_mask, dtype=wp.bool)
-            self._all_joint_mask_wp = wp.from_torch(self._all_joint_mask, dtype=wp.bool)
-            self._last_env_positions = torch.full((binding.layout.num_worlds,), -1, dtype=torch.int32, device=device)
-            self._last_joint_positions = torch.full((binding.layout.num_joints,), -1, dtype=torch.int32, device=device)
-            self._last_env_positions_wp = wp.from_torch(self._last_env_positions, dtype=wp.int32)
-            self._last_joint_positions_wp = wp.from_torch(self._last_joint_positions, dtype=wp.int32)
-            self._parameter_default_joint_ids: dict[int, torch.Tensor] = {}
-            self._parameter_default_joint_ids_wp: dict[int, wp.array] = {}
-            self._scope_joint_ids_wp: dict[int, wp.array] = {}
-            self._group_inverse_lookups: dict[int, torch.Tensor] = {}
-            self._group_inverse_lookups_wp: dict[int, wp.array] = {}
-            group_layouts = {group_layout.name: group_layout for group_layout in binding.layout.group_layouts}
-            for group_name, group in groups.items():
-                group_binding = group.__dict__.get("_parameter_binding")
-                if group_binding is not None:
-                    scope_key = id(group_binding.joint_indices)
-                    self._scope_joint_ids_wp[scope_key] = wp.from_torch(group_binding.joint_indices, dtype=wp.int32)
-                    default_joint_ids = torch.tensor(
-                        tuple(range(group_binding.joint_indices.shape[0])), dtype=torch.int32, device=device
-                    )
-                    self._parameter_default_joint_ids[scope_key] = default_joint_ids
-                    self._parameter_default_joint_ids_wp[scope_key] = wp.from_torch(default_joint_ids, dtype=wp.int32)
-                    inverse_values = [-1] * binding.layout.num_joints
-                    for local_index, joint_index in enumerate(group_layouts[group_name].joint_indices):
-                        inverse_values[joint_index] = local_index
-                    inverse = torch.tensor(inverse_values, dtype=torch.int32, device=device)
-                    self._group_inverse_lookups[id(group_binding)] = inverse
-                    self._group_inverse_lookups_wp[id(group_binding)] = wp.from_torch(inverse, dtype=wp.int32)
-            for type_view in type_views.values():
-                scope_key = id(type_view._joint_indices)
-                self._scope_joint_ids_wp[scope_key] = wp.from_torch(type_view._joint_indices, dtype=wp.int32)
-                default_joint_ids = torch.arange(type_view._joint_indices.shape[0], dtype=torch.int32, device=device)
-                self._parameter_default_joint_ids[scope_key] = default_joint_ids
-                self._parameter_default_joint_ids_wp[scope_key] = wp.from_torch(default_joint_ids, dtype=wp.int32)
+            self._by_type = ActuatorCollection._GuardedMapping(self, type_views, selector_state.token)
             self._debug_validation = binding.registration.debug_validation
             self._control = binding.registration.control
             self._native_group_binding_ids = {
@@ -701,37 +955,6 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 for name in binding.registration.native_group_names
                 if name in groups and "_parameter_binding" in groups[name].__dict__
             }
-            self._native_actuator_types = {
-                type(groups[name]) for name in binding.registration.native_group_names if name in groups
-            }
-            self._backend_owner_slots: dict[tuple[type[ActuatorBase], str], torch.Tensor] = {}
-            for actuator_type in binding.layout.type_layouts:
-                schema_fields = actuator_type._parameter_schema().parameter_names
-                backend_fields = set()
-                if issubclass(actuator_type, ImplicitActuator):
-                    backend_fields.update(("stiffness", "damping"))
-                for group_layout in binding.layout.group_layouts:
-                    if (
-                        group_layout.actuator_type is actuator_type
-                        and group_layout.name in binding.registration.native_group_names
-                    ):
-                        backend_fields.update(schema_fields)
-                for field_name in backend_fields:
-                    owner_values = [-1] * binding.layout.num_joints
-                    for group_layout in binding.layout.group_layouts:
-                        is_implicit_drive = issubclass(actuator_type, ImplicitActuator) and field_name in {
-                            "stiffness",
-                            "damping",
-                        }
-                        is_native_field = (
-                            group_layout.name in binding.registration.native_group_names and field_name in schema_fields
-                        )
-                        if group_layout.actuator_type is actuator_type and (is_implicit_drive or is_native_field):
-                            for local_slot, articulation_slot in enumerate(group_layout.joint_indices):
-                                owner_values[articulation_slot] = group_layout.type_slice.start + local_slot
-                    self._backend_owner_slots[(actuator_type, field_name)] = torch.tensor(
-                        owner_values, dtype=torch.int32, device=device
-                    )
 
         def _write_group_parameter_index(
             self,
@@ -745,6 +968,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             binding = group.__dict__.get("_parameter_binding")
             if binding is None or binding.parameter_proxies is None:
                 raise RuntimeError("Actuator group does not have managed parameter storage.")
+            selector_state = self._require_selector_state()
             self._write_scoped_parameter_index(
                 scope="group",
                 name=name,
@@ -756,7 +980,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 max_csr_fanout=0,
                 actuator_type=type(group),
                 group_binding=binding,
-                group_inverse=self._group_inverse_lookups[id(binding)],
+                group_inverse=selector_state.group_inverse_wp(binding),
                 env_ids=env_ids,
                 joint_ids=joint_ids,
             )
@@ -800,7 +1024,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             max_csr_fanout: int,
             actuator_type: type[ActuatorBase],
             group_binding: _GroupBinding | None,
-            group_inverse: torch.Tensor | None,
+            group_inverse: wp.array | None,
             env_ids: Sequence[int] | torch.Tensor | wp.array | None,
             joint_ids: Sequence[int] | torch.Tensor | wp.array | None,
         ) -> None:
@@ -808,10 +1032,12 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._require_execution_ready()
             if target is None:
                 raise KeyError(f"Unknown parameter {name!r} for {scope} actuator facade.")
-            env_selector = self._normalize_index_selector(env_ids, "env_ids", self._all_env_ids, scope)
+            selector_state = self._require_selector_state()
+            explicit_env_ids = env_ids is not None
+            env_selector = self._normalize_index_selector(env_ids, "env_ids", selector_state._all_env_ids, scope)
             explicit_joint_ids = joint_ids is not None
             if joint_ids is None:
-                joint_selector = self._default_scope_joint_ids(scope_joint_ids)
+                joint_selector = selector_state.default_joint_ids(scope_joint_ids.shape[0])
             else:
                 joint_selector = self._as_index_torch(joint_ids, scope_joint_ids, "joint_ids")
             source, value_mode = self._normalize_index_value(
@@ -823,17 +1049,23 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 )
             if env_selector.shape[0] == 0 or joint_selector.shape[0] == 0:
                 return
-            source_wp = wp.from_torch(source, dtype=wp.float32)
-            env_selector_wp = wp.from_torch(
-                env_selector, dtype=wp.int32 if env_selector.dtype is torch.int32 else wp.int64
+            source_wp = self._parameter_source_warp(source, target, selector_state)
+            env_selector_wp = (
+                selector_state._all_env_ids_wp
+                if env_ids is None
+                else wp.from_torch(env_selector, dtype=wp.int32 if env_selector.dtype is torch.int32 else wp.int64)
             )
             if joint_ids is None:
-                joint_selector_wp = self._parameter_default_joint_ids_wp[id(scope_joint_ids)]
+                joint_selector_wp = selector_state._identity_ids_wp
             else:
                 joint_selector_wp = wp.from_torch(
                     joint_selector, dtype=wp.int32 if joint_selector.dtype is torch.int32 else wp.int64
                 )
-            scope_joint_ids_wp = self._scope_joint_ids_wp[id(scope_joint_ids)]
+            scope_joint_ids_wp = (
+                selector_state.group_joint_ids_wp(group_binding)
+                if group_binding is not None
+                else selector_state.type_joint_ids_wp(actuator_type)
+            )
             type_scope = csr_offsets is not None and csr_slots is not None
             group_scope = group_inverse is not None
             num_candidates = max_csr_fanout if explicit_joint_ids and type_scope else scope_joint_ids.shape[0]
@@ -841,24 +1073,25 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 num_candidates = 1
             if not explicit_joint_ids:
                 num_candidates = 1
-            self._last_env_positions.fill_(-1)
-            wp.launch(
-                actuator_kernels.record_last_scoped_parameter_position,
-                dim=env_selector.shape[0],
-                inputs=[env_selector_wp, self._all_env_ids.shape[0]],
-                outputs=[self._last_env_positions_wp],
-                device=target.warp.device,
-            )
+            if explicit_env_ids:
+                selector_state._last_env_positions_wp.fill_(-1)
+                wp.launch(
+                    actuator_kernels.record_last_scoped_parameter_position,
+                    dim=env_selector.shape[0],
+                    inputs=[env_selector_wp, selector_state._all_env_ids.shape[0]],
+                    outputs=[selector_state._last_env_positions_wp],
+                    device=target.warp.device,
+                )
             if explicit_joint_ids:
-                self._last_joint_positions.fill_(-1)
+                selector_state._last_joint_positions_wp.fill_(-1)
                 wp.launch(
                     actuator_kernels.record_last_scoped_parameter_position,
                     dim=joint_selector.shape[0],
                     inputs=[
                         joint_selector_wp,
-                        self._all_joint_mask.shape[0],
+                        selector_state._all_joint_mask.shape[0],
                     ],
-                    outputs=[self._last_joint_positions_wp],
+                    outputs=[selector_state._last_joint_positions_wp],
                     device=target.warp.device,
                 )
             wp.launch(
@@ -871,11 +1104,12 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     scope_joint_ids_wp,
                     None if csr_offsets is None else csr_offsets.warp,
                     None if csr_slots is None else csr_slots.warp,
-                    None if group_inverse is None else self._group_inverse_lookups_wp[id(group_binding)],
-                    self._last_env_positions_wp,
-                    self._last_joint_positions_wp,
-                    self._all_env_ids.shape[0],
-                    self._all_joint_mask.shape[0],
+                    group_inverse,
+                    selector_state._last_env_positions_wp,
+                    selector_state._last_joint_positions_wp,
+                    selector_state._all_env_ids.shape[0],
+                    selector_state._all_joint_mask.shape[0],
+                    explicit_env_ids,
                     explicit_joint_ids,
                     type_scope,
                     group_scope,
@@ -889,8 +1123,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 scope,
                 name,
                 target.torch,
-                env_selector,
-                joint_selector if explicit_joint_ids else None,
+                None if env_ids is None else env_selector,
+                None if joint_ids is None else joint_selector,
                 csr_offsets,
                 csr_slots,
                 group_binding,
@@ -915,40 +1149,46 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._require_execution_ready()
             if target is None:
                 raise KeyError(f"Unknown parameter {name!r} for {scope} actuator facade.")
-            env_selector = self._normalize_mask_selector(env_mask, "env_mask", self._all_env_mask, scope)
-            joint_selector = self._normalize_mask_selector(joint_mask, "joint_mask", self._all_joint_mask, scope)
-            source, value_mode = self._normalize_mask_value(value, scope_joint_ids.shape[0], target)
-            source_wp = wp.from_torch(source, dtype=wp.float32)
-            env_selector_wp = self._all_env_mask_wp if env_mask is None else wp.from_torch(env_selector, dtype=wp.bool)
-            joint_selector_wp = (
-                self._all_joint_mask_wp if joint_mask is None else wp.from_torch(joint_selector, dtype=wp.bool)
+            selector_state = self._require_selector_state()
+            env_selector = self._normalize_mask_selector(env_mask, "env_mask", selector_state._all_env_mask, scope)
+            joint_selector = self._normalize_mask_selector(
+                joint_mask, "joint_mask", selector_state._all_joint_mask, scope
             )
-            scope_joint_ids_wp = self._scope_joint_ids_wp[id(scope_joint_ids)]
+            source, value_mode = self._normalize_mask_value(value, scope_joint_ids.shape[0], target)
+            source_wp = self._parameter_source_warp(source, target, selector_state)
+            env_selector_wp = (
+                selector_state._all_env_mask_wp if env_mask is None else wp.from_torch(env_selector, dtype=wp.bool)
+            )
+            joint_selector_wp = (
+                selector_state._all_joint_mask_wp
+                if joint_mask is None
+                else wp.from_torch(joint_selector, dtype=wp.bool)
+            )
+            scope_joint_ids_wp = (
+                selector_state.group_joint_ids_wp(group_binding)
+                if group_binding is not None
+                else selector_state.type_joint_ids_wp(actuator_type)
+            )
             wp.launch(
                 actuator_kernels.write_scoped_parameter_mask,
-                dim=(self._all_env_ids.shape[0], scope_joint_ids.shape[0]),
+                dim=(selector_state._all_env_ids.shape[0], scope_joint_ids.shape[0]),
                 inputs=[source_wp, env_selector_wp, joint_selector_wp, scope_joint_ids_wp, value_mode],
                 outputs=[target.warp],
                 device=target.warp.device,
             )
-            native_managed = (group_binding is not None and id(group_binding) in self._native_group_binding_ids) or (
-                group_binding is None and actuator_type in self._native_actuator_types
+            self._route_parameter_side_effect(
+                actuator_type,
+                scope,
+                name,
+                target.torch,
+                None,
+                None,
+                csr_offsets,
+                csr_slots,
+                group_binding,
+                None if env_mask is None else env_selector,
+                None if joint_mask is None else joint_selector,
             )
-            if (issubclass(actuator_type, ImplicitActuator) and name in {"stiffness", "damping"}) or native_managed:
-                owner_slots = self._backend_owner_slots.get((actuator_type, name))
-                if owner_slots is not None or native_managed:
-                    self._control.write_actuator_parameter(
-                        name,
-                        _ActuatorParameterWrite(
-                            value=target.torch,
-                            env_mask=env_selector,
-                            joint_mask=joint_selector,
-                            group_binding=group_binding,
-                            type_csr_offsets=csr_offsets,
-                            type_csr_slots=csr_slots,
-                            backend_owner_slots=owner_slots,
-                        ),
-                    )
 
         @staticmethod
         def _as_torch(value: float | torch.Tensor | wp.array | Sequence[float], target: ProxyArray) -> torch.Tensor:
@@ -966,6 +1206,43 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             if value.dtype is not torch.float32:
                 raise TypeError("Parameter values must have float32 dtype.")
             return value
+
+        @staticmethod
+        def _tensor_byte_span(value: torch.Tensor) -> tuple[int, int] | None:
+            """Return a conservative visible byte interval from public tensor metadata."""
+            if value.numel() == 0:
+                return None
+            min_offset = 0
+            max_offset = 0
+            for size, stride in zip(value.shape, value.stride(), strict=True):
+                offset = (size - 1) * stride
+                min_offset += min(offset, 0)
+                max_offset += max(offset, 0)
+            start = value.data_ptr() + min_offset * value.element_size()
+            return start, value.data_ptr() + (max_offset + 1) * value.element_size()
+
+        def _parameter_source_warp(
+            self, source: torch.Tensor, target: ProxyArray, selector_state: _SelectorState
+        ) -> wp.array:
+            """Return a Warp source alias, staging overlapping values on Warp's stream."""
+            source_span = self._tensor_byte_span(source)
+            target_span = self._tensor_byte_span(target.torch)
+            if source_span is None or target_span is None or source.device != target.torch.device:
+                return wp.from_torch(source, dtype=wp.float32)
+            overlaps = source_span[0] < target_span[1] and target_span[0] < source_span[1]
+            if not overlaps:
+                return wp.from_torch(source, dtype=wp.float32)
+            staged = selector_state.alias_staging(source.shape)
+            source_wp = wp.from_torch(source, dtype=wp.float32)
+            staged_wp = wp.from_torch(staged, dtype=wp.float32)
+            wp.launch(
+                actuator_kernels.copy_scoped_parameter_source,
+                dim=source.shape,
+                inputs=[source_wp],
+                outputs=[staged_wp],
+                device=target.warp.device,
+            )
+            return staged_wp
 
         @staticmethod
         def _as_index_torch(
@@ -998,7 +1275,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
         def _default_scope_joint_ids(self, scope_joint_ids: torch.Tensor) -> torch.Tensor:
             """Return a pointer-stable compact selector owned by this facade."""
-            return self._parameter_default_joint_ids[id(scope_joint_ids)]
+            return self._require_selector_state().default_joint_ids(scope_joint_ids.shape[0])
 
         def _normalize_mask_selector(
             self,
@@ -1048,7 +1325,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 return source.reshape(1, 1), 0
             if source.ndim == 1 and source.shape[0] == num_slots:
                 return source.reshape(1, num_slots), 1
-            if source.ndim == 2 and source.shape == (self._all_env_ids.shape[0], num_slots):
+            if source.ndim == 2 and source.shape == (self._require_selector_state()._all_env_ids.shape[0], num_slots):
                 return source, 2
             raise ValueError("Parameter mask values must be scalar, compact 1-D, or world-by-compact 2-D.")
 
@@ -1064,14 +1341,15 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             """Perform opt-in synchronized bounds, ownership, and duplicate diagnostics."""
             env_values = env_ids.detach().cpu().tolist()
             joint_values = joint_ids.detach().cpu().tolist()
+            selector_state = self._require_selector_state()
             if len(set(env_values)) != len(env_values) or len(set(joint_values)) != len(joint_values):
                 raise ValueError(f"{name!r} {scope} selector contains duplicate ids.")
-            if any(env_id < 0 or env_id >= self._all_env_ids.shape[0] for env_id in env_values):
+            if any(env_id < 0 or env_id >= selector_state._all_env_ids.shape[0] for env_id in env_values):
                 raise ValueError(f"{name!r} {scope} selector contains an out-of-range environment id.")
             if not explicit_joint_ids:
                 return
             scope_values = set(scope_joint_ids.detach().cpu().tolist())
-            if any(joint_id < 0 or joint_id >= self._all_joint_mask.shape[0] for joint_id in joint_values):
+            if any(joint_id < 0 or joint_id >= selector_state._all_joint_mask.shape[0] for joint_id in joint_values):
                 raise ValueError(f"{name!r} {scope} selector contains an out-of-range joint id.")
             if any(joint_id not in scope_values for joint_id in joint_values):
                 raise ValueError(f"{name!r} {scope} selector addresses a joint outside its ownership.")
@@ -1082,29 +1360,32 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             scope: str,
             name: str,
             value: torch.Tensor,
-            env_ids: torch.Tensor,
+            env_ids: torch.Tensor | None,
             joint_ids: torch.Tensor | None,
             csr_offsets: ProxyArray | None,
             csr_slots: ProxyArray | None,
             group_binding: _GroupBinding | None,
+            env_mask: torch.Tensor | None = None,
+            joint_mask: torch.Tensor | None = None,
         ) -> None:
-            """Forward implicit drive writes through their configuration-order owner slots."""
-            native_managed = (group_binding is not None and id(group_binding) in self._native_group_binding_ids) or (
-                group_binding is None and actuator_type in self._native_actuator_types
-            )
-            if not (
-                (issubclass(actuator_type, ImplicitActuator) and name in {"stiffness", "damping"}) or native_managed
-            ):
+            """Forward canonical writes through one configuration-owner routing path."""
+            selector_state = self._require_selector_state()
+            owner_slots = selector_state._backend_owner_slots.get((actuator_type, name))
+            if owner_slots is None:
                 return
-            owner_slots = self._backend_owner_slots.get((actuator_type, name))
-            if owner_slots is None and not native_managed:
-                return
+            if group_binding is not None:
+                is_implicit_drive = issubclass(actuator_type, ImplicitActuator) and name in {"stiffness", "damping"}
+                is_native_group = id(group_binding) in self._native_group_binding_ids
+                if not (is_implicit_drive or is_native_group):
+                    return
             self._control.write_actuator_parameter(
                 name,
                 _ActuatorParameterWrite(
                     value=value,
                     env_ids=env_ids,
                     joint_ids=joint_ids,
+                    env_mask=env_mask,
+                    joint_mask=joint_mask,
                     group_binding=group_binding,
                     type_csr_offsets=csr_offsets,
                     type_csr_slots=csr_slots,
@@ -1117,8 +1398,32 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._failure = ""
 
         def _invalidate(self, failure: str) -> None:
-            self._generation = None
             self._failure = failure
+            self._generation = None
+            self._install_token = None
+            for group in tuple(dict.values(self)):
+                group._release_facade_storage()
+            dict.clear(self)
+            if isinstance(self._by_type, ActuatorCollection._GuardedMapping):
+                for type_view in tuple(self._by_type._values.values()):
+                    type_view._release()
+                self._by_type._values.clear()
+            self._by_type = {}
+            selector_state = self._selector_state
+            self._selector_state = None
+            self._debug_validation = False
+            self._control = None
+            self._native_group_binding_ids = set()
+            if selector_state is not None:
+                selector_state.close()
+
+        def _require_selector_state(self) -> _SelectorState:
+            """Return the active selector state after generation validation."""
+            self._require_current_generation()
+            selector_state = self._selector_state
+            if selector_state is None or selector_state._closed:
+                raise RuntimeError("stale actuator view")
+            return selector_state
 
         def _commit_topology(
             self,
@@ -1145,16 +1450,18 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         def _topology_snapshot(self) -> dict[str, ActuatorBase]:
             return {group_name: group for group_name, group in dict.items(self)}
 
-        def _require_current_generation(self) -> None:
+        def _require_current_generation(self, expected_token: object | None = None) -> None:
             if self._manager._closed:
                 raise RuntimeError("Actuator collection is closed.")
             if self._failure:
                 raise RuntimeError(self._failure)
             if self._generation is None or self._manager.generation != self._generation:
                 raise RuntimeError("stale actuator view")
+            if expected_token is not None and self._install_token is not expected_token:
+                raise RuntimeError("stale actuator view")
 
-        def _require_execution_ready(self) -> None:
-            self._require_current_generation()
+        def _require_execution_ready(self, expected_token: object | None = None) -> None:
+            self._require_current_generation(expected_token)
             if self._manager._dirty:
                 raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator execution.")
 
