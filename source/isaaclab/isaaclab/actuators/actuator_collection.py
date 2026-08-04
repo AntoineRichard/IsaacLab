@@ -667,20 +667,21 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._scope_joint_ids_wp: dict[int, wp.array] = {}
             self._group_inverse_lookups: dict[int, torch.Tensor] = {}
             self._group_inverse_lookups_wp: dict[int, wp.array] = {}
-            for group in groups.values():
+            group_layouts = {group_layout.name: group_layout for group_layout in binding.layout.group_layouts}
+            for group_name, group in groups.items():
                 group_binding = group.__dict__.get("_parameter_binding")
                 if group_binding is not None:
                     scope_key = id(group_binding.joint_indices)
                     self._scope_joint_ids_wp[scope_key] = wp.from_torch(group_binding.joint_indices, dtype=wp.int32)
-                    default_joint_ids = torch.arange(
-                        group_binding.joint_indices.shape[0], dtype=torch.int32, device=device
+                    default_joint_ids = torch.tensor(
+                        tuple(range(group_binding.joint_indices.shape[0])), dtype=torch.int32, device=device
                     )
                     self._parameter_default_joint_ids[scope_key] = default_joint_ids
                     self._parameter_default_joint_ids_wp[scope_key] = wp.from_torch(default_joint_ids, dtype=wp.int32)
-                    inverse = torch.full((binding.layout.num_joints,), -1, dtype=torch.int32, device=device)
-                    inverse[group_binding.joint_indices.to(dtype=torch.long)] = torch.arange(
-                        group_binding.joint_indices.shape[0], dtype=torch.int32, device=device
-                    )
+                    inverse_values = [-1] * binding.layout.num_joints
+                    for local_index, joint_index in enumerate(group_layouts[group_name].joint_indices):
+                        inverse_values[joint_index] = local_index
+                    inverse = torch.tensor(inverse_values, dtype=torch.int32, device=device)
                     self._group_inverse_lookups[id(group_binding)] = inverse
                     self._group_inverse_lookups_wp[id(group_binding)] = wp.from_torch(inverse, dtype=wp.int32)
             for type_view in type_views.values():
