@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 import re
-import warnings
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -21,6 +21,7 @@ from isaaclab.actuators import (
     ActuatorJointProperties,
     IdealPDActuatorCfg,
 )
+from isaaclab.assets.articulation.base_articulation import BaseArticulation
 from isaaclab.utils.warp import ProxyArray
 
 
@@ -33,7 +34,6 @@ class _CompatibilityControl(ActuatorControl):
         self._joint_pos = ProxyArray(wp.zeros((2, 3), dtype=wp.float32, device="cpu"))
         self._joint_vel = ProxyArray(wp.zeros((2, 3), dtype=wp.float32, device="cpu"))
         self.native_stiffness = torch.zeros((2, 3), dtype=torch.float32)
-        self.solver_stiffness = torch.zeros((2, 3), dtype=torch.float32)
 
     @property
     def num_instances(self) -> int:
@@ -126,105 +126,9 @@ class _CompatibilityControl(ActuatorControl):
         assert attr == "kp"
         self.native_stiffness[env_ids[:, None], joint_ids] = values
 
-    def write_solver_stiffness(self, stiffness: torch.Tensor, env_ids: torch.Tensor, joint_ids: torch.Tensor) -> None:
-        self.solver_stiffness[env_ids[:, None], joint_ids] = stiffness
 
-
-class _CompatibilityData:
-    """Deprecated data aliases bound to an articulation-scoped actuator view."""
-
-    def __init__(self, actuators: ActuatorCollection) -> None:
-        self._actuators = actuators
-
-    def _get_alias(self, name: str):
-        command_field = {
-            "joint_pos_target": "position",
-            "joint_vel_target": "velocity",
-            "joint_effort_target": "effort",
-        }.get(name)
-        replacement = f"command.{command_field}" if command_field is not None else name
-        warnings.warn(
-            f"ArticulationData.{name} is deprecated. Use articulation.actuators.{replacement} instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return (
-            getattr(self._actuators.command, command_field)
-            if command_field is not None
-            else getattr(self._actuators, name)
-        )
-
-    @property
-    def joint_pos_target(self):
-        return self._get_alias("joint_pos_target")
-
-    @property
-    def joint_vel_target(self):
-        return self._get_alias("joint_vel_target")
-
-    @property
-    def joint_effort_target(self):
-        return self._get_alias("joint_effort_target")
-
-    @property
-    def computed_torque(self):
-        return self._get_alias("computed_torque")
-
-    @property
-    def applied_torque(self):
-        return self._get_alias("applied_torque")
-
-    @property
-    def soft_joint_vel_limits(self):
-        return self._get_alias("soft_joint_vel_limits")
-
-    @property
-    def gear_ratio(self):
-        return self._get_alias("gear_ratio")
-
-
-class _CompatibilityArticulation:
-    """Focused articulation fake that preserves the public compatibility routes."""
-
-    def __init__(self, actuators: ActuatorCollection, control: _CompatibilityControl) -> None:
-        self.actuators = actuators
-        self.data = _CompatibilityData(actuators)
-        self._control = control
-        self.device = control.device
-
-    def write_actuator_stiffness_to_sim(self, *, stiffness, env_ids, joint_ids) -> None:
-        warnings.warn(
-            "Articulation.write_actuator_stiffness_to_sim is deprecated. Use"
-            " articulation.actuators.write_actuator_stiffness_to_sim instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.actuators.write_actuator_stiffness_to_sim(stiffness=stiffness, env_ids=env_ids, joint_ids=joint_ids)
-
-    def write_joint_stiffness_to_sim_index(self, stiffness, *, env_ids, joint_ids) -> None:
-        self._control.write_solver_stiffness(stiffness, env_ids, joint_ids)
-
-    def set_joint_position_target(self, target, joint_ids=None, env_ids=None) -> None:
-        self._set_target("position", target, joint_ids, env_ids)
-
-    def set_joint_velocity_target(self, target, joint_ids=None, env_ids=None) -> None:
-        self._set_target("velocity", target, joint_ids, env_ids)
-
-    def set_joint_effort_target(self, target, joint_ids=None, env_ids=None) -> None:
-        self._set_target("effort", target, joint_ids, env_ids)
-
-    def _set_target(self, name: str, target, joint_ids, env_ids) -> None:
-        warnings.warn(
-            f"Articulation.set_joint_{name}_target is deprecated. Use "
-            f"articulation.actuators.command.set_{name}_index instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        getattr(self.actuators.command, f"set_{name}_index")(value=target, joint_ids=joint_ids, env_ids=env_ids)
-
-
-def make_initialized_articulation_fixture() -> tuple[_CompatibilityArticulation, _CompatibilityControl]:
-    """Create an articulation compatibility fixture with two logical actuator groups."""
+def make_initialized_actuator_fixture() -> tuple[ActuatorCollection, _CompatibilityControl]:
+    """Create an initialized production actuator collection with two logical groups."""
     control = _CompatibilityControl()
     actuators = ActuatorCollection(
         {
@@ -245,80 +149,51 @@ def make_initialized_articulation_fixture() -> tuple[_CompatibilityArticulation,
         },
         control,
     )
-    return _CompatibilityArticulation(actuators, control), control
+    return actuators, control
 
 
 def test_develop_actuator_mapping_lookup_and_iteration_remain_group_scoped() -> None:
-    articulation, _ = make_initialized_articulation_fixture()
+    actuators, _ = make_initialized_actuator_fixture()
 
-    assert articulation.actuators["shoulder"] is articulation.actuators["shoulder"]
-    assert list(articulation.actuators) == ["shoulder", "wrist"]
-    assert list(articulation.actuators.items()) == [
-        ("shoulder", articulation.actuators["shoulder"]),
-        ("wrist", articulation.actuators["wrist"]),
+    assert actuators["shoulder"] is actuators["shoulder"]
+    assert list(actuators) == ["shoulder", "wrist"]
+    assert list(actuators.items()) == [
+        ("shoulder", actuators["shoulder"]),
+        ("wrist", actuators["wrist"]),
     ]
 
 
 def test_develop_actuator_group_parameters_remain_writable_in_place() -> None:
-    articulation, _ = make_initialized_articulation_fixture()
-    stiffness = articulation.actuators["shoulder"].stiffness
+    actuators, _ = make_initialized_actuator_fixture()
+    stiffness = actuators["shoulder"].stiffness
 
     stiffness[0, 1] = 29.0
 
-    assert articulation.actuators["shoulder"].stiffness.data_ptr() == stiffness.data_ptr()
-    assert articulation.actuators["shoulder"].stiffness[0, 1].item() == 29.0
+    assert actuators["shoulder"].stiffness.data_ptr() == stiffness.data_ptr()
+    assert actuators["shoulder"].stiffness[0, 1].item() == 29.0
 
 
 def test_develop_target_setters_write_command_aliases_and_warn() -> None:
-    articulation, _ = make_initialized_articulation_fixture()
-    values = torch.tensor([[3.0, 5.0]], device=articulation.device)
-    env_ids = torch.tensor([1], device=articulation.device)
-    joint_ids = torch.tensor([0, 2], device=articulation.device)
+    actuators, control = make_initialized_actuator_fixture()
+    articulation = SimpleNamespace(actuators=actuators)
+    values = torch.tensor([[3.0, 5.0]], device=control.device)
+    env_ids = torch.tensor([1], device=control.device)
+    joint_ids = torch.tensor([0, 2], device=control.device)
 
     for target_name, command_name in (("position", "position"), ("velocity", "velocity"), ("effort", "effort")):
         with pytest.warns(DeprecationWarning, match=f"set_joint_{target_name}_target is deprecated"):
-            getattr(articulation, f"set_joint_{target_name}_target")(values, joint_ids=joint_ids, env_ids=env_ids)
-        command = getattr(articulation.actuators.command, command_name).torch
+            getattr(BaseArticulation, f"set_joint_{target_name}_target")(articulation, values, joint_ids, env_ids)
+        command = getattr(actuators.command, command_name).torch
         torch.testing.assert_close(command[1, joint_ids], values[0])
 
 
-def test_develop_data_aliases_preserve_identity_and_warn() -> None:
-    articulation, _ = make_initialized_articulation_fixture()
-    aliases = (
-        ("joint_pos_target", articulation.actuators.command.position),
-        ("joint_vel_target", articulation.actuators.command.velocity),
-        ("joint_effort_target", articulation.actuators.command.effort),
-        ("computed_torque", articulation.actuators.computed_torque),
-        ("applied_torque", articulation.actuators.applied_torque),
-        ("soft_joint_vel_limits", articulation.actuators.soft_joint_vel_limits),
-        ("gear_ratio", articulation.actuators.gear_ratio),
-    )
-
-    for data_name, actuator_value in aliases:
-        with pytest.warns(DeprecationWarning, match=f"ArticulationData.{data_name} is deprecated"):
-            assert getattr(articulation.data, data_name) is actuator_value
-
-
 def test_develop_actuator_gain_writers_update_groups_and_backend() -> None:
-    articulation, control = make_initialized_articulation_fixture()
-    values = torch.tensor([[11.0, 17.0]], device=articulation.device)
-    with pytest.warns(DeprecationWarning, match="write_actuator_stiffness_to_sim is deprecated"):
-        articulation.write_actuator_stiffness_to_sim(
-            stiffness=values,
-            env_ids=torch.tensor([0], device=articulation.device),
-            joint_ids=torch.tensor([0, 1], device=articulation.device),
-        )
-    torch.testing.assert_close(articulation.actuators["shoulder"].stiffness[:1], values)
-    torch.testing.assert_close(control.native_stiffness[:1, :2], values)
-
-
-def test_solver_gain_writers_remain_distinct_from_actuator_parameters() -> None:
-    articulation, control = make_initialized_articulation_fixture()
-    before = articulation.actuators["shoulder"].stiffness.clone()
-    articulation.write_joint_stiffness_to_sim_index(
-        torch.tensor([[31.0]], device=articulation.device),
-        env_ids=torch.tensor([0], device=articulation.device),
-        joint_ids=torch.tensor([0], device=articulation.device),
+    actuators, control = make_initialized_actuator_fixture()
+    values = torch.tensor([[11.0, 17.0]], device=control.device)
+    actuators.write_actuator_stiffness_to_sim(
+        stiffness=values,
+        env_ids=torch.tensor([0], device=control.device),
+        joint_ids=torch.tensor([0, 1], device=control.device),
     )
-    torch.testing.assert_close(articulation.actuators["shoulder"].stiffness, before)
-    assert control.solver_stiffness[0, 0].item() == 31.0
+    torch.testing.assert_close(actuators["shoulder"].stiffness[:1], values)
+    torch.testing.assert_close(control.native_stiffness[:1, :2], values)

@@ -21,6 +21,7 @@ from _articulation_iface_test_utils import (
 )
 from _pytest.mark.structures import ParameterSet
 
+from isaaclab.actuators import ActuatorCollection, IdealPDActuatorCfg
 from isaaclab.utils.buffers import TimestampedBufferWarp
 from isaaclab.utils.wrench_composer import WrenchComposer
 
@@ -921,6 +922,7 @@ _non_mock_backends = _all_backends
 class TestArticulationDataBodyState:
     """Test data properties for all body states."""
 
+    @pytest.mark.filterwarnings("ignore:In Newton, body com pose always has unit quaternion.*:UserWarning")
     @_non_mock_backends
     @pytest.mark.parametrize("num_instances, num_joints, num_bodies", [(2, 1, 3)])
     @pytest.mark.parametrize("device", ["cpu"])
@@ -1968,6 +1970,8 @@ def _make_item_mask(total: int, selected: list[int], device: str) -> wp.array:
 
 
 class TestArticulationOperations:
+    """Test cross-cutting articulation operations."""
+
     def test_iface_fixture_models_nested_actuator_view(self):
         """Keep the ordering fixture aligned with the scoped actuator facade."""
         actuator_view = _MockActuatorCollection.ArticulationView()
@@ -1992,8 +1996,6 @@ class TestArticulationOperations:
         for data_name, actuator_value in aliases:
             with pytest.warns(DeprecationWarning, match=f"ArticulationData.{data_name} is deprecated"):
                 assert getattr(art.data, data_name) is actuator_value
-
-    """Test cross-cutting articulation operations."""
 
     @_non_mock_backends
     @pytest.mark.parametrize("ordering_mode", ["none", "reversed", "cyclic"])
@@ -2211,6 +2213,45 @@ class TestArticulationOperations:
 
 class TestArticulationWritersJoint:
     """Test joint writers/setters with all input combinations."""
+
+    @_requires_newton
+    def test_solver_gain_writers_remain_distinct_from_actuator_parameters(self):
+        """Keep Newton solver stiffness updates separate from actuator parameters."""
+        from isaaclab_newton.assets.articulation.actuator_control import NewtonActuatorControl
+
+        art, _ = get_articulation("newton", 2, 3, 2, device="cpu")
+        object.__setattr__(art, "_sim_cfg", MagicMock(use_newton_actuators=False))
+        actuators = ActuatorCollection(
+            {
+                "shoulder": IdealPDActuatorCfg(
+                    joint_names_expr=["joint_0", "joint_1"],
+                    stiffness=3.0,
+                    damping=4.0,
+                    effort_limit=50.0,
+                    velocity_limit=20.0,
+                ),
+                "wrist": IdealPDActuatorCfg(
+                    joint_names_expr=["joint_2"],
+                    stiffness=5.0,
+                    damping=6.0,
+                    effort_limit=60.0,
+                    velocity_limit=30.0,
+                ),
+            },
+            NewtonActuatorControl(art),
+        )
+        object.__setattr__(art, "actuators", actuators)
+        art.data.bind_actuator_collection(actuators)
+        before = actuators["shoulder"].stiffness.clone()
+
+        art.write_joint_stiffness_to_sim_index(
+            stiffness=torch.tensor([[31.0]], device=art.device),
+            env_ids=torch.tensor([0], device=art.device),
+            joint_ids=torch.tensor([0], device=art.device),
+        )
+
+        torch.testing.assert_close(actuators["shoulder"].stiffness, before)
+        assert art.data.joint_stiffness.torch[0, 0].item() == 31.0
 
     @_non_mock_backends
     @pytest.mark.parametrize("selection", ["index", "mask"])
