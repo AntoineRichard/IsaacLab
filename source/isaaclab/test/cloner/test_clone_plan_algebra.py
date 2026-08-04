@@ -659,6 +659,116 @@ def test_clone_plan_source_assignment_metadata_reuses_homogeneous_backing() -> N
     assert first.local_source_slots.data_ptr() == second.local_source_slots.data_ptr()
 
 
+def test_clone_plan_source_assignment_metadata_rejects_overlapping_rows() -> None:
+    """A cfg cannot assign more than one source row to the same clone column."""
+
+    class _Cfg:
+        pass
+
+    cfg = _Cfg()
+    with pytest.raises(ValueError, match="multiple source rows"):
+        ClonePlan(
+            sources=("/World/envs/env_0/Asset", "/World/envs/env_1/Asset"),
+            destinations=("/World/envs/env_{}/Asset",) * 2,
+            clone_mask=torch.tensor([[True, False], [True, False]], dtype=torch.bool),
+            cfg_rows={id(cfg): (0, 1)},
+        )
+
+
+def test_clone_plan_source_assignment_metadata_marks_all_missing_columns() -> None:
+    """A cfg with no assigned clone columns has no source slots and uses ``-1`` everywhere."""
+
+    class _Cfg:
+        pass
+
+    cfg = _Cfg()
+    plan = ClonePlan(
+        sources=("/World/envs/env_0/Asset",),
+        destinations=("/World/envs/env_{}/Asset",),
+        clone_mask=torch.zeros((1, 3), dtype=torch.bool),
+        cfg_rows={id(cfg): (0,)},
+    )
+
+    assignment = plan._source_assignments[id(cfg)]
+    assert torch.equal(assignment.used_rows, torch.empty(0, dtype=torch.long))
+    assert torch.equal(assignment.representative_columns, torch.empty(0, dtype=torch.long))
+    assert torch.equal(assignment.local_source_slots, torch.full((3,), -1, dtype=torch.long))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required to verify requested-device construction")
+def test_make_clone_plan_keeps_cuda_strategy_assignment_and_metadata_on_their_contract_devices() -> None:
+    """Heterogeneous CUDA construction keeps strategy/mask on CUDA and metadata on CPU."""
+    multi_cfg = type("Cfg", (), {})()
+    multi_cfg.prim_path = "/World/envs/env_.*/Object"
+    multi_cfg.spawn = sim_utils.MultiAssetSpawnerCfg(
+        assets_cfg=[
+            sim_utils.ConeCfg(radius=0.1, height=0.2),
+            sim_utils.SphereCfg(radius=0.1),
+            sim_utils.CylinderCfg(radius=0.1, height=0.2),
+        ]
+    )
+    plain_cfg = type("Cfg", (), {})()
+    plain_cfg.prim_path = "/World/envs/env_.*/Robot"
+    plain_cfg.spawn = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+
+    strategy_calls = []
+
+    def cuda_strategy(combinations, num_clones, device):
+        strategy_calls.append((combinations.device, device))
+        return torch.tensor([[2, 0], [0, -1], [2, 0], [0, -1], [-1, 0]], device=device)
+
+    plan = make_clone_plan(
+        cfgs=(multi_cfg, plain_cfg),
+        num_clones=5,
+        env_spacing=1.0,
+        device="cuda:0",
+        clone_strategy=cuda_strategy,
+        valid_set=torch.tensor([[0, 0]], dtype=torch.long),
+    )
+
+    assert strategy_calls == [(torch.device("cuda:0"), "cuda:0")]
+    assert plan.clone_mask.device == torch.device("cuda:0")
+    multi = plan._source_assignments[id(multi_cfg)]
+    assert torch.equal(multi.used_rows, torch.tensor([0, 2], dtype=torch.long))
+    assert torch.equal(multi.representative_columns, torch.tensor([1, 0], dtype=torch.long))
+    assert torch.equal(multi.local_source_slots, torch.tensor([1, 0, 1, 0, -1], dtype=torch.long))
+    assert all(
+        tensor.device.type == "cpu"
+        for tensor in (multi.used_rows, multi.representative_columns, multi.local_source_slots)
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required to verify seeded strategy semantics")
+def test_make_clone_plan_preserves_cuda_seeded_strategy_semantics() -> None:
+    """The strategy's CUDA RNG stream determines the same source rows as direct CUDA sampling."""
+    cfg = type("Cfg", (), {})()
+    cfg.prim_path = "/World/envs/env_.*/Object"
+    cfg.spawn = sim_utils.MultiAssetSpawnerCfg(
+        assets_cfg=[sim_utils.ConeCfg(radius=0.1, height=0.2), sim_utils.SphereCfg(radius=0.1)]
+    )
+    combinations = torch.tensor([[0], [1]], dtype=torch.long, device="cuda:0")
+
+    torch.manual_seed(17)
+    expected_slots = cloner.random(combinations, 6, "cuda:0").squeeze(1).to(device="cpu")
+    expected_used_slots = torch.unique(expected_slots, sorted=True)
+    expected_slots = expected_slots.clone()
+    slot_remap = torch.full((2,), -1, dtype=torch.long)
+    slot_remap[expected_used_slots] = torch.arange(len(expected_used_slots), dtype=torch.long)
+    expected_slots[:] = slot_remap[expected_slots]
+    torch.manual_seed(17)
+    plan = make_clone_plan(
+        cfgs=(cfg,),
+        num_clones=6,
+        env_spacing=1.0,
+        device="cuda:0",
+        clone_strategy=cloner.random,
+        valid_set=combinations,
+    )
+
+    assignment = plan._source_assignments[id(cfg)]
+    assert torch.equal(assignment.local_source_slots, expected_slots)
+
+
 def test_make_clone_plan_builds_source_assignment_metadata_from_host_assignments() -> None:
     """The heterogeneous constructor records compact CPU slots from its chosen host variants."""
     multi_cfg = type("Cfg", (), {})()

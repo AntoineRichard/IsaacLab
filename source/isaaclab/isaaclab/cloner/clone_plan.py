@@ -143,6 +143,8 @@ def _source_assignments_from_clone_mask(
         local_source_slots = slots_by_rows.get(rows)
         if local_source_slots is None:
             selected_mask = host_mask[torch.tensor(rows, dtype=torch.long)]
+            if (selected_mask.sum(dim=0) > 1).any():
+                raise ValueError("A cfg cannot assign multiple source rows to the same clone column.")
             local_source_slots = torch.full((host_mask.shape[1],), -1, dtype=torch.long)
             active_columns = selected_mask.any(dim=0)
             local_source_slots[active_columns] = selected_mask.to(dtype=torch.int64).argmax(dim=0)[active_columns]
@@ -413,7 +415,7 @@ def make_clone_plan(
     def validate_combo_tensor(combos: torch.Tensor, name: str, expected_rows: int | None = None) -> torch.Tensor:
         if combos.dtype == torch.bool or torch.is_floating_point(combos):
             raise ValueError(f"{name} must contain integer prototype indices.")
-        combos = combos.to(device="cpu", dtype=torch.long)
+        combos = combos.to(device=device, dtype=torch.long)
         if combos.ndim != 2:
             raise ValueError(f"{name} must be a 2-D tensor, got shape {tuple(combos.shape)}.")
         if combos.shape[0] == 0:
@@ -430,11 +432,11 @@ def make_clone_plan(
 
     if valid_set is None:
         all_combos = list(itertools.product(*[range(s) for s in group_sizes]))
-        combos = torch.tensor(all_combos, dtype=torch.long)
+        combos = torch.tensor(all_combos, dtype=torch.long, device=device)
     else:
         combos = validate_combo_tensor(valid_set, "valid_set")
-    chosen_cpu = validate_combo_tensor(clone_strategy(combos, num_clones, "cpu"), "clone_strategy result", num_clones)
-    chosen = chosen_cpu.to(device=device)
+    chosen = validate_combo_tensor(clone_strategy(combos, num_clones, device), "clone_strategy result", num_clones)
+    chosen_cpu = chosen.to(device="cpu")
 
     group_offsets = torch.tensor([0] + list(itertools.accumulate(group_sizes[:-1])), dtype=torch.long, device=device)
     active = chosen >= 0
