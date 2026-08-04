@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
@@ -15,8 +16,43 @@ import torch
 import isaaclab.utils.string as string_utils
 from isaaclab.utils.types import ArticulationActions
 
+from .actuator_storage import _GroupBinding
+
 if TYPE_CHECKING:
     from .actuator_base_cfg import ActuatorBaseCfg
+
+
+class _ManagedParameter:
+    """Descriptor that keeps bound actuator parameter identities stable."""
+
+    def __init__(self, name: str, *, solver_compatibility: bool = False) -> None:
+        self.name = name
+        self._solver_compatibility = solver_compatibility
+
+    def __get__(self, instance: ActuatorBase | None, owner: type[ActuatorBase]) -> torch.Tensor | _ManagedParameter:
+        if instance is None:
+            return self
+        binding = instance.__dict__.get("_parameter_binding")
+        if binding is None:
+            return instance.__dict__[self.name]
+        if self._solver_compatibility:
+            return instance._get_compatibility_sidecar(self.name)
+        if self.name in binding.arrays:
+            return binding.arrays[self.name].torch[:, binding.type_slice]
+        return instance._get_deprecated_gain_sidecar(self.name)
+
+    def __set__(self, instance: ActuatorBase, value: torch.Tensor) -> None:
+        binding = instance.__dict__.get("_parameter_binding")
+        if binding is None:
+            instance.__dict__[self.name] = value
+            return
+        if self._solver_compatibility:
+            instance._get_compatibility_sidecar(self.name).copy_(value)
+            return
+        if self.name in binding.arrays:
+            binding.arrays[self.name].torch[:, binding.type_slice].copy_(value)
+            return
+        instance._get_deprecated_gain_sidecar(self.name).copy_(value)
 
 
 class ActuatorBase(ABC):
@@ -44,19 +80,29 @@ class ActuatorBase(ABC):
     If a class inherits from :class:`ImplicitActuator`, then this flag should be set to :obj:`True`.
     """
 
-    _EXECUTION_PARAMETER_NAMES: ClassVar[tuple[str, ...]] = (
-        "effort_limit",
+    _SOLVER_COMPATIBILITY_PARAMETER_NAMES: ClassVar[tuple[str, ...]] = (
         "effort_limit_sim",
-        "velocity_limit",
         "velocity_limit_sim",
-        "stiffness",
-        "damping",
         "armature",
         "friction",
         "dynamic_friction",
         "viscous_friction",
     )
     _supports_execution_aggregation: ClassVar[bool] = False
+
+    effort_limit = _ManagedParameter("effort_limit")
+    velocity_limit = _ManagedParameter("velocity_limit")
+    stiffness = _ManagedParameter("stiffness")
+    damping = _ManagedParameter("damping")
+    saturation_effort = _ManagedParameter("saturation_effort")
+    computed_effort = _ManagedParameter("computed_effort")
+    applied_effort = _ManagedParameter("applied_effort")
+    effort_limit_sim = _ManagedParameter("effort_limit_sim", solver_compatibility=True)
+    velocity_limit_sim = _ManagedParameter("velocity_limit_sim", solver_compatibility=True)
+    armature = _ManagedParameter("armature", solver_compatibility=True)
+    friction = _ManagedParameter("friction", solver_compatibility=True)
+    dynamic_friction = _ManagedParameter("dynamic_friction", solver_compatibility=True)
+    viscous_friction = _ManagedParameter("viscous_friction", solver_compatibility=True)
 
     computed_effort: torch.Tensor
     """The computed effort for the actuator group. Shape is (num_envs, num_joints)."""
@@ -266,6 +312,11 @@ class ActuatorBase(ABC):
         return len(self._joint_names)
 
     @property
+    def num_envs(self) -> int:
+        """Number of articulation instances represented by the group."""
+        return self._num_envs
+
+    @property
     def joint_names(self) -> list[str]:
         """Articulation's joint names that are part of the group."""
         return self._joint_names
@@ -321,11 +372,61 @@ class ActuatorBase(ABC):
         """Build one private executor from resolved logical actuator groups."""
         executor = copy.copy(actuators[0])
         executor._joint_names = [name for actuator in actuators for name in actuator.joint_names]
-        for name in cls._EXECUTION_PARAMETER_NAMES:
+        for name in cls._execution_parameter_names():
             setattr(executor, name, torch.cat([getattr(actuator, name) for actuator in actuators], dim=1))
         executor.computed_effort = torch.zeros(executor._num_envs, len(executor._joint_names), device=executor._device)
         executor.applied_effort = torch.zeros_like(executor.computed_effort)
         return executor
+
+    @classmethod
+    def _execution_parameter_names(cls) -> tuple[str, ...]:
+        """Return execution parameters derived from an exact-class schema."""
+        if cls.__dict__.get("_parameter_schema") is None:
+            return cls._SOLVER_COMPATIBILITY_PARAMETER_NAMES
+        schema = cls._parameter_schema()
+        return tuple(field.name for field in schema.fields if field.role == "parameter") + (
+            cls._SOLVER_COMPATIBILITY_PARAMETER_NAMES
+        )
+
+    def _bind_parameter_storage(self, binding: _GroupBinding) -> None:
+        """Bind this exact built-in group to canonical typed parameter arrays."""
+        if type(self).__dict__.get("_parameter_schema") is None:
+            raise TypeError(f"{type(self).__name__} does not opt into managed parameter storage.")
+        self.__dict__["_parameter_binding"] = binding
+        self.__dict__["_deprecated_sidecars"] = {}
+        self.__dict__["_deprecated_sidecar_warnings"] = set()
+        self.__dict__["_solver_compatibility_sidecars"] = {}
+
+    def _get_compatibility_sidecar(self, name: str) -> torch.Tensor:
+        """Return a lazy solver-only compatibility buffer for a bound group."""
+        sidecars = self.__dict__.setdefault("_solver_compatibility_sidecars", {})
+        if name not in sidecars:
+            sidecars[name] = self._make_group_local_sidecar(name)
+        return sidecars[name]
+
+    def _get_deprecated_gain_sidecar(self, name: str) -> torch.Tensor:
+        """Return a lazy neural gain compatibility buffer for a bound group."""
+        sidecars = self.__dict__.setdefault("_deprecated_sidecars", {})
+        if name not in sidecars:
+            if name not in {"stiffness", "damping"}:
+                raise AttributeError(f"Managed actuator parameter '{name}' is not allocated.")
+            sidecars[name] = self._make_group_local_sidecar(name)
+            warned = self.__dict__.setdefault("_deprecated_sidecar_warnings", set())
+            if name not in warned:
+                warnings.warn(
+                    f"{type(self).__name__}.{name} is a deprecated neural-actuator compatibility sidecar.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
+                warned.add(name)
+        return sidecars[name]
+
+    def _make_group_local_sidecar(self, name: str) -> torch.Tensor:
+        """Allocate a group-local sidecar initialized from its resolved value."""
+        owned = self.__dict__.get(name)
+        if isinstance(owned, torch.Tensor):
+            return owned.clone()
+        return torch.zeros(self._num_envs, self.num_joints, device=self._device)
 
     def _record_actuator_resolution(self, cfg_val, new_val, usd_val, joint_names, joint_ids, actuator_param: str):
         if actuator_param not in self.joint_property_resolution_table:

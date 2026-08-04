@@ -23,6 +23,7 @@ from isaaclab.utils.assets import read_file
 from isaaclab.utils.types import ArticulationActions
 
 from .actuator_pd import DCMotor
+from .actuator_storage import _ACTUATOR_NET_LSTM_SCHEMA, _ACTUATOR_NET_MLP_SCHEMA
 
 if TYPE_CHECKING:
     from .actuator_net_cfg import ActuatorNetLSTMCfg, ActuatorNetMLPCfg
@@ -42,6 +43,11 @@ class ActuatorNetLSTM(DCMotor):
 
     cfg: ActuatorNetLSTMCfg
     """The configuration of the actuator model."""
+
+    @classmethod
+    def _parameter_schema(cls):
+        """Return the exact-class typed storage schema."""
+        return _ACTUATOR_NET_LSTM_SCHEMA
 
     def __init__(self, cfg: ActuatorNetLSTMCfg, *args, **kwargs):
         super().__init__(cfg, *args, **kwargs)
@@ -119,6 +125,11 @@ class ActuatorNetMLP(DCMotor):
 
     cfg: ActuatorNetMLPCfg
     """The configuration of the actuator model."""
+
+    @classmethod
+    def _parameter_schema(cls):
+        """Return the exact-class typed storage schema."""
+        return _ACTUATOR_NET_MLP_SCHEMA
 
     def __init__(self, cfg: ActuatorNetMLPCfg, *args, **kwargs):
         super().__init__(cfg, *args, **kwargs)

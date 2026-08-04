@@ -744,7 +744,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         if expected_start != expected_num_joints:
             raise ValueError("Execution batch group slices do not cover all executor joints.")
 
-        tensor_names = (*ActuatorBase._EXECUTION_PARAMETER_NAMES, "computed_effort", "applied_effort")
+        tensor_names = (*type(batch.actuator)._execution_parameter_names(), "computed_effort", "applied_effort")
         for name in tensor_names:
             value = getattr(batch.actuator, name)
             if value.shape != (self.num_instances, expected_num_joints):
@@ -755,7 +755,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
     def _bind_execution_batch_parameters(
         self, batch: ActuatorCollection._ExecutionBatch, groups: Sequence[ActuatorBase]
     ) -> None:
-        tensor_names = (*ActuatorBase._EXECUTION_PARAMETER_NAMES, "computed_effort", "applied_effort")
+        tensor_names = (*type(batch.actuator)._execution_parameter_names(), "computed_effort", "applied_effort")
         bindings: list[tuple[ActuatorBase, str, torch.Tensor]] = []
         for group, group_slice in zip(groups, batch.group_slices):
             for name in tensor_names:

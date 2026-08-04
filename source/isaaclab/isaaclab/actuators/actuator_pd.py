@@ -15,6 +15,13 @@ from isaaclab.utils import DelayBuffer, LinearInterpolation
 from isaaclab.utils.types import ArticulationActions
 
 from .actuator_base import ActuatorBase
+from .actuator_storage import (
+    _DC_MOTOR_SCHEMA,
+    _DELAYED_PD_ACTUATOR_SCHEMA,
+    _IDEAL_PD_ACTUATOR_SCHEMA,
+    _IMPLICIT_ACTUATOR_SCHEMA,
+    _REMOTIZED_PD_ACTUATOR_SCHEMA,
+)
 
 if TYPE_CHECKING:
     from .actuator_pd_cfg import (
@@ -56,6 +63,11 @@ class ImplicitActuator(ActuatorBase):
     """The configuration for the actuator model."""
 
     _supports_execution_aggregation = True
+
+    @classmethod
+    def _parameter_schema(cls):
+        """Return the exact-class typed storage schema."""
+        return _IMPLICIT_ACTUATOR_SCHEMA
 
     def __init__(self, cfg: ImplicitActuatorCfg, *args, **kwargs):
         # effort limits
@@ -180,6 +192,11 @@ class IdealPDActuator(ActuatorBase):
 
     _supports_execution_aggregation = True
 
+    @classmethod
+    def _parameter_schema(cls):
+        """Return the exact-class typed storage schema."""
+        return _IDEAL_PD_ACTUATOR_SCHEMA
+
     """
     Operations.
     """
@@ -268,14 +285,19 @@ class DCMotor(IdealPDActuator):
 
     _supports_execution_aggregation = True
 
+    @classmethod
+    def _parameter_schema(cls):
+        """Return the exact-class typed storage schema."""
+        return _DC_MOTOR_SCHEMA
+
     def __init__(self, cfg: DCMotorCfg, *args, **kwargs):
         super().__init__(cfg, *args, **kwargs)
         # parse configuration
         if self.cfg.saturation_effort is None:
             raise ValueError("The saturation_effort must be provided for the DC motor actuator model.")
-        self._saturation_effort = self.cfg.saturation_effort
+        self.saturation_effort = self._parse_joint_parameter(self.cfg.saturation_effort, None)
         # find the velocity on the torque-speed curve that intersects effort_limit in the second and fourth quadrant
-        self._vel_at_effort_lim = self.velocity_limit * (1 + self.effort_limit / self._saturation_effort)
+        self._vel_at_effort_lim = self.velocity_limit * (1 + self.effort_limit / self.saturation_effort)
         # prepare joint vel buffer for max effort computation
         self._joint_vel = torch.zeros_like(self.computed_effort)
         # create buffer for zeros effort
@@ -303,23 +325,18 @@ class DCMotor(IdealPDActuator):
     @classmethod
     def _build_execution_actuator(cls, actuators: Sequence[ActuatorBase]) -> ActuatorBase:
         executor = super()._build_execution_actuator(actuators)
-        executor._saturation_effort = torch.cat(
-            [torch.full_like(actuator.effort_limit, float(actuator._saturation_effort)) for actuator in actuators],
-            dim=1,
-        )
-        executor._vel_at_effort_lim = executor.velocity_limit * (
-            1 + executor.effort_limit / executor._saturation_effort
-        )
+        executor._vel_at_effort_lim = executor.velocity_limit * (1 + executor.effort_limit / executor.saturation_effort)
         executor._joint_vel = torch.zeros_like(executor.computed_effort)
         executor._zeros_effort = torch.zeros_like(executor.computed_effort)
         return executor
 
     def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
         # save current joint vel
+        self._vel_at_effort_lim.copy_(self.velocity_limit * (1 + self.effort_limit / self.saturation_effort))
         self._joint_vel[:] = torch.clip(self._joint_vel, min=-self._vel_at_effort_lim, max=self._vel_at_effort_lim)
         # compute torque limits
-        torque_speed_top = self._saturation_effort * (1.0 - self._joint_vel / self.velocity_limit)
-        torque_speed_bottom = self._saturation_effort * (-1.0 - self._joint_vel / self.velocity_limit)
+        torque_speed_top = self.saturation_effort * (1.0 - self._joint_vel / self.velocity_limit)
+        torque_speed_bottom = self.saturation_effort * (-1.0 - self._joint_vel / self.velocity_limit)
         # -- max limit
         max_effort = torch.clip(torque_speed_top, max=self.effort_limit)
         # -- min limit
@@ -327,6 +344,15 @@ class DCMotor(IdealPDActuator):
         # clip the torques based on the motor limits
         clamped = torch.clip(effort, min=min_effort, max=max_effort)
         return clamped
+
+    @property
+    def _saturation_effort(self) -> torch.Tensor:
+        """Compatibility alias for :attr:`saturation_effort`."""
+        return self.saturation_effort
+
+    @_saturation_effort.setter
+    def _saturation_effort(self, value: torch.Tensor) -> None:
+        self.saturation_effort = value
 
 
 class DelayedPDActuator(IdealPDActuator):
@@ -344,6 +370,11 @@ class DelayedPDActuator(IdealPDActuator):
 
     cfg: DelayedPDActuatorCfg
     """The configuration for the actuator model."""
+
+    @classmethod
+    def _parameter_schema(cls):
+        """Return the exact-class typed storage schema."""
+        return _DELAYED_PD_ACTUATOR_SCHEMA
 
     def __init__(self, cfg: DelayedPDActuatorCfg, *args, **kwargs):
         super().__init__(cfg, *args, **kwargs)
@@ -398,6 +429,11 @@ class RemotizedPDActuator(DelayedPDActuator):
 
     The torque limits are interpolated based on the current joint positions and applied to the actuator commands.
     """
+
+    @classmethod
+    def _parameter_schema(cls):
+        """Return the exact-class typed storage schema."""
+        return _REMOTIZED_PD_ACTUATOR_SCHEMA
 
     def __init__(
         self,
