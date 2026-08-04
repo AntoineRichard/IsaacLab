@@ -17,7 +17,13 @@ import isaaclab.utils.string as string_utils
 from isaaclab.utils.types import ArticulationActions
 from isaaclab.utils.warp import ProxyArray
 
-from .actuator_storage import _GroupBinding
+from .actuator_storage import (
+    _GroupBinding,
+    _GuardedItemsView,
+    _GuardedIterator,
+    _GuardedKeysView,
+    _GuardedValuesView,
+)
 
 if TYPE_CHECKING:
     from .actuator_base_cfg import ActuatorBaseCfg
@@ -44,7 +50,7 @@ class _ManagedParameter:
         return instance._get_deprecated_gain_sidecar(self.name)
 
     def __set__(self, instance: ActuatorBase, value: torch.Tensor) -> None:
-        instance._require_current_facade()
+        instance._require_facade_execution_ready()
         binding = instance.__dict__.get("_parameter_binding")
         if binding is None:
             instance.__dict__[self.name] = value
@@ -71,11 +77,36 @@ class _GuardedParameterMapping(Mapping[str, ProxyArray]):
 
     def __iter__(self) -> Iterator[str]:
         self._actuator._require_current_facade()
-        return iter(self._values)
+        return _GuardedIterator(self._actuator._require_current_facade, iter(self._values))
+
+    def __reversed__(self) -> Iterator[str]:
+        self._actuator._require_current_facade()
+        return _GuardedIterator(self._actuator._require_current_facade, reversed(self._values))
 
     def __len__(self) -> int:
         self._actuator._require_current_facade()
         return len(self._values)
+
+    def __repr__(self) -> str:
+        self._actuator._require_current_facade()
+        return repr(self._values)
+
+    def copy(self) -> dict[str, ProxyArray]:
+        """Return an ordinary dictionary snapshot of the guarded mapping."""
+        self._actuator._require_current_facade()
+        return dict(self._values)
+
+    def keys(self) -> _GuardedKeysView:
+        self._actuator._require_current_facade()
+        return _GuardedKeysView(self, self._actuator._require_current_facade)
+
+    def items(self) -> _GuardedItemsView:
+        self._actuator._require_current_facade()
+        return _GuardedItemsView(self, self._actuator._require_current_facade)
+
+    def values(self) -> _GuardedValuesView:
+        self._actuator._require_current_facade()
+        return _GuardedValuesView(self, self._actuator._require_current_facade)
 
 
 class ActuatorBase(ABC):
@@ -119,7 +150,10 @@ class ActuatorBase(ABC):
             state = object.__getattribute__(self, "__dict__")
             view = state.get("_facade_view")
             if view is not None:
-                view._assert_usable()
+                if name in {"compute", "reset"}:
+                    view._require_execution_ready()
+                else:
+                    view._require_current_generation()
         return object.__getattribute__(self, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -128,7 +162,7 @@ class ActuatorBase(ABC):
             state = object.__getattribute__(self, "__dict__")
             view = state.get("_facade_view")
             if view is not None:
-                view._assert_usable()
+                view._require_execution_ready()
         object.__setattr__(self, name, value)
 
     effort_limit = _ManagedParameter("effort_limit")
@@ -471,7 +505,13 @@ class ActuatorBase(ABC):
         """Reject public group access after its articulation generation expires."""
         view = self.__dict__.get("_facade_view")
         if view is not None:
-            view._assert_usable()
+            view._require_current_generation()
+
+    def _require_facade_execution_ready(self) -> None:
+        """Reject public group writes unless its articulation can execute."""
+        view = self.__dict__.get("_facade_view")
+        if view is not None:
+            view._require_execution_ready()
 
     def _get_compatibility_sidecar(self, name: str) -> torch.Tensor:
         """Return a lazy solver-only compatibility buffer for a bound group."""

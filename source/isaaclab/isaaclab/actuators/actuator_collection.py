@@ -32,6 +32,10 @@ from .actuator_storage import (
     _build_articulation_layout,
     _GroupBinding,
     _GroupRegistration,
+    _GuardedItemsView,
+    _GuardedIterator,
+    _GuardedKeysView,
+    _GuardedValuesView,
     _PrototypeRegistration,
     _TypedStore,
 )
@@ -58,7 +62,7 @@ class _GuardedDictFromKeys:
 
         def fromkeys(iterable, value=None) -> dict:
             if instance is not None:
-                instance._assert_usable()
+                instance._require_current_generation()
             return dict.fromkeys(iterable, value)
 
         return fromkeys
@@ -291,16 +295,41 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._values = values
 
         def __getitem__(self, key: Any) -> Any:
-            self._owner._assert_usable()
+            self._owner._require_current_generation()
             return self._values[key]
 
         def __iter__(self) -> Iterator[Any]:
-            self._owner._assert_usable()
-            return iter(self._values)
+            self._owner._require_current_generation()
+            return _GuardedIterator(self._owner._require_current_generation, iter(self._values))
+
+        def __reversed__(self) -> Iterator[Any]:
+            self._owner._require_current_generation()
+            return _GuardedIterator(self._owner._require_current_generation, reversed(self._values))
 
         def __len__(self) -> int:
-            self._owner._assert_usable()
+            self._owner._require_current_generation()
             return len(self._values)
+
+        def __repr__(self) -> str:
+            self._owner._require_current_generation()
+            return repr(self._values)
+
+        def copy(self) -> dict[Any, Any]:
+            """Return an ordinary dictionary snapshot of the guarded mapping."""
+            self._owner._require_current_generation()
+            return dict(self._values)
+
+        def keys(self) -> _GuardedKeysView:
+            self._owner._require_current_generation()
+            return _GuardedKeysView(self, self._owner._require_current_generation)
+
+        def items(self) -> _GuardedItemsView:
+            self._owner._require_current_generation()
+            return _GuardedItemsView(self, self._owner._require_current_generation)
+
+        def values(self) -> _GuardedValuesView:
+            self._owner._require_current_generation()
+            return _GuardedValuesView(self, self._owner._require_current_generation)
 
     class TypeView:
         """Compact exact-class actuator view for one articulation generation."""
@@ -335,55 +364,55 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             }
             self._parameters = ActuatorCollection._GuardedMapping(self, parameter_values)
 
-        def _assert_usable(self) -> None:
-            self._facade._assert_usable()
+        def _require_current_generation(self) -> None:
+            self._facade._require_current_generation()
 
         @property
         def actuator_type(self) -> type[ActuatorBase]:
             """Exact managed actuator class represented by this view."""
-            self._assert_usable()
+            self._require_current_generation()
             return self._actuator_type
 
         @property
         def num_instances(self) -> int:
             """Number of articulation instances represented by this view."""
-            self._assert_usable()
+            self._require_current_generation()
             return self._num_instances
 
         @property
         def num_joints(self) -> int:
             """Number of compact actuator DOF occurrences represented by this view."""
-            self._assert_usable()
+            self._require_current_generation()
             return len(self._joint_names)
 
         @property
         def joint_names(self) -> tuple[str, ...]:
             """Compact joint names in group and configuration order."""
-            self._assert_usable()
+            self._require_current_generation()
             return self._joint_names
 
         @property
         def joint_indices(self) -> torch.Tensor:
             """Articulation joint indices for compact DOF occurrences."""
-            self._assert_usable()
+            self._require_current_generation()
             return self._joint_indices
 
         @property
         def group_slices(self) -> dict[str, slice]:
             """Compact column slices keyed by logical actuator group."""
-            self._assert_usable()
+            self._require_current_generation()
             return dict(self._group_slices)
 
         @property
         def parameter_names(self) -> tuple[str, ...]:
             """Managed parameter names in exact-schema declaration order."""
-            self._assert_usable()
+            self._require_current_generation()
             return tuple(self._parameters._values)
 
         @property
         def parameters(self) -> Mapping[str, ProxyArray]:
             """Contiguous mutable parameter arrays exposed through a read-only mapping."""
-            self._assert_usable()
+            self._require_current_generation()
             return self._parameters
 
     class ArticulationView(dict[str, ActuatorBase]):
@@ -403,7 +432,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         @property
         def generation(self) -> int:
             """Published collection generation for this view."""
-            self._assert_usable()
+            self._require_current_generation()
             assert self._generation is not None
             return self._generation
 
@@ -419,84 +448,84 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         @property
         def by_type(self) -> Mapping[type[ActuatorBase], ActuatorCollection.TypeView]:
             """Read-only exact managed class views for this articulation."""
-            self._assert_usable()
+            self._require_current_generation()
             return self._by_type
 
         @property
         def command(self):
             """Command facade placeholder guarded until command storage is installed."""
-            self._assert_usable()
+            self._require_execution_ready()
             raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
 
         @property
         def joint_command(self):
             """Processed-command facade placeholder guarded until command storage is installed."""
-            self._assert_usable()
+            self._require_execution_ready()
             raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
 
         def compute(self, dt: float = 0.0) -> None:
             """Reject execution while a topology mutation requires a safe rebuild."""
             del dt
-            self._assert_usable()
+            self._require_execution_ready()
 
         def __getitem__(self, name: str) -> ActuatorBase:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.__getitem__(self, name)
 
         def __iter__(self) -> Iterator[str]:
-            self._assert_usable()
-            return dict.__iter__(self)
+            self._require_current_generation()
+            return _GuardedIterator(self._require_current_generation, dict.__iter__(self))
 
         def __len__(self) -> int:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.__len__(self)
 
         def __contains__(self, name: object) -> bool:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.__contains__(self, name)
 
         def __repr__(self) -> str:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.__repr__(self)
 
         def __reversed__(self) -> Iterator[str]:
-            self._assert_usable()
-            return dict.__reversed__(self)
+            self._require_current_generation()
+            return _GuardedIterator(self._require_current_generation, dict.__reversed__(self))
 
         def __or__(self, other: dict) -> dict:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.__or__(self, other)
 
         def __ror__(self, other: dict) -> dict:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.__ror__(self, other)
 
         def __eq__(self, other: object) -> bool:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.__eq__(self, other)
 
         def __ne__(self, other: object) -> bool:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.__ne__(self, other)
 
-        def keys(self):
-            self._assert_usable()
-            return dict.keys(self)
+        def keys(self) -> _GuardedKeysView:
+            self._require_current_generation()
+            return _GuardedKeysView(self, self._require_current_generation)
 
-        def items(self):
-            self._assert_usable()
-            return dict.items(self)
+        def items(self) -> _GuardedItemsView:
+            self._require_current_generation()
+            return _GuardedItemsView(self, self._require_current_generation)
 
-        def values(self):
-            self._assert_usable()
-            return dict.values(self)
+        def values(self) -> _GuardedValuesView:
+            self._require_current_generation()
+            return _GuardedValuesView(self, self._require_current_generation)
 
         def get(self, name: str, default: Any = None) -> Any:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.get(self, name, default)
 
         def copy(self) -> dict[str, ActuatorBase]:
-            self._assert_usable()
+            self._require_current_generation()
             return dict.copy(self)
 
         def __setitem__(self, name: str, actuator: ActuatorBase) -> None:
@@ -612,10 +641,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             if self._generation is None or self._manager.generation != self._generation:
                 raise RuntimeError("stale actuator view")
 
-        def _assert_usable(self) -> None:
+        def _require_execution_ready(self) -> None:
             self._require_current_generation()
             if self._manager._dirty:
-                raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator access.")
+                raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator execution.")
 
     def _initialize_manager(self, sim_context: Any) -> None:
         self._sim_context = sim_context

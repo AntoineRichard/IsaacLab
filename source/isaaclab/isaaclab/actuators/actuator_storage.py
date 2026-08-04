@@ -7,10 +7,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping, Sequence
+import operator
+from collections.abc import Callable, ItemsView, Iterator, KeysView, Mapping, MutableMapping, Sequence, ValuesView
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 import warp as wp
@@ -21,6 +22,187 @@ if TYPE_CHECKING:
     from isaaclab.cloner import ClonePlan
 
     from .actuator_base import ActuatorBase
+
+
+class _GuardedIterator(Iterator[Any]):
+    """Iterator that revalidates its owning generation on every operation."""
+
+    def __init__(self, guard: Callable[[], None], iterator: Iterator[Any]) -> None:
+        self._guard = guard
+        self._iterator = iterator
+
+    def __iter__(self) -> _GuardedIterator:
+        self._guard()
+        return self
+
+    def __next__(self) -> Any:
+        self._guard()
+        return next(self._iterator)
+
+    def __length_hint__(self) -> int:
+        self._guard()
+        return operator.length_hint(self._iterator)
+
+
+class _GuardedSetOperations:
+    """Set operations that validate a guarded mapping view at entry."""
+
+    _guard: Callable[[], None]
+
+    def _call_set_operation(self, operation: str, other: Any) -> Any:
+        self._guard()
+        return getattr(super(), operation)(other)
+
+    def __le__(self, other: Any) -> bool:
+        return self._call_set_operation("__le__", other)
+
+    def __lt__(self, other: Any) -> bool:
+        return self._call_set_operation("__lt__", other)
+
+    def __gt__(self, other: Any) -> bool:
+        return self._call_set_operation("__gt__", other)
+
+    def __ge__(self, other: Any) -> bool:
+        return self._call_set_operation("__ge__", other)
+
+    def __eq__(self, other: object) -> bool:
+        return self._call_set_operation("__eq__", other)
+
+    def __ne__(self, other: object) -> bool:
+        self._guard()
+        result = super().__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __and__(self, other: Any) -> set[Any]:
+        return self._call_set_operation("__and__", other)
+
+    def __rand__(self, other: Any) -> set[Any]:
+        return self._call_set_operation("__rand__", other)
+
+    def isdisjoint(self, other: Any) -> bool:
+        return self._call_set_operation("isdisjoint", other)
+
+    def __or__(self, other: Any) -> set[Any]:
+        return self._call_set_operation("__or__", other)
+
+    def __ror__(self, other: Any) -> set[Any]:
+        return self._call_set_operation("__ror__", other)
+
+    def __sub__(self, other: Any) -> set[Any]:
+        return self._call_set_operation("__sub__", other)
+
+    def __rsub__(self, other: Any) -> set[Any]:
+        return self._call_set_operation("__rsub__", other)
+
+    def __xor__(self, other: Any) -> set[Any]:
+        return self._call_set_operation("__xor__", other)
+
+    def __rxor__(self, other: Any) -> set[Any]:
+        return self._call_set_operation("__rxor__", other)
+
+
+class _GuardedKeysView(_GuardedSetOperations, KeysView):
+    """Live keys view that revalidates its owning generation when consumed."""
+
+    def __init__(self, mapping: Mapping[Any, Any], guard: Callable[[], None]) -> None:
+        super().__init__(mapping)
+        self._guard = guard
+
+    def __iter__(self) -> Iterator[Any]:
+        self._guard()
+        return _GuardedIterator(self._guard, super().__iter__())
+
+    def __reversed__(self) -> Iterator[Any]:
+        self._guard()
+        return _GuardedIterator(self._guard, reversed(self._mapping))
+
+    def __len__(self) -> int:
+        self._guard()
+        return super().__len__()
+
+    def __contains__(self, key: object) -> bool:
+        self._guard()
+        return super().__contains__(key)
+
+    @property
+    def mapping(self) -> Mapping[Any, Any]:
+        """Read-only guarded access to the underlying live mapping."""
+        self._guard()
+        return MappingProxyType(self._mapping)
+
+    def __repr__(self) -> str:
+        self._guard()
+        return repr(dict(self._mapping).keys())
+
+
+class _GuardedItemsView(_GuardedSetOperations, ItemsView):
+    """Live items view that revalidates its owning generation when consumed."""
+
+    def __init__(self, mapping: Mapping[Any, Any], guard: Callable[[], None]) -> None:
+        super().__init__(mapping)
+        self._guard = guard
+
+    def __iter__(self) -> Iterator[Any]:
+        self._guard()
+        return _GuardedIterator(self._guard, super().__iter__())
+
+    def __reversed__(self) -> Iterator[Any]:
+        self._guard()
+        iterator = ((key, self._mapping[key]) for key in reversed(self._mapping))
+        return _GuardedIterator(self._guard, iterator)
+
+    def __len__(self) -> int:
+        self._guard()
+        return super().__len__()
+
+    def __contains__(self, item: object) -> bool:
+        self._guard()
+        return super().__contains__(item)
+
+    @property
+    def mapping(self) -> Mapping[Any, Any]:
+        """Read-only guarded access to the underlying live mapping."""
+        self._guard()
+        return MappingProxyType(self._mapping)
+
+    def __repr__(self) -> str:
+        self._guard()
+        return repr(dict(self._mapping).items())
+
+
+class _GuardedValuesView(ValuesView):
+    """Live values view that revalidates its owning generation when consumed."""
+
+    def __init__(self, mapping: Mapping[Any, Any], guard: Callable[[], None]) -> None:
+        super().__init__(mapping)
+        self._guard = guard
+
+    def __iter__(self) -> Iterator[Any]:
+        self._guard()
+        return _GuardedIterator(self._guard, super().__iter__())
+
+    def __reversed__(self) -> Iterator[Any]:
+        self._guard()
+        iterator = (self._mapping[key] for key in reversed(self._mapping))
+        return _GuardedIterator(self._guard, iterator)
+
+    def __len__(self) -> int:
+        self._guard()
+        return super().__len__()
+
+    def __contains__(self, value: object) -> bool:
+        self._guard()
+        return super().__contains__(value)
+
+    @property
+    def mapping(self) -> Mapping[Any, Any]:
+        """Read-only guarded access to the underlying live mapping."""
+        self._guard()
+        return MappingProxyType(self._mapping)
+
+    def __repr__(self) -> str:
+        self._guard()
+        return repr(dict(self._mapping).values())
 
 
 @dataclass(frozen=True)

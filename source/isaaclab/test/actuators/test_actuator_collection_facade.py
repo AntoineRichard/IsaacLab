@@ -160,6 +160,16 @@ def test_facade_preserves_dict_copy_union_reverse_and_fromkeys_behavior() -> Non
     assert actuators | {"extra": extra} == dict(actuators) | {"extra": extra}
     assert {"extra": extra} | actuators == {"extra": extra} | dict(actuators)
     assert list(reversed(actuators)) == list(reversed(dict(actuators)))
+    assert list(reversed(actuators.items())) == list(reversed(dict(actuators).items()))
+    assert list(reversed(actuators.values())) == list(reversed(dict(actuators).values()))
+    assert repr(actuators.keys()) == repr(dict(actuators).keys())
+    assert repr(actuators.items()) == repr(dict(actuators).items())
+    assert repr(actuators.values()) == repr(dict(actuators).values())
+    assert dict(actuators.keys().mapping) == dict(actuators)
+    assert dict(actuators.items().mapping) == dict(actuators)
+    assert dict(actuators.values().mapping) == dict(actuators)
+    with pytest.raises(TypeError):
+        actuators.keys().mapping["extra"] = extra
     assert type(actuators.fromkeys(("a", "b"), 1)) is dict
     assert type(ActuatorCollection.ArticulationView.fromkeys(("a", "b"), 1)) is dict
 
@@ -376,8 +386,8 @@ def test_every_dict_mutator_stages_copied_cfgs_warns_once_and_dirties(operation:
     }[operation]
     assert list(staged) == expected_keys
     assert all(staged[name] is not dict.__getitem__(actuators, name).__dict__["cfg"] for name in expected_keys)
-    with pytest.raises(RuntimeError, match="rebuild"):
-        _ = actuators.keys()
+    assert list(actuators) == expected_keys
+    assert list(actuators.keys()) == expected_keys
 
     robot.collection.clear_generation()
     replayed = robot.collection.register_articulation(
@@ -536,6 +546,156 @@ def test_staged_override_replay_is_scoped_to_the_mutated_articulation_key() -> N
 
     assert list(replayed_first) == ["hip", "extra"]
     assert list(replayed_second) == ["ankle"]
+
+
+def test_dirty_topology_keeps_current_generation_reads_visible_but_blocks_writes_and_execution() -> None:
+    robot = make_finalized_robot()
+    facade = robot.actuators
+    group = facade["hip"]
+    type_view = facade.by_type[IdealPDActuator]
+    live_keys = facade.keys()
+    live_items = facade.items()
+    live_values = facade.values()
+    replacement_stiffness = group.stiffness.clone()
+    replacement_cfg = group.cfg.copy()
+
+    with pytest.warns(DeprecationWarning):
+        facade["extra"] = group
+
+    assert list(facade) == ["hip", "knee", "ankle", "extra"]
+    assert facade["extra"] is group
+    assert list(live_keys) == ["hip", "knee", "ankle", "extra"]
+    assert list(live_items)[-1] == ("extra", group)
+    assert list(live_values)[-1] is group
+    assert live_keys & {"hip", "missing"} == {"hip"}
+    assert list(reversed(live_keys)) == ["extra", "ankle", "knee", "hip"]
+    assert group.joint_names == ["hip", "knee"]
+    assert group.cfg is not None
+    assert group.parameters["stiffness"].torch.shape == (2, 2)
+    assert type_view.joint_names == ("hip", "knee", "ankle")
+    assert type_view.parameters["stiffness"].torch.shape == (2, 3)
+    assert facade.by_type[IdealPDActuator] is type_view
+
+    with pytest.raises(RuntimeError, match="rebuild"):
+        facade.compute()
+    with pytest.raises(RuntimeError, match="rebuild"):
+        _ = facade.command
+    with pytest.raises(RuntimeError, match="rebuild"):
+        _ = facade.joint_command
+    with pytest.raises(RuntimeError, match="rebuild"):
+        group.stiffness = replacement_stiffness
+    with pytest.raises(RuntimeError, match="rebuild"):
+        group.cfg = replacement_cfg
+    with pytest.raises(RuntimeError, match="rebuild"):
+        group.custom_state = 1
+
+
+def test_retained_facade_iterators_and_views_recheck_generation_when_consumed() -> None:
+    robot = make_finalized_robot()
+    facade = robot.actuators
+    iterator = iter(facade)
+    reverse_iterator = reversed(facade)
+    keys = facade.keys()
+    items = facade.items()
+    values = facade.values()
+    key_iterator = iter(keys)
+    item_iterator = iter(items)
+    value_iterator = iter(values)
+    reverse_key_iterator = reversed(keys)
+    reverse_item_iterator = reversed(items)
+    reverse_value_iterator = reversed(values)
+    key_mapping = keys.mapping
+    item_mapping = items.mapping
+    value_mapping = values.mapping
+    key_mapping_iterator = iter(key_mapping)
+    item_mapping_iterator = iter(item_mapping)
+    value_mapping_iterator = iter(value_mapping)
+
+    robot.collection.clear_generation()
+
+    operations = (
+        lambda: next(iterator),
+        lambda: next(reverse_iterator),
+        lambda: list(keys),
+        lambda: len(keys),
+        lambda: "hip" in keys,
+        lambda: repr(keys),
+        lambda: keys.isdisjoint(()),
+        lambda: keys & set(),
+        lambda: set() & keys,
+        lambda: list(items),
+        lambda: len(items),
+        lambda: ("hip", object()) in items,
+        lambda: repr(items),
+        lambda: items.isdisjoint(()),
+        lambda: items & set(),
+        lambda: set() & items,
+        lambda: list(values),
+        lambda: len(values),
+        lambda: object() in values,
+        lambda: repr(values),
+        lambda: next(key_iterator),
+        lambda: next(item_iterator),
+        lambda: next(value_iterator),
+        lambda: next(reverse_key_iterator),
+        lambda: next(reverse_item_iterator),
+        lambda: next(reverse_value_iterator),
+        lambda: list(key_mapping),
+        lambda: list(item_mapping),
+        lambda: list(value_mapping),
+        lambda: next(key_mapping_iterator),
+        lambda: next(item_mapping_iterator),
+        lambda: next(value_mapping_iterator),
+    )
+    for operation in operations:
+        with pytest.raises(RuntimeError, match="stale actuator view"):
+            operation()
+
+
+def test_retained_readonly_mapping_iterators_and_views_recheck_generation_when_consumed() -> None:
+    robot = make_finalized_robot()
+    facade = robot.actuators
+    group = facade["hip"]
+    mappings = (
+        facade.by_type,
+        group.parameters,
+        facade.by_type[IdealPDActuator].parameters,
+    )
+    operations = []
+    for mapping in mappings:
+        iterator = iter(mapping)
+        keys = mapping.keys()
+        items = mapping.items()
+        values = mapping.values()
+        key_iterator = iter(keys)
+        item_iterator = iter(items)
+        value_iterator = iter(values)
+        assert list(keys) == list(mapping)
+        assert list(items) == [(key, mapping[key]) for key in mapping]
+        assert list(values) == [mapping[key] for key in mapping]
+        operations.extend(
+            (
+                lambda iterator=iterator: next(iterator),
+                lambda keys=keys: list(keys),
+                lambda keys=keys: len(keys),
+                lambda keys=keys: repr(keys),
+                lambda items=items: list(items),
+                lambda items=items: len(items),
+                lambda items=items: repr(items),
+                lambda values=values: list(values),
+                lambda values=values: len(values),
+                lambda values=values: repr(values),
+                lambda key_iterator=key_iterator: next(key_iterator),
+                lambda item_iterator=item_iterator: next(item_iterator),
+                lambda value_iterator=value_iterator: next(value_iterator),
+            )
+        )
+
+    robot.collection.clear_generation()
+
+    for operation in operations:
+        with pytest.raises(RuntimeError, match="stale actuator view"):
+            operation()
 
 
 def test_retained_facade_group_and_type_views_reject_a_stale_generation() -> None:
