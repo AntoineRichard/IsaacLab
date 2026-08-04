@@ -466,6 +466,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 scope_joint_ids=self._joint_indices,
                 actuator_type=self._actuator_type,
                 group_binding=None,
+                csr_offsets=self._csr_offsets,
+                csr_slots=self._csr_slots,
                 env_mask=env_mask,
                 joint_mask=joint_mask,
             )
@@ -768,6 +770,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 scope_joint_ids=binding.joint_indices,
                 actuator_type=type(group),
                 group_binding=binding,
+                csr_offsets=None,
+                csr_slots=None,
                 env_mask=env_mask,
                 joint_mask=joint_mask,
             )
@@ -891,6 +895,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             scope_joint_ids: torch.Tensor,
             actuator_type: type[ActuatorBase],
             group_binding: _GroupBinding | None,
+            csr_offsets: ProxyArray | None,
+            csr_slots: ProxyArray | None,
             env_mask: torch.Tensor | wp.array | None,
             joint_mask: torch.Tensor | wp.array | None,
         ) -> None:
@@ -927,6 +933,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                             env_mask=env_selector,
                             joint_mask=joint_selector,
                             group_binding=group_binding,
+                            type_csr_offsets=csr_offsets,
+                            type_csr_slots=csr_slots,
                             backend_owner_slots=owner_slots,
                         ),
                     )

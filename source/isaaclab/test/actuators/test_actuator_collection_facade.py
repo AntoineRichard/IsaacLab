@@ -1010,3 +1010,76 @@ def test_type_debug_validation_rejects_in_range_joint_outside_its_scope(device: 
         debug.set_parameter_index(
             "stiffness", torch.tensor([9.0], device=device), joint_ids=torch.tensor([2], device=device)
         )
+
+
+def test_type_parameter_mask_forwards_csr_owner_metadata() -> None:
+    """Catch type mask writes that cannot route canonical owner slots through a shared backend consumer."""
+    collection = ActuatorCollection(_Simulation())
+    control = _Control()
+    view = collection.register_articulation(
+        key="robot",
+        cfgs={"first": _implicit_cfg(["hip", "knee"]), "last": _implicit_cfg(["knee", "ankle"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+
+    view.by_type[ImplicitActuator].set_parameter_mask("stiffness", 7.0)
+
+    write = control.parameter_writes[-1][1]
+    assert write.type_csr_offsets is not None
+    assert write.type_csr_slots is not None
+    assert write.backend_owner_slots is not None
+
+
+def test_overlapping_implicit_parameter_writes_update_only_configuration_owner() -> None:
+    """Catch backend routing that lets a non-owner overlapping implicit group overwrite a solver drive."""
+
+    class _StatefulControl(_Control):
+        def __init__(self) -> None:
+            super().__init__()
+            self.backend_stiffness = torch.ones((2, 3))
+
+        def write_actuator_parameter(self, name, write) -> None:
+            super().write_actuator_parameter(name, write)
+            if name != "stiffness" or write.backend_owner_slots is None:
+                return
+            owners = write.backend_owner_slots.tolist()
+            if write.group_binding is not None:
+                binding = write.group_binding
+                for local_slot, articulation_slot in enumerate(binding.joint_indices.tolist()):
+                    if owners[articulation_slot] == binding.type_slice.start + local_slot:
+                        self.backend_stiffness[:, articulation_slot] = write.value[:, local_slot]
+                return
+            for articulation_slot, owner_slot in enumerate(owners):
+                if owner_slot >= 0:
+                    self.backend_stiffness[:, articulation_slot] = write.value[:, owner_slot]
+
+    collection = ActuatorCollection(_Simulation())
+    control = _StatefulControl()
+    view = collection.register_articulation(
+        key="robot",
+        cfgs={"first": _implicit_cfg(["hip", "knee"]), "last": _implicit_cfg(["knee", "ankle"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+
+    view["first"].set_parameter_index("stiffness", 5.0, joint_ids=torch.tensor([1]))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
+    view["last"].set_parameter_index("stiffness", 17.0, joint_ids=torch.tensor([1]))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 17.0))
+    view["first"].set_parameter_mask("stiffness", 5.0, joint_mask=torch.tensor([False, True, False]))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 17.0))
+    view["last"].set_parameter_mask("stiffness", 19.0, joint_mask=torch.tensor([False, True, False]))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 19.0))
+    view.by_type[ImplicitActuator].set_parameter_index("stiffness", 21.0, joint_ids=torch.tensor([1]))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 21.0))
+    view.by_type[ImplicitActuator].set_parameter_mask(
+        "stiffness", torch.tensor([1.0, 9.0, 23.0, 3.0]), joint_mask=torch.tensor([False, True, False])
+    )
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 23.0))
