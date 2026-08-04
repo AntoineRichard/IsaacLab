@@ -18,9 +18,10 @@ import pytest
 import torch
 
 import isaaclab.actuators.actuator_storage as actuator_storage
+import isaaclab.sim as sim_utils
 from isaaclab import cloner
 from isaaclab.actuators.actuator_pd import IdealPDActuator
-from isaaclab.cloner import ClonePlan
+from isaaclab.cloner import ClonePlan, make_clone_plan
 
 
 def _build_articulation_layout(**kwargs):
@@ -597,3 +598,96 @@ def test_layout_uses_original_cfg_identity_after_asset_copy() -> None:
         replication_cfg_id=id(cfg), clone_plan=plan, registrations=make_variant_registrations()
     )
     assert layout.prototype_rows == plan.cfg_rows[id(cfg)]
+
+
+def test_clone_plan_source_assignment_metadata_compacts_active_nonidentity_rows() -> None:
+    """Per-cfg source slots retain alternating assignments without reading the device mask later.
+
+    Removing the compact row/slot metadata (or deriving slots from global row ids) would make
+    actuator construction choose the wrong prototype for this cfg's nonidentity row ordering.
+    """
+
+    class _Cfg:
+        pass
+
+    cfg = _Cfg()
+    plan = ClonePlan(
+        sources=tuple(f"/World/envs/env_{row}/Asset" for row in range(5)),
+        destinations=("/World/envs/env_{}/Asset",) * 5,
+        clone_mask=torch.tensor(
+            [
+                [False, False, False, False, False],
+                [False, True, False, True, False],
+                [False, False, False, False, False],
+                [False, False, False, False, False],
+                [True, False, True, False, False],
+            ],
+            dtype=torch.bool,
+        ),
+        cfg_rows={id(cfg): (4, 1, 3)},
+    )
+
+    assignment = plan._source_assignments[id(cfg)]
+
+    assert torch.equal(assignment.used_rows, torch.tensor([4, 1], dtype=torch.long))
+    assert torch.equal(assignment.representative_columns, torch.tensor([0, 1], dtype=torch.long))
+    assert torch.equal(assignment.local_source_slots, torch.tensor([0, 1, 0, 1, -1], dtype=torch.long))
+    assert assignment.local_source_slots.device.type == "cpu"
+
+
+def test_clone_plan_source_assignment_metadata_reuses_homogeneous_backing() -> None:
+    """Cfgs sharing one homogeneous row share the same CPU local-slot assignment tensor."""
+
+    class _Cfg:
+        pass
+
+    first_cfg = _Cfg()
+    second_cfg = _Cfg()
+    plan = ClonePlan(
+        sources=("/World/envs/env_0",),
+        destinations=("/World/envs/env_{}",),
+        clone_mask=torch.ones((1, 3), dtype=torch.bool),
+        cfg_rows={id(first_cfg): (0,), id(second_cfg): (0,)},
+    )
+
+    first = plan._source_assignments[id(first_cfg)]
+    second = plan._source_assignments[id(second_cfg)]
+
+    assert torch.equal(first.used_rows, torch.tensor([0], dtype=torch.long))
+    assert torch.equal(first.representative_columns, torch.tensor([0], dtype=torch.long))
+    assert torch.equal(first.local_source_slots, torch.zeros(3, dtype=torch.long))
+    assert first.local_source_slots.data_ptr() == second.local_source_slots.data_ptr()
+
+
+def test_make_clone_plan_builds_source_assignment_metadata_from_host_assignments() -> None:
+    """The heterogeneous constructor records compact CPU slots from its chosen host variants."""
+    multi_cfg = type("Cfg", (), {})()
+    multi_cfg.prim_path = "/World/envs/env_.*/Object"
+    multi_cfg.spawn = sim_utils.MultiAssetSpawnerCfg(
+        assets_cfg=[
+            sim_utils.ConeCfg(radius=0.1, height=0.2),
+            sim_utils.SphereCfg(radius=0.1),
+            sim_utils.CylinderCfg(radius=0.1, height=0.2),
+        ]
+    )
+    plain_cfg = type("Cfg", (), {})()
+    plain_cfg.prim_path = "/World/envs/env_.*/Robot"
+    plain_cfg.spawn = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+
+    plan = make_clone_plan(
+        cfgs=(multi_cfg, plain_cfg),
+        num_clones=5,
+        env_spacing=1.0,
+        device="cpu",
+        valid_set=torch.tensor([[2, 0], [0, -1], [2, 0], [0, -1], [-1, 0]], dtype=torch.long),
+    )
+
+    multi = plan._source_assignments[id(multi_cfg)]
+    assert torch.equal(multi.used_rows, torch.tensor([0, 2], dtype=torch.long))
+    assert torch.equal(multi.representative_columns, torch.tensor([1, 0], dtype=torch.long))
+    assert torch.equal(multi.local_source_slots, torch.tensor([1, 0, 1, 0, -1], dtype=torch.long))
+
+    plain = plan._source_assignments[id(plain_cfg)]
+    assert torch.equal(plain.used_rows, torch.tensor([3], dtype=torch.long))
+    assert torch.equal(plain.representative_columns, torch.tensor([0], dtype=torch.long))
+    assert torch.equal(plain.local_source_slots, torch.tensor([0, -1, 0, -1, 0], dtype=torch.long))

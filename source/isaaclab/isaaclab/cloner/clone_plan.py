@@ -39,6 +39,19 @@ from .path import split
 class ClonePlan:
     """Description of a single replication layout, consumed by :func:`~isaaclab.cloner.replicate`."""
 
+    @dataclass(frozen=True)
+    class _SourceAssignment:
+        """CPU lookup data for one cfg's source prototypes."""
+
+        used_rows: torch.Tensor
+        """Global plan rows in compact local-source-slot order, on CPU."""
+
+        representative_columns: torch.Tensor
+        """One clone column per compact local source slot, on CPU."""
+
+        local_source_slots: torch.Tensor
+        """Flat local source slot by clone column, or ``-1`` where the cfg is absent, on CPU."""
+
     sources: tuple[str, ...]
     """Source prim paths, one per replication row."""
 
@@ -60,6 +73,82 @@ class ClonePlan:
 
     cfg_rows: dict[int, tuple[int, ...]] = field(default_factory=dict)
     """``id(cfg)`` to the row indices the cfg owns."""
+
+    _source_assignments: dict[int, _SourceAssignment] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        """Populate compatibility metadata for manually constructed plans."""
+        if self._source_assignments is None:
+            object.__setattr__(
+                self,
+                "_source_assignments",
+                _source_assignments_from_clone_mask(self.cfg_rows, self.clone_mask),
+            )
+
+
+def _compact_source_assignment(rows: tuple[int, ...], local_source_slots: torch.Tensor) -> ClonePlan._SourceAssignment:
+    """Compact one cfg's CPU source slots to the rows it actually uses."""
+    active = local_source_slots >= 0
+    used_source_slots = torch.unique(local_source_slots[active], sorted=True)
+    row_tensor = torch.tensor(rows, dtype=torch.long)
+    used_rows = row_tensor[used_source_slots]
+
+    slot_remap = torch.full((len(rows),), -1, dtype=torch.long)
+    slot_remap[used_source_slots] = torch.arange(len(used_source_slots), dtype=torch.long)
+    local_source_slots[active] = slot_remap[local_source_slots[active]]
+
+    representative_columns = torch.empty(len(used_source_slots), dtype=torch.long)
+    for source_slot in range(len(used_source_slots)):
+        representative_columns[source_slot] = torch.nonzero(local_source_slots == source_slot, as_tuple=False)[0, 0]
+
+    return ClonePlan._SourceAssignment(
+        used_rows=used_rows,
+        representative_columns=representative_columns,
+        local_source_slots=local_source_slots,
+    )
+
+
+def _source_assignments_from_local_slots(
+    cfg_rows: dict[int, tuple[int, ...]], local_source_slots_by_cfg: dict[int, torch.Tensor]
+) -> dict[int, ClonePlan._SourceAssignment]:
+    """Build cfg-local CPU source assignments from host-resident local variant slots."""
+    assignments: dict[int, ClonePlan._SourceAssignment] = {}
+    cached: dict[tuple[tuple[int, ...], int], ClonePlan._SourceAssignment] = {}
+    for cfg_id, rows in cfg_rows.items():
+        local_source_slots = local_source_slots_by_cfg[cfg_id]
+        cache_key = (rows, local_source_slots.data_ptr())
+        assignment = cached.get(cache_key)
+        if assignment is None:
+            assignment = _compact_source_assignment(rows, local_source_slots)
+            cached[cache_key] = assignment
+        assignments[cfg_id] = assignment
+    return assignments
+
+
+def _source_assignments_from_clone_mask(
+    cfg_rows: dict[int, tuple[int, ...]], clone_mask: torch.Tensor
+) -> dict[int, ClonePlan._SourceAssignment]:
+    """Derive source assignments for direct ``ClonePlan`` construction.
+
+    This compatibility path may synchronize a non-CPU mask. Production plan
+    constructors pass host-resident assignments directly instead.
+    """
+    if not cfg_rows:
+        return {}
+
+    host_mask = clone_mask.to(device="cpu", dtype=torch.bool)
+    local_source_slots_by_cfg: dict[int, torch.Tensor] = {}
+    slots_by_rows: dict[tuple[int, ...], torch.Tensor] = {}
+    for cfg_id, rows in cfg_rows.items():
+        local_source_slots = slots_by_rows.get(rows)
+        if local_source_slots is None:
+            selected_mask = host_mask[torch.tensor(rows, dtype=torch.long)]
+            local_source_slots = torch.full((host_mask.shape[1],), -1, dtype=torch.long)
+            active_columns = selected_mask.any(dim=0)
+            local_source_slots[active_columns] = selected_mask.to(dtype=torch.int64).argmax(dim=0)[active_columns]
+            slots_by_rows[rows] = local_source_slots
+        local_source_slots_by_cfg[cfg_id] = local_source_slots
+    return _source_assignments_from_local_slots(cfg_rows, local_source_slots_by_cfg)
 
 
 def grid_transforms(N: int, spacing: float = 1.0, up_axis: str = "z", device="cpu"):
@@ -296,6 +385,7 @@ def make_clone_plan(
             env_ids=env_ids,
             positions=positions,
             cfg_rows={},
+            _source_assignments={},
         )
 
     # 3) Homogeneous (every cfg is single-variant): emit the simpler env-root plan.
@@ -303,6 +393,7 @@ def make_clone_plan(
         for cfg, spawn_cfg, destination, _ in groups:
             set_spawn_paths(spawn_cfg, [destination.format(0)])
         cfg_rows = {id(cfg): (0,) for cfg, _, _, _ in groups}
+        local_source_slots = torch.zeros(num_clones, dtype=torch.long)
         return ClonePlan(
             sources=(env_template.format(0),),
             destinations=(env_template,),
@@ -310,6 +401,10 @@ def make_clone_plan(
             env_ids=env_ids,
             positions=positions,
             cfg_rows=cfg_rows,
+            _source_assignments=_source_assignments_from_local_slots(
+                cfg_rows,
+                {cfg_id: local_source_slots for cfg_id in cfg_rows},
+            ),
         )
 
     # 4) Heterogeneous: enumerate prototype combos, build per-row mask, mutate spawn paths.
@@ -318,7 +413,7 @@ def make_clone_plan(
     def validate_combo_tensor(combos: torch.Tensor, name: str, expected_rows: int | None = None) -> torch.Tensor:
         if combos.dtype == torch.bool or torch.is_floating_point(combos):
             raise ValueError(f"{name} must contain integer prototype indices.")
-        combos = combos.to(device=device, dtype=torch.long)
+        combos = combos.to(device="cpu", dtype=torch.long)
         if combos.ndim != 2:
             raise ValueError(f"{name} must be a 2-D tensor, got shape {tuple(combos.shape)}.")
         if combos.shape[0] == 0:
@@ -335,10 +430,11 @@ def make_clone_plan(
 
     if valid_set is None:
         all_combos = list(itertools.product(*[range(s) for s in group_sizes]))
-        combos = torch.tensor(all_combos, dtype=torch.long, device=device)
+        combos = torch.tensor(all_combos, dtype=torch.long)
     else:
         combos = validate_combo_tensor(valid_set, "valid_set")
-    chosen = validate_combo_tensor(clone_strategy(combos, num_clones, device), "clone_strategy result", num_clones)
+    chosen_cpu = validate_combo_tensor(clone_strategy(combos, num_clones, "cpu"), "clone_strategy result", num_clones)
+    chosen = chosen_cpu.to(device=device)
 
     group_offsets = torch.tensor([0] + list(itertools.accumulate(group_sizes[:-1])), dtype=torch.long, device=device)
     active = chosen >= 0
@@ -351,18 +447,26 @@ def make_clone_plan(
     if active_flat.any():
         clone_mask[rows[active_flat], cols[active_flat]] = True
 
+    cfg_rows = {}
+    row = 0
+    for cfg, _, _, count in groups:
+        cfg_rows[id(cfg)] = tuple(range(row, row + count))
+        row += count
+    local_source_slots = chosen_cpu.T.contiguous()
+    source_assignments = _source_assignments_from_local_slots(
+        cfg_rows,
+        {id(cfg): local_source_slots[index] for index, (cfg, _, _, _) in enumerate(groups)},
+    )
+
     sources_list: list[str] = []
     destinations_list: list[str] = []
-    cfg_rows: dict[int, tuple[int, ...]] = {}
     row = 0
     for cfg, spawn_cfg, destination, count in groups:
-        cfg_rows[id(cfg)] = tuple(range(row, row + count))
-        group_mask = clone_mask[row : row + count]
-        env_ids_assigned = group_mask.to(torch.int).argmax(dim=1).tolist()
-        active = group_mask.any(dim=1).tolist()
-        paths = [
-            destination.format(env_id) if is_active else None for env_id, is_active in zip(env_ids_assigned, active)
-        ]
+        assignment = source_assignments[id(cfg)]
+        paths: list[str | None] = [None] * count
+        for source_slot, source_row in enumerate(assignment.used_rows.tolist()):
+            prototype = source_row - row
+            paths[prototype] = destination.format(assignment.representative_columns[source_slot].item())
         for i, path in enumerate(paths):
             destinations_list.append(destination)
             # Inactive prototypes fall back to env-i so the source path stays valid even
@@ -378,6 +482,7 @@ def make_clone_plan(
         env_ids=env_ids,
         positions=positions,
         cfg_rows=cfg_rows,
+        _source_assignments=source_assignments,
     )
 
 
@@ -412,6 +517,7 @@ def clone_plan_from_env_0(
     cfg_rows: dict[int, tuple[int, ...]] = {
         id(cfg): (0,) for cfg in REPLICATION_QUEUE if cfg.prim_path.startswith(prefix)
     }
+    local_source_slots = torch.zeros(num_clones, dtype=torch.long)
     return ClonePlan(
         sources=(source,),
         destinations=(destination,),
@@ -419,4 +525,8 @@ def clone_plan_from_env_0(
         env_ids=torch.arange(num_clones, dtype=torch.long, device=device),
         positions=positions,
         cfg_rows=cfg_rows,
+        _source_assignments=_source_assignments_from_local_slots(
+            cfg_rows,
+            {cfg_id: local_source_slots for cfg_id in cfg_rows},
+        ),
     )
