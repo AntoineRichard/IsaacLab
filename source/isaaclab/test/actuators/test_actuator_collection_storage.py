@@ -149,6 +149,62 @@ def _cpu_source_layout(group_count: int):
     )
 
 
+def _cpu_solver_layout(
+    *,
+    key: object,
+    assignment: tuple[int, ...],
+    base: float,
+    type_offsets: dict[type, int],
+):
+    """Build a two-prototype solver layout with distinct values and clone assignment."""
+    cfg = object()
+    clone_plan = ClonePlan(
+        sources=("/World/envs/env_0/Robot", "/World/envs/env_1/Robot"),
+        destinations=("/World/envs/env_{}/Robot", "/World/envs/env_{}/Robot"),
+        clone_mask=torch.tensor(
+            [[source == 0 for source in assignment], [source == 1 for source in assignment]], dtype=torch.bool
+        ),
+        cfg_rows={id(cfg): (0, 1)},
+    )
+    field_rows = {
+        name: torch.tensor(
+            [
+                [base + field_index * 10.0, base + field_index * 10.0 + 1.0],
+                [base + field_index * 10.0 + 100.0, base + field_index * 10.0 + 101.0],
+            ],
+            dtype=torch.float32,
+        )
+        for field_index, name in enumerate(actuator_storage._SolverPropertyStore._FIELD_NAMES)
+    }
+    group = actuator_storage._GroupRegistration(
+        name="drive",
+        actuator_type=IdealPDActuator,
+        joint_indices=(0, 1),
+        values={},
+        joint_names=("joint_0", "joint_1"),
+        source_values={"stiffness": field_rows["stiffness"]},
+    )
+    return _build_articulation_layout(
+        replication_cfg_id=id(cfg),
+        clone_plan=clone_plan,
+        registrations=(
+            actuator_storage._PrototypeRegistration(
+                registration_key=key,
+                num_joints=2,
+                groups=(group,),
+                source_resolved=True,
+                solver_default_values=field_rows,
+            ),
+        ),
+        type_offsets=type_offsets,
+        prototype_rows=(0, 1),
+        prototype_assignment=torch.tensor(assignment, dtype=torch.int32),
+        prototype_source_columns=torch.tensor([0, 1], dtype=torch.int64),
+        source_slot_by_backend_row=torch.tensor(assignment, dtype=torch.int64),
+        num_worlds=len(assignment),
+    )
+
+
 class _ArticulationLayoutFixture:
     """Small test adapter exposing scoped proxies from one immutable layout."""
 
@@ -894,24 +950,34 @@ def test_construction_stream_orders_torch_producers_and_releases_on_its_exact_st
 
     try:
         torch.Tensor.record_stream = _record_stream
-        with wp.ScopedStream(wp.Stream("cuda:0")):
+        release_stream = wp.Stream("cuda:0")
+        with wp.ScopedStream(release_stream):
             typed_store._release_initialization_buffers()
+            typed_recorded_streams = set(recorded_streams)
+            recorded_streams.clear()
             solver_store._release_initialization_buffers()
+            solver_recorded_streams = set(recorded_streams)
     finally:
         torch.Tensor.record_stream = original_record_stream
 
-    assert typed_stream.cuda_stream in recorded_streams
-    assert solver_stream.cuda_stream in recorded_streams
+    assert typed_recorded_streams == {typed_stream.cuda_stream}
+    assert solver_recorded_streams == {solver_stream.cuda_stream}
+    assert release_stream.cuda_stream not in typed_recorded_streams | solver_recorded_streams
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for solver source-transfer coverage")
 def test_solver_store_packs_multi_layout_source_rows_once_per_field_and_reuses_gain_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two device layouts use one assignment and one source H2D per solver field."""
-    layouts = (_cpu_source_layout(1), _cpu_source_layout(1))
+    """Device targets and a gain-only consumer share packed assignment, sources, and metadata."""
+    type_offsets: dict[type, int] = {}
+    first = _cpu_solver_layout(key="first", assignment=(1, 0, 1, 0), base=1.0, type_offsets=type_offsets)
+    second = _cpu_solver_layout(key="second", assignment=(0, 1, 1), base=1000.0, type_offsets=type_offsets)
+    gain_only = _cpu_solver_layout(key="gain", assignment=(1, 0), base=2000.0, type_offsets=type_offsets)
+    consumers = (first, second, gain_only)
+    device_layouts = (first, second)
     store = actuator_storage._SolverPropertyStore()
-    store.allocate(layouts, device="cuda")
+    store.allocate(consumers, device="cuda")
     transfers: list[tuple[int, ...]] = []
     original_to = torch.Tensor.to
 
@@ -936,15 +1002,49 @@ def test_solver_store_packs_multi_layout_source_rows_once_per_field_and_reuses_g
         return original_launch(kernel, *args, **kwargs)
 
     monkeypatch.setattr(wp, "launch", _record_launch)
-    store.prepare_device_assignments(layouts, device="cuda")
-    store.materialize_device_targets(layouts, device="cuda")
+    store.prepare_device_assignments(consumers, device="cuda")
+    for field_name in ("stiffness", "damping"):
+        store._prepare_device_source_rows(consumers, field_name, device="cuda")
+    store.materialize_device_targets(device_layouts, device="cuda")
     before_staging = list(transfers)
-    staging_target = ProxyArray(wp.empty((1, 1), dtype=wp.float32, device="cuda"))
-    store.expand_source_rows_into(staging_target, "stiffness", layouts[0])
+    staging_target = ProxyArray(wp.empty((gain_only.num_worlds, gain_only.num_joints), dtype=wp.float32, device="cuda"))
+    store.expand_source_rows_into(staging_target, "stiffness", gain_only)
+    assert transfers == before_staging
+    monkeypatch.setattr(torch.Tensor, "to", original_to)
+
+    for field_index, field_name in enumerate(store._FIELD_NAMES):
+        for layout, base in ((first, 1.0), (second, 1000.0)):
+            prototypes = torch.tensor(
+                [
+                    [base + field_index * 10.0, base + field_index * 10.0 + 1.0],
+                    [base + field_index * 10.0 + 100.0, base + field_index * 10.0 + 101.0],
+                ],
+                dtype=torch.float32,
+                device="cuda",
+            )
+            expected = prototypes[layout.prototype_assignment.to(device="cuda", dtype=torch.long)]
+            torch.testing.assert_close(store.articulation_proxy(field_name, layout).torch, expected, rtol=0.0, atol=0.0)
+    gain_prototypes = torch.tensor([[2000.0, 2001.0], [2100.0, 2101.0]], device="cuda")
+    gain_expected = gain_prototypes[gain_only.prototype_assignment.to(device="cuda", dtype=torch.long)]
+    torch.testing.assert_close(staging_target.torch, gain_expected, rtol=0.0, atol=0.0)
 
     assert len(before_staging) == 1 + len(store._FIELD_NAMES)
-    assert transfers == before_staging
     assert launches == len(store._FIELD_NAMES)
+    assignment_ptr = store._device_assignment_slab.data_ptr()
+    owner_ptrs = {owners.data_ptr() for owners in store._source_owner_slots.values()}
+    metadata_buffers = {
+        id(buffer)
+        for buffer in store._initialization_buffers
+        if isinstance(buffer, wp.array)
+        and buffer.dtype in {wp.int32, wp.int64}
+        and buffer.ptr != assignment_ptr
+        and buffer.ptr not in owner_ptrs
+        and all(buffer is not alias for alias in store._device_assignment_aliases.values())
+    }
+    assert len(metadata_buffers) == 5
+    store.close()
+    assert store._expansion_metadata == {}
+    assert store._expansion_metadata_signatures == {}
 
 
 @pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])

@@ -22,7 +22,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 import torch
 
-from isaaclab.actuators import ActuatorCollection, actuator_collection
+from isaaclab.actuators import ActuatorCollection, actuator_collection, actuator_storage
 from isaaclab.actuators.actuator_control import ActuatorJointProperties
 from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
 from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, IdealPDActuatorCfg, ImplicitActuatorCfg
@@ -272,6 +272,14 @@ class _SourceResolvingControl(_Control):
 
 class _OpaqueIdealPD(IdealPDActuator):
     """Exact third-party-style actuator intentionally outside managed storage."""
+
+
+class _GainlessNeuralStyleMotor(DCMotor):
+    """Test-only managed motor with neural-style parameters and no network load."""
+
+    @classmethod
+    def _parameter_schema(cls):
+        return actuator_storage._ACTUATOR_NET_MLP_SCHEMA
 
 
 class _RoutedSourceControl(_SourceResolvingControl):
@@ -1342,6 +1350,79 @@ def test_direct_schema_less_opaque_group_uses_its_cfg_to_block_native_saturation
 
     owners = collection._active_generation.selector_states["first"]._backend_owner_slots
     torch.testing.assert_close(owners[(DCMotor, "saturation_effort")], torch.full((2,), -1, dtype=torch.int32))
+
+
+def test_partial_overlap_preserves_uncovered_implicit_gain_owner_and_clears_covered_joint() -> None:
+    """Configuration ownership applies per joint rather than disabling an entire route."""
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _RoutedSourceControl({"implicit": (0, 1), "explicit": (1,)})
+    cfgs = {
+        "implicit": ImplicitActuatorCfg(
+            class_type=ImplicitActuator,
+            joint_names_expr=["implicit"],
+            stiffness=5.0,
+            damping=6.0,
+            effort_limit=None,
+            velocity_limit=None,
+            effort_limit_sim=None,
+            velocity_limit_sim=None,
+        ),
+        "explicit": IdealPDActuatorCfg(
+            class_type=IdealPDActuator,
+            joint_names_expr=["explicit"],
+            stiffness=9.0,
+            damping=10.0,
+            effort_limit=None,
+            velocity_limit=None,
+            effort_limit_sim=None,
+            velocity_limit_sim=None,
+        ),
+    }
+    _register_managed(collection, "first", control, cfgs)
+
+    collection.finalize()
+
+    owners = collection._active_generation.selector_states["first"]._backend_owner_slots
+    torch.testing.assert_close(owners[(ImplicitActuator, "stiffness")], torch.tensor([0, -1], dtype=torch.int32))
+    torch.testing.assert_close(owners[(ImplicitActuator, "damping")], torch.tensor([0, -1], dtype=torch.int32))
+
+
+def test_gainless_neural_style_group_blocks_earlier_implicit_gain_ownership_without_loading_a_network() -> None:
+    """A neural-style schema still semantically owns solver gains inherited from ActuatorBaseCfg."""
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _RoutedSourceControl({"implicit": (0, 1), "neural": (0, 1)})
+    cfgs = {
+        "implicit": ImplicitActuatorCfg(
+            class_type=ImplicitActuator,
+            joint_names_expr=["implicit"],
+            stiffness=5.0,
+            damping=6.0,
+            effort_limit=None,
+            velocity_limit=None,
+            effort_limit_sim=None,
+            velocity_limit_sim=None,
+        ),
+        "neural": DCMotorCfg(
+            class_type=_GainlessNeuralStyleMotor,
+            joint_names_expr=["neural"],
+            stiffness=9.0,
+            damping=10.0,
+            effort_limit=100.0,
+            velocity_limit=20.0,
+            effort_limit_sim=None,
+            velocity_limit_sim=None,
+            saturation_effort=10.0,
+        ),
+    }
+    view = _register_managed(collection, "first", control, cfgs)
+
+    collection.finalize()
+
+    owners = collection._active_generation.selector_states["first"]._backend_owner_slots
+    torch.testing.assert_close(owners[(ImplicitActuator, "stiffness")], torch.full((2,), -1, dtype=torch.int32))
+    torch.testing.assert_close(owners[(ImplicitActuator, "damping")], torch.full((2,), -1, dtype=torch.int32))
+    assert view._backend_parameter_staging is None
+    assert "network" not in view["neural"].__dict__
 
 
 def test_failed_retry_then_stop_invalidates_every_registration() -> None:

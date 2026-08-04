@@ -1134,6 +1134,8 @@ class _SolverPropertyStore:
         self._device_assignment_slab: torch.Tensor | None = None
         self._device_assignment_offsets: dict[int, int] = {}
         self._device_assignment_aliases: dict[int, wp.array] = {}
+        self._expansion_metadata: dict[tuple[str, tuple[int, ...]], tuple[wp.array, ...]] = {}
+        self._expansion_metadata_signatures: dict[tuple[str, tuple[int, ...]], tuple[tuple[int, ...], ...]] = {}
         self._initialization_buffers: list[object] = []
         self._initialization_records: list[tuple[wp.Stream, tuple[torch.Tensor, ...]]] = []
 
@@ -1257,20 +1259,17 @@ class _SolverPropertyStore:
         for layout in layouts:
             assignment_offsets.append(self._device_assignment_offsets[id(layout)])
             prototype_offsets.append(self._device_source_offsets[(id(layout), field_name)])
-        metadata = (
-            *(
-                wp.array(values, dtype=wp.int64, device=device)
-                for values in (output_offsets, assignment_offsets, prototype_offsets)
-            ),
-            *(
-                wp.array(values, dtype=wp.int32, device=device)
-                for values in ([layout.num_worlds for layout in layouts], [layout.num_joints for layout in layouts])
-            ),
+        metadata = self._expansion_metadata_for(
+            layouts=layouts,
+            device=device,
+            output_offsets=output_offsets,
+            assignment_offsets=assignment_offsets,
+            prototype_offsets=prototype_offsets,
         )
         stream, torch_stream, caller_stream = _construction_stream(device)
         source_wp = wp.from_torch(source_slab, dtype=wp.float32)
         assignment_wp = wp.from_torch(assignments, dtype=wp.int32)
-        self._initialization_buffers.extend((source_slab, assignments, source_wp, assignment_wp, *metadata))
+        self._initialization_buffers.extend((source_slab, assignments, source_wp, assignment_wp))
         self._record_launch_buffers(stream, source_slab, assignments)
         wp.launch(
             _expand_prototype_field,
@@ -1284,6 +1283,38 @@ class _SolverPropertyStore:
             **({"stream": stream} if stream is not None else {}),
         )
         _publish_construction_stream(torch_stream, caller_stream)
+
+    def _expansion_metadata_for(
+        self,
+        *,
+        layouts: Sequence[_ArticulationLayout],
+        device: str,
+        output_offsets: Sequence[int],
+        assignment_offsets: Sequence[int],
+        prototype_offsets: Sequence[int],
+    ) -> tuple[wp.array, ...]:
+        """Return one retained metadata bundle for an ordered materialized layout set."""
+        key = str(torch.device(device)), tuple(id(layout) for layout in layouts)
+        signature = (
+            tuple(output_offsets),
+            tuple(assignment_offsets),
+            tuple(prototype_offsets),
+            tuple(layout.num_worlds for layout in layouts),
+            tuple(layout.num_joints for layout in layouts),
+        )
+        existing_signature = self._expansion_metadata_signatures.get(key)
+        if existing_signature is not None and existing_signature != signature:
+            raise RuntimeError("Solver expansion metadata changed for an already prepared ordered layout set.")
+        metadata = self._expansion_metadata.get(key)
+        if metadata is None:
+            metadata = (
+                *(wp.array(values, dtype=wp.int64, device=device) for values in signature[:3]),
+                *(wp.array(values, dtype=wp.int32, device=device) for values in signature[3:]),
+            )
+            self._expansion_metadata[key] = metadata
+            self._expansion_metadata_signatures[key] = signature
+            self._initialization_buffers.extend(metadata)
+        return metadata
 
     def prepare_device_assignments(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
         """Pack host clone assignments once for all layouts using device expansion."""
@@ -1508,6 +1539,8 @@ class _SolverPropertyStore:
         self._device_assignment_slab = None
         self._device_assignment_offsets.clear()
         self._device_assignment_aliases.clear()
+        self._expansion_metadata.clear()
+        self._expansion_metadata_signatures.clear()
         self._fields.clear()
 
     def _release_initialization_buffers(self) -> None:
