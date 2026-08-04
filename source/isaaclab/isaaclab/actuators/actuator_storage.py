@@ -268,6 +268,10 @@ class _BackendParameterStaging:
         all_joint_ids: torch.Tensor | None = None,
         all_env_mask: torch.Tensor | None = None,
         all_joint_mask: torch.Tensor | None = None,
+        all_env_ids_wp: wp.array | None = None,
+        all_joint_ids_wp: wp.array | None = None,
+        all_env_mask_wp: wp.array | None = None,
+        all_joint_mask_wp: wp.array | None = None,
     ) -> None:
         """Allocate pointer-stable staging targets for the supplied backend routes.
 
@@ -297,6 +301,20 @@ class _BackendParameterStaging:
         self._all_joint_mask = (
             torch.ones(num_joints, dtype=torch.bool, device=device) if all_joint_mask is None else all_joint_mask
         )
+        self._selector_aliases: dict[tuple[int, int, torch.dtype, torch.device], wp.array] = {
+            self._selector_key(self._all_env_ids): all_env_ids_wp
+            if all_env_ids_wp is not None
+            else wp.from_torch(self._all_env_ids, dtype=wp.int32),
+            self._selector_key(self._all_joint_ids): all_joint_ids_wp
+            if all_joint_ids_wp is not None
+            else wp.from_torch(self._all_joint_ids, dtype=wp.int32),
+            self._selector_key(self._all_env_mask): all_env_mask_wp
+            if all_env_mask_wp is not None
+            else wp.from_torch(self._all_env_mask, dtype=wp.bool),
+            self._selector_key(self._all_joint_mask): all_joint_mask_wp
+            if all_joint_mask_wp is not None
+            else wp.from_torch(self._all_joint_mask, dtype=wp.bool),
+        }
         if (
             self._all_env_ids.shape != (num_worlds,)
             or self._all_joint_ids.shape != (num_joints,)
@@ -429,9 +447,9 @@ class _BackendParameterStaging:
         self._all_joint_ids = None
         self._all_env_mask = None
         self._all_joint_mask = None
+        self._selector_aliases.clear()
 
-    @staticmethod
-    def _index_warp(ids: torch.Tensor | wp.array, target: ProxyArray, name: str) -> wp.array:
+    def _index_warp(self, ids: torch.Tensor | wp.array, target: ProxyArray, name: str) -> wp.array:
         """Return a signed selector Warp alias without allocating device storage."""
         if isinstance(ids, wp.array):
             if ids.dtype not in (wp.int32, wp.int64):
@@ -445,10 +463,12 @@ class _BackendParameterStaging:
             raise TypeError("Backend parameter indices must be one-dimensional signed integer tensors.")
         if ids.device != target.torch.device:
             raise ValueError(f"{name} must be on the candidate device.")
-        return wp.from_torch(ids, dtype=wp.int32 if ids.dtype is torch.int32 else wp.int64)
+        alias = self._selector_aliases.get(self._selector_key(ids))
+        return (
+            alias if alias is not None else wp.from_torch(ids, dtype=wp.int32 if ids.dtype is torch.int32 else wp.int64)
+        )
 
-    @staticmethod
-    def _mask_warp(mask: torch.Tensor | wp.array, size: int, target: ProxyArray, name: str) -> wp.array:
+    def _mask_warp(self, mask: torch.Tensor | wp.array, size: int, target: ProxyArray, name: str) -> wp.array:
         """Return a full boolean-mask Warp alias without allocating device storage."""
         if isinstance(mask, wp.array):
             if mask.dtype is not wp.bool or mask.ndim != 1 or mask.shape[0] != size:
@@ -460,7 +480,8 @@ class _BackendParameterStaging:
             raise ValueError(f"{name} must be a one-dimensional boolean mask with shape ({size},).")
         if mask.device != target.torch.device:
             raise ValueError(f"{name} must be on the candidate device.")
-        return wp.from_torch(mask, dtype=wp.bool)
+        alias = self._selector_aliases.get(self._selector_key(mask))
+        return alias if alias is not None else wp.from_torch(mask, dtype=wp.bool)
 
     def _validate_canonical(self, canonical: ProxyArray, target: ProxyArray) -> None:
         """Validate canonical source metadata without reading device values."""
@@ -470,6 +491,11 @@ class _BackendParameterStaging:
             raise TypeError("Backend canonical values must have float32 dtype.")
         if canonical.torch.ndim != 2 or canonical.torch.shape[0] != self._num_worlds:
             raise ValueError("Backend canonical values must be two-dimensional with one row per candidate world.")
+
+    @staticmethod
+    def _selector_key(value: torch.Tensor) -> tuple[int, int, torch.dtype, torch.device]:
+        """Return a shape-aware identity key for an owned selector alias."""
+        return value.data_ptr(), value.numel(), value.dtype, value.device
 
 
 @dataclass(frozen=True)
@@ -802,6 +828,7 @@ class _TypedStore:
         self._group_proxies: dict[tuple[int, str], ProxyArray] = {}
         self._mapping_proxies: dict[int, tuple[ProxyArray, ProxyArray]] = {}
         self._initialization_buffers: list[object] = []
+        self._initialization_records: list[tuple[wp.Stream, tuple[torch.Tensor, ...]]] = []
 
     def allocate(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
         """Allocate and initialize one flat array per exact-type schema field."""
@@ -837,9 +864,16 @@ class _TypedStore:
             if any(field.name in group.prototype_values for groups in groups_by_layout for group in groups)
         }
         if varying_fields:
-            assignments = torch.cat(
-                [groups[0].prototype_assignment.to(device=device, dtype=torch.int32) for groups in groups_by_layout]
-            ).contiguous()
+            # Clone assignments are host topology.  Concatenate every matching
+            # articulation before the sole H2D transfer for this exact type.
+            assignment_blocks = [groups[0].prototype_assignment.to(dtype=torch.int32) for groups in groups_by_layout]
+            assignment_source = torch.cat(assignment_blocks).contiguous()
+            assignment_stream = wp.get_stream(device) if torch.device(device).type == "cuda" else None
+            if torch.device(device).type == "cuda":
+                with torch.cuda.stream(wp.stream_to_torch(assignment_stream)):
+                    assignments = assignment_source.to(device=device)
+            else:
+                assignments = assignment_source.to(device=device)
             assignment_offsets = []
             assignment_offset = 0
             prototype_offsets = []
@@ -862,7 +896,7 @@ class _TypedStore:
                 wp.array(values, dtype=wp.int32, device=device) for values in (block_num_worlds, block_num_dofs)
             )
             metadata = (*offset_metadata, *shape_metadata)
-            self._initialization_buffers.extend((assignments, assignment, *metadata))
+            self._initialization_buffers.extend((assignment_source, assignments, assignment, *metadata))
 
         for schema_field in schema.fields:
             if schema_field.name not in varying_fields:
@@ -906,24 +940,38 @@ class _TypedStore:
                 source_blocks.append(torch.cat(group_blocks, dim=1))
 
             source_values = torch.cat([block.reshape(-1) for block in source_blocks]).contiguous()
+            launch_stream = wp.get_stream(device) if torch.device(device).type == "cuda" else None
             if source_values.device.type != torch.device(device).type or source_values.device != torch.device(device):
-                source_values = source_values.to(device=device)
+                if torch.device(device).type == "cuda":
+                    with torch.cuda.stream(wp.stream_to_torch(launch_stream)):
+                        source_values = source_values.to(device=device)
+                else:
+                    source_values = source_values.to(device=device)
             source = wp.from_torch(source_values, dtype=wp.float32)
             self._initialization_buffers.extend((source_values, source))
+            self._record_launch_buffers(launch_stream, source_values, assignments)
             wp.launch(
                 _expand_prototype_field,
                 dim=(len(matching_layouts), max(block_num_worlds), max(block_num_dofs)),
                 inputs=[self._fields[schema_field.name].warp, source, assignment, *metadata],
                 device=device,
+                **({"stream": launch_stream} if launch_stream is not None else {}),
             )
 
     def _release_initialization_buffers(self) -> None:
         """Release construction tensors after recording their final CUDA-stream use."""
-        for buffer in self._initialization_buffers:
-            if isinstance(buffer, torch.Tensor) and buffer.is_cuda:
-                warp_stream = wp.get_stream(str(buffer.device))
-                buffer.record_stream(torch.cuda.ExternalStream(warp_stream.cuda_stream, device=buffer.device))
+        for stream, buffers in self._initialization_records:
+            torch_stream = wp.stream_to_torch(stream)
+            for buffer in buffers:
+                buffer.record_stream(torch_stream)
         self._initialization_buffers.clear()
+        self._initialization_records.clear()
+
+    def _record_launch_buffers(self, stream: wp.Stream | None, *buffers: object) -> None:
+        """Capture the Warp launch stream for every Torch input retained by a launch."""
+        tensors = tuple(buffer for buffer in buffers if isinstance(buffer, torch.Tensor) and buffer.is_cuda)
+        if stream is not None and tensors:
+            self._initialization_records.append((stream, tensors))
 
     def _view_proxy(
         self,
@@ -1020,7 +1068,10 @@ class _SolverPropertyStore:
         self._articulation_proxies: dict[tuple[int, str], ProxyArray] = {}
         self._source_rows: dict[tuple[int, str], torch.Tensor] = {}
         self._source_owner_slots: dict[int, torch.Tensor] = {}
+        self._device_assignments: dict[int, torch.Tensor] = {}
+        self._device_assignment_aliases: dict[int, wp.array] = {}
         self._initialization_buffers: list[object] = []
+        self._initialization_records: list[tuple[wp.Stream, tuple[torch.Tensor, ...]]] = []
 
     def allocate(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
         """Resolve all properties into compact source rows without dense allocation."""
@@ -1042,6 +1093,7 @@ class _SolverPropertyStore:
 
     def materialize_device_targets(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
         """Create one flat dense target per field across device-transport articulations."""
+        self.prepare_device_assignments(layouts, device=device)
         expected_offset = 0
         for layout in layouts:
             self._articulation_offsets[id(layout)] = expected_offset
@@ -1073,6 +1125,28 @@ class _SolverPropertyStore:
                     self._articulation_proxies[key] = proxy
                 self._expand_source_rows(self._articulation_proxies[key], self.source_rows(field_name, layout), layout)
 
+    def prepare_device_assignments(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
+        """Pack host clone assignments once for all layouts using device expansion."""
+        layouts = tuple(layout for layout in layouts if id(layout) not in self._device_assignments)
+        if not layouts:
+            return
+        assignment_source = torch.cat([layout.prototype_assignment.to(dtype=torch.int32) for layout in layouts])
+        launch_stream = wp.get_stream(device) if torch.device(device).type == "cuda" else None
+        if launch_stream is not None:
+            with torch.cuda.stream(wp.stream_to_torch(launch_stream)):
+                assignment_slab = assignment_source.to(device=device)
+        else:
+            assignment_slab = assignment_source.to(device=device)
+        assignment_offset = 0
+        for layout in layouts:
+            assignment = assignment_slab[assignment_offset : assignment_offset + layout.num_worlds]
+            assignment_offset += layout.num_worlds
+            self._device_assignments[id(layout)] = assignment
+            self._device_assignment_aliases[id(layout)] = wp.from_torch(assignment, dtype=wp.int32)
+        self._initialization_buffers.extend(
+            (assignment_source, assignment_slab, *self._device_assignment_aliases.values())
+        )
+
     def expand_source_rows_into(self, target: ProxyArray, field_name: str, layout: _ArticulationLayout) -> None:
         """Expand one final compact field into a caller-owned dense target."""
         self._expand_source_rows(target, self.source_rows(field_name, layout), layout)
@@ -1087,9 +1161,15 @@ class _SolverPropertyStore:
         source_count = len(layout.prototype_rows)
         default_values = layout.solver_default_values.get(field_name)
         if default_values is None:
-            default_values = torch.zeros(
-                (source_count, layout.num_joints), dtype=torch.float32, device=layout.prototype_assignment.device
+            source_device = next(
+                (
+                    values.device
+                    for group in layout.group_layouts
+                    if (values := group.solver_prototype_values.get(field_name)) is not None
+                ),
+                layout.prototype_assignment.device,
             )
+            default_values = torch.zeros((source_count, layout.num_joints), dtype=torch.float32, device=source_device)
         if (
             default_values.dtype is not torch.float32
             or default_values.ndim != 2
@@ -1122,30 +1202,39 @@ class _SolverPropertyStore:
         layout: _ArticulationLayout,
     ) -> None:
         """Expand final compact source rows into one dense solver target."""
-        if layout.prototype_assignment.device != target.torch.device:
-            raise ValueError("Solver source assignment must be on the candidate device.")
+        assignment = self._device_assignments.get(id(layout))
+        if assignment is None:
+            if target.torch.device.type != "cpu":
+                raise RuntimeError("Device solver expansion requires a packed source-assignment view.")
+            assignment = layout.prototype_assignment
         owners = self._source_owner_slots.get(id(layout))
         if owners is None:
             owners = torch.arange(layout.num_joints, dtype=torch.int32, device=target.torch.device)
             self._source_owner_slots[id(layout)] = owners
+        launch_stream = wp.get_stream(str(target.torch.device)) if target.torch.device.type == "cuda" else None
         if source_rows.device == target.torch.device:
             expansion_rows = source_rows
         elif source_rows.device.type == "cpu" and target.torch.device.type != "cpu":
             # CPU source rows are the intentional PhysX/OV construction path.
             # This H2D copy exists only for the private dense canonical target;
             # the source rows retained for the backend remain host-resident.
-            expansion_rows = source_rows.to(device=target.torch.device)
+            with torch.cuda.stream(wp.stream_to_torch(launch_stream)):
+                expansion_rows = source_rows.to(device=target.torch.device)
         else:
             raise ValueError("Solver source rows cannot be copied from device to the canonical target device.")
         source_wp = wp.from_torch(expansion_rows.reshape(-1), dtype=wp.float32)
-        assignment_wp = wp.from_torch(layout.prototype_assignment, dtype=wp.int32)
+        assignment_wp = self._device_assignment_aliases.get(id(layout))
+        if assignment_wp is None:
+            assignment_wp = wp.from_torch(assignment, dtype=wp.int32)
         owners_wp = wp.from_torch(owners, dtype=wp.int32)
-        self._initialization_buffers.extend((expansion_rows, source_wp, assignment_wp, owners_wp))
+        self._initialization_buffers.extend((expansion_rows, assignment, source_wp, assignment_wp, owners_wp))
+        self._record_launch_buffers(launch_stream, expansion_rows, assignment, owners)
         wp.launch(
             actuator_kernels.expand_source_property,
             dim=(layout.num_worlds, layout.num_joints),
             inputs=[target.warp, source_wp, assignment_wp, owners_wp, layout.num_joints],
             device=target.warp.device,
+            **({"stream": launch_stream} if launch_stream is not None else {}),
         )
 
     def overlay_opaque_groups(self, layout: _ArticulationLayout, groups: Mapping[str, Any]) -> None:
@@ -1175,6 +1264,7 @@ class _SolverPropertyStore:
         opaque_values: dict[tuple[str, str], torch.Tensor] = {}
         transfer_blocks: list[torch.Tensor] = []
         transfer_keys: list[tuple[str, str]] = []
+        source_columns_by_device: dict[torch.device, torch.Tensor] = {}
         for field_name in self._FIELD_NAMES:
             source_device = self.source_rows(field_name, layout).device
             for group_layout in opaque_groups:
@@ -1189,15 +1279,14 @@ class _SolverPropertyStore:
                     continue
                 if not isinstance(values, torch.Tensor):
                     continue
-                if (
-                    values.dtype is not torch.float32
-                    or values.shape != (layout.num_worlds, group_layout.num_dofs)
-                    or values.device != layout.prototype_assignment.device
-                ):
+                if values.dtype is not torch.float32 or values.shape != (layout.num_worlds, group_layout.num_dofs):
                     raise ValueError(
                         f"Opaque actuator group {group_layout.name!r} has invalid solver field {field_name!r}."
                     )
-                source_columns = layout.prototype_source_columns.to(device=values.device, dtype=torch.long)
+                source_columns = source_columns_by_device.get(values.device)
+                if source_columns is None:
+                    source_columns = layout.prototype_source_columns.to(device=values.device, dtype=torch.long)
+                    source_columns_by_device[values.device] = source_columns
                 source_values = values.index_select(0, source_columns)
                 if source_values.device != source_device:
                     if source_device.type != "cpu":
@@ -1230,14 +1319,35 @@ class _SolverPropertyStore:
         """Return the final config-order-merged source rows for one property."""
         return self._source_rows[(id(layout), field_name)]
 
+    def source_assignment(self, layout: _ArticulationLayout) -> torch.Tensor:
+        """Return the cached device assignment for a device solver payload."""
+        return self._device_assignments[id(layout)]
+
     def close(self) -> None:
         """Release every candidate-owned solver staging allocation and alias."""
-        self._initialization_buffers.clear()
+        self._release_initialization_buffers()
         self._articulation_proxies.clear()
         self._articulation_offsets.clear()
         self._source_rows.clear()
         self._source_owner_slots.clear()
+        self._device_assignments.clear()
+        self._device_assignment_aliases.clear()
         self._fields.clear()
+
+    def _release_initialization_buffers(self) -> None:
+        """Release CUDA launch inputs only after associating their launch stream."""
+        for stream, buffers in self._initialization_records:
+            torch_stream = wp.stream_to_torch(stream)
+            for buffer in buffers:
+                buffer.record_stream(torch_stream)
+        self._initialization_buffers.clear()
+        self._initialization_records.clear()
+
+    def _record_launch_buffers(self, stream: wp.Stream | None, *buffers: object) -> None:
+        """Capture the Warp stream that consumes the retained Torch launch inputs."""
+        tensors = tuple(buffer for buffer in buffers if isinstance(buffer, torch.Tensor) and buffer.is_cuda)
+        if stream is not None and tensors:
+            self._initialization_records.append((stream, tensors))
 
 
 class _JointDomainStore:

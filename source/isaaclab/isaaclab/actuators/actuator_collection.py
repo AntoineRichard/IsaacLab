@@ -183,31 +183,32 @@ class _SelectorState:
             field: [None] * layout.num_joints for _, field in backend_routes
         }
         for group_layout in layout.group_layouts:
-            fields: set[str] = set()
+            # Configuration order defines the effective backend value.  A group
+            # semantically owns every field in its exact schema even when this
+            # backend has no route for that group: it must clear an earlier
+            # native route rather than leave that route authoritative.
+            # Gains are universal solver semantics, including on exact neural
+            # classes whose typed parameter schema deliberately omits them.
+            schema_factory = getattr(group_layout.actuator_type, "_parameter_schema", None)
+            semantic_fields = (frozenset() if schema_factory is None else schema_factory().parameter_names) | {
+                "stiffness",
+                "damping",
+            }
+            routed_fields: set[str] = set()
             if issubclass(group_layout.actuator_type, ImplicitActuator):
-                fields.update(("stiffness", "damping"))
+                routed_fields.update(("stiffness", "damping"))
             if group_layout.name in binding.registration.native_group_names:
-                fields.update(group_layout.actuator_type._parameter_schema().parameter_names)
-            for field in fields:
+                routed_fields.update(semantic_fields)
+            for field in semantic_fields:
                 winners = winner_by_field.get(field)
                 if winners is None:
                     continue
                 for local_slot, joint_id in enumerate(group_layout.joint_indices):
-                    winners[joint_id] = (group_layout.actuator_type, group_layout.type_slice.start + local_slot)
-            # Every non-implicit group owns its configured joints with respect
-            # to the solver gains, even when it has no backend route itself.
-            # This config-order blocker prevents an earlier implicit group from
-            # continuing to write gains after a later explicit/opaque group has
-            # resolved the final solver source rows for that joint.
-            if (
-                not issubclass(group_layout.actuator_type, ImplicitActuator)
-                and group_layout.name not in binding.registration.native_group_names
-            ):
-                for field in ("stiffness", "damping"):
-                    winners = winner_by_field.get(field)
-                    if winners is not None:
-                        for joint_id in group_layout.joint_indices:
-                            winners[joint_id] = None
+                    winners[joint_id] = (
+                        (group_layout.actuator_type, group_layout.type_slice.start + local_slot)
+                        if field in routed_fields
+                        else None
+                    )
 
         owner_rows_by_policy: dict[tuple[type[ActuatorBase], str], int] = {}
         owner_row_values: list[list[int]] = []
@@ -481,11 +482,11 @@ class _CollectionGeneration:
                     if torch.any(source_env_ids_cpu == registration.control.num_instances):
                         raise ValueError("Clone-plan source slots omit a compact source row.")
                     layout_num_worlds = registration.control.num_instances
-                    layout_assignment = source_slot_by_backend_row.to(
-                        device=candidate_device,
-                        dtype=torch.int32,
-                    )
-                    layout_source_columns = source_env_ids_cpu.to(device=candidate_device)
+                    # Keep clone topology host-resident until its consumers can
+                    # pack matching layouts into one H2D slab.  Registration
+                    # must never upload once per articulation.
+                    layout_assignment = source_slot_by_backend_row.to(dtype=torch.int32)
+                    layout_source_columns = source_env_ids_cpu
                     source_env_ids = (
                         source_env_ids_cpu
                         if source_transport == "cpu"
@@ -517,17 +518,10 @@ class _CollectionGeneration:
                     joint_ids, joint_names = registration.control.find_joints(cfg.joint_names_expr)
                     if not joint_names:
                         raise ValueError(f"{actuator_type.__name__} actuator group {name!r} resolved no joints.")
-                    if isinstance(joint_ids, ProxyArray):
-                        joint_indices = tuple(int(index) for index in joint_ids.torch.tolist())
-                        joint_index_tensor = joint_ids.torch
-                    elif isinstance(joint_ids, torch.Tensor):
-                        joint_indices = tuple(int(index) for index in joint_ids.tolist())
-                        joint_index_tensor = joint_ids
-                    else:
-                        joint_indices = tuple(int(index) for index in joint_ids)
-                        joint_index_tensor = torch.tensor(
-                            joint_indices, dtype=torch.int32, device=registration.control.device
-                        )
+                    if not isinstance(joint_ids, list):
+                        raise TypeError("Actuator joint topology must be returned as a host list.")
+                    joint_indices = tuple(int(index) for index in joint_ids)
+                    joint_index_tensor = torch.tensor(joint_indices, dtype=torch.int32)
                     source_values: Mapping[str, torch.Tensor] = {}
                     solver_values: Mapping[str, torch.Tensor] = {}
                     resolved = None
@@ -669,6 +663,10 @@ class _CollectionGeneration:
             if getattr(binding.registration.control, "resolved_solver_property_transport", lambda: "device")()
             == "device"
         )
+        self.solver_store.prepare_device_assignments(
+            tuple(binding.layout for binding in self.bindings),
+            device=self.bindings[0].registration.control.device,
+        )
         if device_bindings:
             self.solver_store.materialize_device_targets(
                 tuple(binding.layout for binding in device_bindings),
@@ -698,6 +696,10 @@ class _CollectionGeneration:
                     all_joint_ids=selector_state._all_joint_ids,
                     all_env_mask=selector_state._all_env_mask,
                     all_joint_mask=selector_state._all_joint_mask,
+                    all_env_ids_wp=selector_state._all_env_ids_wp,
+                    all_joint_ids_wp=selector_state._all_joint_ids_wp,
+                    all_env_mask_wp=selector_state._all_env_mask_wp,
+                    all_joint_mask_wp=selector_state._all_joint_mask_wp,
                 )
                 for field_name in ("stiffness", "damping"):
                     route = next((route for route in active_owner_slots if route[1] == field_name), None)
@@ -748,7 +750,7 @@ class _CollectionGeneration:
                         transport="device",
                         source_rows=source_rows,
                         source_slot_by_backend_row=None,
-                        source_assignment=binding.layout.prototype_assignment,
+                        source_assignment=self.solver_store.source_assignment(binding.layout),
                         canonical_target=canonical_target,
                     )
             self._solver_properties_written.append(binding)

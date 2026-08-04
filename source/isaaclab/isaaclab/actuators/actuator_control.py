@@ -156,7 +156,7 @@ class ActuatorControl(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def find_joints(self, name_keys: str | Sequence[str]) -> tuple[list[int] | ProxyArray, list[str]]:
+    def find_joints(self, name_keys: str | Sequence[str]) -> tuple[list[int], list[str]]:
         """Resolve joint name expressions to user-order joint indices and names."""
         raise NotImplementedError
 

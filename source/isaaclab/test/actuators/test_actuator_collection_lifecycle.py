@@ -1210,6 +1210,35 @@ def test_backend_owner_slots_use_the_last_cross_type_config_group(cfgs, winner_t
             torch.testing.assert_close(slots, torch.full((2,), -1, dtype=torch.int32))
 
 
+@pytest.mark.parametrize(
+    ("first_type", "second_type", "fields"),
+    [
+        (IdealPDActuator, IdealPDActuator, ("stiffness", "damping", "effort_limit", "velocity_limit")),
+        (DCMotor, DCMotor, ("saturation_effort",)),
+    ],
+)
+def test_later_non_native_group_blocks_every_semantically_owned_backend_field(first_type, second_type, fields) -> None:
+    """A later non-native group owns its schema fields even without a backend route."""
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _SourceResolvingControl()
+    control.native_groups = {"native"}
+    cfg_type = DCMotorCfg if first_type is DCMotor else IdealPDActuatorCfg
+    config_kwargs = {"stiffness": None, "damping": None}
+    if first_type is DCMotor:
+        config_kwargs.update(effort_limit=100.0, velocity_limit=20.0, saturation_effort=10.0)
+    cfgs = {
+        "native": cfg_type(class_type=first_type, joint_names_expr=[".*"], **config_kwargs),
+        "later": cfg_type(class_type=second_type, joint_names_expr=[".*"], **config_kwargs),
+    }
+    _register_managed(collection, "first", control, cfgs)
+
+    collection.finalize()
+
+    owners = collection._active_generation.selector_states["first"]._backend_owner_slots
+    for field in fields:
+        torch.testing.assert_close(owners[(first_type, field)], torch.full((2,), -1, dtype=torch.int32))
+
+
 def test_failed_retry_then_stop_invalidates_every_registration() -> None:
     collection = ActuatorCollection(_Simulation())
     first_control = _Control(complete_error=RuntimeError("retry completion"))
