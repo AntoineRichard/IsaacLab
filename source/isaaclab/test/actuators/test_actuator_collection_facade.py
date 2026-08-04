@@ -963,3 +963,50 @@ def test_group_parameter_mask_forwards_its_owner_binding_to_the_backend() -> Non
     view["first"].set_parameter_mask("stiffness", 7.0, joint_mask=torch.tensor([False, True, False], dtype=torch.bool))
 
     assert control.parameter_writes[-1][1].group_binding is view["first"].__dict__["_parameter_binding"]
+
+
+def test_native_group_parameter_write_delegates_without_affecting_ordinary_groups() -> None:
+    """Catch native discovery metadata that is discarded before scoped writes reach the control bridge."""
+
+    class _NativeControl(_Control):
+        def discover_native_actuators(self, cfgs) -> set[str]:
+            assert tuple(cfgs) == ("native", "ordinary")
+            return {"native"}
+
+    collection = ActuatorCollection(_Simulation())
+    control = _NativeControl()
+    view = collection.register_articulation(
+        key="robot",
+        cfgs={"native": _ideal_cfg(["hip"]), "ordinary": _ideal_cfg(["knee"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+
+    view["ordinary"].set_parameter_index("stiffness", 3.0)
+    assert control.parameter_writes == []
+    view["native"].set_parameter_index("stiffness", 7.0)
+    assert control.parameter_writes[-1][0] == "stiffness"
+    view.by_type[IdealPDActuator].set_parameter_mask("stiffness", 11.0)
+    assert control.parameter_writes[-1][0] == "stiffness"
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_type_debug_validation_rejects_in_range_joint_outside_its_scope(device: str) -> None:
+    """Catch type debug validation that checks bounds but not type ownership."""
+    normal = make_finalized_robot(device=device, groups={"hip": _ideal_cfg(["hip"])}).actuators.by_type[IdealPDActuator]
+    before = normal.parameters["stiffness"].torch.clone()
+    normal.set_parameter_index(
+        "stiffness", torch.tensor([9.0], device=device), joint_ids=torch.tensor([2], device=device)
+    )
+    torch.testing.assert_close(normal.parameters["stiffness"].torch, before)
+
+    debug = make_finalized_robot(
+        device=device, groups={"hip": _ideal_cfg(["hip"])}, debug_validation=True
+    ).actuators.by_type[IdealPDActuator]
+    with pytest.raises(ValueError, match="stiffness.*type"):
+        debug.set_parameter_index(
+            "stiffness", torch.tensor([9.0], device=device), joint_ids=torch.tensor([2], device=device)
+        )
