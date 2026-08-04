@@ -658,6 +658,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._all_env_ids = torch.arange(binding.layout.num_worlds, dtype=torch.int32, device=device)
             self._all_env_mask = torch.ones(binding.layout.num_worlds, dtype=torch.bool, device=device)
             self._all_joint_mask = torch.ones(binding.layout.num_joints, dtype=torch.bool, device=device)
+            self._last_index_occurrences = torch.full(
+                (binding.layout.num_worlds, binding.layout.num_joints), -1, dtype=torch.int32, device=device
+            )
             self._parameter_default_joint_ids: dict[int, torch.Tensor] = {}
             self._group_inverse_lookups: dict[int, torch.Tensor] = {}
             for group in groups.values():
@@ -803,6 +806,21 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 num_candidates = 1
             if not explicit_joint_ids:
                 num_candidates = 1
+            last_occurrences_wp = wp.from_torch(self._last_index_occurrences, dtype=wp.int32)
+            if explicit_joint_ids:
+                self._last_index_occurrences.fill_(-1)
+                wp.launch(
+                    actuator_kernels.record_last_scoped_parameter_index,
+                    dim=(env_selector.shape[0], joint_selector.shape[0]),
+                    inputs=[
+                        env_selector_wp,
+                        joint_selector_wp,
+                        self._all_env_ids.shape[0],
+                        self._all_joint_mask.shape[0],
+                    ],
+                    outputs=[last_occurrences_wp],
+                    device=target.warp.device,
+                )
             wp.launch(
                 actuator_kernels.write_scoped_parameter_index,
                 dim=(env_selector.shape[0], joint_selector.shape[0], num_candidates),
@@ -814,6 +832,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     None if csr_offsets is None else csr_offsets.warp,
                     None if csr_slots is None else csr_slots.warp,
                     None if group_inverse is None else wp.from_torch(group_inverse, dtype=wp.int32),
+                    last_occurrences_wp,
                     self._all_env_ids.shape[0],
                     self._all_joint_mask.shape[0],
                     explicit_joint_ids,
