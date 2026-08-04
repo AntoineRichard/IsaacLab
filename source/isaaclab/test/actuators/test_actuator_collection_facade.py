@@ -17,8 +17,8 @@ import warp as wp
 from isaaclab.actuators import ActuatorCollection
 from isaaclab.actuators.actuator_base import ActuatorBase
 from isaaclab.actuators.actuator_control import ActuatorJointProperties
-from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator
-from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, IdealPDActuatorCfg
+from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
+from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, IdealPDActuatorCfg, ImplicitActuatorCfg
 from isaaclab.cloner.clone_plan import ClonePlan
 from isaaclab.utils.types import ArticulationActions
 
@@ -44,6 +44,7 @@ class _Control:
     def __init__(self, device: str = "cpu") -> None:
         self._joint_names = ("hip", "knee", "ankle")
         self._device = device
+        self.parameter_writes = []
 
     @property
     def num_instances(self) -> int:
@@ -92,6 +93,9 @@ class _Control:
     def invalidate_actuator_view(self) -> None:
         pass
 
+    def write_actuator_parameter(self, name, write) -> None:
+        self.parameter_writes.append((name, write))
+
 
 def _ideal_cfg(joint_names: list[str]) -> IdealPDActuatorCfg:
     cfg = IdealPDActuatorCfg(
@@ -121,6 +125,18 @@ def _dc_cfg(joint_names: list[str]) -> DCMotorCfg:
         saturation_effort=5.0,
     )
     cfg.class_type = DCMotor
+    return cfg
+
+
+def _implicit_cfg(joint_names: list[str]) -> ImplicitActuatorCfg:
+    cfg = ImplicitActuatorCfg(
+        joint_names_expr=joint_names,
+        stiffness=1.0,
+        damping=2.0,
+        effort_limit=3.0,
+        velocity_limit=4.0,
+    )
+    cfg.class_type = ImplicitActuator
     return cfg
 
 
@@ -928,3 +944,22 @@ def test_parameter_empty_and_all_false_selections_leave_values_unchanged(device:
     )
 
     torch.testing.assert_close(view.parameters["stiffness"].torch, before)
+
+
+def test_group_parameter_mask_forwards_its_owner_binding_to_the_backend() -> None:
+    """Catch mask side effects that cannot distinguish a non-owner group from its type view."""
+    collection = ActuatorCollection(_Simulation())
+    control = _Control()
+    view = collection.register_articulation(
+        key="robot",
+        cfgs={"first": _implicit_cfg(["hip", "knee"]), "last": _implicit_cfg(["knee", "ankle"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+
+    view["first"].set_parameter_mask("stiffness", 7.0, joint_mask=torch.tensor([False, True, False], dtype=torch.bool))
+
+    assert control.parameter_writes[-1][1].group_binding is view["first"].__dict__["_parameter_binding"]

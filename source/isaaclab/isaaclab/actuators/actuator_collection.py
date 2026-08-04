@@ -463,6 +463,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 target=self._parameters.get(name),
                 scope_joint_ids=self._joint_indices,
                 actuator_type=self._actuator_type,
+                group_binding=None,
                 env_mask=env_mask,
                 joint_mask=joint_mask,
             )
@@ -655,6 +656,17 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._all_env_ids = torch.arange(binding.layout.num_worlds, dtype=torch.int32, device=device)
             self._all_env_mask = torch.ones(binding.layout.num_worlds, dtype=torch.bool, device=device)
             self._all_joint_mask = torch.ones(binding.layout.num_joints, dtype=torch.bool, device=device)
+            self._parameter_default_joint_ids: dict[int, torch.Tensor] = {}
+            for group in groups.values():
+                group_binding = group.__dict__.get("_parameter_binding")
+                if group_binding is not None:
+                    self._parameter_default_joint_ids[id(group_binding.joint_indices)] = torch.arange(
+                        group_binding.joint_indices.shape[0], dtype=torch.int32, device=device
+                    )
+            for type_view in type_views.values():
+                self._parameter_default_joint_ids[id(type_view._joint_indices)] = torch.arange(
+                    type_view._joint_indices.shape[0], dtype=torch.int32, device=device
+                )
             self._debug_validation = binding.registration.debug_validation
             self._control = binding.registration.control
             self._backend_owner_slots: dict[tuple[type[ActuatorBase], str], torch.Tensor] = {}
@@ -721,6 +733,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 target=binding.parameter_proxies.get(name),
                 scope_joint_ids=binding.joint_indices,
                 actuator_type=type(group),
+                group_binding=binding,
                 env_mask=env_mask,
                 joint_mask=joint_mask,
             )
@@ -747,8 +760,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 raise KeyError(f"Unknown parameter {name!r} for {scope} actuator facade.")
             env_selector = self._normalize_index_selector(env_ids, "env_ids", self._all_env_ids, scope)
             explicit_joint_ids = joint_ids is not None
-            default_joint_ids = self._default_scope_joint_ids(scope_joint_ids)
-            joint_selector = self._normalize_index_selector(joint_ids, "joint_ids", default_joint_ids, scope)
+            if joint_ids is None:
+                joint_selector = self._default_scope_joint_ids(scope_joint_ids)
+            else:
+                joint_selector = self._as_index_torch(joint_ids, scope_joint_ids, "joint_ids")
             source, value_mode = self._normalize_index_value(
                 value, env_selector.shape[0], joint_selector.shape[0], target
             )
@@ -810,6 +825,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             target: ProxyArray | None,
             scope_joint_ids: torch.Tensor,
             actuator_type: type[ActuatorBase],
+            group_binding: _GroupBinding | None,
             env_mask: torch.Tensor | wp.array | None,
             joint_mask: torch.Tensor | wp.array | None,
         ) -> None:
@@ -837,9 +853,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     self._control.write_actuator_parameter(
                         name,
                         _ActuatorParameterWrite(
-                            value=source,
+                            value=target.torch,
                             env_mask=env_selector,
                             joint_mask=joint_selector,
+                            group_binding=group_binding,
                             backend_owner_slots=owner_slots,
                         ),
                     )
@@ -892,13 +909,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
         def _default_scope_joint_ids(self, scope_joint_ids: torch.Tensor) -> torch.Tensor:
             """Return a pointer-stable compact selector owned by this facade."""
-            selectors = self.__dict__.setdefault("_parameter_default_joint_ids", {})
-            key = scope_joint_ids.data_ptr()
-            selector = selectors.get(key)
-            if selector is None:
-                selector = torch.arange(scope_joint_ids.shape[0], dtype=torch.int32, device=scope_joint_ids.device)
-                selectors[key] = selector
-            return selector
+            return self._parameter_default_joint_ids[id(scope_joint_ids)]
 
         def _normalize_mask_selector(
             self,
@@ -973,8 +984,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             scope_values = set(scope_joint_ids.detach().cpu().tolist())
             if any(joint_id < 0 or joint_id >= self._all_joint_mask.shape[0] for joint_id in joint_values):
                 raise ValueError(f"{name!r} {scope} selector contains an out-of-range joint id.")
-            if scope == "group" and any(joint_id not in scope_values for joint_id in joint_values):
-                raise ValueError(f"{name!r} group selector addresses a joint outside its ownership.")
+            if any(joint_id not in scope_values for joint_id in joint_values):
+                raise ValueError(f"{name!r} {scope} selector addresses a joint outside its ownership.")
 
         def _route_parameter_side_effect(
             self,
