@@ -547,8 +547,12 @@ class ActuatorBase(ABC):
 
         Args:
             name: Managed parameter name.
-            value: Scalar, compact per-joint values, or Cartesian world-by-joint
-                values. Units follow :paramref:`name`: stiffness [N/m or N·m/rad],
+            value: A scalar; compact values with shape
+                ``[len(joint_ids)]``; or Cartesian values with shape
+                ``[len(env_ids), len(joint_ids)]``. When :paramref:`joint_ids`
+                is ``None``, its length is this group's compact DOF count; when
+                :paramref:`env_ids` is ``None``, its length is ``num_worlds``.
+                Units follow :paramref:`name`: stiffness [N/m or N·m/rad],
                 damping [N·s/m or N·m·s/rad], effort and saturation limits
                 [N or N·m], and velocity limits [m/s or rad/s], depending on
                 joint type.
@@ -558,16 +562,21 @@ class ActuatorBase(ABC):
                 ``[num_selected_joints]``. ``None`` selects the group's compact
                 slots in configuration order.
 
-        Normal mode ignores out-of-range worlds and joints, as well as joints
-        outside this group's scope. With debug validation enabled, these
-        conditions, duplicate selectors, and ownership violations synchronously
+        The selected Cartesian pairs retain their supplied value rows and
+        columns: filtering out-of-range worlds, out-of-range joints, or joints
+        outside this group's scope does not shift source columns. In normal
+        mode, duplicate environment or joint IDs use the last Cartesian
+        occurrence. ``joint_ids=None`` addresses compact group slots
+        individually in stable configuration order. With debug validation
+        enabled, bounds, duplicates, and ownership violations synchronously
         raise instead.
 
         Raises:
             KeyError: If :paramref:`name` is not managed by this group.
             TypeError: If a value or selector has an unsupported dtype.
             ValueError: If selector/value metadata is malformed, values cannot
-                broadcast, or debug validation rejects selector contents.
+                broadcast, an overlapping value source exceeds the bounded
+                staging capacity, or debug validation rejects selector contents.
             RuntimeError: If the group is stale or its facade is not execution-ready.
         """
         self._require_facade_execution_ready()
@@ -588,8 +597,10 @@ class ActuatorBase(ABC):
 
         Args:
             name: Managed parameter name.
-            value: Scalar, compact per-joint values, or world-by-compact values.
-                Units follow :paramref:`name`: stiffness [N/m or N·m/rad], damping
+            value: A scalar; compact values with shape ``[num_scope_dofs]``;
+                or world-by-compact values with shape
+                ``[num_worlds, num_scope_dofs]``. Units follow
+                :paramref:`name`: stiffness [N/m or N·m/rad], damping
                 [N·s/m or N·m·s/rad], effort and saturation limits [N or N·m],
                 and velocity limits [m/s or rad/s], depending on joint type.
             env_mask: Boolean full-articulation world mask with shape
@@ -597,15 +608,18 @@ class ActuatorBase(ABC):
             joint_mask: Boolean full-articulation DOF mask with shape
                 ``[num_joints]``. ``None`` selects every joint.
 
-        Mask entries outside this group's scope are ignored in every mode.
-        Debug validation performs value-dependent bounds, ownership, and
-        duplicate checks only for index selectors.
+        Values are indexed by stable compact group slots, not by the count of
+        ``True`` entries in :paramref:`joint_mask`. The masks select full
+        articulation domains; entries outside this group's scope are ignored in
+        every mode. Debug validation performs value-dependent bounds, ownership,
+        and duplicate checks only for index selectors.
 
         Raises:
             KeyError: If :paramref:`name` is not managed by this group.
             TypeError: If a value or mask has an unsupported dtype.
             ValueError: If selector/value metadata is malformed or values cannot
-                broadcast.
+                broadcast, or an overlapping value source exceeds the bounded
+                staging capacity.
             RuntimeError: If the group is stale or its facade is not execution-ready.
         """
         self._require_facade_execution_ready()
