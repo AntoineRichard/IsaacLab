@@ -7,12 +7,16 @@
 
 from __future__ import annotations
 
+import copy
 import warnings
+from types import SimpleNamespace
 
 import pytest
 import torch
 import warp as wp
 
+import isaaclab.actuators.actuator_storage as actuator_storage
+import isaaclab.assets.asset_base as asset_base_module
 from isaaclab.actuators.actuator_net import ActuatorNetLSTM, ActuatorNetMLP
 from isaaclab.actuators.actuator_pd import (
     DCMotor,
@@ -23,7 +27,197 @@ from isaaclab.actuators.actuator_pd import (
 )
 from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, DelayedPDActuatorCfg, RemotizedPDActuatorCfg
 from isaaclab.actuators.actuator_storage import _GroupBinding
+from isaaclab.assets.asset_base import AssetBase
+from isaaclab.cloner import ClonePlan
 from isaaclab.utils.warp import ProxyArray
+
+
+def _build_articulation_layout(**kwargs):
+    """Call the production layout builder without making test collection depend on its existence."""
+    return actuator_storage._build_articulation_layout(**kwargs)
+
+
+def _group_registration(name, joint_indices, stiffness):
+    """Build one prototype-local resolved group record."""
+    return actuator_storage._GroupRegistration(
+        name=name,
+        actuator_type=IdealPDActuator,
+        joint_indices=tuple(joint_indices),
+        values={
+            "stiffness": tuple(stiffness),
+            "damping": tuple(value + 0.5 for value in stiffness),
+            "effort_limit": tuple(value + 10.0 for value in stiffness),
+            "velocity_limit": tuple(value + 20.0 for value in stiffness),
+        },
+    )
+
+
+def _prototype_registration(key, num_joints, groups):
+    """Build one source-prototype record."""
+    return actuator_storage._PrototypeRegistration(
+        registration_key=key,
+        num_joints=num_joints,
+        groups=tuple(groups),
+    )
+
+
+def _make_clone_plan(cfg, clone_mask):
+    """Build a clone plan whose rows all belong to ``cfg``."""
+    num_rows = clone_mask.shape[0]
+    return ClonePlan(
+        sources=tuple(f"/World/envs/env_{row}/Robot" for row in range(num_rows)),
+        destinations=("/World/envs/env_{}/Robot",) * num_rows,
+        clone_mask=clone_mask,
+        cfg_rows={id(cfg): tuple(range(num_rows))},
+    )
+
+
+def make_variant_registrations(*, key="robot", num_prototypes=4):
+    """Build three group records for every source prototype."""
+    return tuple(
+        _prototype_registration(
+            key,
+            6,
+            (
+                _group_registration("hip", (0, 2), (prototype + 1.0, prototype + 2.0)),
+                _group_registration("knee", (1,), (prototype + 3.0,)),
+                _group_registration("ankle", (4, 5), (prototype + 4.0, prototype + 5.0)),
+            ),
+        )
+        for prototype in range(num_prototypes)
+    )
+
+
+def build_instrumented_layout(*, num_worlds, num_prototypes):
+    """Build a layout while counting source-level records created by the fixture."""
+    cfg = object()
+    clone_mask = torch.arange(num_worlds).remainder(num_prototypes) == torch.arange(num_prototypes)[:, None]
+    registrations = make_variant_registrations(num_prototypes=num_prototypes)
+    counters = SimpleNamespace(
+        group_records=sum(len(registration.groups) for registration in registrations),
+        prototype_records=len(registrations),
+    )
+    return (
+        _build_articulation_layout(
+            replication_cfg_id=id(cfg),
+            clone_plan=_make_clone_plan(cfg, clone_mask),
+            registrations=registrations,
+        ),
+        counters,
+    )
+
+
+class _ArticulationLayoutFixture:
+    """Small test adapter exposing scoped proxies from one immutable layout."""
+
+    def __init__(self, store, layout):
+        self._store = store
+        self._layout = layout
+        self.stiffness = None
+
+    def type_proxy(self, actuator_type, field):
+        return self._store.type_proxy(self._layout.type_layouts[actuator_type], field)
+
+    def type_dofs(self, actuator_type):
+        return self._layout.type_layouts[actuator_type].num_dofs
+
+
+class _GroupLayoutFixture:
+    """Small test adapter exposing the logical group's canonical stiffness view."""
+
+    def __init__(self, store, layout):
+        self.stiffness = store.group_proxy(layout, "stiffness").torch
+
+
+def make_two_articulation_store(*, device="cpu"):
+    """Allocate two articulation ranges in one exact-type flat store."""
+    type_offsets = {}
+    layouts = []
+    for index, (num_worlds, group_joint_ids) in enumerate(((2, ((0, 2), (1,))), (3, ((0,), (2,))))):
+        cfg = object()
+        registrations = (
+            _prototype_registration(
+                f"robot_{index}",
+                3,
+                tuple(
+                    _group_registration(f"group_{group}", joint_ids, (1.0,) * len(joint_ids))
+                    for group, joint_ids in enumerate(group_joint_ids)
+                ),
+            ),
+        )
+        layouts.append(
+            _build_articulation_layout(
+                replication_cfg_id=id(cfg),
+                clone_plan=_make_clone_plan(cfg, torch.ones((1, num_worlds), dtype=torch.bool, device=device)),
+                registrations=registrations,
+                type_offsets=type_offsets,
+            )
+        )
+    store = actuator_storage._TypedStore(IdealPDActuator)
+    store.allocate(layouts, device=device)
+    first = _ArticulationLayoutFixture(store, layouts[0])
+    second = _ArticulationLayoutFixture(store, layouts[1])
+    second.stiffness = _GroupLayoutFixture(store, layouts[0].group_layouts[0]).stiffness
+    return store, first, second
+
+
+def make_type_layout(*, group_joint_ids):
+    """Build the exact-type layout for overlapping logical groups."""
+    cfg = object()
+    registration = _prototype_registration(
+        "robot",
+        max(joint_id for joint_ids in group_joint_ids for joint_id in joint_ids) + 1,
+        tuple(
+            _group_registration(f"group_{index}", joint_ids, (1.0,) * len(joint_ids))
+            for index, joint_ids in enumerate(group_joint_ids)
+        ),
+    )
+    layout = _build_articulation_layout(
+        replication_cfg_id=id(cfg),
+        clone_plan=_make_clone_plan(cfg, torch.ones((1, 1), dtype=torch.bool)),
+        registrations=(registration,),
+    )
+    return layout.type_layouts[IdealPDActuator]
+
+
+def csr_slots(layout, *, articulation_joint_id):
+    """Read one articulation joint's compact slots from the immutable CSR table."""
+    start = layout.articulation_to_compact_offsets[articulation_joint_id]
+    stop = layout.articulation_to_compact_offsets[articulation_joint_id + 1]
+    return layout.articulation_to_compact_slots[start:stop]
+
+
+class _MinimalAsset(AssetBase):
+    """AssetBase test double that keeps constructor behavior and removes simulator callbacks."""
+
+    @property
+    def data(self):
+        return None
+
+    @property
+    def num_instances(self):
+        return 1
+
+    def reset(self, env_ids=None):
+        pass
+
+    def write_data_to_sim(self):
+        pass
+
+    def update(self, dt):
+        pass
+
+    def _initialize_impl(self):
+        pass
+
+    def _register_callbacks(self):
+        pass
+
+    def _clear_callbacks(self):
+        pass
+
+    def set_debug_vis(self, debug_vis):
+        return False
 
 
 class _TestActuatorStorage:
@@ -323,3 +517,158 @@ def test_remotized_pd_lookup_remains_group_owned_state() -> None:
     assert "_joint_parameter_lookup" in actuator.__dict__
     assert "_joint_parameter_lookup" not in typed_fields
     assert actuator._joint_parameter_lookup is lookup
+
+
+@pytest.mark.parametrize("num_worlds", [1, 64, 4096])
+def test_layout_python_object_count_is_clone_count_independent(num_worlds: int) -> None:
+    layout, counters = build_instrumented_layout(num_worlds=num_worlds, num_prototypes=4)
+    assert layout.num_worlds == num_worlds
+    assert counters.group_records == 12
+    assert counters.prototype_records == 4
+
+
+def test_type_block_is_contiguous_and_group_block_is_strided_zero_copy() -> None:
+    store, articulation, group = make_two_articulation_store()
+    type_stiffness = articulation.type_proxy(IdealPDActuator, "stiffness").torch
+    assert type_stiffness.is_contiguous()
+    assert group.stiffness.stride() == (articulation.type_dofs(IdealPDActuator), 1)
+    assert group.stiffness.untyped_storage().data_ptr() == store.stiffness.torch.untyped_storage().data_ptr()
+
+
+def test_multiple_articulation_type_ranges_are_disjoint() -> None:
+    store, first, second = make_two_articulation_store()
+    first_stiffness = first.type_proxy(IdealPDActuator, "stiffness").torch
+    second_stiffness = second.type_proxy(IdealPDActuator, "stiffness").torch
+    first_stiffness.fill_(3.0)
+    second_stiffness.fill_(9.0)
+    torch.testing.assert_close(first_stiffness, torch.full_like(first_stiffness, 3.0))
+    torch.testing.assert_close(second_stiffness, torch.full_like(second_stiffness, 9.0))
+
+
+def test_overlapping_type_layout_builds_one_to_many_joint_fanout() -> None:
+    layout = make_type_layout(group_joint_ids=((0, 2), (2, 3), (2,)))
+    assert layout.compact_joint_indices == (0, 2, 2, 3, 2)
+    assert csr_slots(layout, articulation_joint_id=2) == (1, 2, 4)
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_heterogeneous_layout_expands_four_prototypes_to_4096_worlds(device: str) -> None:
+    num_worlds = 4096
+    num_prototypes = 4
+    cfg = object()
+    clone_mask = (
+        torch.arange(num_worlds, device=device).remainder(num_prototypes)
+        == torch.arange(num_prototypes, device=device)[:, None]
+    )
+    registrations = tuple(
+        _prototype_registration(
+            "robot",
+            3,
+            (
+                _group_registration("first", (0, 2), (10.0 + prototype, 20.0 + prototype)),
+                _group_registration("second", (1,), (30.0 + prototype,)),
+            ),
+        )
+        for prototype in range(num_prototypes)
+    )
+    layout = _build_articulation_layout(
+        replication_cfg_id=id(cfg),
+        clone_plan=_make_clone_plan(cfg, clone_mask),
+        registrations=registrations,
+    )
+    store = actuator_storage._TypedStore(IdealPDActuator)
+    store.allocate((layout,), device=device)
+
+    actual = store.type_proxy(layout.type_layouts[IdealPDActuator], "stiffness").torch
+    prototype_values = torch.tensor(
+        [[10.0, 20.0, 30.0], [11.0, 21.0, 31.0], [12.0, 22.0, 32.0], [13.0, 23.0, 33.0]],
+        device=device,
+    )
+    expected = prototype_values[torch.arange(num_worlds, device=device).remainder(num_prototypes)]
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
+
+
+def test_layout_proxies_cache_one_torch_alias_and_device_csr_copy() -> None:
+    store, articulation, group = make_two_articulation_store()
+    layout = articulation._layout.type_layouts[IdealPDActuator]
+    type_proxy = articulation.type_proxy(IdealPDActuator, "stiffness")
+    offsets, slots = store.mapping_proxies(layout)
+    assert type_proxy is articulation.type_proxy(IdealPDActuator, "stiffness")
+    assert type_proxy.torch is type_proxy.torch
+    assert group.stiffness is not None
+    torch.testing.assert_close(offsets.torch, torch.tensor(layout.articulation_to_compact_offsets, dtype=torch.int32))
+    torch.testing.assert_close(slots.torch, torch.tensor(layout.articulation_to_compact_slots, dtype=torch.int32))
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_layout_alias_and_csr_semantics_match_on_cpu_and_cuda(device: str) -> None:
+    store, first, group = make_two_articulation_store(device=device)
+    layout = first._layout.type_layouts[IdealPDActuator]
+    type_proxy = first.type_proxy(IdealPDActuator, "stiffness")
+    offsets, slots = store.mapping_proxies(layout)
+    assert type_proxy.torch.is_contiguous()
+    assert type_proxy.torch is type_proxy.torch
+    assert group.stiffness.stride() == (layout.num_dofs, 1)
+    assert group.stiffness.untyped_storage().data_ptr() == store.stiffness.torch.untyped_storage().data_ptr()
+    second_type = group.type_proxy(IdealPDActuator, "stiffness").torch
+    type_proxy.torch.fill_(3.0)
+    second_type.fill_(9.0)
+    torch.testing.assert_close(type_proxy.torch, torch.full_like(type_proxy.torch, 3.0))
+    torch.testing.assert_close(second_type, torch.full_like(second_type, 9.0))
+    torch.testing.assert_close(
+        offsets.torch,
+        torch.tensor(layout.articulation_to_compact_offsets, dtype=torch.int32, device=device),
+    )
+    torch.testing.assert_close(
+        slots.torch,
+        torch.tensor(layout.articulation_to_compact_slots, dtype=torch.int32, device=device),
+    )
+
+
+def test_layout_rejects_unknown_exact_schema_field() -> None:
+    cfg = object()
+    registration = actuator_storage._PrototypeRegistration(
+        registration_key="robot",
+        num_joints=1,
+        groups=(
+            actuator_storage._GroupRegistration(
+                name="joint",
+                actuator_type=IdealPDActuator,
+                joint_indices=(0,),
+                values={"stifness": (1.0,)},
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="stifness.*IdealPDActuator.*joint"):
+        _build_articulation_layout(
+            replication_cfg_id=id(cfg),
+            clone_plan=_make_clone_plan(cfg, torch.ones((1, 1), dtype=torch.bool)),
+            registrations=(registration,),
+        )
+
+
+def test_asset_records_original_cfg_identity_before_copy(monkeypatch) -> None:
+    events = []
+
+    class _Cfg:
+        disable_shape_checks = None
+        spawn = None
+        prim_path = "/World/Robot"
+        debug_vis = False
+
+        def validate(self):
+            pass
+
+        def copy(self):
+            events.append(("copy", id(self)))
+            return copy.copy(self)
+
+    cfg = _Cfg()
+    monkeypatch.setattr(asset_base_module, "queue_replication", lambda value: events.append(("queue", id(value))))
+    monkeypatch.setattr(asset_base_module, "get_current_stage", object)
+
+    asset = _MinimalAsset(cfg)
+
+    assert events == [("queue", id(cfg)), ("copy", id(cfg))]
+    assert asset._replication_cfg_id == id(cfg)
+    assert id(asset.cfg) != id(cfg)

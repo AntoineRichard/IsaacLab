@@ -10,14 +10,59 @@ string/tensor operations over a :class:`~isaaclab.cloner.ClonePlan`. They need n
 simulator and no USD, so they live outside ``test/sim/``.
 """
 
+import copy
 import subprocess
 import sys
 
 import pytest
 import torch
 
+import isaaclab.actuators.actuator_storage as actuator_storage
 from isaaclab import cloner
+from isaaclab.actuators.actuator_pd import IdealPDActuator
 from isaaclab.cloner import ClonePlan
+
+
+def _build_articulation_layout(**kwargs):
+    """Call the production layout builder without making test collection depend on its existence."""
+    return actuator_storage._build_articulation_layout(**kwargs)
+
+
+def make_copied_cfg_clone_plan():
+    """Return an original cfg, its asset-style copy, and a plan keyed by the original."""
+
+    class _Cfg:
+        pass
+
+    cfg = _Cfg()
+    copied_cfg = copy.copy(cfg)
+    plan = ClonePlan(
+        sources=("/World/envs/env_0/Robot", "World/envs/env_1/Robot"),
+        destinations=("/World/envs/env_{}/Robot",) * 2,
+        clone_mask=torch.tensor([[True, False], [False, True]], dtype=torch.bool),
+        cfg_rows={id(cfg): (0, 1)},
+    )
+    return cfg, copied_cfg, plan
+
+
+def make_variant_registrations():
+    """Return one topology-compatible resolved group for each source prototype."""
+    return tuple(
+        actuator_storage._PrototypeRegistration(
+            registration_key="robot",
+            num_joints=1,
+            groups=(
+                actuator_storage._GroupRegistration(
+                    name="joint",
+                    actuator_type=IdealPDActuator,
+                    joint_indices=(0,),
+                    values={"stiffness": (float(row + 1),)},
+                ),
+            ),
+        )
+        for row in range(2)
+    )
+
 
 ##
 # Path primitives.
@@ -543,3 +588,12 @@ def test_cloner_imports_without_kit():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "False", "importing isaaclab.cloner pulled in pxr"
+
+
+def test_layout_uses_original_cfg_identity_after_asset_copy() -> None:
+    cfg, copied_cfg, plan = make_copied_cfg_clone_plan()
+    assert id(copied_cfg) not in plan.cfg_rows
+    layout = _build_articulation_layout(
+        replication_cfg_id=id(cfg), clone_plan=plan, registrations=make_variant_registrations()
+    )
+    assert layout.prototype_rows == plan.cfg_rows[id(cfg)]

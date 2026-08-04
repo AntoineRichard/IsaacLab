@@ -100,6 +100,7 @@ class AssetBase(ABC):
         # register the original cfg object for cloning: the clone plan keys rows by the
         # cfg identity the scene collected; contexts and policy resolve at replication time
         queue_replication(cfg)
+        self._replication_cfg_id = id(cfg)
         # store inputs
         self.cfg = cfg.copy()
         # Resolve shape-check flag once: True means checks are active.
