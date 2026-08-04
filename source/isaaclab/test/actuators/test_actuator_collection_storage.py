@@ -114,6 +114,40 @@ def build_instrumented_layout(*, num_worlds, num_prototypes):
     )
 
 
+def _cpu_source_layout(group_count: int):
+    """Build one source-resolved exact-type layout with CPU prototype rows."""
+    cfg = object()
+    clone_plan = ClonePlan(
+        sources=("/World/envs/env_0/Robot",),
+        destinations=("/World/envs/env_{}/Robot",),
+        clone_mask=torch.ones((1, 1), dtype=torch.bool),
+        cfg_rows={id(cfg): (0,)},
+    )
+    groups = tuple(
+        actuator_storage._GroupRegistration(
+            name=f"group_{index}",
+            actuator_type=IdealPDActuator,
+            joint_indices=(index,),
+            values={},
+            joint_names=(f"joint_{index}",),
+            source_values={"stiffness": torch.full((1, 1), float(index + 1))},
+        )
+        for index in range(group_count)
+    )
+    return _build_articulation_layout(
+        replication_cfg_id=id(cfg),
+        clone_plan=clone_plan,
+        registrations=(
+            actuator_storage._PrototypeRegistration(
+                registration_key=cfg,
+                num_joints=group_count,
+                groups=groups,
+                source_resolved=True,
+            ),
+        ),
+    )
+
+
 class _ArticulationLayoutFixture:
     """Small test adapter exposing scoped proxies from one immutable layout."""
 
@@ -749,6 +783,70 @@ def test_asset_records_original_cfg_identity_before_copy(monkeypatch) -> None:
     assert events == [("queue", id(cfg)), ("copy", id(cfg))]
     assert asset._replication_cfg_id == id(cfg)
     assert id(asset.cfg) != id(cfg)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for source-transfer coverage")
+def test_typed_store_uses_one_cpu_to_cuda_source_transfer_per_field_regardless_of_group_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concatenate CPU group rows before the exact type performs its one H2D copy."""
+    original_to = torch.Tensor.to
+
+    def _count_transfers(group_count: int) -> int:
+        transfers = []
+
+        def _record_to(self, *args, **kwargs):
+            requested_device = kwargs.get("device", args[0] if args else None)
+            if (
+                requested_device is not None
+                and self.device.type == "cpu"
+                and torch.device(requested_device).type == "cuda"
+            ):
+                transfers.append(tuple(self.shape))
+            return original_to(self, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(torch.Tensor, "to", _record_to)
+            store = actuator_storage._TypedStore(IdealPDActuator)
+            store.allocate((_cpu_source_layout(group_count),), device="cuda")
+        return len(transfers)
+
+    # One transfer uploads the prototype assignment and one uploads the
+    # concatenated stiffness source rows.  More logical groups must not add
+    # source transfers for the same exact-type field.
+    assert _count_transfers(1) == 2
+    assert _count_transfers(3) == 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for stream-lifetime coverage")
+def test_typed_store_records_cuda_initialization_tensors_before_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Protect CUDA initialization tensors on the current stream before releasing them."""
+    store = actuator_storage._TypedStore(IdealPDActuator)
+    store.allocate((_cpu_source_layout(1),), device="cuda")
+    expected_ptrs = {
+        buffer.data_ptr()
+        for buffer in store._initialization_buffers
+        if isinstance(buffer, torch.Tensor) and buffer.is_cuda
+    }
+    assert expected_ptrs
+
+    recorded_ptrs = set()
+    recorded_streams = set()
+    original_record_stream = torch.Tensor.record_stream
+
+    def _record_stream(self: torch.Tensor, stream: torch.cuda.Stream) -> None:
+        if self.is_cuda:
+            recorded_ptrs.add(self.data_ptr())
+            recorded_streams.add(stream.cuda_stream)
+        original_record_stream(self, stream)
+
+    monkeypatch.setattr(torch.Tensor, "record_stream", _record_stream)
+
+    store._release_initialization_buffers()
+
+    assert recorded_ptrs == expected_ptrs
+    assert recorded_streams == {wp.get_stream("cuda").cuda_stream}
+    assert store._initialization_buffers == []
 
 
 @pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])

@@ -89,6 +89,24 @@ class _ResolvedManagedRegistration:
     structural_signature: tuple[Any, ...]
 
 
+@dataclass(frozen=True)
+class _SolverCompatibilitySeed:
+    """Compact source rows that lazily recreate one runtime solver field."""
+
+    source_rows: torch.Tensor
+    source_assignment: torch.Tensor
+    source_joint_indices: torch.Tensor
+
+    def materialize(self, *, num_envs: int, device: str) -> torch.Tensor:
+        """Expand compact source rows to the requesting runtime group shape."""
+        assignment = self.source_assignment.to(device=device, dtype=torch.long)
+        if assignment.shape != (num_envs,):
+            raise ValueError("Solver compatibility source assignment has an invalid runtime shape.")
+        source_joint_indices = self.source_joint_indices.to(device=self.source_rows.device, dtype=torch.long)
+        source_rows = self.source_rows.index_select(1, source_joint_indices).to(device=device)
+        return source_rows.index_select(0, assignment)
+
+
 class _GuardedParameterMapping(Mapping[str, ProxyArray]):
     """Read-only parameter map that validates its owning group generation."""
 
@@ -626,7 +644,6 @@ class ActuatorBase(ABC):
             source_values=source_values,
             structural_signature=(
                 cls,
-                tuple(joint_names),
                 tuple(field.name for field in schema.fields),
                 structural_signature,
             ),
@@ -640,7 +657,7 @@ class ActuatorBase(ABC):
         binding: _GroupBinding,
         num_envs: int,
         device: str,
-        joint_indices: torch.Tensor,
+        joint_indices: slice | torch.Tensor,
     ) -> ActuatorBase:
         """Bind one exact managed runtime shell to canonical parameter storage.
 
@@ -723,6 +740,17 @@ class ActuatorBase(ABC):
         self.__dict__["_deprecated_sidecars"] = {}
         self.__dict__["_deprecated_sidecar_warnings"] = set()
         self.__dict__["_solver_compatibility_sidecars"] = {}
+
+    def _bind_solver_compatibility_seeds(self, seeds: Mapping[str, _SolverCompatibilitySeed]) -> None:
+        """Attach final compact solver rows for lazy public compatibility fields."""
+        self.__dict__["_solver_compatibility_seeds"] = dict(seeds)
+
+    def _release_managed_source_parameters(self) -> None:
+        """Drop source-shell tensors now shadowed by canonical arrays or compact seeds."""
+        for field in type(self)._parameter_schema().fields:
+            self.__dict__.pop(field.name, None)
+        for name in self._SOLVER_COMPATIBILITY_PARAMETER_NAMES:
+            self.__dict__.pop(name, None)
 
     def _bind_facade_view(self, view: Any, token: object) -> None:
         """Bind generation checks to the owning articulation facade."""
@@ -857,7 +885,12 @@ class ActuatorBase(ABC):
         """Return a lazy solver-only compatibility buffer for a bound group."""
         sidecars = self.__dict__.setdefault("_solver_compatibility_sidecars", {})
         if name not in sidecars:
-            sidecars[name] = self._make_group_local_sidecar(name)
+            seed = self.__dict__.get("_solver_compatibility_seeds", {}).pop(name, None)
+            sidecars[name] = (
+                seed.materialize(num_envs=self._num_envs, device=self._device)
+                if seed is not None
+                else self._make_group_local_sidecar(name)
+            )
         return sidecars[name]
 
     def _get_deprecated_gain_sidecar(self, name: str) -> torch.Tensor:

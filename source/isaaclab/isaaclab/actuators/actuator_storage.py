@@ -264,6 +264,10 @@ class _BackendParameterStaging:
         device: str,
         owner_slots: Mapping[tuple[type[ActuatorBase], str], torch.Tensor | ProxyArray],
         initial_values: Mapping[str, ProxyArray] | None = None,
+        all_env_ids: torch.Tensor | None = None,
+        all_joint_ids: torch.Tensor | None = None,
+        all_env_mask: torch.Tensor | None = None,
+        all_joint_mask: torch.Tensor | None = None,
     ) -> None:
         """Allocate pointer-stable staging targets for the supplied backend routes.
 
@@ -272,15 +276,34 @@ class _BackendParameterStaging:
             num_joints: Number of articulation joints.
             device: Device hosting the candidate allocations.
             owner_slots: Candidate-owned articulation-joint to compact-slot maps.
+            all_env_ids: Optional selector-state view for every articulation world.
+            all_joint_ids: Optional selector-state view for every articulation joint.
+            all_env_mask: Optional selector-state true mask for every world.
+            all_joint_mask: Optional selector-state true mask for every joint.
         """
         self._num_worlds = num_worlds
         self._num_joints = num_joints
         self._targets: dict[str, ProxyArray] = {}
         self._owner_slots: dict[tuple[type[ActuatorBase], str], ProxyArray] = {}
-        self._all_env_ids = torch.arange(num_worlds, dtype=torch.int32, device=device)
-        self._all_joint_ids = torch.arange(num_joints, dtype=torch.int32, device=device)
-        self._all_env_mask = torch.ones(num_worlds, dtype=torch.bool, device=device)
-        self._all_joint_mask = torch.ones(num_joints, dtype=torch.bool, device=device)
+        self._all_env_ids = (
+            torch.arange(num_worlds, dtype=torch.int32, device=device) if all_env_ids is None else all_env_ids
+        )
+        self._all_joint_ids = (
+            torch.arange(num_joints, dtype=torch.int32, device=device) if all_joint_ids is None else all_joint_ids
+        )
+        self._all_env_mask = (
+            torch.ones(num_worlds, dtype=torch.bool, device=device) if all_env_mask is None else all_env_mask
+        )
+        self._all_joint_mask = (
+            torch.ones(num_joints, dtype=torch.bool, device=device) if all_joint_mask is None else all_joint_mask
+        )
+        if (
+            self._all_env_ids.shape != (num_worlds,)
+            or self._all_joint_ids.shape != (num_joints,)
+            or self._all_env_mask.shape != (num_worlds,)
+            or self._all_joint_mask.shape != (num_joints,)
+        ):
+            raise ValueError("Backend staging selector-state views have invalid articulation shapes.")
         initial_values = {} if initial_values is None else initial_values
         for route, slots in owner_slots.items():
             if isinstance(slots, ProxyArray):
@@ -846,6 +869,17 @@ class _TypedStore:
                 self._fields[schema_field.name].warp.fill_(schema_field.fill)
                 continue
 
+            source_devices = {
+                rows.device
+                for groups in groups_by_layout
+                for group in groups
+                if isinstance((rows := group.prototype_values.get(schema_field.name)), torch.Tensor)
+            }
+            if len(source_devices) > 1:
+                raise ValueError(
+                    f"Source rows for {self.actuator_type.__name__}.{schema_field.name} must share one device."
+                )
+            source_device = next(iter(source_devices), torch.device(device))
             source_blocks: list[torch.Tensor] = []
             for layout, groups in zip(matching_layouts, groups_by_layout):
                 group_blocks: list[torch.Tensor] = []
@@ -857,16 +891,23 @@ class _TypedStore:
                                 (len(layout.prototype_rows), group.num_dofs),
                                 schema_field.fill,
                                 dtype=torch.float32,
-                                device=device,
+                                device=source_device,
                             )
                         )
                     elif isinstance(rows, torch.Tensor):
-                        group_blocks.append(rows.to(device=device, dtype=torch.float32))
+                        if rows.device != source_device:
+                            raise ValueError(
+                                "Source rows for "
+                                f"{self.actuator_type.__name__}.{schema_field.name} must share one device."
+                            )
+                        group_blocks.append(rows.to(dtype=torch.float32))
                     else:
-                        group_blocks.append(torch.tensor(rows, dtype=torch.float32, device=device))
+                        group_blocks.append(torch.tensor(rows, dtype=torch.float32, device=source_device))
                 source_blocks.append(torch.cat(group_blocks, dim=1))
 
             source_values = torch.cat([block.reshape(-1) for block in source_blocks]).contiguous()
+            if source_values.device.type != torch.device(device).type or source_values.device != torch.device(device):
+                source_values = source_values.to(device=device)
             source = wp.from_torch(source_values, dtype=wp.float32)
             self._initialization_buffers.extend((source_values, source))
             wp.launch(
@@ -875,6 +916,14 @@ class _TypedStore:
                 inputs=[self._fields[schema_field.name].warp, source, assignment, *metadata],
                 device=device,
             )
+
+    def _release_initialization_buffers(self) -> None:
+        """Release construction tensors after recording their final CUDA-stream use."""
+        for buffer in self._initialization_buffers:
+            if isinstance(buffer, torch.Tensor) and buffer.is_cuda:
+                warp_stream = wp.get_stream(str(buffer.device))
+                buffer.record_stream(torch.cuda.ExternalStream(warp_stream.cuda_stream, device=buffer.device))
+        self._initialization_buffers.clear()
 
     def _view_proxy(
         self,
@@ -945,12 +994,12 @@ class _TypedStore:
 
 
 class _SolverPropertyStore:
-    """Candidate-owned articulation-wide solver-property staging storage.
+    """Candidate-owned compact solver-property rows and optional device targets.
 
-    Each property has one flat allocation across the candidate.  A source-row
-    expansion initializes USD/default values, then config-order group launches
-    overwrite owned joints.  This preserves overlap precedence without creating
-    a Python object per cloned world or a dense temporary per actuator group.
+    All fields first remain source-prototype rows.  CPU transports consume those
+    compact rows directly; device transports materialize their dense candidate
+    target only after opaque group construction has supplied the final
+    configuration-order overlay.
     """
 
     _FIELD_NAMES = (
@@ -974,58 +1023,59 @@ class _SolverPropertyStore:
         self._initialization_buffers: list[object] = []
 
     def allocate(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
-        """Allocate and resolve all articulation solver properties synchronously."""
+        """Resolve all properties into compact source rows without dense allocation."""
+        del device
+        for layout in layouts:
+            for field_name in self._FIELD_NAMES:
+                self._source_rows[(id(layout), field_name)] = self._merged_source_rows(field_name, layout)
+
+    def articulation_proxy(self, field: str, layout: _ArticulationLayout) -> ProxyArray:
+        """Return the materialized device target for one property.
+
+        CPU transports intentionally never create this target.
+        """
+        key = (id(layout), field)
+        proxy = self._articulation_proxies.get(key)
+        if proxy is None:
+            raise RuntimeError(f"Solver property {field!r} has no device transport target.")
+        return proxy
+
+    def materialize_device_targets(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
+        """Create one flat dense target per field across device-transport articulations."""
         expected_offset = 0
         for layout in layouts:
             self._articulation_offsets[id(layout)] = expected_offset
             expected_offset += layout.num_worlds * layout.num_joints
         allocation_size = max(expected_offset, 1)
-        self._fields = {
-            name: ProxyArray(wp.empty(allocation_size, dtype=wp.float32, device=device)) for name in self._FIELD_NAMES
-        }
+        for field_name in self._FIELD_NAMES:
+            if field_name not in self._fields:
+                self._fields[field_name] = ProxyArray(wp.empty(allocation_size, dtype=wp.float32, device=device))
         for layout in layouts:
             for field_name in self._FIELD_NAMES:
-                target = self.articulation_proxy(field_name, layout)
-                self._expand_config_owned_source(target, field_name, layout)
+                key = (id(layout), field_name)
+                if key not in self._articulation_proxies:
+                    flat = self._fields[field_name]
+                    offset = self._articulation_offsets[id(layout)]
+                    item_size = wp.types.type_size_in_bytes(wp.float32)
+                    shape = (layout.num_worlds, layout.num_joints)
+                    proxy = ProxyArray(
+                        wp.array(
+                            ptr=flat.warp.ptr + offset * item_size,
+                            dtype=wp.float32,
+                            shape=shape,
+                            strides=(layout.num_joints * item_size, item_size),
+                            capacity=layout.num_worlds * layout.num_joints * item_size,
+                            device=flat.warp.device,
+                            copy=False,
+                        )
+                    )
+                    proxy._torch_cache = flat.torch.as_strided(shape, (layout.num_joints, 1), storage_offset=offset)
+                    self._articulation_proxies[key] = proxy
+                self._expand_source_rows(self._articulation_proxies[key], self.source_rows(field_name, layout), layout)
 
-    def articulation_proxy(self, field: str, layout: _ArticulationLayout) -> ProxyArray:
-        """Return a cached contiguous articulation staging view for one property."""
-        key = (id(layout), field)
-        proxy = self._articulation_proxies.get(key)
-        if proxy is None:
-            offset = self._articulation_offsets[id(layout)]
-            item_size = wp.types.type_size_in_bytes(wp.float32)
-            flat = self._fields[field]
-            shape = (layout.num_worlds, layout.num_joints)
-            proxy = ProxyArray(
-                wp.array(
-                    ptr=flat.warp.ptr + offset * item_size,
-                    dtype=wp.float32,
-                    shape=shape,
-                    strides=(layout.num_joints * item_size, item_size),
-                    capacity=layout.num_worlds * layout.num_joints * item_size,
-                    device=flat.warp.device,
-                    copy=False,
-                )
-            )
-            proxy._torch_cache = flat.torch.as_strided(
-                shape,
-                (layout.num_joints, 1),
-                storage_offset=offset,
-            )
-            self._articulation_proxies[key] = proxy
-        return proxy
-
-    def _expand_config_owned_source(
-        self,
-        target: ProxyArray,
-        field_name: str,
-        layout: _ArticulationLayout,
-    ) -> None:
-        """Merge source rows in config order, then expand them in one launch."""
-        source_rows = self._merged_source_rows(field_name, layout)
-        self._source_rows[(id(layout), field_name)] = source_rows
-        self._expand_source_rows(target, source_rows, layout)
+    def expand_source_rows_into(self, target: ProxyArray, field_name: str, layout: _ArticulationLayout) -> None:
+        """Expand one final compact field into a caller-owned dense target."""
+        self._expand_source_rows(target, self.source_rows(field_name, layout), layout)
 
     def _merged_source_rows(
         self,
@@ -1037,9 +1087,8 @@ class _SolverPropertyStore:
         source_count = len(layout.prototype_rows)
         default_values = layout.solver_default_values.get(field_name)
         if default_values is None:
-            target = self.articulation_proxy(field_name, layout)
             default_values = torch.zeros(
-                (source_count, layout.num_joints), dtype=torch.float32, device=target.torch.device
+                (source_count, layout.num_joints), dtype=torch.float32, device=layout.prototype_assignment.device
             )
         if (
             default_values.dtype is not torch.float32
@@ -1131,7 +1180,6 @@ class _SolverPropertyStore:
             for group_layout in opaque_groups:
                 actuator = groups[group_layout.name]
                 values = getattr(actuator, field_name, None)
-                target = self.articulation_proxy(field_name, layout)
                 if field_name in {"stiffness", "damping"} and not issubclass(
                     group_layout.actuator_type, ImplicitActuator
                 ):
@@ -1144,7 +1192,7 @@ class _SolverPropertyStore:
                 if (
                     values.dtype is not torch.float32
                     or values.shape != (layout.num_worlds, group_layout.num_dofs)
-                    or values.device != target.torch.device
+                    or values.device != layout.prototype_assignment.device
                 ):
                     raise ValueError(
                         f"Opaque actuator group {group_layout.name!r} has invalid solver field {field_name!r}."
@@ -1172,10 +1220,11 @@ class _SolverPropertyStore:
         if not opaque_values:
             return
         for field_name in self._FIELD_NAMES:
-            target = self.articulation_proxy(field_name, layout)
             source_rows = self._merged_source_rows(field_name, layout, opaque_values)
             self._source_rows[(id(layout), field_name)] = source_rows
-            self._expand_source_rows(target, source_rows, layout)
+            target = self._articulation_proxies.get((id(layout), field_name))
+            if target is not None:
+                self._expand_source_rows(target, source_rows, layout)
 
     def source_rows(self, field_name: str, layout: _ArticulationLayout) -> torch.Tensor:
         """Return the final config-order-merged source rows for one property."""
