@@ -651,6 +651,98 @@ class _TypedStore:
             raise AttributeError(name) from error
 
 
+class _JointDomainStore:
+    """Warp-owned articulation-major command and telemetry storage.
+
+    Each field owns one flat allocation for the active generation. Cached
+    articulation aliases remain contiguous without adding per-world Python or
+    device metadata objects.
+    """
+
+    _FIELD_NAMES = (
+        "raw_position",
+        "raw_velocity",
+        "raw_effort",
+        "processed_position",
+        "processed_velocity",
+        "processed_effort",
+        "computed_effort",
+        "applied_effort",
+    )
+
+    def __init__(self) -> None:
+        """Create an unallocated joint-domain store."""
+        self._fields: dict[str, ProxyArray] = {}
+        self._articulation_offsets: dict[int, int] = {}
+        self._articulation_proxies: dict[tuple[int, str], ProxyArray] = {}
+
+    def allocate(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
+        """Allocate every joint-domain field once for the supplied articulations.
+
+        Args:
+            layouts: Articulation layouts in deterministic registration order.
+            device: Warp device on which to allocate the flat fields.
+        """
+        expected_offset = 0
+        for layout in layouts:
+            self._articulation_offsets[id(layout)] = expected_offset
+            expected_offset += layout.num_worlds * layout.num_joints
+        allocation_size = max(expected_offset, 1)
+        self._fields = {
+            name: ProxyArray(wp.zeros(allocation_size, dtype=wp.float32, device=device)) for name in self._FIELD_NAMES
+        }
+        for layout in layouts:
+            for field in self._FIELD_NAMES:
+                self.articulation_proxy(field, layout)
+
+    def articulation_proxy(self, field: str, layout: _ArticulationLayout) -> ProxyArray:
+        """Return one cached contiguous articulation alias for a joint-domain field.
+
+        Args:
+            field: Canonical joint-domain field name.
+            layout: Articulation layout that determines the alias shape.
+
+        Returns:
+            A contiguous ``[num_worlds, num_joints]`` proxy alias.
+        """
+        if field not in self._fields:
+            raise KeyError(f"Unknown joint-domain field {field!r}.")
+        key = (id(layout), field)
+        proxy = self._articulation_proxies.get(key)
+        if proxy is None:
+            offset = self._articulation_offsets[id(layout)]
+            shape = (layout.num_worlds, layout.num_joints)
+            item_size = wp.types.type_size_in_bytes(wp.float32)
+            flat = self._fields[field]
+            capacity = layout.num_worlds * layout.num_joints * item_size
+            warp_view = wp.array(
+                ptr=flat.warp.ptr + offset * item_size,
+                dtype=wp.float32,
+                shape=shape,
+                strides=(layout.num_joints * item_size, item_size),
+                capacity=capacity,
+                device=flat.warp.device,
+                copy=False,
+            )
+            proxy = ProxyArray(warp_view)
+            proxy._torch_cache = flat.torch.as_strided(shape, (layout.num_joints, 1), storage_offset=offset)
+            self._articulation_proxies[key] = proxy
+        return proxy
+
+    def close(self) -> None:
+        """Release every flat allocation and cached articulation alias."""
+        self._articulation_proxies.clear()
+        self._articulation_offsets.clear()
+        self._fields.clear()
+
+    def __getattr__(self, name: str) -> ProxyArray:
+        """Expose one flat joint-domain field by its canonical name."""
+        try:
+            return self._fields[name]
+        except KeyError as error:
+            raise AttributeError(name) from error
+
+
 # Ownership rules:
 # typed actuator parameters: stiffness, damping, actuator effort/velocity limits, saturation_effort
 # typed outputs: computed_effort, applied_effort

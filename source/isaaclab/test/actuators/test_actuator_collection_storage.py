@@ -545,6 +545,63 @@ def test_multiple_articulation_type_ranges_are_disjoint() -> None:
     torch.testing.assert_close(second_stiffness, torch.full_like(second_stiffness, 9.0))
 
 
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_joint_domain_views_are_disjoint_live_and_pointer_stable(device: str) -> None:
+    """Joint-domain articulation aliases are cached, contiguous, and isolated."""
+    _, first, second = make_two_articulation_store(device=device)
+    joint_store = actuator_storage._JointDomainStore()
+    joint_store.allocate((first._layout, second._layout), device=device)
+
+    first_position = joint_store.articulation_proxy("raw_position", first._layout)
+    second_position = joint_store.articulation_proxy("raw_position", second._layout)
+    first_pointer = first_position.torch.data_ptr()
+
+    assert first_position is joint_store.articulation_proxy("raw_position", first._layout)
+    assert first_position.torch.is_contiguous()
+    assert second_position.torch.is_contiguous()
+    second_position.torch.fill_(8.0)
+
+    assert first_position.torch.data_ptr() == first_pointer
+    assert torch.count_nonzero(first_position.torch) == 0
+    assert torch.all(second_position.torch == 8.0)
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_joint_domain_store_eagerly_caches_one_alias_for_each_field_and_articulation(device: str) -> None:
+    """Eight flat fields prebuild stable aliases before facade installation."""
+    _, first, second = make_two_articulation_store()
+    joint_store = actuator_storage._JointDomainStore()
+    joint_store.allocate((first._layout, second._layout), device=device)
+
+    assert set(joint_store._fields) == {
+        "raw_position",
+        "raw_velocity",
+        "raw_effort",
+        "processed_position",
+        "processed_velocity",
+        "processed_effort",
+        "computed_effort",
+        "applied_effort",
+    }
+    assert len({field.torch.data_ptr() for field in joint_store._fields.values()}) == 8
+    assert len(joint_store._articulation_proxies) == 16
+    for layout in (first._layout, second._layout):
+        for field in joint_store._fields:
+            assert joint_store.articulation_proxy(field, layout) is joint_store.articulation_proxy(field, layout)
+
+
+def test_joint_domain_store_metadata_is_bounded_for_4096_worlds() -> None:
+    """Joint-domain construction stores articulation prefixes rather than per-world objects."""
+    layout, _ = build_instrumented_layout(num_worlds=4096, num_prototypes=4)
+    joint_store = actuator_storage._JointDomainStore()
+    joint_store.allocate((layout,), device="cpu")
+
+    assert len(joint_store._fields) == 8
+    assert len(joint_store._articulation_offsets) == 1
+    assert len(joint_store._articulation_proxies) == 8
+    assert joint_store.articulation_proxy("raw_position", layout).shape == (4096, layout.num_joints)
+
+
 def test_overlapping_type_layout_builds_one_to_many_joint_fanout() -> None:
     layout = make_type_layout(group_joint_ids=((0, 2), (2, 3), (2,)))
     assert layout.compact_joint_indices == (0, 2, 2, 3, 2)

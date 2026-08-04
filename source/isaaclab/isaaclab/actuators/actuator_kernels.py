@@ -224,6 +224,21 @@ def scatter_actuator_state_model(
 
 
 @wp.kernel(enable_backward=False)
+def scatter_type_effort_telemetry(
+    source_computed_effort: wp.array2d(dtype=wp.float32),
+    source_applied_effort: wp.array2d(dtype=wp.float32),
+    joint_indices: wp.array(dtype=wp.int32),
+    target_computed_effort: wp.array2d(dtype=wp.float32),
+    target_applied_effort: wp.array2d(dtype=wp.float32),
+):
+    """Scatter exact-type effort outputs into articulation joint order."""
+    env_id, source_joint_id = wp.tid()
+    target_joint_id = joint_indices[source_joint_id]
+    target_computed_effort[env_id, target_joint_id] = source_computed_effort[env_id, source_joint_id]
+    target_applied_effort[env_id, target_joint_id] = source_applied_effort[env_id, source_joint_id]
+
+
+@wp.kernel(enable_backward=False)
 def compute_implicit_actuator_batch(
     command_pos: wp.array2d(dtype=wp.float32),
     command_vel: wp.array2d(dtype=wp.float32),

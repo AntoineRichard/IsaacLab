@@ -36,6 +36,7 @@ from .actuator_storage import (
     _GuardedIterator,
     _GuardedKeysView,
     _GuardedValuesView,
+    _JointDomainStore,
     _PrototypeRegistration,
     _TypedStore,
 )
@@ -105,7 +106,7 @@ class _SelectorState:
         self._num_worlds = layout.num_worlds
         self._num_joints = layout.num_joints
         self._max_scope_dofs = max((type_layout.num_dofs for type_layout in layout.type_layouts.values()), default=0)
-        identity_size = max(layout.num_worlds, self._max_scope_dofs)
+        identity_size = max(layout.num_worlds, layout.num_joints, self._max_scope_dofs)
         opaque_group_layouts = tuple(
             group for group in layout.group_layouts if group.actuator_type not in layout.type_layouts
         )
@@ -318,10 +319,12 @@ class _CollectionGeneration:
         generation: int,
         bindings: tuple[_ArticulationBinding, ...],
         stores: dict[type, _TypedStore],
+        joint_store: _JointDomainStore,
     ) -> None:
         self.generation = generation
         self.bindings = bindings
         self.stores = stores
+        self.joint_store = joint_store
         self.groups: dict[object, dict[str, ActuatorBase]] = {}
         self.selector_states: dict[object, _SelectorState] = {}
 
@@ -383,10 +386,11 @@ class _CollectionGeneration:
         for layout in layouts:
             for actuator_type in layout.type_layouts:
                 stores.setdefault(actuator_type, _TypedStore(actuator_type))
-        candidate = cls(generation, (), stores)
+        candidate = cls(generation, (), stores, _JointDomainStore())
         try:
             for store in stores.values():
                 store.allocate(layouts, device=registrations[0].control.device)
+            candidate.joint_store.allocate(layouts, device=registrations[0].control.device)
             candidate.bindings = tuple(
                 _ArticulationBinding(registration=registration, layout=layout)
                 for registration, layout in zip(registrations, layouts, strict=True)
@@ -473,6 +477,34 @@ class _CollectionGeneration:
                 groups[name] = actuator
             self.groups[binding.registration.key] = groups
 
+    def publish_effort_telemetry(self) -> None:
+        """Publish exact-type effort outputs in stable articulation joint order."""
+        for binding in self.bindings:
+            layout = binding.layout
+            self.joint_store.articulation_proxy("computed_effort", layout).warp.fill_(0.0)
+            self.joint_store.articulation_proxy("applied_effort", layout).warp.fill_(0.0)
+
+        for binding in self.bindings:
+            layout = binding.layout
+            selector_state = self.selector_states[binding.registration.key]
+            target_computed_effort = self.joint_store.articulation_proxy("computed_effort", layout)
+            target_applied_effort = self.joint_store.articulation_proxy("applied_effort", layout)
+            for actuator_type, type_layout in layout.type_layouts.items():
+                store = self.stores[actuator_type]
+                if "computed_effort" not in store._fields or "applied_effort" not in store._fields:
+                    continue
+                wp.launch(
+                    actuator_kernels.scatter_type_effort_telemetry,
+                    dim=(layout.num_worlds, type_layout.num_dofs),
+                    inputs=[
+                        store.type_proxy(type_layout, "computed_effort").warp,
+                        store.type_proxy(type_layout, "applied_effort").warp,
+                        selector_state.type_joint_ids_wp(actuator_type),
+                    ],
+                    outputs=[target_computed_effort.warp, target_applied_effort.warp],
+                    device=target_computed_effort.warp.device,
+                )
+
     def close(self) -> None:
         """Release every candidate-owned allocation and private reference."""
         for groups in self.groups.values():
@@ -483,6 +515,7 @@ class _CollectionGeneration:
         for selector_state in self.selector_states.values():
             selector_state.close()
         self.selector_states.clear()
+        self.joint_store.close()
         for store in self.stores.values():
             store._fields.clear()
             store._type_proxies.clear()
@@ -794,6 +827,212 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         _MISSING = object()
         fromkeys = _GuardedDictFromKeys()
 
+        class Command:
+            """Raw commands received by the actuator models.
+
+            Position and velocity commands use joint-side coordinates. All
+            arrays are indexed in articulation joint order.
+            """
+
+            def __init__(
+                self,
+                view: ActuatorCollection.ArticulationView,
+                install_token: object,
+                position: ProxyArray,
+                velocity: ProxyArray,
+                effort: ProxyArray,
+            ) -> None:
+                self._view = view
+                self._install_token = install_token
+                self._position: ProxyArray | None = position
+                self._velocity: ProxyArray | None = velocity
+                self._effort: ProxyArray | None = effort
+
+            def _require_execution_ready(self) -> None:
+                self._view._require_execution_ready(self._install_token)
+
+            @property
+            def position(self) -> ProxyArray:
+                """Desired positions [m or rad, depending on joint type]."""
+                self._require_execution_ready()
+                if self._position is None:
+                    raise RuntimeError("stale actuator view")
+                return self._position
+
+            @property
+            def velocity(self) -> ProxyArray:
+                """Desired velocities [m/s or rad/s, depending on joint type]."""
+                self._require_execution_ready()
+                if self._velocity is None:
+                    raise RuntimeError("stale actuator view")
+                return self._velocity
+
+            @property
+            def effort(self) -> ProxyArray:
+                """Effort commands [N or N·m, depending on joint type]."""
+                self._require_execution_ready()
+                if self._effort is None:
+                    raise RuntimeError("stale actuator view")
+                return self._effort
+
+            def set_position_index(
+                self,
+                *,
+                value: torch.Tensor | wp.array,
+                joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                full_data: bool = False,
+            ) -> None:
+                """Set desired positions using articulation index selectors.
+
+                Args:
+                    value: Desired positions [m or rad, depending on joint type].
+                    joint_ids: Joint indices. Defaults to all joints.
+                    env_ids: Environment indices. Defaults to all environments.
+                    full_data: Whether :paramref:`value` has full articulation shape.
+                """
+                self._view._write_command_index(value, env_ids, joint_ids, self.position, full_data=full_data)
+
+            def set_velocity_index(
+                self,
+                *,
+                value: torch.Tensor | wp.array,
+                joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                full_data: bool = False,
+            ) -> None:
+                """Set desired velocities using articulation index selectors.
+
+                Args:
+                    value: Desired velocities [m/s or rad/s, depending on joint type].
+                    joint_ids: Joint indices. Defaults to all joints.
+                    env_ids: Environment indices. Defaults to all environments.
+                    full_data: Whether :paramref:`value` has full articulation shape.
+                """
+                self._view._write_command_index(value, env_ids, joint_ids, self.velocity, full_data=full_data)
+
+            def set_effort_index(
+                self,
+                *,
+                value: torch.Tensor | wp.array,
+                joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                full_data: bool = False,
+            ) -> None:
+                """Set effort commands using articulation index selectors.
+
+                Args:
+                    value: Effort commands [N or N·m, depending on joint type].
+                    joint_ids: Joint indices. Defaults to all joints.
+                    env_ids: Environment indices. Defaults to all environments.
+                    full_data: Whether :paramref:`value` has full articulation shape.
+                """
+                self._view._write_command_index(value, env_ids, joint_ids, self.effort, full_data=full_data)
+
+            def set_position_mask(
+                self,
+                *,
+                value: torch.Tensor | wp.array,
+                joint_mask: torch.Tensor | wp.array | None = None,
+                env_mask: torch.Tensor | wp.array | None = None,
+            ) -> None:
+                """Set desired positions using articulation masks.
+
+                Args:
+                    value: Full position commands [m or rad, depending on joint type].
+                    joint_mask: Joint selection mask. Defaults to all joints.
+                    env_mask: Environment selection mask. Defaults to all environments.
+                """
+                self._view._write_command_mask(value, env_mask, joint_mask, self.position)
+
+            def set_velocity_mask(
+                self,
+                *,
+                value: torch.Tensor | wp.array,
+                joint_mask: torch.Tensor | wp.array | None = None,
+                env_mask: torch.Tensor | wp.array | None = None,
+            ) -> None:
+                """Set desired velocities using articulation masks.
+
+                Args:
+                    value: Full velocity commands [m/s or rad/s, depending on joint type].
+                    joint_mask: Joint selection mask. Defaults to all joints.
+                    env_mask: Environment selection mask. Defaults to all environments.
+                """
+                self._view._write_command_mask(value, env_mask, joint_mask, self.velocity)
+
+            def set_effort_mask(
+                self,
+                *,
+                value: torch.Tensor | wp.array,
+                joint_mask: torch.Tensor | wp.array | None = None,
+                env_mask: torch.Tensor | wp.array | None = None,
+            ) -> None:
+                """Set effort commands using articulation masks.
+
+                Args:
+                    value: Full effort commands [N or N·m, depending on joint type].
+                    joint_mask: Joint selection mask. Defaults to all joints.
+                    env_mask: Environment selection mask. Defaults to all environments.
+                """
+                self._view._write_command_mask(value, env_mask, joint_mask, self.effort)
+
+            def close(self) -> None:
+                """Release every facade-owned command alias."""
+                self._position = None
+                self._velocity = None
+                self._effort = None
+
+        class JointCommand:
+            """Processed commands produced for the simulated joints."""
+
+            def __init__(
+                self,
+                view: ActuatorCollection.ArticulationView,
+                install_token: object,
+                position: ProxyArray,
+                velocity: ProxyArray,
+                effort: ProxyArray,
+            ) -> None:
+                self._view = view
+                self._install_token = install_token
+                self._position: ProxyArray | None = position
+                self._velocity: ProxyArray | None = velocity
+                self._effort: ProxyArray | None = effort
+
+            def _require_execution_ready(self) -> None:
+                self._view._require_execution_ready(self._install_token)
+
+            @property
+            def position(self) -> ProxyArray:
+                """Processed positions [m or rad, depending on joint type]."""
+                self._require_execution_ready()
+                if self._position is None:
+                    raise RuntimeError("stale actuator view")
+                return self._position
+
+            @property
+            def velocity(self) -> ProxyArray:
+                """Processed velocities [m/s or rad/s, depending on joint type]."""
+                self._require_execution_ready()
+                if self._velocity is None:
+                    raise RuntimeError("stale actuator view")
+                return self._velocity
+
+            @property
+            def effort(self) -> ProxyArray:
+                """Processed efforts [N or N·m, depending on joint type]."""
+                self._require_execution_ready()
+                if self._effort is None:
+                    raise RuntimeError("stale actuator view")
+                return self._effort
+
+            def close(self) -> None:
+                """Release every facade-owned processed-command alias."""
+                self._position = None
+                self._velocity = None
+                self._effort = None
+
         def __init__(self, manager: ActuatorCollection, key: object) -> None:
             dict.__init__(self)
             self._manager = manager
@@ -803,6 +1042,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._by_type: Mapping[type[ActuatorBase], ActuatorCollection.TypeView] = {}
             self._selector_state: _SelectorState | None = None
             self._install_token: object | None = None
+            self._command: ActuatorCollection.ArticulationView.Command | None = None
+            self._joint_command: ActuatorCollection.ArticulationView.JointCommand | None = None
+            self._computed_effort: ProxyArray | None = None
+            self._applied_effort: ProxyArray | None = None
 
         @property
         def generation(self) -> int:
@@ -827,16 +1070,36 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             return self._by_type
 
         @property
-        def command(self):
-            """Command facade placeholder guarded until command storage is installed."""
+        def command(self) -> Command:
+            """Raw commands received by the actuator models."""
             self._require_execution_ready()
-            raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
+            if self._command is None:
+                raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
+            return self._command
 
         @property
-        def joint_command(self):
-            """Processed-command facade placeholder guarded until command storage is installed."""
+        def joint_command(self) -> JointCommand:
+            """Processed commands produced for the simulated joints."""
             self._require_execution_ready()
-            raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
+            if self._joint_command is None:
+                raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
+            return self._joint_command
+
+        @property
+        def computed_effort(self) -> ProxyArray:
+            """Computed effort [N or N·m, depending on joint type]."""
+            self._require_execution_ready()
+            if self._computed_effort is None:
+                raise RuntimeError("Actuator telemetry storage is not available before the scoped facade is installed.")
+            return self._computed_effort
+
+        @property
+        def applied_effort(self) -> ProxyArray:
+            """Applied effort [N or N·m, depending on joint type]."""
+            self._require_execution_ready()
+            if self._applied_effort is None:
+                raise RuntimeError("Actuator telemetry storage is not available before the scoped facade is installed.")
+            return self._applied_effort
 
         def compute(self, dt: float = 0.0) -> None:
             """Reject execution while a topology mutation requires a safe rebuild."""
@@ -967,6 +1230,22 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             selector_state = generation.selector_states[binding.registration.key]
             self._selector_state = selector_state
             self._install_token = selector_state.token
+            self._command = self.Command(
+                self,
+                selector_state.token,
+                generation.joint_store.articulation_proxy("raw_position", binding.layout),
+                generation.joint_store.articulation_proxy("raw_velocity", binding.layout),
+                generation.joint_store.articulation_proxy("raw_effort", binding.layout),
+            )
+            self._joint_command = self.JointCommand(
+                self,
+                selector_state.token,
+                generation.joint_store.articulation_proxy("processed_position", binding.layout),
+                generation.joint_store.articulation_proxy("processed_velocity", binding.layout),
+                generation.joint_store.articulation_proxy("processed_effort", binding.layout),
+            )
+            self._computed_effort = generation.joint_store.articulation_proxy("computed_effort", binding.layout)
+            self._applied_effort = generation.joint_store.articulation_proxy("applied_effort", binding.layout)
             dict.__init__(self, groups)
             for group in groups.values():
                 group._bind_facade_view(self, selector_state.token)
@@ -984,6 +1263,186 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 for name in binding.registration.native_group_names
                 if name in groups and "_parameter_binding" in groups[name].__dict__
             }
+
+        @staticmethod
+        def _as_command_value(value: torch.Tensor | wp.array, target: ProxyArray) -> torch.Tensor | wp.array:
+            """Validate a command value without copying same-device tensor data."""
+            if isinstance(value, ProxyArray):
+                value = value.torch
+            if isinstance(value, wp.array):
+                if value.device != target.warp.device:
+                    raise ValueError("Command values must be on the scoped articulation device.")
+                if value.dtype is not wp.float32:
+                    raise TypeError("Command values must have float32 dtype.")
+                return value
+            elif not isinstance(value, torch.Tensor):
+                value = torch.as_tensor(value, dtype=torch.float32, device=target.torch.device)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError("Command values must be float32 Torch or Warp arrays.")
+            if value.device != target.torch.device:
+                raise ValueError("Command values must be on the scoped articulation device.")
+            if value.dtype is not torch.float32:
+                raise TypeError("Command values must have float32 dtype.")
+            return value
+
+        @staticmethod
+        def _as_command_index_selector(
+            value: Sequence[int] | torch.Tensor | wp.array, target: torch.Tensor, name: str
+        ) -> torch.Tensor | wp.array:
+            """Validate one command index selector without converting Warp storage."""
+            if isinstance(value, ProxyArray):
+                value = value.torch
+            if isinstance(value, wp.array):
+                if len(value.shape) != 1:
+                    raise ValueError(f"{name} must be one-dimensional.")
+                if str(value.device) != str(target.device):
+                    raise ValueError(f"{name} must be on the scoped articulation device.")
+                if value.dtype not in (wp.int32, wp.int64):
+                    raise TypeError(f"{name} must have a signed integer dtype.")
+                return value
+            return ActuatorCollection.ArticulationView._as_index_torch(value, target, name)
+
+        @staticmethod
+        def _as_command_mask_selector(
+            value: torch.Tensor | wp.array, target: torch.Tensor, name: str
+        ) -> torch.Tensor | wp.array:
+            """Validate one command mask without converting Warp storage."""
+            if isinstance(value, ProxyArray):
+                value = value.torch
+            if isinstance(value, wp.array):
+                if value.shape != tuple(target.shape):
+                    raise ValueError(f"{name} must have shape {tuple(target.shape)}.")
+                if str(value.device) != str(target.device):
+                    raise ValueError(f"{name} must be on the scoped articulation device.")
+                if value.dtype is not wp.bool:
+                    raise TypeError(f"{name} must have boolean dtype.")
+                return value
+            if not isinstance(value, torch.Tensor) or value.ndim != 1:
+                raise ValueError(f"{name} must be a one-dimensional boolean tensor.")
+            if value.device != target.device:
+                raise ValueError(f"{name} must be on the scoped articulation device.")
+            if value.dtype is not torch.bool:
+                raise TypeError(f"{name} must have boolean dtype.")
+            if value.shape != target.shape:
+                raise ValueError(f"{name} must have shape {tuple(target.shape)}.")
+            return value
+
+        def _write_command_index(
+            self,
+            value: torch.Tensor | wp.array,
+            env_ids: Sequence[int] | torch.Tensor | wp.array | None,
+            joint_ids: Sequence[int] | torch.Tensor | wp.array | None,
+            target: ProxyArray,
+            *,
+            full_data: bool,
+        ) -> None:
+            """Validate and write one raw command with index selectors."""
+            self._require_execution_ready()
+            selector_state = self._require_selector_state()
+            target_proxy = target
+            env_selector = (
+                selector_state._all_env_ids
+                if env_ids is None
+                else self._as_command_index_selector(env_ids, selector_state._all_env_ids, "env_ids")
+            )
+            joint_selector = (
+                selector_state.default_joint_ids(selector_state._all_joint_mask.shape[0])
+                if joint_ids is None
+                else self._as_command_index_selector(joint_ids, selector_state._all_joint_mask, "joint_ids")
+            )
+            source = self._as_command_value(value, target_proxy)
+            expected_shape = (
+                (selector_state._all_env_ids.shape[0], selector_state._all_joint_mask.shape[0])
+                if full_data
+                else (env_selector.shape[0], joint_selector.shape[0])
+            )
+            if tuple(source.shape) != expected_shape:
+                raise ValueError(f"Command index values must have shape {expected_shape}.")
+            if env_selector.shape[0] == 0 or joint_selector.shape[0] == 0:
+                return
+            env_selector_wp = (
+                selector_state._all_env_ids_wp
+                if env_ids is None
+                else (
+                    env_selector
+                    if isinstance(env_selector, wp.array)
+                    else wp.from_torch(env_selector, dtype=wp.int32 if env_selector.dtype is torch.int32 else wp.int64)
+                )
+            )
+            joint_selector_wp = (
+                selector_state._identity_ids_wp
+                if joint_ids is None
+                else (
+                    joint_selector
+                    if isinstance(joint_selector, wp.array)
+                    else wp.from_torch(
+                        joint_selector, dtype=wp.int32 if joint_selector.dtype is torch.int32 else wp.int64
+                    )
+                )
+            )
+            wp.launch(
+                actuator_kernels.write_2d_float_with_indices_kernel(env_selector, joint_selector),
+                dim=(env_selector.shape[0], joint_selector.shape[0]),
+                inputs=[
+                    source if isinstance(source, wp.array) else wp.from_torch(source, dtype=wp.float32),
+                    env_selector_wp,
+                    joint_selector_wp,
+                    full_data,
+                ],
+                outputs=[target_proxy.warp],
+                device=target_proxy.warp.device,
+            )
+
+        def _write_command_mask(
+            self,
+            value: torch.Tensor | wp.array,
+            env_mask: torch.Tensor | wp.array | None,
+            joint_mask: torch.Tensor | wp.array | None,
+            target: ProxyArray,
+        ) -> None:
+            """Validate and write one raw command with full-articulation masks."""
+            self._require_execution_ready()
+            selector_state = self._require_selector_state()
+            target_proxy = target
+            env_selector = (
+                selector_state._all_env_mask
+                if env_mask is None
+                else self._as_command_mask_selector(env_mask, selector_state._all_env_mask, "env_mask")
+            )
+            joint_selector = (
+                selector_state._all_joint_mask
+                if joint_mask is None
+                else self._as_command_mask_selector(joint_mask, selector_state._all_joint_mask, "joint_mask")
+            )
+            source = self._as_command_value(value, target_proxy)
+            expected_shape = (selector_state._all_env_ids.shape[0], selector_state._all_joint_mask.shape[0])
+            if tuple(source.shape) != expected_shape:
+                raise ValueError(f"Command mask values must have shape {expected_shape}.")
+            env_selector_wp = (
+                selector_state._all_env_mask_wp
+                if env_mask is None
+                else env_selector
+                if isinstance(env_selector, wp.array)
+                else wp.from_torch(env_selector, dtype=wp.bool)
+            )
+            joint_selector_wp = (
+                selector_state._all_joint_mask_wp
+                if joint_mask is None
+                else joint_selector
+                if isinstance(joint_selector, wp.array)
+                else wp.from_torch(joint_selector, dtype=wp.bool)
+            )
+            wp.launch(
+                actuator_kernels.write_2d_float_with_mask,
+                dim=expected_shape,
+                inputs=[
+                    source if isinstance(source, wp.array) else wp.from_torch(source, dtype=wp.float32),
+                    env_selector_wp,
+                    joint_selector_wp,
+                ],
+                outputs=[target_proxy.warp],
+                device=target_proxy.warp.device,
+            )
 
         def _write_group_parameter_index(
             self,
@@ -1430,6 +1889,14 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._failure = failure
             self._generation = None
             self._install_token = None
+            if self._command is not None:
+                self._command.close()
+            if self._joint_command is not None:
+                self._joint_command.close()
+            self._command = None
+            self._joint_command = None
+            self._computed_effort = None
+            self._applied_effort = None
             for group in tuple(dict.values(self)):
                 group._release_facade_storage()
             dict.clear(self)

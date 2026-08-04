@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import gc
 import re
 import warnings
+import weakref
 from collections.abc import Sequence
 from types import SimpleNamespace
 
@@ -29,6 +31,7 @@ from isaaclab.actuators import (
     ImplicitActuatorCfg,
 )
 from isaaclab.actuators.actuator_control import ArticulationActuatorControl
+from isaaclab.cloner import ClonePlan
 from isaaclab.utils.warp import ProxyArray
 
 
@@ -286,6 +289,64 @@ class FakeActuatorControl(ActuatorControl):
 
     def submit_commands(self, collection: ActuatorCollection) -> None:
         self.submitted = True
+
+
+class _ScopedSimulation:
+    """Clone-plan provider for scoped command and telemetry tests."""
+
+    def __init__(self, *, device: str, num_worlds: int = 2) -> None:
+        self._clone_plan = ClonePlan(
+            sources=("/World/envs/env_0",),
+            destinations=("/World/envs/env_{}",),
+            clone_mask=torch.ones((1, num_worlds), dtype=torch.bool, device=device),
+            cfg_rows={1: (0,), 2: (0,)},
+        )
+
+    def get_clone_plan(self) -> ClonePlan:
+        """Return the fixed two-articulation clone plan."""
+        return self._clone_plan
+
+
+def _scoped_ideal_cfg(joint_names: list[str]) -> IdealPDActuatorCfg:
+    """Create one managed exact-type group configuration."""
+    cfg = _ideal_cfg(joint_names, stiffness=1.0, damping=2.0, effort_limit=3.0)
+    cfg.class_type = IdealPDActuator
+    return cfg
+
+
+def _make_finalized_two_articulation_manager(*, device: str = "cpu"):
+    """Build two finalized scoped views with distinct articulation ranges."""
+    collection = ActuatorCollection(_ScopedSimulation(device=device))
+    first = collection.register_articulation(
+        key="first",
+        cfgs={"all": _scoped_ideal_cfg(["joint_0", "joint_1", "joint_2"])},
+        control=FakeActuatorControl(device=device),
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    second = collection.register_articulation(
+        key="second",
+        cfgs={"all": _scoped_ideal_cfg(["joint_0", "joint_1", "joint_2"])},
+        control=FakeActuatorControl(device=device),
+        replication_cfg_id=2,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+    return collection, first, second
+
+
+def _command_pointers(view) -> tuple[int, ...]:
+    """Return every raw and processed command pointer for stability assertions."""
+    return (
+        view.command.position.torch.data_ptr(),
+        view.command.velocity.torch.data_ptr(),
+        view.command.effort.torch.data_ptr(),
+        view.joint_command.position.torch.data_ptr(),
+        view.joint_command.velocity.torch.data_ptr(),
+        view.joint_command.effort.torch.data_ptr(),
+    )
 
 
 class NativeFakeActuatorControl(FakeActuatorControl):
@@ -1064,3 +1125,362 @@ def test_compute_submits_processed_commands():
 
     torch.testing.assert_close(collection.joint_command.position.torch.cpu(), value)
     assert control.submitted
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_scoped_joint_domain_commands_are_disjoint_live_and_pointer_stable(device: str) -> None:
+    """Scoped articulations retain disjoint cached raw command views."""
+    _, first, second = _make_finalized_two_articulation_manager(device=device)
+    first_pointer = first.command.position.torch.data_ptr()
+    second.command.position.torch.fill_(8.0)
+
+    assert first.command.position.torch.data_ptr() == first_pointer
+    assert first.command.position.torch.is_contiguous()
+    assert second.command.position.torch.is_contiguous()
+    assert torch.count_nonzero(first.command.position.torch) == 0
+    assert torch.all(second.command.position.torch == 8.0)
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_scoped_raw_and_processed_commands_have_separate_stable_storage(device: str) -> None:
+    """Raw writes retain cached storage and never alias processed commands."""
+    _, view, _ = _make_finalized_two_articulation_manager(device=device)
+    assert view.command.position.torch.data_ptr() != view.joint_command.position.torch.data_ptr()
+    pointers = _command_pointers(view)
+    assert len(set(pointers)) == len(pointers)
+    assert view.command.position is view.command.position
+    assert view.computed_effort is view.computed_effort
+
+    view.command.set_position_index(
+        value=torch.tensor([[1.0, 2.0]], dtype=torch.float32, device=device),
+        env_ids=torch.tensor([0], dtype=torch.int64, device=device),
+        joint_ids=torch.tensor([1, 2], dtype=torch.int64, device=device),
+    )
+
+    assert _command_pointers(view) == pointers
+    torch.testing.assert_close(
+        view.command.position.torch,
+        torch.tensor([[0.0, 1.0, 2.0], [0.0, 0.0, 0.0]], dtype=torch.float32, device=device),
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_scoped_command_default_selectors_include_uncovered_joints(device: str) -> None:
+    """Default command selectors cover every articulation joint, not just actuator groups."""
+    collection = ActuatorCollection(_ScopedSimulation(device=device))
+    view = collection.register_articulation(
+        key="robot",
+        cfgs={"hip": _scoped_ideal_cfg(["joint_0"])},
+        control=FakeActuatorControl(device=device),
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+    value = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32, device=device)
+
+    view.command.set_position_index(value=value)
+
+    torch.testing.assert_close(view.command.position.torch, value)
+    assert view._control.staged_commands == []
+
+
+def test_retained_scoped_command_facades_reject_dirty_and_stale_generations() -> None:
+    """Command facade guards run before a dirty or stale write can launch."""
+    collection, view, _ = _make_finalized_two_articulation_manager()
+    command = view.command
+    joint_command = view.joint_command
+    with pytest.warns(DeprecationWarning):
+        view["duplicate"] = view["all"]
+
+    for operation in (lambda: command.position, lambda: joint_command.position, lambda: view.computed_effort):
+        with pytest.raises(RuntimeError, match="rebuild"):
+            operation()
+
+    collection.clear_generation()
+    for operation in (lambda: command.position, lambda: joint_command.position):
+        with pytest.raises(RuntimeError, match="stale actuator view"):
+            operation()
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+@pytest.mark.parametrize(
+    ("method", "expected"),
+    (
+        ("set_position_index", "position"),
+        ("set_velocity_index", "velocity"),
+        ("set_effort_index", "effort"),
+        ("set_position_mask", "position"),
+        ("set_velocity_mask", "velocity"),
+        ("set_effort_mask", "effort"),
+    ),
+)
+def test_scoped_command_setters_preserve_index_mask_and_full_data_contracts(
+    device: str, method: str, expected: str
+) -> None:
+    """Every scoped command setter accepts the established selector forms."""
+    _, view, _ = _make_finalized_two_articulation_manager(device=device)
+    command = view.command
+    value = torch.tensor([[1.0, 2.0]], dtype=torch.float32, device=device)
+
+    if method.endswith("index"):
+        getattr(command, method)(
+            value=value,
+            env_ids=torch.tensor([1], dtype=torch.int64, device=device),
+            joint_ids=wp.array([0, 2], dtype=wp.int64, device=device),
+        )
+        actual = getattr(command, expected).torch
+        torch.testing.assert_close(actual[1], torch.tensor([1.0, 0.0, 2.0], dtype=torch.float32, device=device))
+    else:
+        full_value = torch.arange(6, dtype=torch.float32, device=device).reshape(2, 3)
+        getattr(command, method)(
+            value=full_value,
+            env_mask=torch.tensor([True, False], device=device),
+            joint_mask=wp.array([False, True, True], dtype=wp.bool, device=device),
+        )
+        actual = getattr(command, expected).torch
+        torch.testing.assert_close(
+            actual,
+            torch.tensor([[0.0, 1.0, 2.0], [0.0, 0.0, 0.0]], dtype=torch.float32, device=device),
+        )
+
+    full_data = torch.arange(6, dtype=torch.float32, device=device).reshape(2, 3) + 10.0
+    command.position.torch.zero_()
+    command.set_position_index(
+        value=full_data,
+        env_ids=torch.tensor([1], dtype=torch.int64, device=device),
+        joint_ids=wp.array([2, 0], dtype=wp.int64, device=device),
+        full_data=True,
+    )
+    expected_full_data = torch.zeros_like(full_data)
+    expected_full_data[1, 2] = full_data[1, 2]
+    expected_full_data[1, 0] = full_data[1, 0]
+    torch.testing.assert_close(command.position.torch, expected_full_data)
+
+    command.effort.torch.zero_()
+    command.set_effort_index(
+        value=torch.tensor([[7.0, 8.0]], dtype=torch.float32, device=device),
+        env_ids=[0],
+        joint_ids=[0, 1],
+    )
+    torch.testing.assert_close(
+        command.effort.torch[0], torch.tensor([7.0, 8.0, 0.0], dtype=torch.float32, device=device)
+    )
+
+
+@pytest.mark.parametrize("method", ("set_position_index", "set_velocity_mask"))
+def test_retained_scoped_command_setters_reject_dirty_and_stale_views_before_launch(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """Guard command writes before a dirty or stale facade can launch Warp."""
+    collection, view, _ = _make_finalized_two_articulation_manager()
+    command = view.command
+    with pytest.warns(DeprecationWarning):
+        view["duplicate"] = view["all"]
+
+    def _launch_forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("generation guard must run before wp.launch")
+
+    monkeypatch.setattr(wp, "launch", _launch_forbidden)
+    kwargs = {"value": torch.ones((1, 1), dtype=torch.float32), "env_ids": [0], "joint_ids": [0]}
+    if method.endswith("mask"):
+        kwargs = {"value": torch.ones((2, 3), dtype=torch.float32), "env_mask": None, "joint_mask": None}
+    with pytest.raises(RuntimeError, match="rebuild"):
+        getattr(command, method)(**kwargs)
+
+    collection.clear_generation()
+    with pytest.raises(RuntimeError, match="stale actuator view"):
+        getattr(command, method)(**kwargs)
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_scoped_command_setters_reuse_cached_metadata_after_warmup(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """Same-device command writes do not allocate selector or source staging storage."""
+    _, view, _ = _make_finalized_two_articulation_manager(device=device)
+    command = view.command
+    selector_state = view._selector_state
+    assert selector_state is not None
+    index_value = torch.tensor([[1.0, 2.0]], dtype=torch.float32, device=device)
+    mask_value = torch.arange(6, dtype=torch.float32, device=device).reshape(2, 3)
+    env_ids = torch.tensor([1], dtype=torch.int64, device=device)
+    joint_ids = wp.array([0, 2], dtype=wp.int64, device=device)
+    env_mask = torch.tensor([True, False], dtype=torch.bool, device=device)
+    joint_mask = wp.array([False, True, True], dtype=wp.bool, device=device)
+    command.set_position_index(value=index_value, env_ids=env_ids, joint_ids=joint_ids)
+    command.set_velocity_mask(value=mask_value, env_mask=env_mask, joint_mask=joint_mask)
+    pointers = (
+        selector_state._int_slab.data_ptr(),
+        selector_state._bool_slab.data_ptr(),
+        selector_state._identity_ids_wp.ptr,
+        selector_state._all_env_mask_wp.ptr,
+        selector_state._all_joint_mask_wp.ptr,
+        command.position.torch.data_ptr(),
+        command.velocity.torch.data_ptr(),
+        command.effort.torch.data_ptr(),
+    )
+
+    def _allocation_forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("steady-state scoped command write allocated host-visible storage")
+
+    monkeypatch.setattr(torch, "arange", _allocation_forbidden)
+    monkeypatch.setattr(torch, "full", _allocation_forbidden)
+    monkeypatch.setattr(torch, "tensor", _allocation_forbidden)
+    monkeypatch.setattr(torch, "as_tensor", _allocation_forbidden)
+    monkeypatch.setattr(torch.Tensor, "contiguous", _allocation_forbidden)
+    command.set_effort_index(value=wp.from_torch(index_value, dtype=wp.float32), env_ids=env_ids, joint_ids=joint_ids)
+    command.set_position_mask(
+        value=wp.from_torch(mask_value, dtype=wp.float32), env_mask=env_mask, joint_mask=joint_mask
+    )
+
+    assert pointers == (
+        selector_state._int_slab.data_ptr(),
+        selector_state._bool_slab.data_ptr(),
+        selector_state._identity_ids_wp.ptr,
+        selector_state._all_env_mask_wp.ptr,
+        selector_state._all_joint_mask_wp.ptr,
+        command.position.torch.data_ptr(),
+        command.velocity.torch.data_ptr(),
+        command.effort.torch.data_ptr(),
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+@pytest.mark.parametrize("method", ("index", "mask"))
+def test_scoped_command_selectors_do_not_read_device_values_in_normal_mode(
+    monkeypatch: pytest.MonkeyPatch, device: str, method: str
+) -> None:
+    """Normal scoped command writes never synchronize or inspect selector contents."""
+    _, view, _ = _make_finalized_two_articulation_manager(device=device)
+    command = view.command
+    index_value = torch.tensor([[5.0], [7.0]], dtype=torch.float32, device=device)
+    mask_value = torch.arange(6, dtype=torch.float32, device=device).reshape(2, 3)
+    env_ids = torch.tensor([0, 1], dtype=torch.int64, device=device)
+    joint_ids = torch.tensor([1], dtype=torch.int64, device=device)
+    env_mask = torch.tensor([True, False], dtype=torch.bool, device=device)
+    joint_mask = torch.tensor([False, True, False], dtype=torch.bool, device=device)
+
+    def _read_forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("normal scoped command path read a device tensor")
+
+    monkeypatch.setattr(torch.Tensor, "cpu", _read_forbidden)
+    monkeypatch.setattr(torch.Tensor, "tolist", _read_forbidden)
+    monkeypatch.setattr(torch.Tensor, "item", _read_forbidden)
+    if device.startswith("cuda"):
+        monkeypatch.setattr(torch.cuda, "synchronize", _read_forbidden)
+    for name in ("synchronize", "synchronize_device", "synchronize_stream"):
+        if hasattr(wp, name):
+            monkeypatch.setattr(wp, name, _read_forbidden)
+
+    if method == "index":
+        command.set_position_index(value=index_value, env_ids=env_ids, joint_ids=joint_ids)
+    else:
+        command.set_velocity_mask(value=mask_value, env_mask=env_mask, joint_mask=joint_mask)
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_scoped_effort_telemetry_is_persistent_and_in_articulation_order(device: str) -> None:
+    """Type-order effort outputs scatter into stable articulation-order telemetry."""
+    collection = ActuatorCollection(_ScopedSimulation(device=device))
+    view = collection.register_articulation(
+        key="robot",
+        cfgs={"rear": _scoped_ideal_cfg(["joint_2"]), "front": _scoped_ideal_cfg(["joint_0"])},
+        control=FakeActuatorControl(device=device),
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+    generation = collection._active_generation
+    assert generation is not None
+    binding = generation.bindings[0]
+    type_layout = binding.layout.type_layouts[IdealPDActuator]
+    store = generation.stores[IdealPDActuator]
+    computed = store.type_proxy(type_layout, "computed_effort").torch
+    applied = store.type_proxy(type_layout, "applied_effort").torch
+    computed.copy_(torch.tensor([[30.0, 10.0], [31.0, 11.0]], device=device))
+    applied.copy_(torch.tensor([[300.0, 100.0], [301.0, 101.0]], device=device))
+    pointers = (view.computed_effort.torch.data_ptr(), view.applied_effort.torch.data_ptr())
+    view.computed_effort.torch.fill_(999.0)
+    view.applied_effort.torch.fill_(999.0)
+
+    generation.publish_effort_telemetry()
+
+    torch.testing.assert_close(
+        view.computed_effort.torch,
+        torch.tensor([[10.0, 0.0, 30.0], [11.0, 0.0, 31.0]], dtype=torch.float32, device=device),
+    )
+    torch.testing.assert_close(
+        view.applied_effort.torch,
+        torch.tensor([[100.0, 0.0, 300.0], [101.0, 0.0, 301.0]], dtype=torch.float32, device=device),
+    )
+    assert pointers == (view.computed_effort.torch.data_ptr(), view.applied_effort.torch.data_ptr())
+
+
+def test_failed_scoped_finalization_releases_retained_command_aliases_and_rejects_aba_reuse() -> None:
+    """Retained scoped commands cannot revive after rollback and retry."""
+
+    class _CompletionControl(FakeActuatorControl):
+        def __init__(self, *, fail: bool) -> None:
+            super().__init__()
+            self.fail = fail
+            self.children = None
+            self.alias_refs = None
+
+        def bind_actuator_view(self, view) -> None:
+            if self.children is None:
+                command = view.command
+                self.children = (command, view.joint_command)
+                self.alias_refs = (
+                    weakref.ref(command._position),
+                    weakref.ref(command._position.warp),
+                    weakref.ref(command._position.torch),
+                )
+
+        def complete_articulation_initialization(self) -> None:
+            if self.fail:
+                raise RuntimeError("intentional command rollback")
+
+    collection = ActuatorCollection(_ScopedSimulation(device="cpu"))
+    first_control = _CompletionControl(fail=False)
+    second_control = _CompletionControl(fail=True)
+    first = collection.register_articulation(
+        key="first",
+        cfgs={"all": _scoped_ideal_cfg(["joint_0", "joint_1", "joint_2"])},
+        control=first_control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.register_articulation(
+        key="second",
+        cfgs={"all": _scoped_ideal_cfg(["joint_0", "joint_1", "joint_2"])},
+        control=second_control,
+        replication_cfg_id=2,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+
+    with pytest.raises(RuntimeError, match="intentional command rollback"):
+        collection.finalize()
+    assert first_control.children is not None
+    assert first_control.alias_refs is not None
+    old_command, old_joint_command = first_control.children
+    raw_proxy_ref, raw_warp_ref, raw_torch_ref = first_control.alias_refs
+
+    second_control.fail = False
+    collection.finalize()
+    gc.collect()
+
+    assert raw_proxy_ref() is None
+    assert raw_warp_ref() is None
+    assert raw_torch_ref() is None
+    for command in (old_command, old_joint_command):
+        with pytest.raises(RuntimeError, match="stale actuator view"):
+            _ = command.position
+    assert first.command is not old_command
+    assert first.joint_command is not old_joint_command
