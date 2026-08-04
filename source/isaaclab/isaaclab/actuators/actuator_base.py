@@ -105,10 +105,10 @@ class ActuatorBase(ABC):
     viscous_friction = _ManagedParameter("viscous_friction", solver_compatibility=True)
 
     computed_effort: torch.Tensor
-    """The computed effort for the actuator group. Shape is (num_envs, num_joints)."""
+    """The computed effort [N or N·m, depending on joint type]. Shape is (num_envs, num_joints)."""
 
     applied_effort: torch.Tensor
-    """The applied effort for the actuator group. Shape is (num_envs, num_joints).
+    """The applied effort [N or N·m, depending on joint type]. Shape is (num_envs, num_joints).
 
     This is the effort obtained after clipping the :attr:`computed_effort` based on the
     actuator characteristics.
@@ -167,6 +167,9 @@ class ActuatorBase(ABC):
 
     viscous_friction: torch.Tensor
     """The joint viscous friction of the actuator joints. Shape is (num_envs, num_joints)."""
+
+    saturation_effort: torch.Tensor
+    """The peak actuator effort [N or N·m, depending on joint type]. Shape is (num_envs, num_joints)."""
 
     _DEFAULT_MAX_EFFORT_SIM: ClassVar[float] = 1.0e9
     """The default maximum effort for the actuator joints in the simulation. Defaults to 1.0e9.

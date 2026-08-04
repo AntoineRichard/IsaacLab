@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import torch
-import warp as wp
 
 from isaaclab.utils.warp import ProxyArray
 
@@ -86,38 +85,3 @@ _DELAYED_PD_ACTUATOR_SCHEMA = _ActuatorSchema(_PD_PARAMETERS + _OUTPUTS, graphab
 _REMOTIZED_PD_ACTUATOR_SCHEMA = _ActuatorSchema(_PD_PARAMETERS + _OUTPUTS, graphable=False, stateful=True)
 _ACTUATOR_NET_LSTM_SCHEMA = _ActuatorSchema(_NEURAL_PARAMETERS + _OUTPUTS, graphable=False, stateful=True)
 _ACTUATOR_NET_MLP_SCHEMA = _ActuatorSchema(_NEURAL_PARAMETERS + _OUTPUTS, graphable=False, stateful=True)
-
-
-class _ActuatorStorage:
-    """Small typed-array allocator used while global storage is assembled."""
-
-    def __init__(self, *, num_worlds: int, device: str | torch.device) -> None:
-        self._num_worlds = num_worlds
-        self._device = device
-        self._arrays: dict[type, dict[str, ProxyArray]] = {}
-
-    def allocate(self, actuator_type: type, num_slots: int) -> Mapping[str, ProxyArray]:
-        """Allocate canonical arrays for one exact actuator type."""
-        hook = actuator_type.__dict__.get("_parameter_schema")
-        if hook is None:
-            raise TypeError(f"{actuator_type.__name__} does not opt into managed parameter storage.")
-        schema = actuator_type._parameter_schema()
-        arrays = {
-            field.name: ProxyArray(
-                wp.from_torch(
-                    torch.full((self._num_worlds, num_slots), field.fill, dtype=torch.float32, device=self._device),
-                    dtype=wp.float32,
-                )
-            )
-            for field in schema.fields
-        }
-        self._arrays[actuator_type] = arrays
-        return arrays
-
-    def array(self, actuator_type: type, name: str) -> ProxyArray:
-        """Return one allocated canonical array."""
-        return self._arrays[actuator_type][name]
-
-    def allocated_fields(self, actuator_type: type) -> frozenset[str]:
-        """Return allocated typed fields for an exact actuator type."""
-        return frozenset(self._arrays.get(actuator_type, {}))

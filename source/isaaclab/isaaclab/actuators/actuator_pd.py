@@ -376,6 +376,11 @@ class DelayedPDActuator(IdealPDActuator):
         """Return the exact-class typed storage schema."""
         return _DELAYED_PD_ACTUATOR_SCHEMA
 
+    @classmethod
+    def _structural_signature(cls, cfg: DelayedPDActuatorCfg) -> tuple[tuple[str, int], ...]:
+        """Return structural state that determines delayed-execution storage shape."""
+        return (("delay_history_length", cfg.max_delay),)
+
     def __init__(self, cfg: DelayedPDActuatorCfg, *args, **kwargs):
         super().__init__(cfg, *args, **kwargs)
         # instantiate the delay buffers
@@ -434,6 +439,12 @@ class RemotizedPDActuator(DelayedPDActuator):
     def _parameter_schema(cls):
         """Return the exact-class typed storage schema."""
         return _REMOTIZED_PD_ACTUATOR_SCHEMA
+
+    @classmethod
+    def _structural_signature(cls, cfg: RemotizedPDActuatorCfg) -> tuple[tuple[str, int | tuple[int, int]], ...]:
+        """Return structural state that determines remotized-execution storage shape."""
+        lookup_shape = (len(cfg.joint_parameter_lookup), len(cfg.joint_parameter_lookup[0]))
+        return (("delay_history_length", cfg.max_delay), ("joint_parameter_lookup_shape", lookup_shape))
 
     def __init__(
         self,

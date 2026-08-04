@@ -11,11 +11,52 @@ import warnings
 
 import pytest
 import torch
+import warp as wp
 
 from isaaclab.actuators.actuator_net import ActuatorNetLSTM, ActuatorNetMLP
-from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
-from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg
-from isaaclab.actuators.actuator_storage import _ActuatorStorage, _GroupBinding
+from isaaclab.actuators.actuator_pd import (
+    DCMotor,
+    DelayedPDActuator,
+    IdealPDActuator,
+    ImplicitActuator,
+    RemotizedPDActuator,
+)
+from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, DelayedPDActuatorCfg, RemotizedPDActuatorCfg
+from isaaclab.actuators.actuator_storage import _GroupBinding
+from isaaclab.utils.warp import ProxyArray
+
+
+class _TestActuatorStorage:
+    """Minimal canonical-array fixture for managed-parameter descriptor tests."""
+
+    def __init__(self, *, num_worlds: int, device: str) -> None:
+        self._num_worlds = num_worlds
+        self._device = device
+        self._arrays: dict[type, dict[str, ProxyArray]] = {}
+
+    def allocate(self, actuator_type: type, num_slots: int) -> dict[str, ProxyArray]:
+        """Allocate canonical arrays for one exact actuator schema."""
+        if actuator_type.__dict__.get("_parameter_schema") is None:
+            raise TypeError(f"{actuator_type.__name__} does not opt into managed parameter storage.")
+        arrays = {
+            field.name: ProxyArray(
+                wp.from_torch(
+                    torch.full((self._num_worlds, num_slots), field.fill, dtype=torch.float32, device=self._device),
+                    dtype=wp.float32,
+                )
+            )
+            for field in actuator_type._parameter_schema().fields
+        }
+        self._arrays[actuator_type] = arrays
+        return arrays
+
+    def array(self, actuator_type: type, name: str) -> ProxyArray:
+        """Return one allocated canonical array."""
+        return self._arrays[actuator_type][name]
+
+    def allocated_fields(self, actuator_type: type) -> frozenset[str]:
+        """Return allocated typed fields for an exact actuator type."""
+        return frozenset(self._arrays.get(actuator_type, {}))
 
 
 def _make_bound_group(
@@ -43,7 +84,7 @@ def _make_bound_group(
             "damping": torch.full((num_worlds, group_dofs), 12.0),
         }
     )
-    store = _ActuatorStorage(num_worlds=num_worlds, device="cpu")
+    store = _TestActuatorStorage(num_worlds=num_worlds, device="cpu")
     arrays = store.allocate(actuator_type, type_dofs)
     binding = _GroupBinding(
         generation=0,
@@ -54,6 +95,22 @@ def _make_bound_group(
     )
     group._bind_parameter_storage(binding)
     return group, store
+
+
+def _bind_existing_group(group) -> _TestActuatorStorage:
+    """Bind a fully initialized actuator while retaining its eager structural state."""
+    store = _TestActuatorStorage(num_worlds=group.num_envs, device=group._device)
+    arrays = store.allocate(type(group), group.num_joints)
+    group._bind_parameter_storage(
+        _GroupBinding(
+            generation=0,
+            joint_indices=torch.arange(group.num_joints, dtype=torch.int32),
+            joint_names=tuple(group.joint_names),
+            type_slice=slice(None),
+            arrays=arrays,
+        )
+    )
+    return store
 
 
 def make_bound_ideal_pd_group(*, num_worlds: int, group_dofs: int, type_dofs: int, offset: int):
@@ -164,6 +221,105 @@ def test_opaque_subclass_does_not_inherit_managed_storage_opt_in() -> None:
     class CustomDCMotor(DCMotor):
         pass
 
-    store = _ActuatorStorage(num_worlds=1, device="cpu")
+    store = _TestActuatorStorage(num_worlds=1, device="cpu")
     with pytest.raises(TypeError, match="does not opt into"):
         store.allocate(CustomDCMotor, 1)
+
+
+def test_delayed_pd_structural_signature_ignores_numeric_pd_parameters() -> None:
+    """Delay state shape, not PD values, determines delayed actuator structure."""
+    low_gains = DelayedPDActuatorCfg(
+        joint_names_expr=["joint"],
+        stiffness=1.0,
+        damping=2.0,
+        effort_limit=3.0,
+        velocity_limit=4.0,
+        min_delay=1,
+        max_delay=3,
+    )
+    high_gains = DelayedPDActuatorCfg(
+        joint_names_expr=["joint"],
+        stiffness=10.0,
+        damping=20.0,
+        effort_limit=30.0,
+        velocity_limit=40.0,
+        min_delay=1,
+        max_delay=3,
+    )
+
+    assert DelayedPDActuator._structural_signature(low_gains) == DelayedPDActuator._structural_signature(high_gains)
+
+
+def test_delayed_pd_delay_buffers_remain_group_owned_state() -> None:
+    """Delay buffers are owned by the eager group and excluded from typed fields."""
+    cfg = DelayedPDActuatorCfg(
+        joint_names_expr=["joint"],
+        stiffness=1.0,
+        damping=2.0,
+        effort_limit=3.0,
+        velocity_limit=4.0,
+        min_delay=1,
+        max_delay=3,
+    )
+    actuator = DelayedPDActuator(cfg, ["joint"], slice(None), num_envs=2, device="cpu")
+    delay_buffers = tuple(
+        getattr(actuator, name)
+        for name in (
+            "positions_delay_buffer",
+            "velocities_delay_buffer",
+            "efforts_delay_buffer",
+        )
+    )
+    _bind_existing_group(actuator)
+
+    typed_fields = {field.name for field in actuator._parameter_schema().fields}
+    for name, buffer in zip(
+        ("positions_delay_buffer", "velocities_delay_buffer", "efforts_delay_buffer"), delay_buffers
+    ):
+        assert name in actuator.__dict__
+        assert name not in typed_fields
+        assert getattr(actuator, name) is buffer
+
+
+def test_remotized_pd_structural_signature_tracks_lookup_shape_not_values() -> None:
+    """Lookup storage structure is independent of PD values and lookup samples."""
+    low_values = RemotizedPDActuatorCfg(
+        joint_names_expr=["joint"],
+        stiffness=1.0,
+        damping=2.0,
+        min_delay=0,
+        max_delay=2,
+        joint_parameter_lookup=[[0.0, 1.0, 2.0], [1.0, 3.0, 4.0]],
+    )
+    high_values = RemotizedPDActuatorCfg(
+        joint_names_expr=["joint"],
+        stiffness=10.0,
+        damping=20.0,
+        min_delay=0,
+        max_delay=2,
+        joint_parameter_lookup=[[5.0, 6.0, 7.0], [8.0, 9.0, 10.0]],
+    )
+
+    assert RemotizedPDActuator._structural_signature(low_values) == RemotizedPDActuator._structural_signature(
+        high_values
+    )
+
+
+def test_remotized_pd_lookup_remains_group_owned_state() -> None:
+    """Lookup data remains on the eager group instead of canonical typed storage."""
+    cfg = RemotizedPDActuatorCfg(
+        joint_names_expr=["joint"],
+        stiffness=1.0,
+        damping=2.0,
+        min_delay=0,
+        max_delay=2,
+        joint_parameter_lookup=[[0.0, 1.0, 2.0], [1.0, 3.0, 4.0]],
+    )
+    actuator = RemotizedPDActuator(cfg, ["joint"], slice(None), num_envs=2, device="cpu")
+    lookup = actuator._joint_parameter_lookup
+    _bind_existing_group(actuator)
+
+    typed_fields = {field.name for field in actuator._parameter_schema().fields}
+    assert "_joint_parameter_lookup" in actuator.__dict__
+    assert "_joint_parameter_lookup" not in typed_fields
+    assert actuator._joint_parameter_lookup is lookup
