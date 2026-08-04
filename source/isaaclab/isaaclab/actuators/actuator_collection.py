@@ -84,6 +84,7 @@ class _CollectionGeneration:
             raise RuntimeError("Actuator collection finalization requires a published clone plan.")
 
         layouts: list[_ArticulationLayout] = []
+        type_offsets: dict[type[ActuatorBase], int] = {}
         for registration in registrations:
             try:
                 groups: list[_GroupRegistration] = []
@@ -117,6 +118,7 @@ class _CollectionGeneration:
                                 groups=tuple(groups),
                             ),
                         ),
+                        type_offsets=type_offsets,
                     )
                 )
             except Exception as error:
@@ -127,13 +129,18 @@ class _CollectionGeneration:
         for layout in layouts:
             for actuator_type in layout.type_layouts:
                 stores.setdefault(actuator_type, _TypedStore(actuator_type))
-        for store in stores.values():
-            store.allocate(layouts, device=registrations[0].control.device)
-        bindings = tuple(
-            _ArticulationBinding(registration=registration, layout=layout)
-            for registration, layout in zip(registrations, layouts, strict=True)
-        )
-        return cls(generation, bindings, stores)
+        candidate = cls(generation, (), stores)
+        try:
+            for store in stores.values():
+                store.allocate(layouts, device=registrations[0].control.device)
+            candidate.bindings = tuple(
+                _ArticulationBinding(registration=registration, layout=layout)
+                for registration, layout in zip(registrations, layouts, strict=True)
+            )
+        except Exception:
+            candidate.close()
+            raise
+        return candidate
 
     def validate(self) -> None:
         """Validate candidate bindings without reading public facades."""
@@ -157,6 +164,12 @@ class _CollectionGeneration:
             store._mapping_proxies.clear()
             store._initialization_buffers.clear()
         self.stores.clear()
+
+
+def _binding_context(binding: _ArticulationBinding) -> str:
+    """Describe the articulation groups involved in a binding failure."""
+    groups = ", ".join(f"{group.name} ({group.actuator_type.__name__})" for group in binding.layout.group_layouts)
+    return f"articulation {binding.registration.key!r}; actuator groups: {groups or '<none>'}"
 
 
 class ActuatorCollection(Mapping[str, ActuatorBase]):
@@ -251,7 +264,6 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._next_generation = 0
         self._dirty = False
         self._closed = False
-        self._invalidated_registrations: set[int] = set()
         self._deprecated_staged_topology_overrides: dict[object, object] = {}
 
     def register_articulation(
@@ -321,8 +333,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 try:
                     binding.registration.control.prepare_actuator_binding(binding)
                 except Exception as error:
-                    error.add_note(f"Failed to prepare actuator binding for {binding.registration.key!r}.")
-                    raise
+                    raise type(error)(f"Failed to prepare {_binding_context(binding)}: {error}") from error
         except Exception as error:
             if candidate is not None:
                 candidate.close()
@@ -337,14 +348,16 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 try:
                     binding.registration.control.bind_actuator_view(self._views[binding.registration.key])
                 except Exception as error:
-                    error.add_note(f"Failed to bind actuator view for {binding.registration.key!r}.")
-                    raise
+                    raise type(error)(
+                        f"Failed to bind actuator view for {_binding_context(binding)}: {error}"
+                    ) from error
             for binding in candidate.bindings:
                 try:
                     binding.registration.control.complete_articulation_initialization()
                 except Exception as error:
-                    error.add_note(f"Failed to complete actuator initialization for {binding.registration.key!r}.")
-                    raise
+                    raise type(error)(
+                        f"Failed to complete actuator initialization for {_binding_context(binding)}: {error}"
+                    ) from error
         except Exception as error:
             self._active_generation = None
             self._invalidate_pending(error, failure="finalization failed")
@@ -355,10 +368,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
     def _invalidate_pending(self, error: Exception, *, failure: str) -> None:
         for registration in self._registrations:
-            registration_id = id(registration)
-            if registration_id not in self._invalidated_registrations:
-                self._invalidated_registrations.add(registration_id)
-                registration.control.invalidate_actuator_view()
+            registration.control.invalidate_actuator_view()
             self._views[registration.key]._invalidate(failure)
 
     def clear_generation(self) -> None:
@@ -367,17 +377,13 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._active_generation = None
         self._dirty = False
         for registration in self._registrations:
-            registration_id = id(registration)
-            if registration_id not in self._invalidated_registrations:
-                self._invalidated_registrations.add(registration_id)
-                registration.control.invalidate_actuator_view()
+            registration.control.invalidate_actuator_view()
             self._views[registration.key]._invalidate("stale actuator view")
         if active is not None:
             active.close()
         self._next_generation += 1
         self._registrations.clear()
         self._views.clear()
-        self._invalidated_registrations.clear()
 
     def close(self) -> None:
         """Permanently close this manager and reject later registration."""
