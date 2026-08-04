@@ -969,9 +969,28 @@ def test_native_group_parameter_write_delegates_without_affecting_ordinary_group
     """Catch native discovery metadata that is discarded before scoped writes reach the control bridge."""
 
     class _NativeControl(_Control):
+        def __init__(self) -> None:
+            super().__init__()
+            self.backend_stiffness = torch.ones((2, 3))
+
         def discover_native_actuators(self, cfgs) -> set[str]:
             assert tuple(cfgs) == ("native", "ordinary")
             return {"native"}
+
+        def write_actuator_parameter(self, name, write) -> None:
+            super().write_actuator_parameter(name, write)
+            if name != "stiffness" or write.backend_owner_slots is None:
+                return
+            owners = write.backend_owner_slots.tolist()
+            if write.group_binding is not None:
+                binding = write.group_binding
+                for local_slot, articulation_slot in enumerate(binding.joint_indices.tolist()):
+                    if owners[articulation_slot] == binding.type_slice.start + local_slot:
+                        self.backend_stiffness[:, articulation_slot] = write.value[:, local_slot]
+                return
+            for articulation_slot, owner_slot in enumerate(owners):
+                if owner_slot >= 0:
+                    self.backend_stiffness[:, articulation_slot] = write.value[:, owner_slot]
 
     collection = ActuatorCollection(_Simulation())
     control = _NativeControl()
@@ -989,8 +1008,40 @@ def test_native_group_parameter_write_delegates_without_affecting_ordinary_group
     assert control.parameter_writes == []
     view["native"].set_parameter_index("stiffness", 7.0)
     assert control.parameter_writes[-1][0] == "stiffness"
-    view.by_type[IdealPDActuator].set_parameter_mask("stiffness", 11.0)
+    assert control.parameter_writes[-1][1].backend_owner_slots is not None
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 7.0))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
+    view["native"].set_parameter_mask("stiffness", 9.0)
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 9.0))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
+    view.by_type[IdealPDActuator].set_parameter_index("stiffness", 11.0, joint_ids=torch.tensor([0, 1]))
     assert control.parameter_writes[-1][0] == "stiffness"
+    assert control.parameter_writes[-1][1].backend_owner_slots is not None
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 11.0))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
+    view.by_type[IdealPDActuator].set_parameter_mask("stiffness", 13.0)
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 13.0))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
+
+
+def test_native_discovery_rejects_unknown_actuator_group() -> None:
+    """Catch control bridges that return native actuator names absent from the configuration."""
+
+    class _InvalidNativeControl(_Control):
+        def discover_native_actuators(self, cfgs) -> set[str]:
+            del cfgs
+            return {"missing"}
+
+    collection = ActuatorCollection(_Simulation())
+    with pytest.raises(ValueError, match="unknown group.*'missing'"):
+        collection.register_articulation(
+            key="robot",
+            cfgs={"hip": _ideal_cfg(["hip"])},
+            control=_InvalidNativeControl(),
+            replication_cfg_id=1,
+            debug_validation=False,
+            debug_value_resolution=False,
+        )
 
 
 @pytest.mark.parametrize("device", _available_devices())
@@ -1034,31 +1085,47 @@ def test_type_parameter_mask_forwards_csr_owner_metadata() -> None:
     assert write.backend_owner_slots is not None
 
 
-def test_overlapping_implicit_parameter_writes_update_only_configuration_owner() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_overlapping_implicit_parameter_writes_update_only_configuration_owner(device: str) -> None:
     """Catch backend routing that lets a non-owner overlapping implicit group overwrite a solver drive."""
 
     class _StatefulControl(_Control):
-        def __init__(self) -> None:
-            super().__init__()
-            self.backend_stiffness = torch.ones((2, 3))
+        def __init__(self, device: str) -> None:
+            super().__init__(device)
+            self.backend_stiffness = torch.ones((2, 3), device=device)
 
         def write_actuator_parameter(self, name, write) -> None:
             super().write_actuator_parameter(name, write)
             if name != "stiffness" or write.backend_owner_slots is None:
                 return
             owners = write.backend_owner_slots.tolist()
+            env_selected = torch.ones(2, dtype=torch.bool, device=self.device)
+            joint_selected = torch.ones(3, dtype=torch.bool, device=self.device)
+            if write.env_ids is not None:
+                env_selected[:] = False
+                env_selected[write.env_ids] = True
+            if write.joint_ids is not None:
+                joint_selected[:] = False
+                joint_selected[write.joint_ids] = True
+            if write.env_mask is not None:
+                env_selected &= write.env_mask
+            if write.joint_mask is not None:
+                joint_selected &= write.joint_mask
             if write.group_binding is not None:
                 binding = write.group_binding
                 for local_slot, articulation_slot in enumerate(binding.joint_indices.tolist()):
-                    if owners[articulation_slot] == binding.type_slice.start + local_slot:
-                        self.backend_stiffness[:, articulation_slot] = write.value[:, local_slot]
+                    if (
+                        joint_selected[articulation_slot]
+                        and owners[articulation_slot] == binding.type_slice.start + local_slot
+                    ):
+                        self.backend_stiffness[env_selected, articulation_slot] = write.value[env_selected, local_slot]
                 return
             for articulation_slot, owner_slot in enumerate(owners):
-                if owner_slot >= 0:
-                    self.backend_stiffness[:, articulation_slot] = write.value[:, owner_slot]
+                if joint_selected[articulation_slot] and owner_slot >= 0:
+                    self.backend_stiffness[env_selected, articulation_slot] = write.value[env_selected, owner_slot]
 
-    collection = ActuatorCollection(_Simulation())
-    control = _StatefulControl()
+    collection = ActuatorCollection(_Simulation(device))
+    control = _StatefulControl(device)
     view = collection.register_articulation(
         key="robot",
         cfgs={"first": _implicit_cfg(["hip", "knee"]), "last": _implicit_cfg(["knee", "ankle"])},
@@ -1069,17 +1136,37 @@ def test_overlapping_implicit_parameter_writes_update_only_configuration_owner()
     )
     collection.finalize()
 
-    view["first"].set_parameter_index("stiffness", 5.0, joint_ids=torch.tensor([1]))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2))
-    view["last"].set_parameter_index("stiffness", 17.0, joint_ids=torch.tensor([1]))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 17.0))
-    view["first"].set_parameter_mask("stiffness", 5.0, joint_mask=torch.tensor([False, True, False]))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 17.0))
-    view["last"].set_parameter_mask("stiffness", 19.0, joint_mask=torch.tensor([False, True, False]))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 19.0))
-    view.by_type[ImplicitActuator].set_parameter_index("stiffness", 21.0, joint_ids=torch.tensor([1]))
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 21.0))
+    view["first"].set_parameter_index("stiffness", 5.0, joint_ids=torch.tensor([1], device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2, device=device))
+    view["last"].set_parameter_index("stiffness", 17.0, joint_ids=torch.tensor([1], device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 17.0, device=device))
+    view["first"].set_parameter_mask("stiffness", 5.0, joint_mask=torch.tensor([False, True, False], device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 17.0, device=device))
+    view["last"].set_parameter_mask("stiffness", 19.0, joint_mask=torch.tensor([False, True, False], device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 19.0, device=device))
+    view.by_type[ImplicitActuator].set_parameter_index("stiffness", 21.0, joint_ids=torch.tensor([1], device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 21.0, device=device))
     view.by_type[ImplicitActuator].set_parameter_mask(
-        "stiffness", torch.tensor([1.0, 9.0, 23.0, 3.0]), joint_mask=torch.tensor([False, True, False])
+        "stiffness",
+        torch.tensor([1.0, 9.0, 23.0, 3.0], device=device),
+        joint_mask=torch.tensor([False, True, False], device=device),
     )
-    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 23.0))
+    torch.testing.assert_close(control.backend_stiffness[:, 1], torch.full((2,), 23.0, device=device))
+    canonical_before = view.by_type[ImplicitActuator].parameters["stiffness"].torch.clone()
+    backend_before = control.backend_stiffness.clone()
+    view.by_type[ImplicitActuator].set_parameter_index(
+        "stiffness",
+        torch.empty((0, 0), dtype=torch.float32, device=device),
+        env_ids=torch.empty(0, dtype=torch.int32, device=device),
+        joint_ids=torch.empty(0, dtype=torch.int32, device=device),
+    )
+    torch.testing.assert_close(view.by_type[ImplicitActuator].parameters["stiffness"].torch, canonical_before)
+    torch.testing.assert_close(control.backend_stiffness, backend_before)
+    view.by_type[ImplicitActuator].set_parameter_mask(
+        "stiffness",
+        31.0,
+        env_mask=torch.zeros(2, dtype=torch.bool, device=device),
+        joint_mask=torch.zeros(3, dtype=torch.bool, device=device),
+    )
+    torch.testing.assert_close(view.by_type[ImplicitActuator].parameters["stiffness"].torch, canonical_before)
+    torch.testing.assert_close(control.backend_stiffness, backend_before)

@@ -705,22 +705,33 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 type(groups[name]) for name in binding.registration.native_group_names if name in groups
             }
             self._backend_owner_slots: dict[tuple[type[ActuatorBase], str], torch.Tensor] = {}
-            for actuator_type, type_layout in binding.layout.type_layouts.items():
-                if not issubclass(actuator_type, ImplicitActuator):
-                    continue
-                for field_name in ("stiffness", "damping"):
-                    owners = torch.full((binding.layout.num_joints,), -1, dtype=torch.int32, device=device)
+            for actuator_type in binding.layout.type_layouts:
+                schema_fields = actuator_type._parameter_schema().parameter_names
+                backend_fields = set()
+                if issubclass(actuator_type, ImplicitActuator):
+                    backend_fields.update(("stiffness", "damping"))
+                for group_layout in binding.layout.group_layouts:
+                    if (
+                        group_layout.actuator_type is actuator_type
+                        and group_layout.name in binding.registration.native_group_names
+                    ):
+                        backend_fields.update(schema_fields)
+                for field_name in backend_fields:
+                    owner_values = [-1] * binding.layout.num_joints
                     for group_layout in binding.layout.group_layouts:
-                        if group_layout.actuator_type is not actuator_type:
-                            continue
-                        local_slots = torch.arange(
-                            group_layout.type_slice.start,
-                            group_layout.type_slice.stop,
-                            dtype=torch.int32,
-                            device=device,
+                        is_implicit_drive = issubclass(actuator_type, ImplicitActuator) and field_name in {
+                            "stiffness",
+                            "damping",
+                        }
+                        is_native_field = (
+                            group_layout.name in binding.registration.native_group_names and field_name in schema_fields
                         )
-                        owners[torch.tensor(group_layout.joint_indices, dtype=torch.long, device=device)] = local_slots
-                    self._backend_owner_slots[(actuator_type, field_name)] = owners
+                        if group_layout.actuator_type is actuator_type and (is_implicit_drive or is_native_field):
+                            for local_slot, articulation_slot in enumerate(group_layout.joint_indices):
+                                owner_values[articulation_slot] = group_layout.type_slice.start + local_slot
+                    self._backend_owner_slots[(actuator_type, field_name)] = torch.tensor(
+                        owner_values, dtype=torch.int32, device=device
+                    )
 
         def _write_group_parameter_index(
             self,
