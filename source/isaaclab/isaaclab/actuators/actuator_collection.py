@@ -658,26 +658,37 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._all_env_ids = torch.arange(binding.layout.num_worlds, dtype=torch.int32, device=device)
             self._all_env_mask = torch.ones(binding.layout.num_worlds, dtype=torch.bool, device=device)
             self._all_joint_mask = torch.ones(binding.layout.num_joints, dtype=torch.bool, device=device)
-            self._last_index_occurrences = torch.full(
-                (binding.layout.num_worlds, binding.layout.num_joints), -1, dtype=torch.int32, device=device
-            )
+            self._last_env_positions = torch.full((binding.layout.num_worlds,), -1, dtype=torch.int32, device=device)
+            self._last_joint_positions = torch.full((binding.layout.num_joints,), -1, dtype=torch.int32, device=device)
+            self._last_env_positions_wp = wp.from_torch(self._last_env_positions, dtype=wp.int32)
+            self._last_joint_positions_wp = wp.from_torch(self._last_joint_positions, dtype=wp.int32)
             self._parameter_default_joint_ids: dict[int, torch.Tensor] = {}
+            self._parameter_default_joint_ids_wp: dict[int, wp.array] = {}
+            self._scope_joint_ids_wp: dict[int, wp.array] = {}
             self._group_inverse_lookups: dict[int, torch.Tensor] = {}
+            self._group_inverse_lookups_wp: dict[int, wp.array] = {}
             for group in groups.values():
                 group_binding = group.__dict__.get("_parameter_binding")
                 if group_binding is not None:
-                    self._parameter_default_joint_ids[id(group_binding.joint_indices)] = torch.arange(
+                    scope_key = id(group_binding.joint_indices)
+                    self._scope_joint_ids_wp[scope_key] = wp.from_torch(group_binding.joint_indices, dtype=wp.int32)
+                    default_joint_ids = torch.arange(
                         group_binding.joint_indices.shape[0], dtype=torch.int32, device=device
                     )
+                    self._parameter_default_joint_ids[scope_key] = default_joint_ids
+                    self._parameter_default_joint_ids_wp[scope_key] = wp.from_torch(default_joint_ids, dtype=wp.int32)
                     inverse = torch.full((binding.layout.num_joints,), -1, dtype=torch.int32, device=device)
                     inverse[group_binding.joint_indices.to(dtype=torch.long)] = torch.arange(
                         group_binding.joint_indices.shape[0], dtype=torch.int32, device=device
                     )
                     self._group_inverse_lookups[id(group_binding)] = inverse
+                    self._group_inverse_lookups_wp[id(group_binding)] = wp.from_torch(inverse, dtype=wp.int32)
             for type_view in type_views.values():
-                self._parameter_default_joint_ids[id(type_view._joint_indices)] = torch.arange(
-                    type_view._joint_indices.shape[0], dtype=torch.int32, device=device
-                )
+                scope_key = id(type_view._joint_indices)
+                self._scope_joint_ids_wp[scope_key] = wp.from_torch(type_view._joint_indices, dtype=wp.int32)
+                default_joint_ids = torch.arange(type_view._joint_indices.shape[0], dtype=torch.int32, device=device)
+                self._parameter_default_joint_ids[scope_key] = default_joint_ids
+                self._parameter_default_joint_ids_wp[scope_key] = wp.from_torch(default_joint_ids, dtype=wp.int32)
             self._debug_validation = binding.registration.debug_validation
             self._control = binding.registration.control
             self._native_group_binding_ids = {
@@ -795,10 +806,13 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             env_selector_wp = wp.from_torch(
                 env_selector, dtype=wp.int32 if env_selector.dtype is torch.int32 else wp.int64
             )
-            joint_selector_wp = wp.from_torch(
-                joint_selector, dtype=wp.int32 if joint_selector.dtype is torch.int32 else wp.int64
-            )
-            scope_joint_ids_wp = wp.from_torch(scope_joint_ids, dtype=wp.int32)
+            if joint_ids is None:
+                joint_selector_wp = self._parameter_default_joint_ids_wp[id(scope_joint_ids)]
+            else:
+                joint_selector_wp = wp.from_torch(
+                    joint_selector, dtype=wp.int32 if joint_selector.dtype is torch.int32 else wp.int64
+                )
+            scope_joint_ids_wp = self._scope_joint_ids_wp[id(scope_joint_ids)]
             type_scope = csr_offsets is not None and csr_slots is not None
             group_scope = group_inverse is not None
             num_candidates = max_csr_fanout if explicit_joint_ids and type_scope else scope_joint_ids.shape[0]
@@ -806,19 +820,24 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 num_candidates = 1
             if not explicit_joint_ids:
                 num_candidates = 1
-            last_occurrences_wp = wp.from_torch(self._last_index_occurrences, dtype=wp.int32)
+            self._last_env_positions.fill_(-1)
+            wp.launch(
+                actuator_kernels.record_last_scoped_parameter_position,
+                dim=env_selector.shape[0],
+                inputs=[env_selector_wp, self._all_env_ids.shape[0]],
+                outputs=[self._last_env_positions_wp],
+                device=target.warp.device,
+            )
             if explicit_joint_ids:
-                self._last_index_occurrences.fill_(-1)
+                self._last_joint_positions.fill_(-1)
                 wp.launch(
-                    actuator_kernels.record_last_scoped_parameter_index,
-                    dim=(env_selector.shape[0], joint_selector.shape[0]),
+                    actuator_kernels.record_last_scoped_parameter_position,
+                    dim=joint_selector.shape[0],
                     inputs=[
-                        env_selector_wp,
                         joint_selector_wp,
-                        self._all_env_ids.shape[0],
                         self._all_joint_mask.shape[0],
                     ],
-                    outputs=[last_occurrences_wp],
+                    outputs=[self._last_joint_positions_wp],
                     device=target.warp.device,
                 )
             wp.launch(
@@ -831,8 +850,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     scope_joint_ids_wp,
                     None if csr_offsets is None else csr_offsets.warp,
                     None if csr_slots is None else csr_slots.warp,
-                    None if group_inverse is None else wp.from_torch(group_inverse, dtype=wp.int32),
-                    last_occurrences_wp,
+                    None if group_inverse is None else self._group_inverse_lookups_wp[id(group_binding)],
+                    self._last_env_positions_wp,
+                    self._last_joint_positions_wp,
                     self._all_env_ids.shape[0],
                     self._all_joint_mask.shape[0],
                     explicit_joint_ids,

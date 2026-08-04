@@ -63,19 +63,16 @@ def write_2d_float_with_mask(
 
 
 @wp.kernel(enable_backward=False)
-def record_last_scoped_parameter_index(
-    env_ids: wp.array(dtype=Any),
-    joint_ids: wp.array(dtype=Any),
-    num_worlds: int,
-    num_articulation_joints: int,
-    last_occurrences: wp.array2d(dtype=wp.int32),
+def record_last_scoped_parameter_position(
+    ids: wp.array(dtype=Any),
+    upper_bound: int,
+    last_positions: wp.array(dtype=wp.int32),
 ):
-    """Record the final Cartesian selector occurrence for each articulation destination."""
-    env_i, joint_i = wp.tid()
-    env_id = env_ids[env_i]
-    joint_id = joint_ids[joint_i]
-    if env_id >= 0 and env_id < num_worlds and joint_id >= 0 and joint_id < num_articulation_joints:
-        wp.atomic_max(last_occurrences, env_id, joint_id, env_i * joint_ids.shape[0] + joint_i)
+    """Record the final selected position for each bounded signed selector id."""
+    position = wp.tid()
+    selector_id = ids[position]
+    if selector_id >= 0 and selector_id < upper_bound:
+        wp.atomic_max(last_positions, selector_id, position)
 
 
 @wp.kernel(enable_backward=False)
@@ -87,7 +84,8 @@ def write_scoped_parameter_index(
     csr_offsets: wp.array(dtype=wp.int32),
     csr_slots: wp.array(dtype=wp.int32),
     group_inverse: wp.array(dtype=wp.int32),
-    last_occurrences: wp.array2d(dtype=wp.int32),
+    last_env_positions: wp.array(dtype=wp.int32),
+    last_joint_positions: wp.array(dtype=wp.int32),
     num_worlds: int,
     num_articulation_joints: int,
     explicit_joint_ids: bool,
@@ -125,15 +123,14 @@ def write_scoped_parameter_index(
             slot = candidate_i
             if scope_joint_ids[slot] != articulation_joint_id:
                 return
-        if last_occurrences[env_id, wp.int32(articulation_joint_id)] != env_i * joint_ids.shape[0] + joint_i:
+        if last_env_positions[env_id] != env_i or last_joint_positions[wp.int32(articulation_joint_id)] != joint_i:
             return
     else:
         if candidate_i != 0:
             return
         slot = joint_i
-        for later_env_i in range(env_i, env_ids.shape[0]):
-            if env_ids[later_env_i] == env_id and later_env_i > env_i:
-                return
+        if last_env_positions[env_id] != env_i:
+            return
 
     if value_mode == 0:
         target[env_id, slot] = source[0, 0]
