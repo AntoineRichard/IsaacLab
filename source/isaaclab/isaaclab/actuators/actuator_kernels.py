@@ -70,10 +70,12 @@ def write_scoped_parameter_index(
     scope_joint_ids: wp.array(dtype=wp.int32),
     csr_offsets: wp.array(dtype=wp.int32),
     csr_slots: wp.array(dtype=wp.int32),
+    group_inverse: wp.array(dtype=wp.int32),
     num_worlds: int,
     num_articulation_joints: int,
     explicit_joint_ids: bool,
     type_scope: bool,
+    group_scope: bool,
     value_mode: int,
     target: wp.array2d(dtype=wp.float32),
 ):
@@ -98,6 +100,10 @@ def write_scoped_parameter_index(
             if compact_i >= csr_offsets[csr_joint_id + wp.int32(1)]:
                 return
             slot = csr_slots[compact_i]
+        elif group_scope:
+            slot = group_inverse[wp.int32(articulation_joint_id)]
+            if slot < 0:
+                return
         else:
             slot = candidate_i
             if scope_joint_ids[slot] != articulation_joint_id:
