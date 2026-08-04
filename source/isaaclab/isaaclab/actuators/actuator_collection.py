@@ -11,7 +11,7 @@ import copy
 import logging
 import warnings
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -25,10 +25,17 @@ from isaaclab.utils.warp.launch_cache import _WarpLaunchCache
 from . import actuator_kernels
 from .actuator_base import ActuatorBase
 from .actuator_base_cfg import ActuatorBaseCfg
-from .actuator_control import ActuatorControl, _ActuatorParameterWrite
+from .actuator_control import (
+    ActuatorControl,
+    ActuatorJointProperties,
+    _ActuatorParameterWrite,
+    _ResolvedSolverProperties,
+    _ResolvedSolverProperty,
+)
 from .actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
 from .actuator_storage import (
     _ArticulationLayout,
+    _BackendParameterStaging,
     _build_articulation_layout,
     _GroupBinding,
     _GroupRegistration,
@@ -38,6 +45,7 @@ from .actuator_storage import (
     _GuardedValuesView,
     _JointDomainStore,
     _PrototypeRegistration,
+    _SolverPropertyStore,
     _TypedStore,
 )
 
@@ -53,6 +61,16 @@ def _copy_actuator_cfg(cfg: ActuatorBaseCfg) -> ActuatorBaseCfg:
     if callable(copy_method):
         return copy_method()
     return copy.deepcopy(cfg)
+
+
+def _clone_source_assignment(clone_plan: Any, replication_cfg_id: int) -> object | None:
+    """Return clone-plan source metadata without coupling consumers to its storage shape."""
+    for accessor_name in ("get_source_assignment", "source_assignment"):
+        accessor = getattr(clone_plan, accessor_name, None)
+        if callable(accessor):
+            return accessor(replication_cfg_id)
+    assignments = getattr(clone_plan, "_source_assignments", None)
+    return None if assignments is None else assignments.get(replication_cfg_id)
 
 
 class _GuardedDictFromKeys:
@@ -88,6 +106,18 @@ class _ArticulationBinding:
 
     registration: _ArticulationRegistration
     layout: _ArticulationLayout
+    backend_parameter_staging: _BackendParameterStaging | None = None
+
+
+@dataclass(frozen=True)
+class _ManagedGroupResolution:
+    """Source-bounded exact-class resolution retained by one candidate group."""
+
+    configuration_index: int
+    native_managed: bool
+    source_env_ids: torch.Tensor
+    resolved: Any
+    backend_binding_metadata: Mapping[str, Any]
 
 
 class _SelectorState:
@@ -126,21 +156,31 @@ class _SelectorState:
             ):
                 fields.update(actuator_type._parameter_schema().parameter_names)
             backend_routes.extend((actuator_type, field) for field in sorted(fields))
+
+        winner_by_field: dict[str, list[tuple[type[ActuatorBase], int] | None]] = {
+            field: [None] * layout.num_joints for _, field in backend_routes
+        }
+        for group_layout in layout.group_layouts:
+            fields: set[str] = set()
+            if issubclass(group_layout.actuator_type, ImplicitActuator):
+                fields.update(("stiffness", "damping"))
+            if group_layout.name in binding.registration.native_group_names:
+                fields.update(group_layout.actuator_type._parameter_schema().parameter_names)
+            for field in fields:
+                winners = winner_by_field.get(field)
+                if winners is None:
+                    continue
+                for local_slot, joint_id in enumerate(group_layout.joint_indices):
+                    winners[joint_id] = (group_layout.actuator_type, group_layout.type_slice.start + local_slot)
+
         owner_rows_by_policy: dict[tuple[type[ActuatorBase], str], int] = {}
         owner_row_values: list[list[int]] = []
         for route in backend_routes:
             actuator_type, field = route
             owners = [-1] * layout.num_joints
-            for group_layout in layout.group_layouts:
-                is_implicit_drive = issubclass(actuator_type, ImplicitActuator) and field in {"stiffness", "damping"}
-                is_native_field = (
-                    group_layout.name in binding.registration.native_group_names
-                    and group_layout.actuator_type is actuator_type
-                    and field in actuator_type._parameter_schema().parameter_names
-                )
-                if group_layout.actuator_type is actuator_type and (is_implicit_drive or is_native_field):
-                    for local_slot, joint_id in enumerate(group_layout.joint_indices):
-                        owners[joint_id] = group_layout.type_slice.start + local_slot
+            for joint_id, winner in enumerate(winner_by_field[field]):
+                if winner is not None and winner[0] is actuator_type:
+                    owners[joint_id] = winner[1]
             owner_row = next((index for index, values in enumerate(owner_row_values) if values == owners), None)
             if owner_row is None:
                 owner_row = len(owner_row_values)
@@ -320,13 +360,18 @@ class _CollectionGeneration:
         bindings: tuple[_ArticulationBinding, ...],
         stores: dict[type, _TypedStore],
         joint_store: _JointDomainStore,
+        managed_group_resolutions: Mapping[tuple[object, str], _ManagedGroupResolution],
     ) -> None:
         self.generation = generation
         self.bindings = bindings
         self.stores = stores
         self.joint_store = joint_store
+        self.solver_store = _SolverPropertyStore()
+        self.managed_group_resolutions = dict(managed_group_resolutions)
         self.groups: dict[object, dict[str, ActuatorBase]] = {}
         self.selector_states: dict[object, _SelectorState] = {}
+        self.backend_parameter_staging: dict[object, _BackendParameterStaging] = {}
+        self._solver_properties_written: list[_ArticulationBinding] = []
 
     @classmethod
     def build(
@@ -338,30 +383,187 @@ class _CollectionGeneration:
         clone_plan: ClonePlan | None = sim_context.get_clone_plan()
         if clone_plan is None:
             raise RuntimeError("Actuator collection finalization requires a published clone plan.")
+        candidate_device = torch.device(registrations[0].control.device)
+        if any(torch.device(registration.control.device) != candidate_device for registration in registrations[1:]):
+            raise ValueError("All actuator registrations in one simulation must use the same device.")
 
         layouts: list[_ArticulationLayout] = []
+        managed_group_resolutions: dict[tuple[object, str], _ManagedGroupResolution] = {}
         type_offsets: dict[type[ActuatorBase], int] = {}
         for registration in registrations:
             try:
+                source_transport = getattr(
+                    registration.control, "resolved_solver_property_transport", lambda: "device"
+                )()
+                if source_transport not in {"cpu", "device"}:
+                    raise ValueError(f"Unsupported solver-property transport {source_transport!r}.")
+                clone_metadata = _clone_source_assignment(clone_plan, registration.replication_cfg_id)
+                source_slot_by_backend_row: torch.Tensor | None = None
+                layout_assignment: torch.Tensor | None = None
+                layout_source_columns: torch.Tensor | None = None
+                layout_num_worlds: int | None = None
+                if clone_metadata is None:
+                    prototype_rows = clone_plan.cfg_rows[registration.replication_cfg_id]
+                    prototype_row_indices = torch.tensor(
+                        prototype_rows,
+                        dtype=torch.long,
+                        device=clone_plan.clone_mask.device,
+                    )
+                    source_mask = clone_plan.clone_mask[prototype_row_indices]
+                    source_env_ids = torch.argmax(source_mask.to(dtype=torch.int32), dim=1).to(dtype=torch.int64)
+                else:
+                    if clone_metadata.local_source_slots.device.type != "cpu":
+                        raise ValueError("Clone-plan local source slots must be host-resident.")
+                    active_source_slots = clone_metadata.local_source_slots[clone_metadata.local_source_slots >= 0]
+                    if active_source_slots.shape != (registration.control.num_instances,):
+                        raise ValueError(
+                            "Clone-plan local source slots must contain one active entry per backend articulation row."
+                        )
+                    prototype_rows = tuple(int(row) for row in clone_metadata.used_rows.tolist())
+                    source_slot_by_backend_row = active_source_slots.to(dtype=torch.int64)
+                    backend_rows = torch.arange(registration.control.num_instances, dtype=torch.int64)
+                    source_env_ids_cpu = torch.full(
+                        (len(prototype_rows),),
+                        registration.control.num_instances,
+                        dtype=torch.int64,
+                    )
+                    source_env_ids_cpu.scatter_reduce_(
+                        0,
+                        source_slot_by_backend_row,
+                        backend_rows,
+                        reduce="amin",
+                        include_self=True,
+                    )
+                    if torch.any(source_env_ids_cpu == registration.control.num_instances):
+                        raise ValueError("Clone-plan source slots omit a compact source row.")
+                    layout_num_worlds = registration.control.num_instances
+                    layout_assignment = source_slot_by_backend_row.to(
+                        device=candidate_device,
+                        dtype=torch.int32,
+                    )
+                    layout_source_columns = source_env_ids_cpu.to(device=candidate_device)
+                    source_env_ids = (
+                        source_env_ids_cpu
+                        if source_transport == "cpu"
+                        else source_env_ids_cpu.to(device=candidate_device)
+                    )
                 groups: list[_GroupRegistration] = []
-                for name, cfg in registration.cfgs.items():
+                source_resolved = hasattr(registration.control, "get_source_joint_properties")
+                solver_default_values: dict[str, torch.Tensor] = {}
+                source_defaults: ActuatorJointProperties | None = None
+                if registration.control.num_joints and source_resolved:
+                    all_joint_ids = torch.arange(
+                        registration.control.num_joints,
+                        dtype=torch.int32,
+                        device="cpu" if source_transport == "cpu" else registration.control.device,
+                    )
+                    source_defaults = registration.control.get_source_joint_properties(all_joint_ids, source_env_ids)
+                    solver_default_values = {
+                        "stiffness": source_defaults.stiffness,
+                        "damping": source_defaults.damping,
+                        "effort_limit_sim": source_defaults.effort_limit,
+                        "velocity_limit_sim": source_defaults.velocity_limit,
+                        "armature": source_defaults.armature,
+                        "friction": source_defaults.friction,
+                        "dynamic_friction": source_defaults.dynamic_friction,
+                        "viscous_friction": source_defaults.viscous_friction,
+                    }
+                for configuration_index, (name, cfg) in enumerate(registration.cfgs.items()):
                     joint_ids, joint_names = registration.control.find_joints(cfg.joint_names_expr)
                     if not joint_names:
                         actuator_type = cfg.class_type
                         raise ValueError(f"{actuator_type.__name__} actuator group {name!r} resolved no joints.")
                     if isinstance(joint_ids, ProxyArray):
                         joint_indices = tuple(int(index) for index in joint_ids.torch.tolist())
+                        joint_index_tensor = joint_ids.torch
                     elif isinstance(joint_ids, torch.Tensor):
                         joint_indices = tuple(int(index) for index in joint_ids.tolist())
+                        joint_index_tensor = joint_ids
                     else:
                         joint_indices = tuple(int(index) for index in joint_ids)
+                        joint_index_tensor = torch.tensor(
+                            joint_indices, dtype=torch.int32, device=registration.control.device
+                        )
+                    source_values: Mapping[str, torch.Tensor] = {}
+                    solver_values: Mapping[str, torch.Tensor] = {}
+                    resolved = None
+                    actuator_type = cfg.class_type
+                    if (
+                        isinstance(actuator_type, type)
+                        and actuator_type.__dict__.get("_parameter_schema") is not None
+                        and hasattr(registration.control, "get_source_joint_properties")
+                    ):
+                        public_joint_indices: slice | torch.Tensor
+                        if joint_indices == tuple(range(registration.control.num_joints)):
+                            public_joint_indices = slice(None)
+                        else:
+                            public_joint_indices = joint_index_tensor
+                        if source_defaults is None:
+                            raise RuntimeError("Managed source resolution requires articulation source defaults.")
+                        source_joint_ids = torch.tensor(
+                            joint_indices,
+                            dtype=torch.long,
+                            device=source_defaults.stiffness.device,
+                        )
+                        source_properties = ActuatorJointProperties(
+                            stiffness=source_defaults.stiffness.index_select(1, source_joint_ids),
+                            damping=source_defaults.damping.index_select(1, source_joint_ids),
+                            armature=source_defaults.armature.index_select(1, source_joint_ids),
+                            friction=source_defaults.friction.index_select(1, source_joint_ids),
+                            dynamic_friction=source_defaults.dynamic_friction.index_select(1, source_joint_ids),
+                            viscous_friction=source_defaults.viscous_friction.index_select(1, source_joint_ids),
+                            effort_limit=source_defaults.effort_limit.index_select(1, source_joint_ids),
+                            velocity_limit=source_defaults.velocity_limit.index_select(1, source_joint_ids),
+                        )
+                        resolved = actuator_type._resolve_managed_registration(
+                            cfg=_copy_actuator_cfg(cfg),
+                            joint_names=list(joint_names),
+                            joint_indices=public_joint_indices,
+                            defaults_by_source=source_properties,
+                            debug_value_resolution=registration.debug_value_resolution,
+                        )
+                        source_values = resolved.source_values
+                        is_solver_implicit = (
+                            issubclass(actuator_type, ImplicitActuator) and name not in registration.native_group_names
+                        )
+                        solver_values = {
+                            "stiffness": (
+                                resolved.source_shell.stiffness
+                                if is_solver_implicit
+                                else torch.zeros_like(resolved.source_shell.stiffness)
+                            ),
+                            "damping": (
+                                resolved.source_shell.damping
+                                if is_solver_implicit
+                                else torch.zeros_like(resolved.source_shell.damping)
+                            ),
+                            "effort_limit_sim": resolved.source_shell.effort_limit_sim,
+                            "velocity_limit_sim": resolved.source_shell.velocity_limit_sim,
+                            "armature": resolved.source_shell.armature,
+                            "friction": resolved.source_shell.friction,
+                            "dynamic_friction": resolved.source_shell.dynamic_friction,
+                            "viscous_friction": resolved.source_shell.viscous_friction,
+                        }
+                        managed_group_resolutions[(registration.key, name)] = _ManagedGroupResolution(
+                            configuration_index=configuration_index,
+                            native_managed=name in registration.native_group_names,
+                            source_env_ids=source_env_ids,
+                            resolved=resolved,
+                            backend_binding_metadata={
+                                "actuator_type": actuator_type,
+                                "parameter_names": actuator_type._parameter_schema().parameter_names,
+                            },
+                        )
                     groups.append(
                         _GroupRegistration(
                             name=name,
-                            actuator_type=cfg.class_type,
+                            actuator_type=actuator_type,
                             joint_indices=joint_indices,
                             values={},
                             joint_names=tuple(joint_names),
+                            source_values=source_values,
+                            solver_values=solver_values,
+                            resolved=resolved,
                         ),
                     )
                 layouts.append(
@@ -373,9 +575,17 @@ class _CollectionGeneration:
                                 registration_key=registration.key,
                                 num_joints=registration.control.num_joints,
                                 groups=tuple(groups),
+                                source_resolved=source_resolved,
+                                solver_default_values=solver_default_values,
                             ),
                         ),
                         type_offsets=type_offsets,
+                        prototype_rows=prototype_rows,
+                        prototype_assignment=layout_assignment,
+                        prototype_source_columns=layout_source_columns,
+                        source_slot_by_backend_row=source_slot_by_backend_row,
+                        num_worlds=layout_num_worlds,
+                        clone_plan_metadata=clone_metadata,
                     )
                 )
             except Exception as error:
@@ -386,11 +596,12 @@ class _CollectionGeneration:
         for layout in layouts:
             for actuator_type in layout.type_layouts:
                 stores.setdefault(actuator_type, _TypedStore(actuator_type))
-        candidate = cls(generation, (), stores, _JointDomainStore())
+        candidate = cls(generation, (), stores, _JointDomainStore(), managed_group_resolutions)
         try:
             for store in stores.values():
-                store.allocate(layouts, device=registrations[0].control.device)
-            candidate.joint_store.allocate(layouts, device=registrations[0].control.device)
+                store.allocate(layouts, device=str(candidate_device))
+            candidate.joint_store.allocate(layouts, device=str(candidate_device))
+            candidate.solver_store.allocate(layouts, device=str(candidate_device))
             candidate.bindings = tuple(
                 _ArticulationBinding(registration=registration, layout=layout)
                 for registration, layout in zip(registrations, layouts, strict=True)
@@ -398,6 +609,26 @@ class _CollectionGeneration:
             candidate.selector_states = {
                 binding.registration.key: _SelectorState(binding) for binding in candidate.bindings
             }
+            candidate.backend_parameter_staging = {
+                binding.registration.key: _BackendParameterStaging(
+                    num_worlds=binding.layout.num_worlds,
+                    num_joints=binding.layout.num_joints,
+                    device=binding.registration.control.device,
+                    owner_slots=candidate.selector_states[binding.registration.key]._backend_owner_slots,
+                    initial_values={
+                        name: candidate.solver_store.articulation_proxy(name, binding.layout)
+                        for name in ("stiffness", "damping")
+                    },
+                )
+                for binding in candidate.bindings
+            }
+            candidate.bindings = tuple(
+                replace(
+                    binding,
+                    backend_parameter_staging=candidate.backend_parameter_staging[binding.registration.key],
+                )
+                for binding in candidate.bindings
+            )
         except Exception:
             candidate.close()
             raise
@@ -408,6 +639,95 @@ class _CollectionGeneration:
         for binding in self.bindings:
             if binding.layout.registration_key is not binding.registration.key:
                 raise ValueError(f"Candidate binding for {binding.registration.key!r} has an invalid registration key.")
+
+    def write_solver_properties(self) -> None:
+        """Synchronously offer one resolved articulation rowset to each control."""
+        for binding in self.bindings:
+            write = getattr(binding.registration.control, "write_resolved_joint_properties_staged", None)
+            if write is None:
+                # Pre-Task-8 duck-typed test/third-party controls remain valid
+                # until their adapters adopt the explicit neutral contract.
+                continue
+            transport = getattr(binding.registration.control, "resolved_solver_property_transport", lambda: "device")()
+            if transport not in {"cpu", "device"}:
+                raise ValueError(f"Unsupported solver-property transport {transport!r}.")
+            source_slot_by_backend_row = getattr(binding.layout, "source_slot_by_backend_row", None)
+            properties: dict[str, _ResolvedSolverProperty] = {}
+            for name in self.solver_store._FIELD_NAMES:
+                source_rows = self.solver_store.source_rows(name, binding.layout)
+                if transport == "cpu":
+                    if source_rows.device.type != "cpu" or source_slot_by_backend_row is None:
+                        raise RuntimeError(
+                            "CPU solver-property transport requires clone-plan-provided CPU source rows and slots."
+                        )
+                    if source_slot_by_backend_row.device.type != "cpu":
+                        raise ValueError("CPU solver-property source slots must be host-resident.")
+                    properties[name] = _ResolvedSolverProperty(
+                        transport="cpu",
+                        source_rows=source_rows,
+                        source_slot_by_backend_row=source_slot_by_backend_row,
+                        source_assignment=None,
+                        canonical_target=None,
+                    )
+                else:
+                    canonical_target = self.solver_store.articulation_proxy(name, binding.layout)
+                    if source_rows.device != canonical_target.torch.device:
+                        raise RuntimeError(
+                            "Device solver-property transport requires source rows on the canonical target device."
+                        )
+                    properties[name] = _ResolvedSolverProperty(
+                        transport="device",
+                        source_rows=source_rows,
+                        source_slot_by_backend_row=None,
+                        source_assignment=binding.layout.prototype_assignment,
+                        canonical_target=canonical_target,
+                    )
+            self._solver_properties_written.append(binding)
+            write(
+                _ResolvedSolverProperties(properties=properties, clone_plan_metadata=binding.layout.clone_plan_metadata)
+            )
+
+    def validate_solver_properties(self) -> None:
+        """Run backend validation after synchronous solver writes and before publication."""
+        for binding in self._solver_properties_written:
+            validate = getattr(binding.registration.control, "validate_resolved_joint_properties", None)
+            if validate is not None:
+                validate()
+
+    def restore_solver_properties(self) -> None:
+        """Restore backend solver defaults after a reversible candidate failure."""
+        failures: list[Exception] = []
+        try:
+            for binding in reversed(self._solver_properties_written):
+                try:
+                    restore = getattr(binding.registration.control, "restore_resolved_joint_properties", None)
+                    if restore is not None:
+                        restore()
+                except Exception as error:
+                    error.add_note(f"Failed to restore solver properties for {_binding_context(binding)}.")
+                    failures.append(error)
+        finally:
+            self._solver_properties_written.clear()
+        if failures:
+            first, *remaining = failures
+            for error in remaining:
+                first.add_note(f"Additional solver-property restore failure: {error}")
+            raise first
+
+    def commit_solver_properties(self) -> None:
+        """Discard build-only solver staging after every control has completed."""
+        try:
+            for binding in self._solver_properties_written:
+                try:
+                    commit = getattr(binding.registration.control, "commit_resolved_joint_properties", None)
+                    if commit is not None:
+                        commit()
+                except Exception:
+                    logger.exception("Failed to commit solver properties for %s.", _binding_context(binding))
+        finally:
+            self._solver_properties_written.clear()
+            self.managed_group_resolutions.clear()
+            self.solver_store.close()
 
     def bind_facade_storage(self) -> None:
         """Construct exact logical groups and bind candidate-owned typed arrays."""
@@ -426,7 +746,36 @@ class _CollectionGeneration:
                 else:
                     public_joint_indices = joint_indices
                 cfg = _copy_actuator_cfg(source_cfg)
-                if hasattr(control, "get_default_joint_properties") and hasattr(cfg, "effort_limit"):
+                managed_resolution = self.managed_group_resolutions.get((binding.registration.key, name))
+                store = self.stores.get(group_layout.actuator_type)
+                parameter_binding = None
+                if store is not None:
+                    schema = group_layout.actuator_type._parameter_schema()
+                    group_proxies = {field.name: store.group_proxy(group_layout, field.name) for field in schema.fields}
+                    type_layout = binding.layout.type_layouts[group_layout.actuator_type]
+                    parameter_binding = _GroupBinding(
+                        generation=self.generation,
+                        joint_indices=joint_indices,
+                        joint_names=tuple(joint_names),
+                        type_slice=group_layout.type_slice,
+                        arrays={field.name: store.type_proxy(type_layout, field.name) for field in schema.fields},
+                        parameter_proxies={
+                            field.name: group_proxies[field.name]
+                            for field in schema.fields
+                            if field.role == "parameter"
+                        },
+                    )
+                if managed_resolution is not None:
+                    if parameter_binding is None:
+                        raise RuntimeError(f"Managed actuator group {name!r} has no canonical parameter binding.")
+                    actuator = group_layout.actuator_type._build_managed_runtime_shell(
+                        resolved=managed_resolution.resolved,
+                        binding=parameter_binding,
+                        num_envs=group_layout.num_worlds,
+                        device=control.device,
+                        joint_indices=joint_indices,
+                    )
+                elif hasattr(control, "get_default_joint_properties") and hasattr(cfg, "effort_limit"):
                     defaults = control.get_default_joint_properties(joint_indices)
                     actuator = group_layout.actuator_type(
                         cfg=cfg,
@@ -451,31 +800,17 @@ class _CollectionGeneration:
                     actuator._joint_names = list(joint_names)
                     actuator._joint_indices = public_joint_indices
 
-                store = self.stores.get(group_layout.actuator_type)
-                if store is not None:
-                    schema = group_layout.actuator_type._parameter_schema()
-                    group_proxies = {field.name: store.group_proxy(group_layout, field.name) for field in schema.fields}
-                    for field in schema.fields:
-                        existing = actuator.__dict__.get(field.name)
-                        if isinstance(existing, torch.Tensor):
-                            group_proxies[field.name].torch.copy_(existing)
-                    type_layout = binding.layout.type_layouts[group_layout.actuator_type]
-                    parameter_binding = _GroupBinding(
-                        generation=self.generation,
-                        joint_indices=joint_indices,
-                        joint_names=tuple(joint_names),
-                        type_slice=group_layout.type_slice,
-                        arrays={field.name: store.type_proxy(type_layout, field.name) for field in schema.fields},
-                        parameter_proxies={
-                            field.name: group_proxies[field.name]
-                            for field in schema.fields
-                            if field.role == "parameter"
-                        },
-                    )
-                    actuator._bind_parameter_storage(parameter_binding)
+                if parameter_binding is not None:
+                    if managed_resolution is None:
+                        for field in schema.fields:
+                            existing = actuator.__dict__.get(field.name)
+                            if isinstance(existing, torch.Tensor):
+                                group_proxies[field.name].torch.copy_(existing)
+                        actuator._bind_parameter_storage(parameter_binding)
                     selector_state.bind_group(parameter_binding, name)
                 groups[name] = actuator
             self.groups[binding.registration.key] = groups
+            self.solver_store.overlay_opaque_groups(binding.layout, groups)
 
     def publish_effort_telemetry(self) -> None:
         """Publish exact-type effort outputs in stable articulation joint order."""
@@ -515,6 +850,10 @@ class _CollectionGeneration:
         for selector_state in self.selector_states.values():
             selector_state.close()
         self.selector_states.clear()
+        for staging in self.backend_parameter_staging.values():
+            staging.close()
+        self.backend_parameter_staging.clear()
+        self.solver_store.close()
         self.joint_store.close()
         for store in self.stores.values():
             store._fields.clear()
@@ -524,6 +863,8 @@ class _CollectionGeneration:
             store._initialization_buffers.clear()
         self.stores.clear()
         self.groups.clear()
+        self.managed_group_resolutions.clear()
+        self._solver_properties_written.clear()
 
 
 def _binding_context(binding: _ArticulationBinding) -> str:
@@ -848,13 +1189,15 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 self._velocity: ProxyArray | None = velocity
                 self._effort: ProxyArray | None = effort
 
-            def _require_execution_ready(self) -> None:
-                self._view._require_execution_ready(self._install_token)
+            def _require_current_generation(self) -> None:
+                self._view._require_current_generation(self._install_token)
+                if self._view._manager._dirty:
+                    raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator access.")
 
             @property
             def position(self) -> ProxyArray:
                 """Desired positions [m or rad, depending on joint type]."""
-                self._require_execution_ready()
+                self._require_current_generation()
                 if self._position is None:
                     raise RuntimeError("stale actuator view")
                 return self._position
@@ -862,7 +1205,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             @property
             def velocity(self) -> ProxyArray:
                 """Desired velocities [m/s or rad/s, depending on joint type]."""
-                self._require_execution_ready()
+                self._require_current_generation()
                 if self._velocity is None:
                     raise RuntimeError("stale actuator view")
                 return self._velocity
@@ -870,7 +1213,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             @property
             def effort(self) -> ProxyArray:
                 """Effort commands [N or N·m, depending on joint type]."""
-                self._require_execution_ready()
+                self._require_current_generation()
                 if self._effort is None:
                     raise RuntimeError("stale actuator view")
                 return self._effort
@@ -899,7 +1242,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     env_ids: Environment indices. Defaults to all environments.
                     full_data: Whether :paramref:`value` has full articulation shape.
                 """
-                self._view._write_command_index(value, env_ids, joint_ids, self.position, full_data=full_data)
+                self._view._write_command_index(
+                    value, env_ids, joint_ids, self.position, command_name="position", full_data=full_data
+                )
 
             def set_velocity_index(
                 self,
@@ -925,7 +1270,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     env_ids: Environment indices. Defaults to all environments.
                     full_data: Whether :paramref:`value` has full articulation shape.
                 """
-                self._view._write_command_index(value, env_ids, joint_ids, self.velocity, full_data=full_data)
+                self._view._write_command_index(
+                    value, env_ids, joint_ids, self.velocity, command_name="velocity", full_data=full_data
+                )
 
             def set_effort_index(
                 self,
@@ -951,7 +1298,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     env_ids: Environment indices. Defaults to all environments.
                     full_data: Whether :paramref:`value` has full articulation shape.
                 """
-                self._view._write_command_index(value, env_ids, joint_ids, self.effort, full_data=full_data)
+                self._view._write_command_index(
+                    value, env_ids, joint_ids, self.effort, command_name="effort", full_data=full_data
+                )
 
             def set_position_mask(
                 self,
@@ -967,7 +1316,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     joint_mask: Joint selection mask. Defaults to all joints.
                     env_mask: Environment selection mask. Defaults to all environments.
                 """
-                self._view._write_command_mask(value, env_mask, joint_mask, self.position)
+                self._view._write_command_mask(value, env_mask, joint_mask, self.position, command_name="position")
 
             def set_velocity_mask(
                 self,
@@ -983,7 +1332,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     joint_mask: Joint selection mask. Defaults to all joints.
                     env_mask: Environment selection mask. Defaults to all environments.
                 """
-                self._view._write_command_mask(value, env_mask, joint_mask, self.velocity)
+                self._view._write_command_mask(value, env_mask, joint_mask, self.velocity, command_name="velocity")
 
             def set_effort_mask(
                 self,
@@ -999,7 +1348,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     joint_mask: Joint selection mask. Defaults to all joints.
                     env_mask: Environment selection mask. Defaults to all environments.
                 """
-                self._view._write_command_mask(value, env_mask, joint_mask, self.effort)
+                self._view._write_command_mask(value, env_mask, joint_mask, self.effort, command_name="effort")
 
             def _close(self) -> None:
                 """Release every facade-owned command alias."""
@@ -1024,13 +1373,15 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 self._velocity: ProxyArray | None = velocity
                 self._effort: ProxyArray | None = effort
 
-            def _require_execution_ready(self) -> None:
-                self._view._require_execution_ready(self._install_token)
+            def _require_current_generation(self) -> None:
+                self._view._require_current_generation(self._install_token)
+                if self._view._manager._dirty:
+                    raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator access.")
 
             @property
             def position(self) -> ProxyArray:
                 """Processed positions [m or rad, depending on joint type]."""
-                self._require_execution_ready()
+                self._require_current_generation()
                 if self._position is None:
                     raise RuntimeError("stale actuator view")
                 return self._position
@@ -1038,7 +1389,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             @property
             def velocity(self) -> ProxyArray:
                 """Processed velocities [m/s or rad/s, depending on joint type]."""
-                self._require_execution_ready()
+                self._require_current_generation()
                 if self._velocity is None:
                     raise RuntimeError("stale actuator view")
                 return self._velocity
@@ -1046,7 +1397,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             @property
             def effort(self) -> ProxyArray:
                 """Processed efforts [N or N·m, depending on joint type]."""
-                self._require_execution_ready()
+                self._require_current_generation()
                 if self._effort is None:
                     raise RuntimeError("stale actuator view")
                 return self._effort
@@ -1070,6 +1421,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._joint_command: ActuatorCollection.ArticulationView.JointCommand | None = None
             self._computed_effort: ProxyArray | None = None
             self._applied_effort: ProxyArray | None = None
+            self._backend_parameter_staging: _BackendParameterStaging | None = None
 
         @property
         def generation(self) -> int:
@@ -1084,7 +1436,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             return (
                 self._generation is not None
                 and self._manager.generation == self._generation
-                and not self._manager._dirty
+                and self._manager.is_finalized
             )
 
         @property
@@ -1096,7 +1448,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         @property
         def command(self) -> Command:
             """Raw commands received by the actuator models."""
-            self._require_execution_ready()
+            self._require_bindable()
             if self._command is None:
                 raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
             return self._command
@@ -1104,7 +1456,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         @property
         def joint_command(self) -> JointCommand:
             """Processed commands produced for the simulated joints."""
-            self._require_execution_ready()
+            self._require_bindable()
             if self._joint_command is None:
                 raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
             return self._joint_command
@@ -1112,7 +1464,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         @property
         def computed_effort(self) -> ProxyArray:
             """Computed effort [N or N·m, depending on joint type]."""
-            self._require_execution_ready()
+            self._require_bindable()
             if self._computed_effort is None:
                 raise RuntimeError("Actuator telemetry storage is not available before the scoped facade is installed.")
             return self._computed_effort
@@ -1120,7 +1472,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         @property
         def applied_effort(self) -> ProxyArray:
             """Applied effort [N or N·m, depending on joint type]."""
-            self._require_execution_ready()
+            self._require_bindable()
             if self._applied_effort is None:
                 raise RuntimeError("Actuator telemetry storage is not available before the scoped facade is installed.")
             return self._applied_effort
@@ -1270,6 +1622,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             )
             self._computed_effort = generation.joint_store.articulation_proxy("computed_effort", binding.layout)
             self._applied_effort = generation.joint_store.articulation_proxy("applied_effort", binding.layout)
+            self._backend_parameter_staging = binding.backend_parameter_staging
             dict.__init__(self, groups)
             for group in groups.values():
                 group._bind_facade_view(self, selector_state.token)
@@ -1358,6 +1711,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             joint_ids: Sequence[int] | torch.Tensor | wp.array | None,
             target: ProxyArray,
             *,
+            command_name: str,
             full_data: bool,
         ) -> None:
             """Validate and write one raw command with index selectors."""
@@ -1383,6 +1737,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             if tuple(source.shape) != expected_shape:
                 raise ValueError(f"Command index values must have shape {expected_shape}.")
             if env_selector.shape[0] == 0 or joint_selector.shape[0] == 0:
+                self._stage_user_command(command_name, env_selector, joint_selector, None, None)
                 return
             env_selector_wp = (
                 selector_state._all_env_ids_wp
@@ -1416,6 +1771,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 outputs=[target_proxy.warp],
                 device=target_proxy.warp.device,
             )
+            self._stage_user_command(command_name, env_selector, joint_selector, None, None)
 
         def _write_command_mask(
             self,
@@ -1423,6 +1779,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             env_mask: torch.Tensor | wp.array | None,
             joint_mask: torch.Tensor | wp.array | None,
             target: ProxyArray,
+            *,
+            command_name: str,
         ) -> None:
             """Validate and write one raw command with full-articulation masks."""
             self._require_execution_ready()
@@ -1467,6 +1825,21 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 outputs=[target_proxy.warp],
                 device=target_proxy.warp.device,
             )
+            self._stage_user_command(command_name, None, None, env_selector, joint_selector)
+
+        def _stage_user_command(
+            self,
+            command_name: str,
+            env_ids: torch.Tensor | wp.array | None,
+            joint_ids: torch.Tensor | wp.array | None,
+            env_mask: torch.Tensor | wp.array | None,
+            joint_mask: torch.Tensor | wp.array | None,
+        ) -> None:
+            """Deliver a completed canonical raw-command write to its backend control."""
+            control = self._control
+            if control is None:
+                raise RuntimeError("Actuator control is not available before the scoped facade is installed.")
+            control.stage_user_command(command_name, self, env_ids, joint_ids, env_mask, joint_mask)
 
         def _write_group_parameter_index(
             self,
@@ -1585,6 +1958,20 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 num_candidates = 1
             if not explicit_joint_ids:
                 num_candidates = 1
+            backend_write = self._prepare_parameter_side_effect(
+                actuator_type=actuator_type,
+                scope=scope,
+                name=name,
+                value=target.torch,
+                target=target,
+                env_ids=None if env_ids is None else env_selector,
+                joint_ids=None if joint_ids is None else joint_selector,
+                csr_offsets=csr_offsets,
+                csr_slots=csr_slots,
+                group_binding=group_binding,
+            )
+            if backend_write is not None:
+                getattr(self._control, "preflight_actuator_parameter_write", lambda *_: None)(name, backend_write)
             if explicit_env_ids:
                 selector_state._last_env_positions_wp.fill_(-1)
                 wp.launch(
@@ -1630,17 +2017,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 outputs=[target.warp],
                 device=target.warp.device,
             )
-            self._route_parameter_side_effect(
-                actuator_type,
-                scope,
-                name,
-                target.torch,
-                None if env_ids is None else env_selector,
-                None if joint_ids is None else joint_selector,
-                csr_offsets,
-                csr_slots,
-                group_binding,
-            )
+            self._route_parameter_side_effect(name, backend_write)
 
         def _write_scoped_parameter_mask(
             self,
@@ -1681,6 +2058,22 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 if group_binding is not None
                 else selector_state.type_joint_ids_wp(actuator_type)
             )
+            backend_write = self._prepare_parameter_side_effect(
+                actuator_type=actuator_type,
+                scope=scope,
+                name=name,
+                value=target.torch,
+                target=target,
+                env_ids=None,
+                joint_ids=None,
+                csr_offsets=csr_offsets,
+                csr_slots=csr_slots,
+                group_binding=group_binding,
+                env_mask=None if env_mask is None else env_selector,
+                joint_mask=None if joint_mask is None else joint_selector,
+            )
+            if backend_write is not None:
+                getattr(self._control, "preflight_actuator_parameter_write", lambda *_: None)(name, backend_write)
             wp.launch(
                 actuator_kernels.write_scoped_parameter_mask,
                 dim=(selector_state._all_env_ids.shape[0], scope_joint_ids.shape[0]),
@@ -1688,19 +2081,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 outputs=[target.warp],
                 device=target.warp.device,
             )
-            self._route_parameter_side_effect(
-                actuator_type,
-                scope,
-                name,
-                target.torch,
-                None,
-                None,
-                csr_offsets,
-                csr_slots,
-                group_binding,
-                None if env_mask is None else env_selector,
-                None if joint_mask is None else joint_selector,
-            )
+            self._route_parameter_side_effect(name, backend_write)
 
         @staticmethod
         def _as_torch(value: float | torch.Tensor | wp.array | Sequence[float], target: ProxyArray) -> torch.Tensor:
@@ -1866,12 +2247,14 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             if any(joint_id not in scope_values for joint_id in joint_values):
                 raise ValueError(f"{name!r} {scope} selector addresses a joint outside its ownership.")
 
-        def _route_parameter_side_effect(
+        def _prepare_parameter_side_effect(
             self,
+            *,
             actuator_type: type[ActuatorBase],
             scope: str,
             name: str,
             value: torch.Tensor,
+            target: ProxyArray,
             env_ids: torch.Tensor | None,
             joint_ids: torch.Tensor | None,
             csr_offsets: ProxyArray | None,
@@ -1879,31 +2262,36 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             group_binding: _GroupBinding | None,
             env_mask: torch.Tensor | None = None,
             joint_mask: torch.Tensor | None = None,
-        ) -> None:
-            """Forward canonical writes through one configuration-owner routing path."""
+        ) -> _ActuatorParameterWrite | None:
+            """Resolve one backend route before either canonical or backend mutation."""
             selector_state = self._require_selector_state()
             owner_slots = selector_state._backend_owner_slots.get((actuator_type, name))
             if owner_slots is None:
-                return
+                return None
             if group_binding is not None:
                 is_implicit_drive = issubclass(actuator_type, ImplicitActuator) and name in {"stiffness", "damping"}
                 is_native_group = id(group_binding) in self._native_group_binding_ids
                 if not (is_implicit_drive or is_native_group):
-                    return
-            self._control.write_actuator_parameter(
-                name,
-                _ActuatorParameterWrite(
-                    value=value,
-                    env_ids=env_ids,
-                    joint_ids=joint_ids,
-                    env_mask=env_mask,
-                    joint_mask=joint_mask,
-                    group_binding=group_binding,
-                    type_csr_offsets=csr_offsets,
-                    type_csr_slots=csr_slots,
-                    backend_owner_slots=owner_slots,
-                ),
+                    return None
+            return _ActuatorParameterWrite(
+                value=value,
+                canonical=target if group_binding is None else group_binding.arrays.get(name, target),
+                env_ids=env_ids,
+                joint_ids=joint_ids,
+                env_mask=env_mask,
+                joint_mask=joint_mask,
+                group_binding=group_binding,
+                type_csr_offsets=csr_offsets,
+                type_csr_slots=csr_slots,
+                backend_owner_slots=owner_slots,
+                backend_parameter_staging=self._backend_parameter_staging,
+                scope=scope,
             )
+
+        def _route_parameter_side_effect(self, name: str, write: _ActuatorParameterWrite | None) -> None:
+            """Forward a preflighted canonical write through the backend route."""
+            if write is not None:
+                self._control.write_actuator_parameter(name, write)
 
         def _publish(self, generation: int) -> None:
             self._generation = generation
@@ -1921,6 +2309,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._joint_command = None
             self._computed_effort = None
             self._applied_effort = None
+            self._backend_parameter_staging = None
             for group in tuple(dict.values(self)):
                 group._release_facade_storage()
             dict.clear(self)
@@ -1984,6 +2373,14 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._require_current_generation(expected_token)
             if self._manager._dirty:
                 raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator execution.")
+            if not self._manager.is_finalized:
+                raise RuntimeError("actuator collection finalization is incomplete")
+
+        def _require_bindable(self) -> None:
+            """Allow aliases during completion, but not after a dirty rebuild request."""
+            self._require_current_generation()
+            if self._manager._dirty:
+                raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator access.")
 
     def _initialize_manager(self, sim_context: Any) -> None:
         self._sim_context = sim_context
@@ -1992,6 +2389,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._active_generation: _CollectionGeneration | None = None
         self._next_generation = 0
         self._dirty = False
+        self._finalizing = False
         self._closed = False
         self._deprecated_staged_topology_overrides: dict[object, object] = {}
         self._deprecated_topology_warning_emitted = False
@@ -2048,7 +2446,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
     @property
     def is_finalized(self) -> bool:
         """Whether a clean generation is currently published."""
-        return self._active_generation is not None and not self._dirty
+        return self._active_generation is not None and not self._dirty and not self._finalizing
 
     def finalize(self) -> None:
         """Build and atomically publish a complete registered generation."""
@@ -2067,6 +2465,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             )
             candidate.validate()
             candidate.bind_facade_storage()
+            candidate.write_solver_properties()
+            candidate.validate_solver_properties()
             for binding in candidate.bindings:
                 try:
                     binding.registration.control.prepare_actuator_binding(binding)
@@ -2075,11 +2475,17 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     raise
         except Exception as error:
             if candidate is not None:
-                candidate.close()
+                try:
+                    candidate.restore_solver_properties()
+                except Exception as restore_error:
+                    error.add_note(str(restore_error))
             self._invalidate_pending(error, failure="finalization failed")
+            if candidate is not None:
+                candidate.close()
             raise
 
         self._active_generation = candidate
+        self._finalizing = True
         try:
             for binding in candidate.bindings:
                 view = self._views[binding.registration.key]
@@ -2099,10 +2505,17 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     raise
         except Exception as error:
             self._active_generation = None
+            self._finalizing = False
+            try:
+                candidate.restore_solver_properties()
+            except Exception as restore_error:
+                error.add_note(str(restore_error))
             self._invalidate_pending(error, failure="finalization failed")
             candidate.close()
             error.add_note("Actuator collection finalization rolled back every registration.")
             raise
+        candidate.commit_solver_properties()
+        self._finalizing = False
         self._dirty = False
         for binding in candidate.bindings:
             self._deprecated_staged_topology_overrides.pop(binding.registration.key, None)
@@ -2137,15 +2550,23 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._dirty = True
 
     def _invalidate_pending(self, error: Exception, *, failure: str) -> None:
+        """Invalidate every control and facade without masking the triggering error."""
         for registration in self._registrations:
-            registration.control.invalidate_actuator_view()
-            self._views[registration.key]._invalidate(failure)
+            try:
+                registration.control.invalidate_actuator_view()
+            except Exception as invalidation_error:
+                error.add_note(f"Failed to invalidate backend control for {registration.key!r}: {invalidation_error}")
+            try:
+                self._views[registration.key]._invalidate(failure)
+            except Exception as invalidation_error:
+                error.add_note(f"Failed to invalidate actuator view for {registration.key!r}: {invalidation_error}")
 
     def clear_generation(self) -> None:
         """Invalidate the active generation and retain only staged topology overrides."""
         active = self._active_generation
         self._active_generation = None
         self._dirty = False
+        self._finalizing = False
         for registration in self._registrations:
             registration.control.invalidate_actuator_view()
             self._views[registration.key]._invalidate("stale actuator view")

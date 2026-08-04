@@ -29,6 +29,18 @@ if TYPE_CHECKING:
     from .actuator_net_cfg import ActuatorNetLSTMCfg, ActuatorNetMLPCfg
 
 
+def _move_network_to_runtime_device(network: torch.jit.ScriptModule, device: str) -> torch.jit.ScriptModule:
+    """Move one consumed source-shell network to its final runtime device."""
+    parameters = getattr(network, "parameters", None)
+    buffers = getattr(network, "buffers", None)
+    if not callable(parameters) or not callable(buffers):
+        return network
+    tensors = (*parameters(), *buffers())
+    if not tensors or tensors[0].device == torch.device(device):
+        return network
+    return network.to(device).eval()
+
+
 class ActuatorNetLSTM(DCMotor):
     """Actuator model based on recurrent neural network (LSTM).
 
@@ -69,6 +81,24 @@ class ActuatorNetLSTM(DCMotor):
         layer_shape_per_env = (num_layers, self._num_envs, self.num_joints, hidden_dim)
         self.sea_hidden_state_per_env = self.sea_hidden_state.view(layer_shape_per_env)
         self.sea_cell_state_per_env = self.sea_cell_state.view(layer_shape_per_env)
+
+    def _rebuild_managed_runtime_state(self) -> None:
+        """Rebuild recurrent state for final worlds without reloading the network."""
+        super()._rebuild_managed_runtime_state()
+        num_layers = len(self.network.lstm.state_dict()) // 4
+        hidden_dim = self.network.lstm.state_dict()["weight_hh_l0"].shape[1]
+        self.sea_input = torch.zeros(self._num_envs * self.num_joints, 1, 2, device=self._device)
+        self.sea_hidden_state = torch.zeros(
+            num_layers, self._num_envs * self.num_joints, hidden_dim, device=self._device
+        )
+        self.sea_cell_state = torch.zeros(num_layers, self._num_envs * self.num_joints, hidden_dim, device=self._device)
+        layer_shape_per_env = (num_layers, self._num_envs, self.num_joints, hidden_dim)
+        self.sea_hidden_state_per_env = self.sea_hidden_state.view(layer_shape_per_env)
+        self.sea_cell_state_per_env = self.sea_cell_state.view(layer_shape_per_env)
+
+    def _move_managed_runtime_structure(self, device: str) -> None:
+        """Move the consumed TorchScript module to the final runtime device."""
+        self.network = _move_network_to_runtime_device(self.network, device)
 
     """
     Operations.
@@ -144,6 +174,19 @@ class ActuatorNetMLP(DCMotor):
             self._num_envs, history_length, self.num_joints, device=self._device
         )
         self._joint_vel_history = torch.zeros(self._num_envs, history_length, self.num_joints, device=self._device)
+
+    def _rebuild_managed_runtime_state(self) -> None:
+        """Rebuild MLP history for final worlds without reloading the network."""
+        super()._rebuild_managed_runtime_state()
+        history_length = max(self.cfg.input_idx) + 1
+        self._joint_pos_error_history = torch.zeros(
+            self._num_envs, history_length, self.num_joints, device=self._device
+        )
+        self._joint_vel_history = torch.zeros(self._num_envs, history_length, self.num_joints, device=self._device)
+
+    def _move_managed_runtime_structure(self, device: str) -> None:
+        """Move the consumed TorchScript module to the final runtime device."""
+        self.network = _move_network_to_runtime_device(self.network, device)
 
     """
     Operations.

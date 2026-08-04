@@ -23,7 +23,9 @@ import pytest
 import torch
 
 from isaaclab.actuators import ActuatorCollection, actuator_collection
+from isaaclab.actuators.actuator_control import ActuatorJointProperties
 from isaaclab.actuators.actuator_pd import IdealPDActuator, ImplicitActuator
+from isaaclab.actuators.actuator_pd_cfg import IdealPDActuatorCfg, ImplicitActuatorCfg
 from isaaclab.assets.asset_base import AssetBase
 from isaaclab.cloner.clone_plan import ClonePlan
 from isaaclab.physics import PhysicsEvent
@@ -42,14 +44,27 @@ class _Control:
         *,
         prepare_error: Exception | None = None,
         complete_error: Exception | None = None,
+        invalidate_error: Exception | None = None,
         num_joints: int = 0,
+        num_instances: int = 1,
+        device: str = "cpu",
     ) -> None:
         self.prepare_error = prepare_error
         self.complete_error = complete_error
+        self.invalidate_error = invalidate_error
         self.bind_count = 0
+        self.bound_ready_states = []
+        self.bound_alias_pointers = []
+        self.bind_setter_rejected = False
+        self.bind_compute_rejected = False
+        self.staged_commands = []
+        self.bound_staging = None
+        self.staging_alive_during_invalidation = False
         self.complete_count = 0
         self.invalidate_count = 0
         self._num_joints = num_joints
+        self._num_instances = num_instances
+        self._device = device
         self.asset = type("_Asset", (), {"_is_initialized": False, "data": _Data()})()
 
     @property
@@ -57,8 +72,12 @@ class _Control:
         return self._num_joints
 
     @property
+    def num_instances(self) -> int:
+        return self._num_instances
+
+    @property
     def device(self) -> str:
-        return "cpu"
+        return self._device
 
     def discover_native_actuators(self, cfgs) -> set[str]:
         return set()
@@ -68,13 +87,38 @@ class _Control:
         return list(range(self.num_joints)), ["wheel"] * self.num_joints
 
     def prepare_actuator_binding(self, binding) -> None:
-        del binding
+        self.bound_staging = binding.backend_parameter_staging
         if self.prepare_error is not None:
             raise self.prepare_error
 
+    def write_resolved_joint_properties_staged(self, properties) -> None:
+        del properties
+
+    def validate_resolved_joint_properties(self) -> None:
+        pass
+
+    def restore_resolved_joint_properties(self) -> None:
+        pass
+
+    def stage_user_command(self, command_name, collection, env_ids, joint_ids, env_mask, joint_mask) -> None:
+        self.staged_commands.append((command_name, collection, env_ids, joint_ids, env_mask, joint_mask))
+
     def bind_actuator_view(self, view) -> None:
-        del view
         self.bind_count += 1
+        self.bound_ready_states.append(view.is_ready)
+        self.bound_alias_pointers.append(
+            (
+                view.command.position.torch.data_ptr(),
+                view.joint_command.position.torch.data_ptr(),
+                view.computed_effort.torch.data_ptr(),
+            )
+        )
+        with pytest.raises(RuntimeError, match="finalization is incomplete"):
+            view.command.set_effort_index(value=torch.zeros(view.command.effort.torch.shape))
+        self.bind_setter_rejected = True
+        with pytest.raises(RuntimeError, match="finalization is incomplete"):
+            view.compute()
+        self.bind_compute_rejected = True
 
     def complete_articulation_initialization(self) -> None:
         self.complete_count += 1
@@ -85,8 +129,12 @@ class _Control:
 
     def invalidate_actuator_view(self) -> None:
         self.invalidate_count += 1
+        if self.bound_staging is not None:
+            self.staging_alive_during_invalidation = self.bound_staging._all_env_ids is not None
         self.asset._is_initialized = False
         self.asset.data.is_primed = False
+        if self.invalidate_error is not None:
+            raise self.invalidate_error
 
 
 class _StructuredError(RuntimeError):
@@ -103,6 +151,36 @@ class _Simulation:
             destinations=("/World/envs/env_{}",),
             clone_mask=torch.ones((1, 1), dtype=torch.bool),
             cfg_rows={1: (0,), 2: (0,)},
+        )
+
+    def get_clone_plan(self) -> ClonePlan:
+        return self._clone_plan
+
+
+class _VariantSimulation:
+    """Two-source, four-world clone plan for source-resolution coverage."""
+
+    def __init__(self) -> None:
+        self._clone_plan = ClonePlan(
+            sources=("/World/envs/env_0", "/World/envs/env_1"),
+            destinations=("/World/envs/env_{}", "/World/envs/env_{}"),
+            clone_mask=torch.tensor([[True, False, True, False], [False, True, False, True]]),
+            cfg_rows={1: (0, 1)},
+        )
+
+    def get_clone_plan(self) -> ClonePlan:
+        return self._clone_plan
+
+
+class _PartialPresenceSimulation:
+    """Five global clone columns with one articulation present in three backend rows."""
+
+    def __init__(self) -> None:
+        self._clone_plan = ClonePlan(
+            sources=("/World/envs/env_0", "/World/envs/env_1"),
+            destinations=("/World/envs/env_{}", "/World/envs/env_{}"),
+            clone_mask=torch.tensor([[False, False, True, False, False], [True, False, False, False, True]]),
+            cfg_rows={1: (0, 1)},
         )
 
     def get_clone_plan(self) -> ClonePlan:
@@ -129,6 +207,71 @@ class _DeferredAsset(AssetBase):
 
     def _initialize_impl(self) -> None:
         pass
+
+
+class _SourceResolvingControl(_Control):
+    """Control double that supplies only source-prototype solver rows."""
+
+    def __init__(self, *, num_instances: int = 4, device: str = "cpu") -> None:
+        super().__init__(num_joints=2, num_instances=num_instances, device=device)
+        self.source_resolution_count = 0
+        self.requested_source_env_ids = None
+        self.solver_property_write_count = 0
+        self.saw_unready_solver_write = False
+        self.solver_properties = {}
+        self.native_groups = set()
+
+    def discover_native_actuators(self, cfgs) -> set[str]:
+        return self.native_groups.intersection(cfgs)
+
+    def find_joints(self, name_keys):
+        del name_keys
+        return [0, 1], ["joint_0", "joint_1"]
+
+    def get_source_joint_properties(self, joint_ids, source_env_ids):
+        assert joint_ids.shape == (2,)
+        assert source_env_ids.shape == (2,)
+        self.source_resolution_count += 1
+        self.requested_source_env_ids = source_env_ids
+
+        def _row(stiffness: float) -> ActuatorJointProperties:
+            values = torch.tensor([[stiffness, stiffness + 1.0]], dtype=torch.float32)
+            return ActuatorJointProperties(
+                stiffness=values,
+                damping=torch.full_like(values, 2.0),
+                armature=torch.full_like(values, 0.1),
+                friction=torch.full_like(values, 0.2),
+                dynamic_friction=torch.full_like(values, 0.3),
+                viscous_friction=torch.full_like(values, 0.4),
+                effort_limit=torch.full_like(values, 100.0),
+                velocity_limit=torch.full_like(values, 20.0),
+            )
+
+        rows = tuple(_row(1.0 if source_env_id == 0 else 11.0) for source_env_id in source_env_ids.tolist())
+        first, second = rows
+        return ActuatorJointProperties(
+            stiffness=torch.cat((first.stiffness, second.stiffness)),
+            damping=torch.cat((first.damping, second.damping)),
+            armature=torch.cat((first.armature, second.armature)),
+            friction=torch.cat((first.friction, second.friction)),
+            dynamic_friction=torch.cat((first.dynamic_friction, second.dynamic_friction)),
+            viscous_friction=torch.cat((first.viscous_friction, second.viscous_friction)),
+            effort_limit=torch.cat((first.effort_limit, second.effort_limit)),
+            velocity_limit=torch.cat((first.velocity_limit, second.velocity_limit)),
+        )
+
+    def get_default_joint_properties(self, joint_ids):
+        del joint_ids
+        raise AssertionError("candidate construction must resolve source rows before world-sized defaults")
+
+    def write_resolved_joint_properties_staged(self, properties) -> None:
+        self.solver_property_write_count += len(properties.properties)
+        self.saw_unready_solver_write = not self.asset._is_initialized and not self.asset.data.is_primed
+        self.solver_properties = dict(properties.properties)
+
+
+class _OpaqueIdealPD(IdealPDActuator):
+    """Exact third-party-style actuator intentionally outside managed storage."""
 
 
 class _FakeCallbackHandle:
@@ -296,6 +439,67 @@ def test_failed_finalization_publishes_no_partial_generation() -> None:
         _ = bad.command
 
 
+def test_failed_invalidator_does_not_prevent_other_controls_or_candidate_close() -> None:
+    """One invalidation failure must not mask the trigger or retain another binding."""
+    collection = ActuatorCollection(_Simulation())
+    first_control = _Control(invalidate_error=RuntimeError("first invalidation"))
+    second_control = _Control(complete_error=RuntimeError("completion trigger"))
+    first = _register(collection, "first", first_control)
+    second = _register(collection, "second", second_control)
+
+    with pytest.raises(RuntimeError, match="completion trigger") as caught:
+        collection.finalize()
+
+    assert first_control.invalidate_count == second_control.invalidate_count == 1
+    assert any("first invalidation" in note for note in caught.value.__notes__)
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        _ = first.command
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        _ = second.command
+
+
+def test_partial_solver_write_enrolls_for_best_effort_restore_before_candidate_close() -> None:
+    """A failing staged write must still restore itself and every earlier control."""
+
+    class _PartialSolverWriteControl(_Control):
+        def __init__(self, *, write_error: Exception | None = None, restore_error: Exception | None = None) -> None:
+            super().__init__()
+            self.write_error = write_error
+            self.restore_error = restore_error
+            self.partial_target = None
+            self.restore_count = 0
+            self.restore_saw_live_target = False
+
+        def write_resolved_joint_properties_staged(self, properties) -> None:
+            self.partial_target = properties.properties["stiffness"].canonical_target
+            assert self.partial_target is not None
+            self.partial_target.torch.fill_(17.0)
+            if self.write_error is not None:
+                raise self.write_error
+
+        def restore_resolved_joint_properties(self) -> None:
+            self.restore_count += 1
+            self.restore_saw_live_target = self.partial_target is not None and self.partial_target.torch.shape == (1, 0)
+            if self.restore_error is not None:
+                raise self.restore_error
+
+    collection = ActuatorCollection(_Simulation())
+    first_control = _PartialSolverWriteControl()
+    second_control = _PartialSolverWriteControl(
+        write_error=RuntimeError("partial solver write"),
+        restore_error=RuntimeError("later restore failure"),
+    )
+    _register(collection, "first", first_control)
+    _register(collection, "second", second_control)
+
+    with pytest.raises(RuntimeError, match="partial solver write") as caught:
+        collection.finalize()
+
+    assert first_control.restore_count == second_control.restore_count == 1
+    assert first_control.restore_saw_live_target and second_control.restore_saw_live_target
+    assert any("later restore failure" in note for note in caught.value.__notes__)
+
+
 def test_second_completion_failure_rolls_back_first_completed_asset(monkeypatch) -> None:
     collection = ActuatorCollection(_Simulation())
     first_control = _Control(num_joints=1)
@@ -318,6 +522,10 @@ def test_second_completion_failure_rolls_back_first_completed_asset(monkeypatch)
     assert not first_control.asset._is_initialized and not first_control.asset.data.is_primed
     assert not second_control.asset._is_initialized and not second_control.asset.data.is_primed
     assert first_control.invalidate_count == second_control.invalidate_count == 1
+    assert first_control.staging_alive_during_invalidation
+    assert second_control.staging_alive_during_invalidation
+    assert first_control.bound_staging._all_env_ids is None
+    assert second_control.bound_staging._all_env_ids is None
     assert allocated_stores and all(not store._fields for store in allocated_stores)
     assert any("wheel (IdealPDActuator)" in note for note in caught.value.__notes__)
     with pytest.raises(RuntimeError, match="finalization failed"):
@@ -353,6 +561,271 @@ def test_same_type_registrations_use_disjoint_global_storage() -> None:
     first_slice = bindings[0].layout.type_layouts[IdealPDActuator].global_slice
     second_slice = bindings[1].layout.type_layouts[IdealPDActuator].global_slice
     assert first_slice.stop <= second_slice.start
+
+
+def test_bind_callback_reads_aliases_before_readiness_but_cannot_execute() -> None:
+    """Publication exposes aliases before completion without allowing execution."""
+    collection = ActuatorCollection(_Simulation())
+    control = _Control(num_joints=1)
+    view = _register_managed(collection, "first", control)
+
+    collection.finalize()
+
+    assert control.bound_ready_states == [False]
+    assert control.bind_setter_rejected and control.bind_compute_rejected
+    assert len(control.bound_alias_pointers) == 1
+    assert view.is_ready and collection.is_finalized
+
+
+def test_scoped_command_stages_normalized_empty_index_and_all_false_mask() -> None:
+    """Raw command staging follows every successful canonical write attempt exactly once."""
+    collection = ActuatorCollection(_Simulation())
+    control = _Control(num_joints=1)
+    view = _register_managed(collection, "first", control)
+    collection.finalize()
+    raw_before = view.command.position.torch.clone()
+
+    view.command.set_position_index(
+        value=torch.empty((0, 1), dtype=torch.float32),
+        env_ids=torch.empty(0, dtype=torch.int32),
+        joint_ids=torch.tensor([0], dtype=torch.int32),
+    )
+    view.command.set_velocity_mask(
+        value=torch.full((1, 1), 3.0),
+        env_mask=torch.tensor([False]),
+        joint_mask=torch.tensor([False]),
+    )
+
+    assert [event[0] for event in control.staged_commands] == ["position", "velocity"]
+    assert all(event[1] is view for event in control.staged_commands)
+    assert control.staged_commands[0][2].shape == (0,)
+    assert control.staged_commands[1][4].dtype is torch.bool
+    torch.testing.assert_close(view.command.position.torch, raw_before)
+    with pytest.raises(ValueError, match="shape"):
+        view.command.set_effort_index(value=torch.zeros((2, 1)))
+    assert [event[0] for event in control.staged_commands] == ["position", "velocity"]
+
+
+def test_source_prototype_rows_expand_into_one_exact_runtime_group() -> None:
+    """Source-only backend rows must expand before the final group shell is built."""
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _SourceResolvingControl()
+    cfg = IdealPDActuatorCfg(
+        class_type=IdealPDActuator,
+        joint_names_expr=[".*"],
+        stiffness=None,
+        damping=None,
+    )
+    view = _register_managed(collection, "first", control, {"drive": cfg})
+
+    collection.finalize()
+
+    assert control.source_resolution_count == 1
+    torch.testing.assert_close(control.requested_source_env_ids, torch.tensor([0, 1]))
+    assert isinstance(view["drive"], IdealPDActuator)
+    assert view["drive"]._solver_compatibility_sidecars == {}
+    torch.testing.assert_close(
+        view["drive"].stiffness,
+        torch.tensor([[1.0, 2.0], [11.0, 12.0], [1.0, 2.0], [11.0, 12.0]]),
+    )
+    torch.testing.assert_close(view["drive"].computed_effort, torch.zeros((4, 2)))
+
+
+def test_successful_finalization_releases_build_only_solver_staging() -> None:
+    """Successful publication keeps runtime gain staging but releases solver build state."""
+
+    class _CommitControl(_SourceResolvingControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.commit_count = 0
+
+        def commit_resolved_joint_properties(self) -> None:
+            self.commit_count += 1
+
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _CommitControl()
+    cfg = ImplicitActuatorCfg(
+        class_type=ImplicitActuator,
+        joint_names_expr=[".*"],
+        stiffness=None,
+        damping=None,
+    )
+    facade = _register_managed(collection, "first", control, {"drive": cfg})
+
+    collection.finalize()
+
+    generation = collection._active_generation
+    assert generation is not None
+    assert control.commit_count == 1
+    assert generation._solver_properties_written == []
+    assert generation.managed_group_resolutions == {}
+    assert generation.solver_store._fields == {}
+    assert generation.solver_store._source_rows == {}
+    staging = facade._backend_parameter_staging
+    assert staging is not None
+    assert staging.target(ImplicitActuator, "stiffness").torch.shape == (4, 2)
+
+
+def test_source_solver_rowset_writes_once_per_property_with_config_order_overlap() -> None:
+    """One solver rowset must use the final config owner before publication."""
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _SourceResolvingControl()
+    explicit = IdealPDActuatorCfg(
+        class_type=IdealPDActuator,
+        joint_names_expr=[".*"],
+        stiffness=None,
+        damping=None,
+    )
+    implicit = ImplicitActuatorCfg(
+        class_type=ImplicitActuator,
+        joint_names_expr=[".*"],
+        stiffness=None,
+        damping=None,
+    )
+    _register_managed(collection, "first", control, {"explicit": explicit, "implicit": implicit})
+
+    collection.finalize()
+
+    assert control.source_resolution_count == 1
+    torch.testing.assert_close(control.requested_source_env_ids, torch.tensor([0, 1]))
+    assert control.solver_property_write_count == 8
+    assert control.saw_unready_solver_write
+    stiffness = control.solver_properties["stiffness"]
+    assert stiffness.transport == "device"
+    assert stiffness.source_slot_by_backend_row is None
+    torch.testing.assert_close(stiffness.source_rows, torch.tensor([[1.0, 2.0], [11.0, 12.0]]))
+    torch.testing.assert_close(stiffness.source_assignment, torch.tensor([0, 1, 0, 1], dtype=torch.int32))
+    torch.testing.assert_close(
+        stiffness.canonical_target.torch,
+        torch.tensor([[1.0, 2.0], [11.0, 12.0], [1.0, 2.0], [11.0, 12.0]]),
+    )
+
+
+def test_partial_clone_presence_uses_compact_backend_source_slots() -> None:
+    """Source metadata must compact global clone columns before solver-property transport."""
+
+    class _CpuSourceControl(_SourceResolvingControl):
+        def resolved_solver_property_transport(self) -> str:
+            return "cpu"
+
+    collection = ActuatorCollection(_PartialPresenceSimulation())
+    control = _CpuSourceControl(num_instances=3)
+    cfg = ImplicitActuatorCfg(
+        class_type=ImplicitActuator,
+        joint_names_expr=[".*"],
+        stiffness=None,
+        damping=None,
+    )
+    _register_managed(collection, "first", control, {"drive": cfg})
+
+    collection.finalize()
+
+    stiffness = control.solver_properties["stiffness"]
+    assert stiffness.transport == "cpu"
+    torch.testing.assert_close(control.requested_source_env_ids, torch.tensor([1, 0], dtype=torch.int64))
+    torch.testing.assert_close(stiffness.source_slot_by_backend_row, torch.tensor([1, 0, 1], dtype=torch.int64))
+    torch.testing.assert_close(stiffness.source_rows, torch.tensor([[11.0, 12.0], [1.0, 2.0]]))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for opaque CPU-transport coverage")
+def test_opaque_cuda_constructor_uses_one_bounded_cpu_source_row_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opaque CUDA values remain compatible with CPU solver transport through compact source rows."""
+
+    class _CpuOpaqueControl(_SourceResolvingControl):
+        def __init__(self) -> None:
+            super().__init__(num_instances=3, device="cuda")
+
+        def resolved_solver_property_transport(self) -> str:
+            return "cpu"
+
+        def get_default_joint_properties(self, joint_ids):
+            del joint_ids
+            world_values = torch.tensor([10.0, 20.0, 10.0], dtype=torch.float32, device="cuda").reshape(-1, 1)
+            values = world_values.expand(-1, 2)
+            return ActuatorJointProperties(
+                stiffness=torch.zeros_like(values),
+                damping=torch.zeros_like(values),
+                armature=torch.zeros_like(values),
+                friction=values,
+                dynamic_friction=values + 1.0,
+                viscous_friction=values + 2.0,
+                effort_limit=torch.full_like(values, 100.0),
+                velocity_limit=torch.full_like(values, 20.0),
+            )
+
+    collection = ActuatorCollection(_PartialPresenceSimulation())
+    control = _CpuOpaqueControl()
+    cfg = IdealPDActuatorCfg(
+        class_type=_OpaqueIdealPD,
+        joint_names_expr=[".*"],
+        stiffness=None,
+        damping=None,
+        friction=None,
+    )
+    _register_managed(collection, "first", control, {"drive": cfg})
+
+    cuda_to_cpu_transfers = []
+    original_to = torch.Tensor.to
+
+    def _record_to(self, *args, **kwargs):
+        requested_device = kwargs.get("device", args[0] if args else None)
+        if requested_device is not None and self.device.type == "cuda" and torch.device(requested_device).type == "cpu":
+            cuda_to_cpu_transfers.append(tuple(self.shape))
+        return original_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", _record_to)
+    collection.finalize()
+
+    friction = control.solver_properties["friction"]
+    assert friction.transport == "cpu"
+    assert friction.source_rows.device.type == "cpu"
+    torch.testing.assert_close(friction.source_rows, torch.tensor([[20.0, 20.0], [10.0, 10.0]]))
+    assert cuda_to_cpu_transfers == [(2, 12)]
+
+
+@pytest.mark.parametrize(
+    ("cfgs", "winner_type"),
+    [
+        (
+            ("ideal", "implicit"),
+            ImplicitActuator,
+        ),
+        (
+            ("implicit", "ideal"),
+            IdealPDActuator,
+        ),
+    ],
+)
+def test_backend_owner_slots_use_the_last_cross_type_config_group(cfgs, winner_type) -> None:
+    """Cross-type backend routes must clear earlier owners when config order overlaps."""
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _SourceResolvingControl()
+    control.native_groups = {"ideal", "implicit"}
+    configs = {
+        "ideal": IdealPDActuatorCfg(
+            class_type=IdealPDActuator,
+            joint_names_expr=[".*"],
+            stiffness=None,
+            damping=None,
+        ),
+        "implicit": ImplicitActuatorCfg(
+            class_type=ImplicitActuator,
+            joint_names_expr=[".*"],
+            stiffness=None,
+            damping=None,
+        ),
+    }
+    _register_managed(collection, "first", control, {name: configs[name] for name in cfgs})
+
+    collection.finalize()
+
+    owners = collection._active_generation.selector_states["first"]._backend_owner_slots
+    for actuator_type in (IdealPDActuator, ImplicitActuator):
+        slots = owners[(actuator_type, "stiffness")]
+        if actuator_type is winner_type:
+            assert torch.all(slots >= 0)
+        else:
+            torch.testing.assert_close(slots, torch.full((2,), -1, dtype=torch.int32))
 
 
 def test_failed_retry_then_stop_invalidates_every_registration() -> None:

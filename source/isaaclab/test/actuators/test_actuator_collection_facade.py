@@ -931,6 +931,45 @@ def test_default_parameter_index_write_uses_single_kernel_without_duplicate_stag
 
 
 @pytest.mark.parametrize("device", _available_devices())
+def test_parameter_preflight_rejects_before_canonical_or_backend_mutation(device: str) -> None:
+    """A capture guard must run before the canonical setter launch and backend route."""
+
+    class _CaptureGuardControl(_Control):
+        def __init__(self, device: str) -> None:
+            super().__init__(device)
+            self.preflight_writes = []
+
+        def preflight_actuator_parameter_write(self, name, write) -> None:
+            self.preflight_writes.append((name, write))
+            raise RuntimeError("parameter write is not capture-safe")
+
+    collection = ActuatorCollection(_Simulation(device))
+    control = _CaptureGuardControl(device)
+    facade = collection.register_articulation(
+        key="robot",
+        cfgs={"implicit": _implicit_cfg(["hip", "knee"])},
+        control=control,
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+    collection.finalize()
+    view = facade["implicit"]
+    canonical_before = view.parameters["stiffness"].torch.clone()
+    staging = facade._backend_parameter_staging
+    assert staging is not None
+    staged_before = staging.target(ImplicitActuator, "stiffness").torch.clone()
+
+    with pytest.raises(RuntimeError, match="not capture-safe"):
+        view.set_parameter_index("stiffness", 7.0)
+
+    assert len(control.preflight_writes) == 1
+    assert control.parameter_writes == []
+    torch.testing.assert_close(view.parameters["stiffness"].torch, canonical_before)
+    torch.testing.assert_close(staging.target(ImplicitActuator, "stiffness").torch, staged_before)
+
+
+@pytest.mark.parametrize("device", _available_devices())
 @pytest.mark.parametrize("scope", ("group", "type"))
 def test_parameter_setters_accept_python_and_warp_inputs_with_signed_indices(scope: str, device: str) -> None:
     """Catch compatibility paths that only accept contiguous Torch inputs or one signed index width."""

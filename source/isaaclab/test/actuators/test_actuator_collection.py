@@ -1191,7 +1191,7 @@ def test_scoped_command_default_selectors_include_uncovered_joints(device: str) 
     view.command.set_position_index(value=value)
 
     torch.testing.assert_close(view.command.position.torch, value)
-    assert view._control.staged_commands == []
+    assert view._control.staged_commands == ["position"]
 
 
 def test_retained_scoped_command_facades_reject_dirty_and_stale_generations() -> None:

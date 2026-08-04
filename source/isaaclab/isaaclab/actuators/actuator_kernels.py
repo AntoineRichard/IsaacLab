@@ -175,6 +175,58 @@ def write_scoped_parameter_mask(
 
 
 @wp.kernel(enable_backward=False)
+def patch_backend_parameter_index(
+    canonical: wp.array2d(dtype=wp.float32),
+    env_ids: wp.array(dtype=Any),
+    joint_ids: wp.array(dtype=Any),
+    owner_slots: wp.array(dtype=wp.int32),
+    num_worlds: int,
+    num_joints: int,
+    target: wp.array2d(dtype=wp.float32),
+):
+    """Patch selected backend joints from canonical compact parameter storage."""
+    env_i, joint_i = wp.tid()
+    env_id = env_ids[env_i]
+    joint_id = joint_ids[joint_i]
+    if env_id < 0 or env_id >= num_worlds or joint_id < 0 or joint_id >= num_joints:
+        return
+    compact_slot = owner_slots[wp.int32(joint_id)]
+    if compact_slot >= 0:
+        target[env_id, joint_id] = canonical[env_id, compact_slot]
+
+
+@wp.kernel(enable_backward=False)
+def patch_backend_parameter_mask(
+    canonical: wp.array2d(dtype=wp.float32),
+    env_mask: wp.array(dtype=wp.bool),
+    joint_mask: wp.array(dtype=wp.bool),
+    owner_slots: wp.array(dtype=wp.int32),
+    target: wp.array2d(dtype=wp.float32),
+):
+    """Patch masked backend joints from canonical compact parameter storage."""
+    env_id, joint_id = wp.tid()
+    if not env_mask[env_id] or not joint_mask[joint_id]:
+        return
+    compact_slot = owner_slots[joint_id]
+    if compact_slot >= 0:
+        target[env_id, joint_id] = canonical[env_id, compact_slot]
+
+
+@wp.kernel(enable_backward=False)
+def expand_source_property(
+    output: wp.array2d(dtype=wp.float32),
+    source_values: wp.array(dtype=wp.float32),
+    prototype_assignment: wp.array(dtype=wp.int32),
+    owner_slots: wp.array(dtype=wp.int32),
+    source_row_stride: int,
+):
+    """Expand config-owned source rows into one articulation-wide property field."""
+    world, articulation_joint = wp.tid()
+    prototype = prototype_assignment[world]
+    output[world, articulation_joint] = source_values[prototype * source_row_stride + owner_slots[articulation_joint]]
+
+
+@wp.kernel(enable_backward=False)
 def scatter_processed_targets(
     source_pos: wp.array2d(dtype=wp.float32),
     source_vel: wp.array2d(dtype=wp.float32),

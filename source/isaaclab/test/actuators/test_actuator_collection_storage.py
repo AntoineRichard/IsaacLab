@@ -17,6 +17,8 @@ import warp as wp
 
 import isaaclab.actuators.actuator_storage as actuator_storage
 import isaaclab.assets.asset_base as asset_base_module
+from isaaclab.actuators.actuator_base import _ResolvedManagedRegistration
+from isaaclab.actuators.actuator_control import ActuatorJointProperties, _ActuatorParameterWrite
 from isaaclab.actuators.actuator_net import ActuatorNetLSTM, ActuatorNetMLP
 from isaaclab.actuators.actuator_pd import (
     DCMotor,
@@ -25,7 +27,12 @@ from isaaclab.actuators.actuator_pd import (
     ImplicitActuator,
     RemotizedPDActuator,
 )
-from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, DelayedPDActuatorCfg, RemotizedPDActuatorCfg
+from isaaclab.actuators.actuator_pd_cfg import (
+    DCMotorCfg,
+    DelayedPDActuatorCfg,
+    IdealPDActuatorCfg,
+    RemotizedPDActuatorCfg,
+)
 from isaaclab.actuators.actuator_storage import _GroupBinding
 from isaaclab.assets.asset_base import AssetBase
 from isaaclab.cloner import ClonePlan
@@ -251,6 +258,19 @@ class _TestActuatorStorage:
     def allocated_fields(self, actuator_type: type) -> frozenset[str]:
         """Return allocated typed fields for an exact actuator type."""
         return frozenset(self._arrays.get(actuator_type, {}))
+
+
+class _TracedLSTMNetwork(torch.nn.Module):
+    """Tiny traceable LSTM matching the actuator network's public shape."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lstm = torch.nn.LSTM(input_size=2, hidden_size=3, num_layers=1)
+
+    def forward(
+        self, inputs: torch.Tensor, state: tuple[torch.Tensor, torch.Tensor]
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        return self.lstm(inputs, state)
 
 
 def _make_bound_group(
@@ -729,3 +749,642 @@ def test_asset_records_original_cfg_identity_before_copy(monkeypatch) -> None:
     assert events == [("queue", id(cfg)), ("copy", id(cfg))]
     assert asset._replication_cfg_id == id(cfg)
     assert id(asset.cfg) != id(cfg)
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_backend_parameter_staging_patches_only_owned_indexed_joints_without_reallocation(device: str) -> None:
+    """Stage canonical compact values into their configuration-owned backend joints.
+
+    This fails if backend staging allocates a compact selector, treats an
+    articulation joint as a compact slot, or rewrites joints outside the
+    selected Cartesian slice.
+    """
+    staging = actuator_storage._BackendParameterStaging(
+        num_worlds=2,
+        num_joints=4,
+        device=device,
+        owner_slots={(IdealPDActuator, "stiffness"): torch.tensor([1, -1, 0, 2], dtype=torch.int32, device=device)},
+    )
+    compact = ProxyArray(
+        wp.from_torch(
+            torch.tensor([[10.0, 11.0, 12.0], [20.0, 21.0, 22.0]], dtype=torch.float32, device=device),
+            dtype=wp.float32,
+        )
+    )
+    target = staging.target(IdealPDActuator, "stiffness")
+    target.torch.fill_(-5.0)
+    pointer = target.torch.data_ptr()
+
+    staging.patch_index(
+        actuator_type=IdealPDActuator,
+        name="stiffness",
+        canonical=compact,
+        env_ids=torch.tensor([1], dtype=torch.int32, device=device),
+        joint_ids=torch.tensor([0, 1, 3], dtype=torch.int64, device=device),
+    )
+
+    assert target.torch.data_ptr() == pointer
+    torch.testing.assert_close(
+        target.torch,
+        torch.tensor([[-5.0, -5.0, -5.0, -5.0], [21.0, -5.0, -5.0, 22.0]], device=device),
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_backend_parameter_staging_respects_full_masks_and_releases_candidate_storage(device: str) -> None:
+    """Stage a full mask without retaining caller-owned values after candidate close.
+
+    This fails if mask staging does not use canonical compact slots, updates a
+    disabled world or joint, or leaves candidate-owned storage live on close.
+    """
+    staging = actuator_storage._BackendParameterStaging(
+        num_worlds=2,
+        num_joints=3,
+        device=device,
+        owner_slots={(IdealPDActuator, "damping"): torch.tensor([0, -1, 1], dtype=torch.int32, device=device)},
+    )
+    compact = ProxyArray(
+        wp.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=device), dtype=wp.float32)
+    )
+    target = staging.target(IdealPDActuator, "damping")
+    target.torch.fill_(-7.0)
+
+    staging.patch_mask(
+        actuator_type=IdealPDActuator,
+        name="damping",
+        canonical=compact,
+        env_mask=torch.tensor([False, True], dtype=torch.bool, device=device),
+        joint_mask=torch.tensor([True, True, False], dtype=torch.bool, device=device),
+    )
+
+    torch.testing.assert_close(
+        target.torch,
+        torch.tensor([[-7.0, -7.0, -7.0], [3.0, -7.0, -7.0]], device=device),
+    )
+    staging.close()
+    assert staging._targets == {}
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_backend_parameter_staging_uses_type_canonical_values_for_group_writes(device: str) -> None:
+    """Use the type-wide canonical field when a group is only a strided subview.
+
+    This fails if a group side effect feeds its local ``value`` view to the
+    backend path: owner slot 2 is outside the group's single local column.
+    """
+    canonical = ProxyArray(
+        wp.from_torch(
+            torch.tensor([[10.0, 11.0, 12.0], [20.0, 21.0, 22.0]], dtype=torch.float32, device=device),
+            dtype=wp.float32,
+        )
+    )
+    group_value = torch.full((2, 1), 99.0, dtype=torch.float32, device=device)
+    binding = _GroupBinding(
+        generation=0,
+        joint_indices=torch.tensor([0], dtype=torch.int32, device=device),
+        joint_names=("joint_0",),
+        type_slice=slice(0, 1),
+        arrays={"stiffness": canonical},
+    )
+    write = _ActuatorParameterWrite(
+        value=group_value,
+        env_ids=torch.tensor([0, 1], dtype=torch.int32, device=device),
+        joint_ids=torch.tensor([0], dtype=torch.int32, device=device),
+        group_binding=binding,
+        canonical=canonical,
+    )
+    staging = actuator_storage._BackendParameterStaging(
+        num_worlds=2,
+        num_joints=1,
+        device=device,
+        owner_slots={(IdealPDActuator, "stiffness"): torch.tensor([2], dtype=torch.int32, device=device)},
+    )
+
+    staging.patch_write(actuator_type=IdealPDActuator, name="stiffness", write=write)
+
+    torch.testing.assert_close(
+        staging.target(IdealPDActuator, "stiffness").torch,
+        torch.tensor([[12.0], [22.0]], device=device),
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_backend_parameter_staging_reuses_candidate_owned_default_selectors(device: str) -> None:
+    """Use persistent all-world/all-joint selectors when a write omits both selectors.
+
+    This fails if the steady path synthesizes temporary selector tensors or
+    leaves unselected owner slots stale when the public API passes ``None``.
+    """
+    canonical = ProxyArray(
+        wp.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=device), dtype=wp.float32)
+    )
+    staging = actuator_storage._BackendParameterStaging(
+        num_worlds=2,
+        num_joints=3,
+        device=device,
+        owner_slots={(IdealPDActuator, "stiffness"): torch.tensor([1, -1, 0], dtype=torch.int32, device=device)},
+    )
+    write = _ActuatorParameterWrite(value=canonical.torch, canonical=canonical)
+    env_ids = staging._all_env_ids
+    joint_ids = staging._all_joint_ids
+
+    staging.patch_write(actuator_type=IdealPDActuator, name="stiffness", write=write)
+
+    assert staging._all_env_ids is env_ids
+    assert staging._all_joint_ids is joint_ids
+    torch.testing.assert_close(
+        staging.target(IdealPDActuator, "stiffness").torch,
+        torch.tensor([[2.0, 0.0, 1.0], [4.0, 0.0, 3.0]], device=device),
+    )
+
+
+@pytest.mark.skipif(not wp.get_cuda_devices(), reason="CUDA is required to validate cross-device backend staging.")
+def test_backend_parameter_staging_rejects_a_canonical_array_on_the_wrong_device() -> None:
+    """Reject a cross-device canonical source before the backend patch launch."""
+    staging = actuator_storage._BackendParameterStaging(
+        num_worlds=1,
+        num_joints=1,
+        device="cuda:0",
+        owner_slots={(IdealPDActuator, "stiffness"): torch.tensor([0], dtype=torch.int32, device="cuda:0")},
+    )
+    canonical = ProxyArray(wp.from_torch(torch.ones((1, 1), dtype=torch.float32), dtype=wp.float32))
+    write = _ActuatorParameterWrite(value=canonical.torch, canonical=canonical)
+
+    with pytest.raises(ValueError, match="canonical.*candidate device"):
+        staging.patch_write(actuator_type=IdealPDActuator, name="stiffness", write=write)
+
+
+def test_backend_parameter_staging_shares_one_solver_property_target_across_exact_types() -> None:
+    """Cross-type partial patches retain earlier winners and untouched solver defaults."""
+    initial = ProxyArray(wp.from_torch(torch.full((1, 3), 9.0), dtype=wp.float32))
+    staging = actuator_storage._BackendParameterStaging(
+        num_worlds=1,
+        num_joints=3,
+        device="cpu",
+        owner_slots={
+            (IdealPDActuator, "stiffness"): torch.tensor([0, -1, -1], dtype=torch.int32),
+            (ImplicitActuator, "stiffness"): torch.tensor([-1, 0, -1], dtype=torch.int32),
+        },
+        initial_values={"stiffness": initial},
+    )
+    ideal = ProxyArray(wp.from_torch(torch.tensor([[1.0]], dtype=torch.float32), dtype=wp.float32))
+    implicit = ProxyArray(wp.from_torch(torch.tensor([[2.0]], dtype=torch.float32), dtype=wp.float32))
+    env_ids = torch.tensor([0], dtype=torch.int32)
+
+    staging.patch_index(
+        actuator_type=IdealPDActuator,
+        name="stiffness",
+        canonical=ideal,
+        env_ids=env_ids,
+        joint_ids=torch.tensor([0], dtype=torch.int32),
+    )
+    staging.patch_index(
+        actuator_type=ImplicitActuator,
+        name="stiffness",
+        canonical=implicit,
+        env_ids=env_ids,
+        joint_ids=torch.tensor([1], dtype=torch.int32),
+    )
+
+    assert staging.target(IdealPDActuator, "stiffness") is staging.target(ImplicitActuator, "stiffness")
+    torch.testing.assert_close(staging.target(IdealPDActuator, "stiffness").torch, torch.tensor([[1.0, 2.0, 9.0]]))
+
+
+def _source_defaults(stiffness: float, damping: float, *, device: str = "cpu") -> ActuatorJointProperties:
+    """Build one source-prototype row of articulation solver defaults."""
+    values = torch.tensor([[stiffness, stiffness + 1.0]], dtype=torch.float32, device=device)
+    return ActuatorJointProperties(
+        stiffness=values,
+        damping=torch.full_like(values, damping),
+        armature=torch.full_like(values, 0.1),
+        friction=torch.full_like(values, 0.2),
+        dynamic_friction=torch.full_like(values, 0.3),
+        viscous_friction=torch.full_like(values, 0.4),
+        effort_limit=torch.full_like(values, 100.0),
+        velocity_limit=torch.full_like(values, 20.0),
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for source-resolution sync coverage")
+def test_source_registration_skips_debug_scalar_resolution_on_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Source construction must not read CUDA values on the host when diagnostics are disabled."""
+    defaults = ActuatorJointProperties(
+        stiffness=torch.tensor([[1.0, 2.0], [11.0, 12.0]], dtype=torch.float32, device="cuda"),
+        damping=torch.full((2, 2), 3.0, dtype=torch.float32, device="cuda"),
+        armature=torch.full((2, 2), 0.1, dtype=torch.float32, device="cuda"),
+        friction=torch.full((2, 2), 0.2, dtype=torch.float32, device="cuda"),
+        dynamic_friction=torch.full((2, 2), 0.3, dtype=torch.float32, device="cuda"),
+        viscous_friction=torch.full((2, 2), 0.4, dtype=torch.float32, device="cuda"),
+        effort_limit=torch.full((2, 2), 100.0, dtype=torch.float32, device="cuda"),
+        velocity_limit=torch.full((2, 2), 20.0, dtype=torch.float32, device="cuda"),
+    )
+    cfg = IdealPDActuatorCfg(
+        joint_names_expr=["joint_0", "joint_1"],
+        stiffness=None,
+        damping=None,
+        effort_limit=None,
+        velocity_limit=None,
+        effort_limit_sim=None,
+        velocity_limit_sim=None,
+    )
+
+    def _host_read_forbidden(*_args, **_kwargs):
+        raise AssertionError("source registration attempted a CUDA host read")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(torch, "allclose", _host_read_forbidden)
+        patch.setattr(torch, "all", _host_read_forbidden)
+        patch.setattr(torch.Tensor, "item", _host_read_forbidden)
+        patch.setattr(torch.Tensor, "tolist", _host_read_forbidden)
+        patch.setattr(torch.Tensor, "__float__", _host_read_forbidden)
+        patch.setattr(torch.Tensor, "__int__", _host_read_forbidden)
+        resolved = IdealPDActuator._resolve_managed_registration(
+            cfg=cfg,
+            joint_names=["joint_0", "joint_1"],
+            joint_indices=torch.tensor([0, 1], dtype=torch.int32, device="cuda"),
+            defaults_by_source=defaults,
+            debug_value_resolution=False,
+        )
+
+    assert resolved.source_shell.num_envs == 2
+    assert resolved.source_values["stiffness"].device.type == "cuda"
+
+
+def test_managed_registration_resolves_exact_class_parameters_per_source_prototype() -> None:
+    """Resolve one exact class over source rows without expanding clone worlds.
+
+    This fails if registration skips the exact class's existing parsing rules,
+    combines prototype defaults incorrectly, or materializes the final world
+    count before canonical storage exists.
+    """
+    resolved = IdealPDActuator._resolve_managed_registration(
+        cfg=IdealPDActuatorCfg(
+            joint_names_expr=["joint_0", "joint_1"],
+            stiffness=None,
+            damping=None,
+            effort_limit=None,
+            velocity_limit=None,
+            effort_limit_sim=None,
+            velocity_limit_sim=None,
+        ),
+        joint_names=["joint_0", "joint_1"],
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        defaults_by_source=(_source_defaults(1.0, 3.0), _source_defaults(11.0, 13.0)),
+    )
+
+    assert resolved.actuator_type is IdealPDActuator
+    assert resolved.source_shell.num_envs == 2
+    torch.testing.assert_close(resolved.source_values["stiffness"], torch.tensor([[1.0, 2.0], [11.0, 12.0]]))
+    torch.testing.assert_close(resolved.source_values["damping"], torch.tensor([[3.0, 3.0], [13.0, 13.0]]))
+
+
+def test_managed_runtime_shell_rebinds_ideal_pd_to_world_sized_canonical_storage() -> None:
+    """Bind one exact logical shell after source-only parameter resolution.
+
+    This fails if runtime construction allocates a second world-sized parameter
+    tensor or leaves the group attached to source-prototype parameter rows.
+    """
+    resolved = IdealPDActuator._resolve_managed_registration(
+        cfg=IdealPDActuatorCfg(
+            joint_names_expr=["joint_0", "joint_1"],
+            stiffness=None,
+            damping=None,
+            effort_limit=None,
+            velocity_limit=None,
+            effort_limit_sim=None,
+            velocity_limit_sim=None,
+        ),
+        joint_names=["joint_0", "joint_1"],
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        defaults_by_source=(_source_defaults(1.0, 3.0), _source_defaults(11.0, 13.0)),
+    )
+    store = _TestActuatorStorage(num_worlds=4, device="cpu")
+    arrays = store.allocate(IdealPDActuator, 2)
+    binding = _GroupBinding(
+        generation=0,
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        joint_names=("joint_0", "joint_1"),
+        type_slice=slice(0, 2),
+        arrays=arrays,
+    )
+
+    runtime = IdealPDActuator._build_managed_runtime_shell(
+        resolved=resolved,
+        binding=binding,
+        num_envs=4,
+        device="cpu",
+        joint_indices=binding.joint_indices,
+    )
+
+    assert type(runtime) is IdealPDActuator
+    assert runtime.num_envs == 4
+    assert runtime.stiffness.data_ptr() == arrays["stiffness"].torch.data_ptr()
+
+
+def test_dc_motor_runtime_shell_reallocates_only_its_world_sized_structural_state() -> None:
+    """Keep DC motor scratch state aligned with final worlds after source resolution.
+
+    This fails when the generic source-shell copy leaves the motor's private
+    state at the number of source prototypes rather than the final world count.
+    """
+    resolved = DCMotor._resolve_managed_registration(
+        cfg=DCMotorCfg(
+            joint_names_expr=["joint_0", "joint_1"],
+            stiffness=None,
+            damping=None,
+            effort_limit=None,
+            velocity_limit=20.0,
+            effort_limit_sim=None,
+            velocity_limit_sim=None,
+            saturation_effort=100.0,
+        ),
+        joint_names=["joint_0", "joint_1"],
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        defaults_by_source=(_source_defaults(1.0, 3.0), _source_defaults(11.0, 13.0)),
+    )
+    store = _TestActuatorStorage(num_worlds=4, device="cpu")
+    arrays = store.allocate(DCMotor, 2)
+    binding = _GroupBinding(
+        generation=0,
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        joint_names=("joint_0", "joint_1"),
+        type_slice=slice(0, 2),
+        arrays=arrays,
+    )
+
+    runtime = DCMotor._build_managed_runtime_shell(
+        resolved=resolved,
+        binding=binding,
+        num_envs=4,
+        device="cpu",
+        joint_indices=binding.joint_indices,
+    )
+
+    assert runtime._joint_vel.shape == (4, 2)
+    assert runtime._zeros_effort.shape == (4, 2)
+
+
+@pytest.mark.parametrize(
+    ("actuator_type", "cfg"),
+    [
+        (
+            DelayedPDActuator,
+            DelayedPDActuatorCfg(
+                joint_names_expr=["joint_0", "joint_1"],
+                stiffness=None,
+                damping=None,
+                effort_limit=None,
+                velocity_limit=None,
+                effort_limit_sim=None,
+                velocity_limit_sim=None,
+                min_delay=0,
+                max_delay=2,
+            ),
+        ),
+        (
+            RemotizedPDActuator,
+            RemotizedPDActuatorCfg(
+                joint_names_expr=["joint_0", "joint_1"],
+                stiffness=None,
+                damping=None,
+                effort_limit=None,
+                velocity_limit=None,
+                effort_limit_sim=None,
+                velocity_limit_sim=None,
+                min_delay=0,
+                max_delay=2,
+                joint_parameter_lookup=[[0.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+            ),
+        ),
+    ],
+)
+def test_delayed_runtime_shell_reallocates_delay_state_for_final_worlds(actuator_type, cfg) -> None:
+    """Rebuild delay state at final world count while retaining the exact class.
+
+    This fails when either delayed class keeps a two-source delay buffer after
+    its canonical parameter storage has been expanded to four worlds.
+    """
+    resolved = actuator_type._resolve_managed_registration(
+        cfg=cfg,
+        joint_names=["joint_0", "joint_1"],
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        defaults_by_source=(_source_defaults(1.0, 3.0), _source_defaults(11.0, 13.0)),
+    )
+    store = _TestActuatorStorage(num_worlds=4, device="cpu")
+    arrays = store.allocate(actuator_type, 2)
+    binding = _GroupBinding(
+        generation=0,
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        joint_names=("joint_0", "joint_1"),
+        type_slice=slice(0, 2),
+        arrays=arrays,
+    )
+
+    runtime = actuator_type._build_managed_runtime_shell(
+        resolved=resolved,
+        binding=binding,
+        num_envs=4,
+        device="cpu",
+        joint_indices=binding.joint_indices,
+    )
+
+    assert type(runtime) is actuator_type
+    assert runtime.positions_delay_buffer.batch_size == 4
+    assert runtime.velocities_delay_buffer.batch_size == 4
+    assert runtime.efforts_delay_buffer.batch_size == 4
+    assert runtime._ALL_INDICES.shape == (4,)
+    if actuator_type is DelayedPDActuator:
+        assert ("delay_history_length", 2) in resolved.structural_signature[-1]
+    else:
+        assert ("delay_history_length", 2) in resolved.structural_signature[-1]
+        assert ("joint_parameter_lookup_shape", (2, 3)) in resolved.structural_signature[-1]
+
+
+@pytest.mark.parametrize("actuator_type", [ActuatorNetMLP, ActuatorNetLSTM])
+def test_neural_runtime_shell_reallocates_world_sized_state_without_reloading_the_network(actuator_type) -> None:
+    """Rebuild neural state for final worlds while reusing one loaded network object.
+
+    This fails if the generic shell copy retains state for two source rows, or
+    if a runtime rebuild replaces the already loaded immutable TorchScript model.
+    """
+    source = object.__new__(actuator_type)
+    source._num_envs = 2
+    source._device = "cpu"
+    source._joint_names = ["joint_0", "joint_1"]
+    source._joint_indices = torch.tensor([0, 1], dtype=torch.int32)
+    source.network = SimpleNamespace(
+        lstm=SimpleNamespace(
+            state_dict=lambda: {
+                "weight_ih_l0": torch.empty((8, 3)),
+                "weight_hh_l0": torch.empty((8, 3)),
+                "bias_ih_l0": torch.empty(8),
+                "bias_hh_l0": torch.empty(8),
+            }
+        )
+    )
+    if actuator_type is ActuatorNetMLP:
+        source.cfg = SimpleNamespace(input_idx=(0, 2))
+        source._joint_pos_error_history = torch.zeros((2, 3, 2))
+        source._joint_vel_history = torch.zeros((2, 3, 2))
+    else:
+        source.cfg = SimpleNamespace()
+        source.sea_input = torch.zeros((4, 1, 2))
+        source.sea_hidden_state = torch.zeros((1, 4, 3))
+        source.sea_cell_state = torch.zeros((1, 4, 3))
+        source.sea_hidden_state_per_env = source.sea_hidden_state.view((1, 2, 2, 3))
+        source.sea_cell_state_per_env = source.sea_cell_state.view((1, 2, 2, 3))
+    source._joint_vel = torch.zeros((2, 2))
+    source._zeros_effort = torch.zeros((2, 2))
+    source._vel_at_effort_lim = torch.zeros((2, 2))
+
+    resolved = _ResolvedManagedRegistration(
+        cfg=source.cfg,
+        actuator_type=actuator_type,
+        joint_names=("joint_0", "joint_1"),
+        joint_indices=source._joint_indices,
+        source_shell=source,
+        source_values={},
+        structural_signature=(actuator_type,),
+    )
+    store = _TestActuatorStorage(num_worlds=4, device="cpu")
+    arrays = store.allocate(actuator_type, 2)
+    binding = _GroupBinding(
+        generation=0,
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        joint_names=("joint_0", "joint_1"),
+        type_slice=slice(0, 2),
+        arrays=arrays,
+    )
+
+    runtime = actuator_type._build_managed_runtime_shell(
+        resolved=resolved,
+        binding=binding,
+        num_envs=4,
+        device="cpu",
+        joint_indices=binding.joint_indices,
+    )
+
+    assert runtime.network is source.network
+    assert runtime._joint_vel.shape == (4, 2)
+    if actuator_type is ActuatorNetMLP:
+        assert runtime._joint_pos_error_history.shape == (4, 3, 2)
+        assert runtime._joint_vel_history.shape == (4, 3, 2)
+    else:
+        assert runtime.sea_input.shape == (8, 1, 2)
+        assert runtime.sea_hidden_state_per_env.shape == (1, 4, 2, 3)
+        assert runtime.sea_cell_state_per_env.shape == (1, 4, 2, 3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for runtime-device structural coverage")
+@pytest.mark.parametrize("actuator_type", [ActuatorNetMLP, ActuatorNetLSTM])
+def test_neural_runtime_shell_moves_cpu_source_structure_to_cuda(actuator_type) -> None:
+    """Move one CPU-resolved source network to its sole CUDA runtime consumer."""
+    source = object.__new__(actuator_type)
+    source._num_envs = 2
+    source._device = "cpu"
+    source._joint_names = ["joint_0", "joint_1"]
+    source._joint_indices = torch.tensor([0, 1], dtype=torch.int32)
+    source._joint_vel = torch.zeros((2, 2))
+    source._zeros_effort = torch.zeros((2, 2))
+    source._vel_at_effort_lim = torch.zeros((2, 2))
+    if actuator_type is ActuatorNetMLP:
+        source.cfg = SimpleNamespace(input_idx=(0, 2))
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="`torch.jit.script` is deprecated", category=DeprecationWarning)
+            source.network = torch.jit.script(torch.nn.Linear(6, 1))
+        source._joint_pos_error_history = torch.zeros((2, 3, 2))
+        source._joint_vel_history = torch.zeros((2, 3, 2))
+    else:
+        source.cfg = SimpleNamespace()
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="`torch.jit.script` is deprecated", category=DeprecationWarning)
+            source.network = torch.jit.script(_TracedLSTMNetwork())
+        source.sea_input = torch.zeros((4, 1, 2))
+        source.sea_hidden_state = torch.zeros((1, 4, 3))
+        source.sea_cell_state = torch.zeros((1, 4, 3))
+        source.sea_hidden_state_per_env = source.sea_hidden_state.view((1, 2, 2, 3))
+        source.sea_cell_state_per_env = source.sea_cell_state.view((1, 2, 2, 3))
+
+    resolved = _ResolvedManagedRegistration(
+        cfg=source.cfg,
+        actuator_type=actuator_type,
+        joint_names=("joint_0", "joint_1"),
+        joint_indices=source._joint_indices,
+        source_shell=source,
+        source_values={},
+        structural_signature=(actuator_type,),
+    )
+    store = _TestActuatorStorage(num_worlds=4, device="cuda")
+    arrays = store.allocate(actuator_type, 2)
+    binding = _GroupBinding(
+        generation=0,
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32, device="cuda"),
+        joint_names=("joint_0", "joint_1"),
+        type_slice=slice(0, 2),
+        arrays=arrays,
+    )
+    assert all(parameter.device.type == "cpu" for parameter in source.network.parameters())
+
+    runtime = actuator_type._build_managed_runtime_shell(
+        resolved=resolved,
+        binding=binding,
+        num_envs=4,
+        device="cuda",
+        joint_indices=binding.joint_indices,
+    )
+
+    assert runtime.network is source.network
+    assert all(parameter.device.type == "cuda" for parameter in runtime.network.parameters())
+    assert all(parameter.device.type == "cuda" for parameter in source.network.parameters())
+    if actuator_type is ActuatorNetMLP:
+        assert runtime._joint_pos_error_history.device.type == "cuda"
+        assert runtime._joint_vel_history.device.type == "cuda"
+    else:
+        assert runtime.sea_input.device.type == "cuda"
+        assert runtime.sea_hidden_state.device.type == "cuda"
+        assert runtime.sea_cell_state.device.type == "cuda"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for runtime-device structural coverage")
+def test_remotized_runtime_shell_moves_cpu_source_lookup_to_cuda() -> None:
+    """Rebuild the remotized lookup interpolator on the runtime device."""
+    cfg = RemotizedPDActuatorCfg(
+        joint_names_expr=["joint_0", "joint_1"],
+        stiffness=None,
+        damping=None,
+        effort_limit=None,
+        velocity_limit=None,
+        effort_limit_sim=None,
+        velocity_limit_sim=None,
+        min_delay=0,
+        max_delay=2,
+        joint_parameter_lookup=[[0.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+    )
+    resolved = RemotizedPDActuator._resolve_managed_registration(
+        cfg=cfg,
+        joint_names=["joint_0", "joint_1"],
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32),
+        defaults_by_source=(_source_defaults(1.0, 3.0), _source_defaults(11.0, 13.0)),
+    )
+    store = _TestActuatorStorage(num_worlds=4, device="cuda")
+    arrays = store.allocate(RemotizedPDActuator, 2)
+    binding = _GroupBinding(
+        generation=0,
+        joint_indices=torch.tensor([0, 1], dtype=torch.int32, device="cuda"),
+        joint_names=("joint_0", "joint_1"),
+        type_slice=slice(0, 2),
+        arrays=arrays,
+    )
+
+    runtime = RemotizedPDActuator._build_managed_runtime_shell(
+        resolved=resolved,
+        binding=binding,
+        num_envs=4,
+        device="cuda",
+        joint_indices=binding.joint_indices,
+    )
+
+    assert resolved.source_shell._joint_parameter_lookup.device.type == "cpu"
+    assert runtime._joint_parameter_lookup.device.type == "cuda"
+    assert runtime._torque_limit._x.device.type == "cuda"
+    assert runtime._torque_limit._y.device.type == "cuda"

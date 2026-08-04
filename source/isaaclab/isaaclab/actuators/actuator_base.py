@@ -9,6 +9,7 @@ import copy
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
@@ -45,6 +46,8 @@ class _ManagedParameter:
         if binding is None:
             return instance.__dict__[self.name]
         if self._solver_compatibility:
+            if binding.solver_proxies is not None and self.name in binding.solver_proxies:
+                return binding.solver_proxies[self.name].torch
             return instance._get_compatibility_sidecar(self.name)
         if self.name in binding.arrays:
             return binding.arrays[self.name].torch[:, binding.type_slice]
@@ -57,12 +60,33 @@ class _ManagedParameter:
             instance.__dict__[self.name] = value
             return
         if self._solver_compatibility:
+            if binding.solver_proxies is not None and self.name in binding.solver_proxies:
+                binding.solver_proxies[self.name].torch.copy_(value)
+                return
             instance._get_compatibility_sidecar(self.name).copy_(value)
             return
         if self.name in binding.arrays:
             binding.arrays[self.name].torch[:, binding.type_slice].copy_(value)
             return
         instance._get_deprecated_gain_sidecar(self.name).copy_(value)
+
+
+@dataclass(frozen=True)
+class _ResolvedManagedRegistration:
+    """Exact-class actuator parameters resolved over source-prototype rows.
+
+    The source shell is private candidate state.  Its parameter tensors have one
+    row per used clone source and are expanded into canonical storage before one
+    runtime group shell is bound to the final generation.
+    """
+
+    cfg: Any
+    actuator_type: type[ActuatorBase]
+    joint_names: tuple[str, ...]
+    joint_indices: slice | torch.Tensor
+    source_shell: ActuatorBase
+    source_values: Mapping[str, torch.Tensor]
+    structural_signature: tuple[Any, ...]
 
 
 class _GuardedParameterMapping(Mapping[str, ProxyArray]):
@@ -270,6 +294,8 @@ class ActuatorBase(ABC):
         viscous_friction: torch.Tensor | float = 0.0,
         effort_limit: torch.Tensor | float = torch.inf,
         velocity_limit: torch.Tensor | float = torch.inf,
+        *,
+        debug_value_resolution: bool = True,
     ):
         """Initialize the actuator.
 
@@ -306,6 +332,10 @@ class ActuatorBase(ABC):
                 If a tensor, then the shape is (num_envs, num_joints).
             velocity_limit: The default velocity limit. Defaults to infinity.
                 If a tensor, then the shape is (num_envs, num_joints).
+            debug_value_resolution: Whether to materialize the diagnostic table
+                describing configuration/default-value resolution. This private
+                construction flag is disabled while resolving source prototypes
+                so CUDA construction never reads a device scalar on the host.
         """
         # save parameters
         self.cfg = cfg
@@ -339,18 +369,21 @@ class ActuatorBase(ABC):
             setattr(self, param_name, self._parse_joint_parameter(cfg_val, usd_val))
             new_val = getattr(self, param_name)
 
-            allclose = (
-                torch.all(new_val == usd_val) if isinstance(usd_val, (float, int)) else torch.allclose(new_val, usd_val)
-            )
-            if cfg_val is None or not allclose:
-                self._record_actuator_resolution(
-                    cfg_val=getattr(self.cfg, param_name),
-                    new_val=new_val[0],  # new val always has the shape of (num_envs, num_joints)
-                    usd_val=usd_val,
-                    joint_names=joint_names,
-                    joint_ids=joint_ids,
-                    actuator_param=param_name,
+            if debug_value_resolution:
+                allclose = (
+                    torch.all(new_val == usd_val)
+                    if isinstance(usd_val, (float, int))
+                    else torch.allclose(new_val, usd_val)
                 )
+                if cfg_val is None or not allclose:
+                    self._record_actuator_resolution(
+                        cfg_val=getattr(self.cfg, param_name),
+                        new_val=new_val[0],  # new val always has the shape of (num_envs, num_joints)
+                        usd_val=usd_val,
+                        joint_names=joint_names,
+                        joint_ids=joint_ids,
+                        actuator_param=param_name,
+                    )
 
         self.velocity_limit = self._parse_joint_parameter(self.cfg.velocity_limit, self.velocity_limit_sim)
         # Parse effort_limit with special default handling:
@@ -468,6 +501,198 @@ class ActuatorBase(ABC):
     """
     Helper functions.
     """
+
+    @classmethod
+    def _resolve_managed_registration(
+        cls,
+        *,
+        cfg: ActuatorBaseCfg,
+        joint_names: list[str],
+        joint_indices: slice | torch.Tensor,
+        defaults_by_source: Sequence[Any],
+        debug_value_resolution: bool = False,
+    ) -> _ResolvedManagedRegistration:
+        """Resolve one managed actuator class over source-prototype default rows.
+
+        The existing concrete constructor remains the authority for configuration
+        parsing.  It receives only the used source rows, never every cloned
+        world, so its resolved numeric tensors can be expanded into canonical
+        storage later without creating world-sized temporary parameter buffers.
+
+        Args:
+            cfg: Logical actuator-group configuration.
+            joint_names: Resolved articulation joint names in group order.
+            joint_indices: Articulation joint indices in group order.
+            defaults_by_source: One backend-default row per used clone source,
+                or one compact property record with a source-row leading axis.
+            debug_value_resolution: Whether to retain a materialized
+                configuration/default-resolution diagnostic table. Disabled by
+                default so source resolution remains device-only on CUDA.
+
+        Returns:
+            Private source-bounded resolved registration metadata.
+
+        Raises:
+            TypeError: If this exact class does not opt into managed storage or
+                a source-default row is malformed.
+            ValueError: If no source rows are supplied or their shapes/devices
+                do not agree with the logical group topology.
+        """
+        if cls.__dict__.get("_parameter_schema") is None:
+            raise TypeError(f"{cls.__name__} does not opt into managed parameter storage.")
+        num_joints = len(joint_names)
+        field_names = (
+            "stiffness",
+            "damping",
+            "armature",
+            "friction",
+            "dynamic_friction",
+            "viscous_friction",
+            "effort_limit",
+            "velocity_limit",
+        )
+        source_defaults: dict[str, torch.Tensor] = {}
+        source_device: torch.device | None = None
+        compact_defaults = getattr(defaults_by_source, "stiffness", None) is not None
+        if compact_defaults:
+            num_sources: int | None = None
+            for field_name in field_names:
+                value = getattr(defaults_by_source, field_name, None)
+                if not isinstance(value, torch.Tensor):
+                    raise TypeError(f"{cls.__name__} source default {field_name!r} must be a Torch tensor.")
+                if value.dtype is not torch.float32 or value.ndim != 2 or value.shape[1] != num_joints:
+                    raise ValueError(
+                        f"{cls.__name__} source default {field_name!r} must have shape "
+                        f"(num_sources, {num_joints}) and float32 dtype."
+                    )
+                if num_sources is None:
+                    num_sources = value.shape[0]
+                elif value.shape[0] != num_sources:
+                    raise ValueError(f"{cls.__name__} source defaults must share one source-row count.")
+                if source_device is None:
+                    source_device = value.device
+                elif value.device != source_device:
+                    raise ValueError(f"{cls.__name__} source defaults must share one device.")
+                source_defaults[field_name] = value
+            if not num_sources:
+                raise ValueError(f"{cls.__name__} requires at least one source-prototype default row.")
+        else:
+            if not defaults_by_source:
+                raise ValueError(f"{cls.__name__} requires at least one source-prototype default row.")
+            for field_name in field_names:
+                rows: list[torch.Tensor] = []
+                for source_index, defaults in enumerate(defaults_by_source):
+                    value = getattr(defaults, field_name, None)
+                    if not isinstance(value, torch.Tensor):
+                        raise TypeError(
+                            f"{cls.__name__} source {source_index} default {field_name!r} must be a Torch tensor."
+                        )
+                    if value.dtype is not torch.float32 or value.ndim != 2 or value.shape != (1, num_joints):
+                        raise ValueError(
+                            f"{cls.__name__} source {source_index} default {field_name!r} must have shape "
+                            f"(1, {num_joints}) and float32 dtype."
+                        )
+                    if source_device is None:
+                        source_device = value.device
+                    elif value.device != source_device:
+                        raise ValueError(f"{cls.__name__} source defaults must share one device.")
+                    rows.append(value)
+                source_defaults[field_name] = torch.cat(rows, dim=0)
+
+        copied_cfg = cfg.copy() if hasattr(cfg, "copy") else copy.deepcopy(cfg)
+        num_sources = next(iter(source_defaults.values())).shape[0]
+        source_shell = cls(
+            cfg=copied_cfg,
+            joint_names=list(joint_names),
+            joint_ids=joint_indices,
+            num_envs=num_sources,
+            device=str(source_device),
+            **source_defaults,
+            debug_value_resolution=debug_value_resolution,
+        )
+        schema = cls._parameter_schema()
+        source_values = {
+            field.name: getattr(source_shell, field.name).detach()
+            for field in schema.fields
+            if field.role == "parameter"
+        }
+        structural_signature = getattr(cls, "_structural_signature", lambda _cfg: ())(copied_cfg)
+        return _ResolvedManagedRegistration(
+            cfg=copied_cfg,
+            actuator_type=cls,
+            joint_names=tuple(joint_names),
+            joint_indices=joint_indices,
+            source_shell=source_shell,
+            source_values=source_values,
+            structural_signature=(
+                cls,
+                tuple(joint_names),
+                tuple(field.name for field in schema.fields),
+                structural_signature,
+            ),
+        )
+
+    @classmethod
+    def _build_managed_runtime_shell(
+        cls,
+        *,
+        resolved: _ResolvedManagedRegistration,
+        binding: _GroupBinding,
+        num_envs: int,
+        device: str,
+        joint_indices: torch.Tensor,
+    ) -> ActuatorBase:
+        """Bind one exact managed runtime shell to canonical parameter storage.
+
+        Stateless exact classes inherit this source-shell rebinding path.  A
+        class with world-sized structural state may override it privately to
+        allocate only that state after canonical parameter binding.
+
+        Args:
+            resolved: Source-prototype metadata from
+                :meth:`_resolve_managed_registration`.
+            binding: Canonical exact-type parameter binding for this group.
+            num_envs: Final articulation-world count.
+            device: Device hosting canonical storage.
+            joint_indices: Final articulation joint indices in group order.
+
+        Returns:
+            The exact configured actuator class bound to canonical storage.
+        """
+        if resolved.actuator_type is not cls:
+            raise TypeError(f"Resolved registration belongs to {resolved.actuator_type.__name__}, not {cls.__name__}.")
+        runtime = copy.copy(resolved.source_shell)
+        runtime._num_envs = num_envs
+        runtime._device = device
+        runtime._joint_names = list(resolved.joint_names)
+        runtime._joint_indices = joint_indices
+        runtime._move_managed_runtime_structure(device)
+        runtime._bind_parameter_storage(binding)
+        runtime._rebuild_managed_runtime_state()
+        return runtime
+
+    def _move_managed_runtime_structure(self, device: str) -> None:
+        """Move private non-parameter structure to the final runtime device.
+
+        Managed source shells are resolved on the backend's source transport,
+        which may be CPU even when the final runtime actuator executes on CUDA.
+        Each source shell is consumed by exactly one runtime group and then
+        released with candidate build state. Subclasses override this hook for
+        structural tensors or modules that cannot be recreated during
+        :meth:`_rebuild_managed_runtime_state`.
+
+        Args:
+            device: Device hosting the final runtime actuator.
+        """
+        del device
+
+    def _rebuild_managed_runtime_state(self) -> None:
+        """Rebuild private world-sized state after canonical parameter binding.
+
+        Stateless actuator classes retain their source-shell structural objects.
+        Stateful subclasses override this hook to allocate only state and scratch
+        whose leading dimension depends on the final articulation-world count.
+        """
 
     @classmethod
     def _build_execution_actuator(cls, actuators: Sequence[ActuatorBase]) -> ActuatorBase:

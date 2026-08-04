@@ -330,6 +330,12 @@ class DCMotor(IdealPDActuator):
         executor._zeros_effort = torch.zeros_like(executor.computed_effort)
         return executor
 
+    def _rebuild_managed_runtime_state(self) -> None:
+        """Rebuild DC motor derived state for the final articulation-world count."""
+        self._vel_at_effort_lim = self.velocity_limit * (1 + self.effort_limit / self.saturation_effort)
+        self._joint_vel = torch.zeros_like(self.computed_effort)
+        self._zeros_effort = torch.zeros_like(self.computed_effort)
+
     def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
         # save current joint vel
         self._vel_at_effort_lim.copy_(self.velocity_limit * (1 + self.effort_limit / self.saturation_effort))
@@ -388,6 +394,13 @@ class DelayedPDActuator(IdealPDActuator):
         self.velocities_delay_buffer = DelayBuffer(cfg.max_delay, self._num_envs, device=self._device)
         self.efforts_delay_buffer = DelayBuffer(cfg.max_delay, self._num_envs, device=self._device)
         # all of the envs
+        self._ALL_INDICES = torch.arange(self._num_envs, dtype=torch.long, device=self._device)
+
+    def _rebuild_managed_runtime_state(self) -> None:
+        """Rebuild delay state for the final articulation-world count."""
+        self.positions_delay_buffer = DelayBuffer(self.cfg.max_delay, self._num_envs, device=self._device)
+        self.velocities_delay_buffer = DelayBuffer(self.cfg.max_delay, self._num_envs, device=self._device)
+        self.efforts_delay_buffer = DelayBuffer(self.cfg.max_delay, self._num_envs, device=self._device)
         self._ALL_INDICES = torch.arange(self._num_envs, dtype=torch.long, device=self._device)
 
     def reset(self, env_ids: Sequence[int]):
@@ -461,6 +474,8 @@ class RemotizedPDActuator(DelayedPDActuator):
         viscous_friction: torch.Tensor | float = 0.0,
         effort_limit: torch.Tensor | float = torch.inf,
         velocity_limit: torch.Tensor | float = torch.inf,
+        *,
+        debug_value_resolution: bool = True,
     ):
         # remove effort and velocity box constraints from the base class
         cfg.effort_limit = torch.inf
@@ -480,9 +495,15 @@ class RemotizedPDActuator(DelayedPDActuator):
             viscous_friction,
             effort_limit,
             velocity_limit,
+            debug_value_resolution=debug_value_resolution,
         )
         self._joint_parameter_lookup = torch.tensor(cfg.joint_parameter_lookup, device=device)
         # define remotized joint torque limit
+        self._torque_limit = LinearInterpolation(self.angle_samples, self.max_torque_samples, device=device)
+
+    def _move_managed_runtime_structure(self, device: str) -> None:
+        """Move lookup structure and rebuild its device-local interpolator."""
+        self._joint_parameter_lookup = self._joint_parameter_lookup.to(device=device)
         self._torque_limit = LinearInterpolation(self.angle_samples, self.max_torque_samples, device=device)
 
     """
