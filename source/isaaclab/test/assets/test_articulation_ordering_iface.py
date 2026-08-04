@@ -13,7 +13,12 @@ import numpy as np
 import pytest
 import torch
 import warp as wp
-from _articulation_iface_test_utils import BACKEND_UNAVAILABLE_REASONS, BACKENDS, get_articulation
+from _articulation_iface_test_utils import (
+    BACKEND_UNAVAILABLE_REASONS,
+    BACKENDS,
+    _MockActuatorCollection,
+    get_articulation,
+)
 from _pytest.mark.structures import ParameterSet
 
 from isaaclab.utils.buffers import TimestampedBufferWarp
@@ -1963,6 +1968,31 @@ def _make_item_mask(total: int, selected: list[int], device: str) -> wp.array:
 
 
 class TestArticulationOperations:
+    def test_iface_fixture_models_nested_actuator_view(self):
+        """Keep the ordering fixture aligned with the scoped actuator facade."""
+        actuator_view = _MockActuatorCollection.ArticulationView()
+
+        assert isinstance(actuator_view, dict)
+
+    @_requires_newton
+    def test_newton_data_aliases_are_bound_to_nested_actuator_view(self):
+        """Expose deprecated data aliases through the articulation-scoped actuator view."""
+        art, _ = get_articulation("newton", 1, 3, 2, device="cpu")
+
+        assert isinstance(art.actuators, _MockActuatorCollection.ArticulationView)
+        aliases = (
+            ("joint_pos_target", art.actuators.command.position),
+            ("joint_vel_target", art.actuators.command.velocity),
+            ("joint_effort_target", art.actuators.command.effort),
+            ("computed_torque", art.actuators.computed_torque),
+            ("applied_torque", art.actuators.applied_torque),
+            ("soft_joint_vel_limits", art.actuators.soft_joint_vel_limits),
+            ("gear_ratio", art.actuators.gear_ratio),
+        )
+        for data_name, actuator_value in aliases:
+            with pytest.warns(DeprecationWarning, match=f"ArticulationData.{data_name} is deprecated"):
+                assert getattr(art.data, data_name) is actuator_value
+
     """Test cross-cutting articulation operations."""
 
     @_non_mock_backends

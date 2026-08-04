@@ -16,7 +16,6 @@ import numpy as np
 import torch
 import warp as wp
 
-from isaaclab.actuators import ActuatorCollection
 from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.test.mock_interfaces.utils import MockWrenchComposer
 
@@ -139,7 +138,11 @@ def create_physx_articulation(
     object.__setattr__(articulation, "_debug_vis_handle", None)
 
     # Set up other required attributes
-    object.__setattr__(articulation, "actuators", _MockActuatorCollection(PhysxActuatorControl(articulation)))
+    object.__setattr__(
+        articulation,
+        "actuators",
+        _MockActuatorCollection.ArticulationView(PhysxActuatorControl(articulation)),
+    )
     data.bind_actuator_collection(articulation.actuators)
     object.__setattr__(articulation, "_has_implicit_actuators", False)
     object.__setattr__(articulation, "_ALL_INDICES", wp.array(np.arange(num_instances, dtype=np.int32), device=device))
@@ -303,7 +306,11 @@ def create_ovphysx_articulation(
     object.__setattr__(articulation, "_invalidate_initialize_handle", None)
     object.__setattr__(articulation, "_prim_deletion_handle", None)
     object.__setattr__(articulation, "_debug_vis_handle", None)
-    object.__setattr__(articulation, "actuators", _MockActuatorCollection(OvPhysxActuatorControl(articulation)))
+    object.__setattr__(
+        articulation,
+        "actuators",
+        _MockActuatorCollection.ArticulationView(OvPhysxActuatorControl(articulation)),
+    )
     data.bind_actuator_collection(articulation.actuators)
     object.__setattr__(articulation, "_has_implicit_actuators", False)
 
@@ -316,8 +323,8 @@ def create_ovphysx_articulation(
     return articulation, mock_bindings
 
 
-class _MockActuatorCollection(dict):
-    """Minimal stand-in for :class:`~isaaclab.actuators.ActuatorCollection`.
+class _MockActuatorView(dict):
+    """Minimal articulation-scoped actuator facade for interface tests.
 
     The ordering tests build mock articulations without running actuator
     processing, so this provides the collection command hooks that
@@ -328,6 +335,87 @@ class _MockActuatorCollection(dict):
     so the interface writer tests exercise the real resolve/assert logic through
     the backend adapter, independent of PhysX/Newton API differences.
     """
+
+    class Command:
+        """Minimal command facade owned by the mocked articulation view."""
+
+        def __init__(self, collection) -> None:
+            self._collection = collection
+
+        @property
+        def position(self):
+            return self._collection._joint_pos_target_ta
+
+        @property
+        def velocity(self):
+            return self._collection._joint_vel_target_ta
+
+        @property
+        def effort(self):
+            return self._collection._joint_effort_target_ta
+
+        def set_position_index(self, *, value, joint_ids=None, env_ids=None, full_data: bool = False) -> None:
+            collection = self._collection
+            collection._write_index_target(
+                value,
+                env_ids,
+                joint_ids,
+                collection._joint_pos_target,
+                full_data,
+                "position",
+            )
+
+        def set_velocity_index(self, *, value, joint_ids=None, env_ids=None, full_data: bool = False) -> None:
+            collection = self._collection
+            collection._write_index_target(
+                value,
+                env_ids,
+                joint_ids,
+                collection._joint_vel_target,
+                full_data,
+                "velocity",
+            )
+
+        def set_effort_index(self, *, value, joint_ids=None, env_ids=None, full_data: bool = False) -> None:
+            collection = self._collection
+            collection._write_index_target(
+                value,
+                env_ids,
+                joint_ids,
+                collection._joint_effort_target,
+                full_data,
+                "effort",
+            )
+
+        def set_position_mask(self, *, value, joint_mask=None, env_mask=None) -> None:
+            collection = self._collection
+            collection._write_mask_target(value, env_mask, joint_mask, collection._joint_pos_target, "position")
+
+        def set_velocity_mask(self, *, value, joint_mask=None, env_mask=None) -> None:
+            collection = self._collection
+            collection._write_mask_target(value, env_mask, joint_mask, collection._joint_vel_target, "velocity")
+
+        def set_effort_mask(self, *, value, joint_mask=None, env_mask=None) -> None:
+            collection = self._collection
+            collection._write_mask_target(value, env_mask, joint_mask, collection._joint_effort_target, "effort")
+
+    class JointCommand:
+        """Minimal processed-command facade owned by the mocked articulation view."""
+
+        def __init__(self, collection) -> None:
+            self._collection = collection
+
+        @property
+        def position(self):
+            return self._collection._joint_pos_target_sim_ta
+
+        @property
+        def velocity(self):
+            return self._collection._joint_vel_target_sim_ta
+
+        @property
+        def effort(self):
+            return self._collection._joint_effort_target_sim_ta
 
     def __init__(self, control=None):
         super().__init__()
@@ -358,8 +446,8 @@ class _MockActuatorCollection(dict):
             self._applied_torque_ta = ProxyArray(self._applied_torque)
             self._soft_joint_vel_limits_ta = ProxyArray(self._soft_joint_vel_limits)
             self._gear_ratio_ta = ProxyArray(self._gear_ratio)
-            self.command = ActuatorCollection.Command(self)
-            self.joint_command = ActuatorCollection.JointCommand(self)
+            self.command = self.Command(self)
+            self.joint_command = self.JointCommand(self)
 
     def compute(self, dt: float = 0.0) -> None:
         # Intentionally a no-op: the ordering tests stub the actuator-compute stage
@@ -455,6 +543,13 @@ class _MockActuatorCollection(dict):
             device=self._control.device,
         )
         self._control.stage_user_command(command_name, self, None, None, env_mask, joint_mask)
+
+
+class _MockActuatorCollection:
+    """Namespace mirroring the production actuator collection's nested facade."""
+
+    class ArticulationView(_MockActuatorView):
+        """Nested articulation-scoped actuator facade used by interface test fixtures."""
 
 
 def create_newton_articulation(
@@ -560,7 +655,11 @@ def create_newton_articulation(
     object.__setattr__(articulation, "_debug_vis_handle", None)
 
     # Other required attributes
-    object.__setattr__(articulation, "actuators", _MockActuatorCollection(NewtonActuatorControl(articulation)))
+    object.__setattr__(
+        articulation,
+        "actuators",
+        _MockActuatorCollection.ArticulationView(NewtonActuatorControl(articulation)),
+    )
     data.bind_actuator_collection(articulation.actuators)
     object.__setattr__(articulation, "_has_implicit_actuators", False)
 

@@ -995,6 +995,7 @@ def test_collection_exports_proxy_arrays():
     assert collection.joint_command.effort.shape == (2, 3)
     assert collection.computed_torque.shape == (2, 3)
     assert collection.applied_torque.shape == (2, 3)
+    assert collection.soft_joint_vel_limits.shape == (2, 3)
     assert collection.gear_ratio.shape == (2, 3)
 
 
