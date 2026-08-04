@@ -89,6 +89,13 @@ class _Control:
         self.asset.data.is_primed = False
 
 
+class _StructuredError(RuntimeError):
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(code, message)
+        self.code = code
+        self.message = message
+
+
 class _Simulation:
     def __init__(self) -> None:
         self._clone_plan = ClonePlan(
@@ -168,6 +175,14 @@ class _FakePhysicsManager:
     @classmethod
     def close(cls) -> None:
         cls.callbacks = []
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake_context_singleton():
+    """Prevent fake SimulationContext instances from leaking between assertions."""
+    yield
+    SimulationContext._instance = None
+    _FakePhysicsManager.reset()
 
 
 def _make_fake_context(monkeypatch) -> SimulationContext:
@@ -296,7 +311,7 @@ def test_second_completion_failure_rolls_back_first_completed_asset(monkeypatch)
 
     monkeypatch.setattr(actuator_collection._TypedStore, "allocate", record_allocation)
 
-    with pytest.raises(RuntimeError, match="wheel.*IdealPDActuator.*second completion"):
+    with pytest.raises(RuntimeError, match="second completion") as caught:
         collection.finalize()
 
     assert collection.generation is None
@@ -304,10 +319,26 @@ def test_second_completion_failure_rolls_back_first_completed_asset(monkeypatch)
     assert not second_control.asset._is_initialized and not second_control.asset.data.is_primed
     assert first_control.invalidate_count == second_control.invalidate_count == 1
     assert allocated_stores and all(not store._fields for store in allocated_stores)
+    assert any("wheel (IdealPDActuator)" in note for note in caught.value.__notes__)
     with pytest.raises(RuntimeError, match="finalization failed"):
         _ = first.command
     with pytest.raises(RuntimeError, match="finalization failed"):
         _ = second.command
+
+
+def test_completion_preserves_structured_exception_and_adds_binding_context() -> None:
+    collection = ActuatorCollection(_Simulation())
+    error = _StructuredError(17, "structured completion")
+    _register_managed(collection, "first", _Control(num_joints=1))
+    _register_managed(collection, "second", _Control(complete_error=error, num_joints=1))
+
+    with pytest.raises(_StructuredError) as caught:
+        collection.finalize()
+
+    assert caught.value is error
+    assert caught.value.args == (17, "structured completion")
+    assert any("articulation 'second'" in note for note in caught.value.__notes__)
+    assert any("wheel (IdealPDActuator)" in note for note in caught.value.__notes__)
 
 
 def test_same_type_registrations_use_disjoint_global_storage() -> None:

@@ -333,7 +333,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 try:
                     binding.registration.control.prepare_actuator_binding(binding)
                 except Exception as error:
-                    raise type(error)(f"Failed to prepare {_binding_context(binding)}: {error}") from error
+                    error.add_note(f"Failed to prepare {_binding_context(binding)}.")
+                    raise
         except Exception as error:
             if candidate is not None:
                 candidate.close()
@@ -348,16 +349,14 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 try:
                     binding.registration.control.bind_actuator_view(self._views[binding.registration.key])
                 except Exception as error:
-                    raise type(error)(
-                        f"Failed to bind actuator view for {_binding_context(binding)}: {error}"
-                    ) from error
+                    error.add_note(f"Failed to bind actuator view for {_binding_context(binding)}.")
+                    raise
             for binding in candidate.bindings:
                 try:
                     binding.registration.control.complete_articulation_initialization()
                 except Exception as error:
-                    raise type(error)(
-                        f"Failed to complete actuator initialization for {_binding_context(binding)}: {error}"
-                    ) from error
+                    error.add_note(f"Failed to complete actuator initialization for {_binding_context(binding)}.")
+                    raise
         except Exception as error:
             self._active_generation = None
             self._invalidate_pending(error, failure="finalization failed")
