@@ -150,25 +150,36 @@ class _SelectorState:
         compact_values = [
             joint_id for type_layout in layout.type_layouts.values() for joint_id in type_layout.compact_joint_indices
         ] + [joint_id for group in opaque_group_layouts for joint_id in group.joint_indices]
-        inverse_values = [-1] * group_inverse_size
-        for group_row, group_layout in enumerate(layout.group_layouts):
-            start = group_row * layout.num_joints
-            for local_slot, joint_id in enumerate(group_layout.joint_indices):
-                inverse_values[start + joint_id] = local_slot
+        owner_values = [value for row in owner_row_values for value in row]
 
         # Layout: identity ids, compact joint ids, group inverse rows, duplicate
-        # scratch rows, and configuration-order backend-owner rows. Constructing
-        # this host list first makes the resulting tensor the sole int32 device
-        # allocation owned by selector metadata.
-        int_values = (
-            list(range(identity_size))
-            + compact_values
-            + inverse_values
-            + [-1] * layout.num_worlds
-            + [-1] * layout.num_joints
-            + [value for row in owner_row_values for value in row]
-        )
-        self._int_slab = torch.tensor(int_values, dtype=torch.int32, device=device)
+        # scratch rows, and configuration-order backend-owner rows. Build the
+        # device slab from one host tensor: vectorized initialization avoids
+        # per-world Python objects while keeping one retained int32 allocation.
+        int_size = identity_size + scope_size + group_inverse_size + layout.num_worlds + layout.num_joints
+        int_size += backend_owner_size
+        int_host = torch.empty(int_size, dtype=torch.int32)
+        cursor = 0
+        torch.arange(identity_size, dtype=torch.int32, out=int_host[cursor : cursor + identity_size])
+        cursor += identity_size
+        if compact_values:
+            int_host[cursor : cursor + scope_size].copy_(torch.as_tensor(compact_values, dtype=torch.int32))
+        cursor += scope_size
+        int_host[cursor : cursor + group_inverse_size].fill_(-1)
+        for group_row, group_layout in enumerate(layout.group_layouts):
+            start = cursor + group_row * layout.num_joints
+            for local_slot, joint_id in enumerate(group_layout.joint_indices):
+                int_host[start + joint_id] = local_slot
+        cursor += group_inverse_size
+        int_host[cursor : cursor + layout.num_worlds].fill_(-1)
+        cursor += layout.num_worlds
+        int_host[cursor : cursor + layout.num_joints].fill_(-1)
+        cursor += layout.num_joints
+        if owner_values:
+            int_host[cursor : cursor + backend_owner_size].copy_(torch.as_tensor(owner_values, dtype=torch.int32))
+        cursor += backend_owner_size
+        assert cursor == int_size
+        self._int_slab = int_host.to(device)
         self._bool_slab = torch.ones(max(layout.num_worlds, layout.num_joints), dtype=torch.bool, device=device)
         self._float_slab = torch.empty(layout.num_worlds * self._max_scope_dofs, dtype=torch.float32, device=device)
 

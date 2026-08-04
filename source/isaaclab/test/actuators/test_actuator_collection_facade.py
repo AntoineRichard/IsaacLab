@@ -16,7 +16,7 @@ import pytest
 import torch
 import warp as wp
 
-from isaaclab.actuators import ActuatorCollection, actuator_kernels
+from isaaclab.actuators import ActuatorCollection, actuator_collection, actuator_kernels
 from isaaclab.actuators.actuator_base import ActuatorBase
 from isaaclab.actuators.actuator_control import ActuatorJointProperties
 from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
@@ -30,11 +30,11 @@ class _CustomIdealPD(IdealPDActuator):
 
 
 class _Simulation:
-    def __init__(self, device: str = "cpu") -> None:
+    def __init__(self, device: str = "cpu", num_worlds: int = 2) -> None:
         self._clone_plan = ClonePlan(
             sources=("/World/envs/env_0",),
             destinations=("/World/envs/env_{}",),
-            clone_mask=torch.ones((1, 2), dtype=torch.bool, device=device),
+            clone_mask=torch.ones((1, num_worlds), dtype=torch.bool, device=device),
             cfg_rows={1: (0,)},
         )
 
@@ -43,14 +43,15 @@ class _Simulation:
 
 
 class _Control:
-    def __init__(self, device: str = "cpu") -> None:
+    def __init__(self, device: str = "cpu", num_worlds: int = 2) -> None:
         self._joint_names = ("hip", "knee", "ankle")
         self._device = device
+        self._num_worlds = num_worlds
         self.parameter_writes = []
 
     @property
     def num_instances(self) -> int:
-        return 2
+        return self._num_worlds
 
     @property
     def num_joints(self) -> int:
@@ -1275,6 +1276,43 @@ def test_selector_metadata_owning_storage_count_does_not_scale_with_groups(devic
             assert not hasattr(facade, old_attribute)
 
     assert [len(count) for count in owner_counts] == [3, 3, 3]
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_selector_metadata_build_avoids_python_world_sized_sequences(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """Catch selector construction that materializes Python objects once per cloned world."""
+    num_worlds = 4096
+    original_range = range
+    original_tensor = torch.tensor
+
+    def _reject_world_range(*args):
+        generated = original_range(*args)
+        if len(generated) >= num_worlds:
+            raise AssertionError("selector metadata iterated once per cloned world")
+        return generated
+
+    def _reject_world_sized_tensor(data, *args, **kwargs):
+        if isinstance(data, (list, tuple)) and len(data) >= num_worlds:
+            raise AssertionError("selector metadata materialized a world-sized Python sequence")
+        return original_tensor(data, *args, **kwargs)
+
+    monkeypatch.setattr(actuator_collection, "range", _reject_world_range, raising=False)
+    monkeypatch.setattr(torch, "tensor", _reject_world_sized_tensor)
+    collection = ActuatorCollection(_Simulation(device, num_worlds))
+    facade = collection.register_articulation(
+        key="robot",
+        cfgs={"hip": _ideal_cfg(["hip", "knee"])},
+        control=_Control(device, num_worlds),
+        replication_cfg_id=1,
+        debug_validation=False,
+        debug_value_resolution=False,
+    )
+
+    collection.finalize()
+
+    assert facade["hip"].parameters["stiffness"].torch.shape == (num_worlds, 2)
 
 
 def test_clear_generation_releases_selector_state_from_retained_public_views() -> None:
