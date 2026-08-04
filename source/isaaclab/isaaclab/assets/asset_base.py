@@ -112,6 +112,9 @@ class AssetBase(ABC):
             self._check_shapes = not self.cfg.disable_shape_checks
         # flag for whether the asset is initialized
         self._is_initialized = False
+        # Assets opt into order-20 completion explicitly during their order-10
+        # initialization callback. Existing assets remain synchronous.
+        self._initialization_deferred = False
         # get stage handle
         self.stage: Usd.Stage = get_current_stage()
 
@@ -471,15 +474,30 @@ class AssetBase(ABC):
             Physics handles are only valid once the simulation is ready. This callback runs when
             :attr:`PhysicsEvent.PHYSICS_READY` is dispatched by the current backend.
         """
-        if not self._is_initialized:
-            self._backend = SimulationContext.instance().physics_manager.get_backend()
-            self._device = SimulationContext.instance().physics_manager.get_device()
-            self._initialize_impl()
+        if self._is_initialized:
+            return
+        self._backend = SimulationContext.instance().physics_manager.get_backend()
+        self._device = SimulationContext.instance().physics_manager.get_device()
+        self._initialization_deferred = False
+        self._initialize_impl()
+        if not self._initialization_deferred:
             self._is_initialized = True
+
+    def _defer_initialization(self) -> None:
+        """Request order-20 completion after the actuator generation publishes."""
+        self._initialization_deferred = True
+
+    def _complete_deferred_initialization(self) -> None:
+        """Mark an explicitly deferred asset initialized after publication."""
+        if not self._initialization_deferred:
+            raise RuntimeError("Asset initialization was not deferred.")
+        self._initialization_deferred = False
+        self._is_initialized = True
 
     def _invalidate_initialize_callback(self, event):
         """Invalidates the scene elements."""
         self._is_initialized = False
+        self._initialization_deferred = False
         self._clear_selector_cache()
         sim_ctx = SimulationContext.instance()
         if sim_ctx is not None:

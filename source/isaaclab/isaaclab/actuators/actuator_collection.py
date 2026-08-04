@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import torch
 import warp as wp
@@ -24,12 +25,147 @@ from .actuator_base import ActuatorBase
 from .actuator_base_cfg import ActuatorBaseCfg
 from .actuator_control import ActuatorControl
 from .actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
+from .actuator_storage import (
+    _ArticulationLayout,
+    _build_articulation_layout,
+    _GroupRegistration,
+    _PrototypeRegistration,
+    _TypedStore,
+)
+
+if TYPE_CHECKING:
+    from isaaclab.cloner import ClonePlan
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _ArticulationRegistration:
+    """Metadata registered by an articulation before collection publication."""
+
+    key: object
+    cfgs: Mapping[str, ActuatorBaseCfg]
+    control: ActuatorControl
+    replication_cfg_id: int
+    debug_validation: bool
+    debug_value_resolution: bool
+
+
+@dataclass(frozen=True)
+class _ArticulationBinding:
+    """Private candidate binding for one articulation registration."""
+
+    registration: _ArticulationRegistration
+    layout: _ArticulationLayout
+
+
+class _CollectionGeneration:
+    """Private, reversible collection generation prepared before publication."""
+
+    def __init__(
+        self,
+        generation: int,
+        bindings: tuple[_ArticulationBinding, ...],
+        stores: dict[type, _TypedStore],
+    ) -> None:
+        self.generation = generation
+        self.bindings = bindings
+        self.stores = stores
+
+    @classmethod
+    def build(
+        cls,
+        registrations: tuple[_ArticulationRegistration, ...],
+        sim_context: Any,
+        generation: int,
+    ) -> _CollectionGeneration:
+        clone_plan: ClonePlan | None = sim_context.get_clone_plan()
+        if clone_plan is None:
+            raise RuntimeError("Actuator collection finalization requires a published clone plan.")
+
+        layouts: list[_ArticulationLayout] = []
+        for registration in registrations:
+            try:
+                groups: list[_GroupRegistration] = []
+                for name, cfg in registration.cfgs.items():
+                    joint_ids, joint_names = registration.control.find_joints(cfg.joint_names_expr)
+                    if not joint_names:
+                        actuator_type = cfg.class_type
+                        raise ValueError(f"{actuator_type.__name__} actuator group {name!r} resolved no joints.")
+                    if isinstance(joint_ids, ProxyArray):
+                        joint_indices = tuple(int(index) for index in joint_ids.torch.tolist())
+                    elif isinstance(joint_ids, torch.Tensor):
+                        joint_indices = tuple(int(index) for index in joint_ids.tolist())
+                    else:
+                        joint_indices = tuple(int(index) for index in joint_ids)
+                    groups.append(
+                        _GroupRegistration(
+                            name=name,
+                            actuator_type=cfg.class_type,
+                            joint_indices=joint_indices,
+                            values={},
+                        ),
+                    )
+                layouts.append(
+                    _build_articulation_layout(
+                        replication_cfg_id=registration.replication_cfg_id,
+                        clone_plan=clone_plan,
+                        registrations=(
+                            _PrototypeRegistration(
+                                registration_key=registration.key,
+                                num_joints=registration.control.num_joints,
+                                groups=tuple(groups),
+                            ),
+                        ),
+                    )
+                )
+            except Exception as error:
+                error.add_note(f"Failed to build actuator candidate for {registration.key!r}.")
+                raise
+
+        stores: dict[type, _TypedStore] = {}
+        for layout in layouts:
+            for actuator_type in layout.type_layouts:
+                stores.setdefault(actuator_type, _TypedStore(actuator_type))
+        for store in stores.values():
+            store.allocate(layouts, device=registrations[0].control.device)
+        bindings = tuple(
+            _ArticulationBinding(registration=registration, layout=layout)
+            for registration, layout in zip(registrations, layouts, strict=True)
+        )
+        return cls(generation, bindings, stores)
+
+    def validate(self) -> None:
+        """Validate candidate bindings without reading public facades."""
+        for binding in self.bindings:
+            if binding.layout.registration_key is not binding.registration.key:
+                raise ValueError(f"Candidate binding for {binding.registration.key!r} has an invalid registration key.")
+
+    def bind_facade_storage(self) -> None:
+        """Prepare private storage bindings before publication.
+
+        Task 4 deliberately does not expose joint-domain arrays or the full facade.
+        The layouts and typed stores stay private until the active-slot swap.
+        """
+
+    def close(self) -> None:
+        """Release every candidate-owned allocation and private reference."""
+        for store in self.stores.values():
+            store._fields.clear()
+            store._type_proxies.clear()
+            store._group_proxies.clear()
+            store._mapping_proxies.clear()
+            store._initialization_buffers.clear()
+        self.stores.clear()
+
+
 class ActuatorCollection(Mapping[str, ActuatorBase]):
-    """Read-only runtime collection of actuator groups for one articulation.
+    """Simulation-scoped actuator registration manager.
+
+    ``ActuatorCollection(sim_context)`` creates the lifecycle manager used by
+    :class:`~isaaclab.sim.SimulationContext`.  The legacy two-argument
+    constructor remains temporarily available for develop compatibility while
+    backend integration is completed in a later task.
 
     The collection owns actuator command buffers, processed joint command buffers,
     actuator telemetry, and actuator-resolved gain/state buffers. Named mapping
@@ -45,6 +181,211 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
     :meth:`~isaaclab.actuators.ActuatorBase.reset` directly on a mapping value is
     unsupported.
     """
+
+    class ArticulationView(dict[str, ActuatorBase]):
+        """Guarded articulation facade owned by one collection generation."""
+
+        def __init__(self, manager: ActuatorCollection, key: object) -> None:
+            super().__init__()
+            self._manager = manager
+            self._key = key
+            self._generation: int | None = None
+            self._failure: str = "pending actuator view"
+
+        @property
+        def generation(self) -> int:
+            """Published collection generation for this view."""
+            self._assert_usable()
+            assert self._generation is not None
+            return self._generation
+
+        @property
+        def is_ready(self) -> bool:
+            """Whether this view belongs to the active generation."""
+            return (
+                self._generation is not None
+                and self._manager.generation == self._generation
+                and not self._manager._dirty
+            )
+
+        @property
+        def command(self):
+            """Command facade placeholder guarded until Task 5 installs runtime arrays."""
+            self._assert_usable()
+            raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
+
+        @property
+        def joint_command(self):
+            """Processed-command facade placeholder guarded until Task 5."""
+            self._assert_usable()
+            raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
+
+        def compute(self, dt: float = 0.0) -> None:
+            """Reject execution while a late registration requires a safe rebuild."""
+            del dt
+            self._assert_usable()
+
+        def _publish(self, generation: int) -> None:
+            self._generation = generation
+            self._failure = ""
+
+        def _invalidate(self, failure: str) -> None:
+            self._generation = None
+            self._failure = failure
+
+        def _assert_usable(self) -> None:
+            if self._manager._closed:
+                raise RuntimeError("Actuator collection is closed.")
+            if self._failure:
+                raise RuntimeError(self._failure)
+            if self._manager._dirty:
+                raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator access.")
+            if self._generation is None or self._manager.generation != self._generation:
+                raise RuntimeError("stale actuator view")
+
+    def _initialize_manager(self, sim_context: Any) -> None:
+        self._sim_context = sim_context
+        self._registrations: list[_ArticulationRegistration] = []
+        self._views: dict[object, ActuatorCollection.ArticulationView] = {}
+        self._active_generation: _CollectionGeneration | None = None
+        self._next_generation = 0
+        self._dirty = False
+        self._closed = False
+        self._invalidated_registrations: set[int] = set()
+        self._deprecated_staged_topology_overrides: dict[object, object] = {}
+
+    def register_articulation(
+        self,
+        *,
+        key: object,
+        cfgs: Mapping[str, ActuatorBaseCfg],
+        control: ActuatorControl,
+        replication_cfg_id: int,
+        debug_validation: bool,
+        debug_value_resolution: bool,
+    ) -> ArticulationView:
+        """Register one articulation for the next transactional generation."""
+        if self._closed:
+            raise RuntimeError("Actuator collection is closed and cannot accept registrations.")
+        if key in self._views:
+            raise RuntimeError(f"Actuator collection already registered {key!r} for this generation.")
+        control.discover_native_actuators(cfgs)
+        registration = _ArticulationRegistration(
+            key=key,
+            cfgs=cfgs,
+            control=control,
+            replication_cfg_id=replication_cfg_id,
+            debug_validation=debug_validation,
+            debug_value_resolution=debug_value_resolution,
+        )
+        view = self.ArticulationView(self, key)
+        self._registrations.append(registration)
+        self._views[key] = view
+        if self._active_generation is not None:
+            self._dirty = True
+        return view
+
+    @property
+    def registration_keys(self) -> tuple[object, ...]:
+        """Registered articulation keys in deterministic registration order."""
+        return tuple(registration.key for registration in self._registrations)
+
+    @property
+    def generation(self) -> int | None:
+        """Active published generation, if any."""
+        return None if self._active_generation is None else self._active_generation.generation
+
+    @property
+    def is_finalized(self) -> bool:
+        """Whether a clean generation is currently published."""
+        return self._active_generation is not None and not self._dirty
+
+    def finalize(self) -> None:
+        """Build and atomically publish a complete registered generation."""
+        if self._closed:
+            raise RuntimeError("Actuator collection is closed.")
+        if self._active_generation is not None:
+            if self._dirty:
+                raise RuntimeError("Late registration requires STOP-to-READY rebuild before finalization.")
+            return
+        if not self._registrations:
+            return
+        candidate: _CollectionGeneration | None = None
+        try:
+            candidate = _CollectionGeneration.build(
+                tuple(self._registrations), self._sim_context, self._next_generation
+            )
+            candidate.validate()
+            candidate.bind_facade_storage()
+            for binding in candidate.bindings:
+                try:
+                    binding.registration.control.prepare_actuator_binding(binding)
+                except Exception as error:
+                    error.add_note(f"Failed to prepare actuator binding for {binding.registration.key!r}.")
+                    raise
+        except Exception as error:
+            if candidate is not None:
+                candidate.close()
+            self._invalidate_pending(error, failure="finalization failed")
+            raise
+
+        self._active_generation = candidate
+        try:
+            for binding in candidate.bindings:
+                self._views[binding.registration.key]._publish(candidate.generation)
+            for binding in candidate.bindings:
+                try:
+                    binding.registration.control.bind_actuator_view(self._views[binding.registration.key])
+                except Exception as error:
+                    error.add_note(f"Failed to bind actuator view for {binding.registration.key!r}.")
+                    raise
+            for binding in candidate.bindings:
+                try:
+                    binding.registration.control.complete_articulation_initialization()
+                except Exception as error:
+                    error.add_note(f"Failed to complete actuator initialization for {binding.registration.key!r}.")
+                    raise
+        except Exception as error:
+            self._active_generation = None
+            self._invalidate_pending(error, failure="finalization failed")
+            candidate.close()
+            error.add_note("Actuator collection finalization rolled back every registration.")
+            raise
+        self._dirty = False
+
+    def _invalidate_pending(self, error: Exception, *, failure: str) -> None:
+        for registration in self._registrations:
+            registration_id = id(registration)
+            if registration_id not in self._invalidated_registrations:
+                self._invalidated_registrations.add(registration_id)
+                registration.control.invalidate_actuator_view()
+            self._views[registration.key]._invalidate(failure)
+
+    def clear_generation(self) -> None:
+        """Invalidate the active generation and retain only staged topology overrides."""
+        active = self._active_generation
+        self._active_generation = None
+        self._dirty = False
+        for registration in self._registrations:
+            registration_id = id(registration)
+            if registration_id not in self._invalidated_registrations:
+                self._invalidated_registrations.add(registration_id)
+                registration.control.invalidate_actuator_view()
+            self._views[registration.key]._invalidate("stale actuator view")
+        if active is not None:
+            active.close()
+        self._next_generation += 1
+        self._registrations.clear()
+        self._views.clear()
+        self._invalidated_registrations.clear()
+
+    def close(self) -> None:
+        """Permanently close this manager and reject later registration."""
+        if self._closed:
+            return
+        self.clear_generation()
+        self._deprecated_staged_topology_overrides.clear()
+        self._closed = True
 
     @dataclass
     class _ExecutionBatch:
@@ -278,18 +619,27 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
     def __init__(
         self,
-        actuator_cfgs: dict[str, ActuatorBaseCfg],
-        control: ActuatorControl,
+        sim_context_or_actuator_cfgs: Any,
+        control: ActuatorControl | None = None,
         *,
         debug_value_resolution: bool = False,
     ):
         """Initialize the actuator collection.
 
         Args:
-            actuator_cfgs: Mapping of actuator group names to actuator configs.
+            sim_context_or_actuator_cfgs: Simulation context for the scoped manager,
+                or the deprecated mapping of actuator group names to configs.
             control: Backend control bridge for state reads and sim writes.
             debug_value_resolution: Whether to log actuator value resolution.
         """
+        if control is None and not isinstance(sim_context_or_actuator_cfgs, Mapping):
+            self._initialize_manager(sim_context_or_actuator_cfgs)
+            return
+        if control is None:
+            raise TypeError("The deprecated ActuatorCollection constructor requires a control bridge.")
+        actuator_cfgs = sim_context_or_actuator_cfgs
+        if not isinstance(actuator_cfgs, Mapping):
+            raise TypeError("Actuator configs must be a mapping in the deprecated constructor.")
         self._control = control
         self._groups: dict[str, ActuatorBase] = {}
         self._groups_by_class: dict[type[ActuatorBase], list[ActuatorBase]] = {}

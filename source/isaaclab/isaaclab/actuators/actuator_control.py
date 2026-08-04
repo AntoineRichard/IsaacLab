@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -22,7 +22,8 @@ from .actuator_base_cfg import ActuatorBaseCfg
 from .actuator_pd import ImplicitActuator
 
 if TYPE_CHECKING:
-    from .actuator_collection import ActuatorCollection
+    from .actuator_collection import ActuatorCollection, _ArticulationBinding
+    from .actuator_storage import _GroupBinding
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,21 @@ class ActuatorJointProperties:
 
     velocity_limit: torch.Tensor
     """Default joint velocity limits [m/s or rad/s, depending on joint type]."""
+
+
+@dataclass(frozen=True)
+class _ActuatorParameterWrite:
+    """Canonical selection and backend ownership for one actuator parameter write."""
+
+    value: torch.Tensor | wp.array
+    env_ids: torch.Tensor | wp.array | None = None
+    joint_ids: torch.Tensor | wp.array | None = None
+    env_mask: torch.Tensor | wp.array | None = None
+    joint_mask: torch.Tensor | wp.array | None = None
+    group_binding: _GroupBinding | None = None
+    type_csr_offsets: ProxyArray | None = None
+    type_csr_slots: ProxyArray | None = None
+    backend_owner_slots: torch.Tensor | wp.array | None = None
 
 
 class ActuatorControl(ABC):
@@ -160,6 +176,26 @@ class ActuatorControl(ABC):
     def write_resolved_joint_properties(self, actuator: ActuatorBase, *, native_managed: bool) -> None:
         """Write actuator-resolved limits and physical properties to the backend."""
         raise NotImplementedError
+
+    def discover_native_actuators(self, cfgs: Mapping[str, ActuatorBaseCfg]) -> set[str]:
+        """Discover native actuator groups during order-10 registration."""
+        return set()
+
+    def prepare_actuator_binding(self, binding: _ArticulationBinding) -> None:
+        """Prepare private candidate binding state before generation publication."""
+
+    def bind_actuator_view(self, view: ActuatorCollection.ArticulationView) -> None:
+        """Bind the now-live public articulation facade after publication."""
+
+    def invalidate_actuator_view(self) -> None:
+        """Discard a published or pending articulation facade binding."""
+
+    def complete_articulation_initialization(self) -> None:
+        """Mark the owning articulation ready after every facade has bound."""
+
+    def write_actuator_parameter(self, name: str, write: _ActuatorParameterWrite) -> None:
+        """Apply one canonical parameter write to backend-owned slots."""
+        del name, write
 
     def stage_user_command(
         self,

@@ -227,14 +227,37 @@ class SimulationContext:
         # Shared renderers for all Camera sensors (compatible renderer_cfg only).
         self._render_context = RenderContext()
 
+        # Services must exist before lifecycle callbacks are registered: ready
+        # dispatch takes a callback snapshot before order-10 asset registration.
+        self._services = ServiceLocator()
+
         # Run renderer post-physics setup.
         self.physics_manager.register_callback(
             lambda _payload: self._render_context.ensure_initialize(),
             PhysicsEvent.PHYSICS_READY,
             order=5,
+            name="render_context_initialize",
         )
-
-        self._services = ServiceLocator()
+        self._actuator_finalize_handle = self.physics_manager.register_callback(
+            lambda payload: PhysicsManager.safe_callback_invoke(
+                self._finalize_actuator_collection,
+                payload,
+                physics_manager=self.physics_manager,
+            ),
+            PhysicsEvent.PHYSICS_READY,
+            order=20,
+            name="actuator_collection_finalize",
+        )
+        self._actuator_stop_handle = self.physics_manager.register_callback(
+            lambda payload: PhysicsManager.safe_callback_invoke(
+                self._clear_actuator_collection_generation,
+                payload,
+                physics_manager=self.physics_manager,
+            ),
+            PhysicsEvent.STOP,
+            order=20,
+            name="actuator_collection_stop",
+        )
 
         type(self)._instance = self  # Mark as valid singleton only after successful init
 
@@ -881,6 +904,34 @@ class SimulationContext:
     # ------------------------------------------------------------------
     # Service locator
     # ------------------------------------------------------------------
+
+    def _get_actuator_collection(self):
+        """Return the lazily-created simulation actuator lifecycle manager."""
+        from isaaclab.actuators import ActuatorCollection
+
+        collection = self._services[ActuatorCollection]
+        if collection is None:
+            collection = ActuatorCollection(self)
+            self._services[ActuatorCollection] = collection
+        return collection
+
+    def _finalize_actuator_collection(self, event) -> None:
+        """Finalize an existing actuator service without constructing an unused one."""
+        del event
+        from isaaclab.actuators import ActuatorCollection
+
+        collection = self._services[ActuatorCollection]
+        if collection is not None:
+            collection.finalize()
+
+    def _clear_actuator_collection_generation(self, event) -> None:
+        """Invalidate an existing actuator generation at the STOP boundary."""
+        del event
+        from isaaclab.actuators import ActuatorCollection
+
+        collection = self._services[ActuatorCollection]
+        if collection is not None:
+            collection.clear_generation()
 
     @property
     def services(self) -> ServiceLocator:
