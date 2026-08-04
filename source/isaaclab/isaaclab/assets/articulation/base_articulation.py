@@ -106,7 +106,7 @@ class BaseArticulation(AssetBase):
     solver-view order matches.
     """
 
-    actuators: ActuatorCollection
+    actuators: ActuatorCollection.ArticulationView
     """Runtime actuator collection for the articulation.
 
     The collection is mapping-like for named actuator group lookup and owns actuator

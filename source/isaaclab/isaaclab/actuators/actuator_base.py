@@ -8,13 +8,14 @@ from __future__ import annotations
 import copy
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, ClassVar
+from collections.abc import Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 
 import isaaclab.utils.string as string_utils
 from isaaclab.utils.types import ArticulationActions
+from isaaclab.utils.warp import ProxyArray
 
 from .actuator_storage import _GroupBinding
 
@@ -32,6 +33,7 @@ class _ManagedParameter:
     def __get__(self, instance: ActuatorBase | None, owner: type[ActuatorBase]) -> torch.Tensor | _ManagedParameter:
         if instance is None:
             return self
+        instance._require_current_facade()
         binding = instance.__dict__.get("_parameter_binding")
         if binding is None:
             return instance.__dict__[self.name]
@@ -42,6 +44,7 @@ class _ManagedParameter:
         return instance._get_deprecated_gain_sidecar(self.name)
 
     def __set__(self, instance: ActuatorBase, value: torch.Tensor) -> None:
+        instance._require_current_facade()
         binding = instance.__dict__.get("_parameter_binding")
         if binding is None:
             instance.__dict__[self.name] = value
@@ -53,6 +56,26 @@ class _ManagedParameter:
             binding.arrays[self.name].torch[:, binding.type_slice].copy_(value)
             return
         instance._get_deprecated_gain_sidecar(self.name).copy_(value)
+
+
+class _GuardedParameterMapping(Mapping[str, ProxyArray]):
+    """Read-only parameter map that validates its owning group generation."""
+
+    def __init__(self, actuator: ActuatorBase, values: Mapping[str, ProxyArray]) -> None:
+        self._actuator = actuator
+        self._values = values
+
+    def __getitem__(self, name: str) -> ProxyArray:
+        self._actuator._require_current_facade()
+        return self._values[name]
+
+    def __iter__(self) -> Iterator[str]:
+        self._actuator._require_current_facade()
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        self._actuator._require_current_facade()
+        return len(self._values)
 
 
 class ActuatorBase(ABC):
@@ -89,6 +112,24 @@ class ActuatorBase(ABC):
         "viscous_friction",
     )
     _supports_execution_aggregation: ClassVar[bool] = False
+
+    def __getattribute__(self, name: str) -> Any:
+        """Guard public group access when the owning facade generation expires."""
+        if not name.startswith("_"):
+            state = object.__getattribute__(self, "__dict__")
+            view = state.get("_facade_view")
+            if view is not None:
+                view._assert_usable()
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Guard public group writes when the owning facade generation expires."""
+        if not name.startswith("_"):
+            state = object.__getattribute__(self, "__dict__")
+            view = state.get("_facade_view")
+            if view is not None:
+                view._assert_usable()
+        object.__setattr__(self, name, value)
 
     effort_limit = _ManagedParameter("effort_limit")
     velocity_limit = _ManagedParameter("velocity_limit")
@@ -312,16 +353,19 @@ class ActuatorBase(ABC):
     @property
     def num_joints(self) -> int:
         """Number of actuators in the group."""
+        self._require_current_facade()
         return len(self._joint_names)
 
     @property
     def num_envs(self) -> int:
         """Number of articulation instances represented by the group."""
+        self._require_current_facade()
         return self._num_envs
 
     @property
     def joint_names(self) -> list[str]:
         """Articulation's joint names that are part of the group."""
+        self._require_current_facade()
         return self._joint_names
 
     @property
@@ -332,7 +376,26 @@ class ActuatorBase(ABC):
             If :obj:`slice(None)` is returned, then the group contains all the joints in the articulation.
             We do this to avoid unnecessary indexing of the joints for performance reasons.
         """
+        self._require_current_facade()
         return self._joint_indices
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        """Managed parameter names in exact-schema declaration order."""
+        return tuple(self.parameters)
+
+    @property
+    def parameters(self) -> Mapping[str, ProxyArray]:
+        """Mutable managed parameter arrays exposed through a read-only mapping."""
+        self._require_current_facade()
+        binding = self.__dict__.get("_parameter_binding")
+        if binding is None or binding.parameter_proxies is None:
+            return _GuardedParameterMapping(self, {})
+        mapping = self.__dict__.get("_parameter_mapping")
+        if mapping is None:
+            mapping = _GuardedParameterMapping(self, binding.parameter_proxies)
+            self.__dict__["_parameter_mapping"] = mapping
+        return mapping
 
     """
     Operations.
@@ -399,6 +462,16 @@ class ActuatorBase(ABC):
         self.__dict__["_deprecated_sidecars"] = {}
         self.__dict__["_deprecated_sidecar_warnings"] = set()
         self.__dict__["_solver_compatibility_sidecars"] = {}
+
+    def _bind_facade_view(self, view: Any) -> None:
+        """Bind generation checks to the owning articulation facade."""
+        self.__dict__["_facade_view"] = view
+
+    def _require_current_facade(self) -> None:
+        """Reject public group access after its articulation generation expires."""
+        view = self.__dict__.get("_facade_view")
+        if view is not None:
+            view._assert_usable()
 
     def _get_compatibility_sidecar(self, name: str) -> torch.Tensor:
         """Return a lazy solver-only compatibility buffer for a bound group."""

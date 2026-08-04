@@ -58,6 +58,7 @@ class _GroupBinding:
     joint_names: tuple[str, ...]
     type_slice: slice
     arrays: Mapping[str, ProxyArray]
+    parameter_proxies: Mapping[str, ProxyArray] | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class _GroupRegistration:
     actuator_type: type[ActuatorBase]
     joint_indices: tuple[int, ...]
     values: Mapping[str, tuple[float, ...]]
+    joint_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ class _GroupLayout:
     num_type_dofs: int
     type_slice: slice
     joint_indices: tuple[int, ...]
+    joint_names: tuple[str, ...]
     prototype_values: Mapping[str, tuple[tuple[float, ...], ...]]
     prototype_assignment: torch.Tensor
 
@@ -155,6 +158,7 @@ def _build_articulation_layout(
                 actual.name != expected.name
                 or actual.actuator_type is not expected.actuator_type
                 or actual.joint_indices != expected.joint_indices
+                or actual.joint_names != expected.joint_names
             ):
                 raise ValueError(f"Source prototypes disagree on actuator group {expected.name!r} topology.")
 
@@ -173,7 +177,21 @@ def _build_articulation_layout(
     group_layout_by_index: dict[int, _GroupLayout] = {}
     for actuator_type, indexed_groups in groups_by_type.items():
         if actuator_type.__dict__.get("_parameter_schema") is None:
-            raise TypeError(f"{actuator_type.__name__} does not opt into managed parameter storage.")
+            for group_index, group in indexed_groups:
+                group_layout_by_index[group_index] = _GroupLayout(
+                    name=group.name,
+                    actuator_type=actuator_type,
+                    global_slice=slice(0, 0),
+                    articulation_offset=0,
+                    num_worlds=num_worlds,
+                    num_type_dofs=len(group.joint_indices),
+                    type_slice=slice(0, len(group.joint_indices)),
+                    joint_indices=group.joint_indices,
+                    joint_names=group.joint_names,
+                    prototype_values=MappingProxyType({}),
+                    prototype_assignment=prototype_assignment,
+                )
+            continue
         parameter_names = actuator_type._parameter_schema().parameter_names
         for group_index, group in indexed_groups:
             unknown_fields = (
@@ -246,6 +264,7 @@ def _build_articulation_layout(
                 num_type_dofs=num_type_dofs,
                 type_slice=slice(group_offset, group_offset + len(group.joint_indices)),
                 joint_indices=group.joint_indices,
+                joint_names=group.joint_names,
                 prototype_values=MappingProxyType(prototype_fields),
                 prototype_assignment=prototype_assignment,
             )

@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import copy
 import logging
+import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -28,6 +30,7 @@ from .actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
 from .actuator_storage import (
     _ArticulationLayout,
     _build_articulation_layout,
+    _GroupBinding,
     _GroupRegistration,
     _PrototypeRegistration,
     _TypedStore,
@@ -37,6 +40,28 @@ if TYPE_CHECKING:
     from isaaclab.cloner import ClonePlan
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_actuator_cfg(cfg: ActuatorBaseCfg) -> ActuatorBaseCfg:
+    """Copy one actuator config without retaining mutable runtime state."""
+    copy_method = getattr(cfg, "copy", None)
+    if callable(copy_method):
+        return copy_method()
+    return copy.deepcopy(cfg)
+
+
+class _GuardedDictFromKeys:
+    """Return ordinary dict snapshots while guarding instance-bound calls."""
+
+    def __get__(self, instance: Any, owner: type | None = None):
+        del owner
+
+        def fromkeys(iterable, value=None) -> dict:
+            if instance is not None:
+                instance._assert_usable()
+            return dict.fromkeys(iterable, value)
+
+        return fromkeys
 
 
 @dataclass(frozen=True)
@@ -71,6 +96,7 @@ class _CollectionGeneration:
         self.generation = generation
         self.bindings = bindings
         self.stores = stores
+        self.groups: dict[object, dict[str, ActuatorBase]] = {}
 
     @classmethod
     def build(
@@ -105,6 +131,7 @@ class _CollectionGeneration:
                             actuator_type=cfg.class_type,
                             joint_indices=joint_indices,
                             values={},
+                            joint_names=tuple(joint_names),
                         ),
                     )
                 layouts.append(
@@ -149,11 +176,71 @@ class _CollectionGeneration:
                 raise ValueError(f"Candidate binding for {binding.registration.key!r} has an invalid registration key.")
 
     def bind_facade_storage(self) -> None:
-        """Prepare private storage bindings before publication.
+        """Construct exact logical groups and bind candidate-owned typed arrays."""
+        for binding in self.bindings:
+            groups: dict[str, ActuatorBase] = {}
+            control = binding.registration.control
+            for (name, source_cfg), group_layout in zip(
+                binding.registration.cfgs.items(), binding.layout.group_layouts, strict=True
+            ):
+                joint_indices = torch.tensor(group_layout.joint_indices, dtype=torch.int32, device=control.device)
+                joint_names = group_layout.joint_names
+                public_joint_indices: slice | torch.Tensor
+                if group_layout.joint_indices == tuple(range(binding.layout.num_joints)):
+                    public_joint_indices = slice(None)
+                else:
+                    public_joint_indices = joint_indices
+                cfg = _copy_actuator_cfg(source_cfg)
+                if hasattr(control, "get_default_joint_properties") and hasattr(cfg, "effort_limit"):
+                    defaults = control.get_default_joint_properties(joint_indices)
+                    actuator = group_layout.actuator_type(
+                        cfg=cfg,
+                        joint_names=list(joint_names),
+                        joint_ids=public_joint_indices,
+                        num_envs=group_layout.num_worlds,
+                        device=control.device,
+                        stiffness=defaults.stiffness,
+                        damping=defaults.damping,
+                        armature=defaults.armature,
+                        friction=defaults.friction,
+                        dynamic_friction=defaults.dynamic_friction,
+                        viscous_friction=defaults.viscous_friction,
+                        effort_limit=defaults.effort_limit,
+                        velocity_limit=defaults.velocity_limit,
+                    )
+                else:
+                    actuator = object.__new__(group_layout.actuator_type)
+                    actuator.cfg = cfg
+                    actuator._num_envs = group_layout.num_worlds
+                    actuator._device = control.device
+                    actuator._joint_names = list(joint_names)
+                    actuator._joint_indices = public_joint_indices
 
-        Task 4 deliberately does not expose joint-domain arrays or the full facade.
-        The layouts and typed stores stay private until the active-slot swap.
-        """
+                store = self.stores.get(group_layout.actuator_type)
+                if store is not None:
+                    schema = group_layout.actuator_type._parameter_schema()
+                    group_proxies = {field.name: store.group_proxy(group_layout, field.name) for field in schema.fields}
+                    for field in schema.fields:
+                        existing = actuator.__dict__.get(field.name)
+                        if isinstance(existing, torch.Tensor):
+                            group_proxies[field.name].torch.copy_(existing)
+                    type_layout = binding.layout.type_layouts[group_layout.actuator_type]
+                    actuator._bind_parameter_storage(
+                        _GroupBinding(
+                            generation=self.generation,
+                            joint_indices=joint_indices,
+                            joint_names=tuple(joint_names),
+                            type_slice=group_layout.type_slice,
+                            arrays={field.name: store.type_proxy(type_layout, field.name) for field in schema.fields},
+                            parameter_proxies={
+                                field.name: group_proxies[field.name]
+                                for field in schema.fields
+                                if field.role == "parameter"
+                            },
+                        )
+                    )
+                groups[name] = actuator
+            self.groups[binding.registration.key] = groups
 
     def close(self) -> None:
         """Release every candidate-owned allocation and private reference."""
@@ -164,6 +251,7 @@ class _CollectionGeneration:
             store._mapping_proxies.clear()
             store._initialization_buffers.clear()
         self.stores.clear()
+        self.groups.clear()
 
 
 def _binding_context(binding: _ArticulationBinding) -> str:
@@ -195,15 +283,122 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
     unsupported.
     """
 
+    class _GuardedMapping(Mapping[Any, Any]):
+        """Read-only mapping whose owner validates each access."""
+
+        def __init__(self, owner: Any, values: Mapping[Any, Any]) -> None:
+            self._owner = owner
+            self._values = values
+
+        def __getitem__(self, key: Any) -> Any:
+            self._owner._assert_usable()
+            return self._values[key]
+
+        def __iter__(self) -> Iterator[Any]:
+            self._owner._assert_usable()
+            return iter(self._values)
+
+        def __len__(self) -> int:
+            self._owner._assert_usable()
+            return len(self._values)
+
+    class TypeView:
+        """Compact exact-class actuator view for one articulation generation."""
+
+        def __init__(
+            self,
+            facade: ActuatorCollection.ArticulationView,
+            actuator_type: type[ActuatorBase],
+            binding: _ArticulationBinding,
+            store: _TypedStore,
+            groups: Mapping[str, ActuatorBase],
+        ) -> None:
+            self._facade = facade
+            self._actuator_type = actuator_type
+            type_layout = binding.layout.type_layouts[actuator_type]
+            group_layouts = tuple(
+                group for group in binding.layout.group_layouts if group.actuator_type is actuator_type
+            )
+            self._joint_names = tuple(
+                joint_name for group in group_layouts for joint_name in groups[group.name].__dict__["_joint_names"]
+            )
+            self._joint_indices = torch.tensor(
+                type_layout.compact_joint_indices, dtype=torch.int32, device=binding.registration.control.device
+            )
+            self._group_slices = {group.name: group.type_slice for group in group_layouts}
+            self._num_instances = type_layout.num_worlds
+            schema = actuator_type._parameter_schema()
+            parameter_values = {
+                field.name: store.type_proxy(type_layout, field.name)
+                for field in schema.fields
+                if field.role == "parameter"
+            }
+            self._parameters = ActuatorCollection._GuardedMapping(self, parameter_values)
+
+        def _assert_usable(self) -> None:
+            self._facade._assert_usable()
+
+        @property
+        def actuator_type(self) -> type[ActuatorBase]:
+            """Exact managed actuator class represented by this view."""
+            self._assert_usable()
+            return self._actuator_type
+
+        @property
+        def num_instances(self) -> int:
+            """Number of articulation instances represented by this view."""
+            self._assert_usable()
+            return self._num_instances
+
+        @property
+        def num_joints(self) -> int:
+            """Number of compact actuator DOF occurrences represented by this view."""
+            self._assert_usable()
+            return len(self._joint_names)
+
+        @property
+        def joint_names(self) -> tuple[str, ...]:
+            """Compact joint names in group and configuration order."""
+            self._assert_usable()
+            return self._joint_names
+
+        @property
+        def joint_indices(self) -> torch.Tensor:
+            """Articulation joint indices for compact DOF occurrences."""
+            self._assert_usable()
+            return self._joint_indices
+
+        @property
+        def group_slices(self) -> dict[str, slice]:
+            """Compact column slices keyed by logical actuator group."""
+            self._assert_usable()
+            return dict(self._group_slices)
+
+        @property
+        def parameter_names(self) -> tuple[str, ...]:
+            """Managed parameter names in exact-schema declaration order."""
+            self._assert_usable()
+            return tuple(self._parameters._values)
+
+        @property
+        def parameters(self) -> Mapping[str, ProxyArray]:
+            """Contiguous mutable parameter arrays exposed through a read-only mapping."""
+            self._assert_usable()
+            return self._parameters
+
     class ArticulationView(dict[str, ActuatorBase]):
-        """Guarded articulation facade owned by one collection generation."""
+        """Guarded dictionary facade owned by one collection generation."""
+
+        _MISSING = object()
+        fromkeys = _GuardedDictFromKeys()
 
         def __init__(self, manager: ActuatorCollection, key: object) -> None:
-            super().__init__()
+            dict.__init__(self)
             self._manager = manager
             self._key = key
             self._generation: int | None = None
             self._failure: str = "pending actuator view"
+            self._by_type: Mapping[type[ActuatorBase], ActuatorCollection.TypeView] = {}
 
         @property
         def generation(self) -> int:
@@ -222,21 +417,159 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             )
 
         @property
+        def by_type(self) -> Mapping[type[ActuatorBase], ActuatorCollection.TypeView]:
+            """Read-only exact managed class views for this articulation."""
+            self._assert_usable()
+            return self._by_type
+
+        @property
         def command(self):
-            """Command facade placeholder guarded until Task 5 installs runtime arrays."""
+            """Command facade placeholder guarded until command storage is installed."""
             self._assert_usable()
             raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
 
         @property
         def joint_command(self):
-            """Processed-command facade placeholder guarded until Task 5."""
+            """Processed-command facade placeholder guarded until command storage is installed."""
             self._assert_usable()
             raise RuntimeError("Actuator command storage is not available before the scoped facade is installed.")
 
         def compute(self, dt: float = 0.0) -> None:
-            """Reject execution while a late registration requires a safe rebuild."""
+            """Reject execution while a topology mutation requires a safe rebuild."""
             del dt
             self._assert_usable()
+
+        def __getitem__(self, name: str) -> ActuatorBase:
+            self._assert_usable()
+            return dict.__getitem__(self, name)
+
+        def __iter__(self) -> Iterator[str]:
+            self._assert_usable()
+            return dict.__iter__(self)
+
+        def __len__(self) -> int:
+            self._assert_usable()
+            return dict.__len__(self)
+
+        def __contains__(self, name: object) -> bool:
+            self._assert_usable()
+            return dict.__contains__(self, name)
+
+        def __repr__(self) -> str:
+            self._assert_usable()
+            return dict.__repr__(self)
+
+        def __reversed__(self) -> Iterator[str]:
+            self._assert_usable()
+            return dict.__reversed__(self)
+
+        def __or__(self, other: dict) -> dict:
+            self._assert_usable()
+            return dict.__or__(self, other)
+
+        def __ror__(self, other: dict) -> dict:
+            self._assert_usable()
+            return dict.__ror__(self, other)
+
+        def __eq__(self, other: object) -> bool:
+            self._assert_usable()
+            return dict.__eq__(self, other)
+
+        def __ne__(self, other: object) -> bool:
+            self._assert_usable()
+            return dict.__ne__(self, other)
+
+        def keys(self):
+            self._assert_usable()
+            return dict.keys(self)
+
+        def items(self):
+            self._assert_usable()
+            return dict.items(self)
+
+        def values(self):
+            self._assert_usable()
+            return dict.values(self)
+
+        def get(self, name: str, default: Any = None) -> Any:
+            self._assert_usable()
+            return dict.get(self, name, default)
+
+        def copy(self) -> dict[str, ActuatorBase]:
+            self._assert_usable()
+            return dict.copy(self)
+
+        def __setitem__(self, name: str, actuator: ActuatorBase) -> None:
+            self._require_current_generation()
+            candidate = self._topology_snapshot()
+            dict.__setitem__(candidate, name, actuator)
+            self._commit_topology(candidate, "setitem", name, actuator)
+
+        def __delitem__(self, name: str) -> None:
+            self._require_current_generation()
+            candidate = self._topology_snapshot()
+            dict.__delitem__(candidate, name)
+            self._commit_topology(candidate, "delitem", name, None)
+
+        def clear(self) -> None:
+            self._require_current_generation()
+            candidate = self._topology_snapshot()
+            dict.clear(candidate)
+            self._commit_topology(candidate, "clear", "", None)
+
+        def pop(self, name: str, default: Any = _MISSING) -> Any:
+            self._require_current_generation()
+            candidate = self._topology_snapshot()
+            if default is self._MISSING:
+                value = dict.pop(candidate, name)
+            else:
+                value = dict.pop(candidate, name, default)
+            self._commit_topology(candidate, "pop", name, None)
+            return value
+
+        def popitem(self) -> tuple[str, ActuatorBase]:
+            self._require_current_generation()
+            candidate = self._topology_snapshot()
+            value = dict.popitem(candidate)
+            self._commit_topology(candidate, "popitem", value[0], None)
+            return value
+
+        def setdefault(self, name: str, default: ActuatorBase | None = None) -> ActuatorBase | None:
+            self._require_current_generation()
+            candidate = self._topology_snapshot()
+            value = dict.setdefault(candidate, name, default)
+            self._commit_topology(candidate, "setdefault", name, value)
+            return value
+
+        def update(self, *args, **kwargs) -> None:
+            self._require_current_generation()
+            candidate = self._topology_snapshot()
+            dict.update(candidate, *args, **kwargs)
+            self._commit_topology(candidate, "update", "", None)
+
+        def __ior__(self, other: Mapping[str, ActuatorBase]):
+            self._require_current_generation()
+            candidate = self._topology_snapshot()
+            dict.__ior__(candidate, other)
+            self._commit_topology(candidate, "ior", "", None)
+            return self
+
+        def _install(
+            self,
+            generation: _CollectionGeneration,
+            binding: _ArticulationBinding,
+        ) -> None:
+            groups = generation.groups[binding.registration.key]
+            dict.__init__(self, groups)
+            for group in groups.values():
+                group._bind_facade_view(self)
+            type_views = {
+                actuator_type: ActuatorCollection.TypeView(
+                    self, actuator_type, binding, generation.stores[actuator_type], groups
+                )
+                for actuator_type in binding.layout.type_layouts
+            }
+            self._by_type = ActuatorCollection._GuardedMapping(self, type_views)
 
         def _publish(self, generation: int) -> None:
             self._generation = generation
@@ -246,15 +579,43 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._generation = None
             self._failure = failure
 
-        def _assert_usable(self) -> None:
+        def _commit_topology(
+            self,
+            candidate: dict[str, ActuatorBase],
+            operation: str,
+            name: str,
+            actuator: ActuatorBase | None,
+        ) -> None:
+            current_names = tuple(dict.keys(self))
+            if tuple(candidate) == current_names and all(
+                candidate[group_name] is dict.__getitem__(self, group_name) for group_name in current_names
+            ):
+                return
+            self._manager.stage_deprecated_mutation(
+                self,
+                operation,
+                name,
+                actuator,
+                candidate=candidate,
+            )
+            dict.clear(self)
+            dict.update(self, candidate)
+
+        def _topology_snapshot(self) -> dict[str, ActuatorBase]:
+            return {group_name: group for group_name, group in dict.items(self)}
+
+        def _require_current_generation(self) -> None:
             if self._manager._closed:
                 raise RuntimeError("Actuator collection is closed.")
             if self._failure:
                 raise RuntimeError(self._failure)
-            if self._manager._dirty:
-                raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator access.")
             if self._generation is None or self._manager.generation != self._generation:
                 raise RuntimeError("stale actuator view")
+
+        def _assert_usable(self) -> None:
+            self._require_current_generation()
+            if self._manager._dirty:
+                raise RuntimeError("late registration requires STOP-to-READY rebuild before actuator access.")
 
     def _initialize_manager(self, sim_context: Any) -> None:
         self._sim_context = sim_context
@@ -265,6 +626,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._dirty = False
         self._closed = False
         self._deprecated_staged_topology_overrides: dict[object, object] = {}
+        self._deprecated_topology_warning_emitted = False
 
     def register_articulation(
         self,
@@ -281,6 +643,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             raise RuntimeError("Actuator collection is closed and cannot accept registrations.")
         if key in self._views:
             raise RuntimeError(f"Actuator collection already registered {key!r} for this generation.")
+        retained_override = self._deprecated_staged_topology_overrides.get(key)
+        if retained_override is not None:
+            cfgs = {name: _copy_actuator_cfg(cfg) for name, cfg in retained_override.items()}
         control.discover_native_actuators(cfgs)
         registration = _ArticulationRegistration(
             key=key,
@@ -344,7 +709,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._active_generation = candidate
         try:
             for binding in candidate.bindings:
-                self._views[binding.registration.key]._publish(candidate.generation)
+                view = self._views[binding.registration.key]
+                view._install(candidate, binding)
+                view._publish(candidate.generation)
             for binding in candidate.bindings:
                 try:
                     binding.registration.control.bind_actuator_view(self._views[binding.registration.key])
@@ -364,6 +731,37 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             error.add_note("Actuator collection finalization rolled back every registration.")
             raise
         self._dirty = False
+        for binding in candidate.bindings:
+            self._deprecated_staged_topology_overrides.pop(binding.registration.key, None)
+
+    def stage_deprecated_mutation(
+        self,
+        view: ArticulationView,
+        operation: str,
+        name: str,
+        actuator: ActuatorBase | None,
+        *,
+        candidate: Mapping[str, ActuatorBase] | None = None,
+    ) -> None:
+        """Retain a copied ordered config override for deprecated facade mutation."""
+        del operation, name, actuator
+        view._require_current_generation()
+        if candidate is None:
+            candidate = view
+        override: dict[str, ActuatorBaseCfg] = {}
+        for group_name, group in candidate.items():
+            if not isinstance(group, ActuatorBase):
+                raise TypeError("Actuator facade values must be ActuatorBase instances.")
+            override[group_name] = _copy_actuator_cfg(group.__dict__["cfg"])
+        if not self._deprecated_topology_warning_emitted:
+            warnings.warn(
+                "Mutating Articulation.actuators is deprecated; rebuild the simulation from ArticulationCfg instead.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+            self._deprecated_topology_warning_emitted = True
+        self._deprecated_staged_topology_overrides[view._key] = override
+        self._dirty = True
 
     def _invalidate_pending(self, error: Exception, *, failure: str) -> None:
         for registration in self._registrations:
