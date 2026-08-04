@@ -878,9 +878,17 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             def set_position_index(
                 self,
                 *,
-                value: torch.Tensor | wp.array,
-                joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
-                env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                value: torch.Tensor | wp.array(dtype=wp.float32),
+                joint_ids: Sequence[int]
+                | torch.Tensor
+                | wp.array(dtype=wp.int32)
+                | wp.array(dtype=wp.int64)
+                | None = None,
+                env_ids: Sequence[int]
+                | torch.Tensor
+                | wp.array(dtype=wp.int32)
+                | wp.array(dtype=wp.int64)
+                | None = None,
                 full_data: bool = False,
             ) -> None:
                 """Set desired positions using articulation index selectors.
@@ -896,9 +904,17 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             def set_velocity_index(
                 self,
                 *,
-                value: torch.Tensor | wp.array,
-                joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
-                env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                value: torch.Tensor | wp.array(dtype=wp.float32),
+                joint_ids: Sequence[int]
+                | torch.Tensor
+                | wp.array(dtype=wp.int32)
+                | wp.array(dtype=wp.int64)
+                | None = None,
+                env_ids: Sequence[int]
+                | torch.Tensor
+                | wp.array(dtype=wp.int32)
+                | wp.array(dtype=wp.int64)
+                | None = None,
                 full_data: bool = False,
             ) -> None:
                 """Set desired velocities using articulation index selectors.
@@ -914,9 +930,17 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             def set_effort_index(
                 self,
                 *,
-                value: torch.Tensor | wp.array,
-                joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
-                env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+                value: torch.Tensor | wp.array(dtype=wp.float32),
+                joint_ids: Sequence[int]
+                | torch.Tensor
+                | wp.array(dtype=wp.int32)
+                | wp.array(dtype=wp.int64)
+                | None = None,
+                env_ids: Sequence[int]
+                | torch.Tensor
+                | wp.array(dtype=wp.int32)
+                | wp.array(dtype=wp.int64)
+                | None = None,
                 full_data: bool = False,
             ) -> None:
                 """Set effort commands using articulation index selectors.
@@ -932,9 +956,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             def set_position_mask(
                 self,
                 *,
-                value: torch.Tensor | wp.array,
-                joint_mask: torch.Tensor | wp.array | None = None,
-                env_mask: torch.Tensor | wp.array | None = None,
+                value: torch.Tensor | wp.array(dtype=wp.float32),
+                joint_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
+                env_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
             ) -> None:
                 """Set desired positions using articulation masks.
 
@@ -948,9 +972,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             def set_velocity_mask(
                 self,
                 *,
-                value: torch.Tensor | wp.array,
-                joint_mask: torch.Tensor | wp.array | None = None,
-                env_mask: torch.Tensor | wp.array | None = None,
+                value: torch.Tensor | wp.array(dtype=wp.float32),
+                joint_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
+                env_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
             ) -> None:
                 """Set desired velocities using articulation masks.
 
@@ -964,9 +988,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             def set_effort_mask(
                 self,
                 *,
-                value: torch.Tensor | wp.array,
-                joint_mask: torch.Tensor | wp.array | None = None,
-                env_mask: torch.Tensor | wp.array | None = None,
+                value: torch.Tensor | wp.array(dtype=wp.float32),
+                joint_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
+                env_mask: torch.Tensor | wp.array(dtype=wp.bool) | None = None,
             ) -> None:
                 """Set effort commands using articulation masks.
 
@@ -977,7 +1001,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 """
                 self._view._write_command_mask(value, env_mask, joint_mask, self.effort)
 
-            def close(self) -> None:
+            def _close(self) -> None:
                 """Release every facade-owned command alias."""
                 self._position = None
                 self._velocity = None
@@ -1027,7 +1051,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     raise RuntimeError("stale actuator view")
                 return self._effort
 
-            def close(self) -> None:
+            def _close(self) -> None:
                 """Release every facade-owned processed-command alias."""
                 self._position = None
                 self._velocity = None
@@ -1890,9 +1914,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._generation = None
             self._install_token = None
             if self._command is not None:
-                self._command.close()
+                self._command._close()
             if self._joint_command is not None:
-                self._joint_command.close()
+                self._joint_command._close()
             self._command = None
             self._joint_command = None
             self._computed_effort = None

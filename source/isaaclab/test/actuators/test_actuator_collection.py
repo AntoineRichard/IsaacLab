@@ -1165,6 +1165,15 @@ def test_scoped_raw_and_processed_commands_have_separate_stable_storage(device: 
 
 
 @pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_scoped_command_facades_do_not_expose_public_close(device: str) -> None:
+    """Scoped command facade lifetimes are owned exclusively by their view."""
+    _, view, _ = _make_finalized_two_articulation_manager(device=device)
+
+    assert not hasattr(view.command, "close")
+    assert not hasattr(view.joint_command, "close")
+
+
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
 def test_scoped_command_default_selectors_include_uncovered_joints(device: str) -> None:
     """Default command selectors cover every articulation joint, not just actuator groups."""
     collection = ActuatorCollection(_ScopedSimulation(device=device))
