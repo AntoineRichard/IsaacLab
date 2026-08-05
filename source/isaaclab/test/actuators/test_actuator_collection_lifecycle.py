@@ -2094,6 +2094,129 @@ def test_clear_generation_releases_every_resource_after_invalidation_failures(mo
     assert replacement.is_ready
 
 
+def test_view_invalidation_releases_every_resource_after_group_failures(monkeypatch) -> None:
+    """Facade invalidation must continue after every nested group release failure."""
+    collection = ActuatorCollection(_Simulation())
+    control = _Control(num_joints=1)
+    cfgs = {
+        name: IdealPDActuatorCfg(
+            class_type=IdealPDActuator,
+            joint_names_expr=["wheel"],
+            stiffness=None,
+            damping=None,
+        )
+        for name in ("first", "second")
+    }
+    view = _register_managed(collection, "first", control, cfgs)
+    collection.finalize()
+
+    selector_state = view._selector_state
+    assert selector_state is not None
+    first_group = view["first"]
+    second_group = view["second"]
+    first_error = _StructuredError(29, "first group release")
+    second_error = RuntimeError("second group release")
+    release_second = second_group._release_facade_storage
+
+    def fail_first_release() -> None:
+        raise first_error
+
+    def release_second_then_fail() -> None:
+        release_second()
+        raise second_error
+
+    monkeypatch.setattr(first_group, "_release_facade_storage", fail_first_release)
+    monkeypatch.setattr(second_group, "_release_facade_storage", release_second_then_fail)
+
+    with pytest.raises(_StructuredError) as caught:
+        view._invalidate("stale actuator view")
+
+    assert caught.value is first_error
+    assert any("second group release" in note for note in caught.value.__notes__)
+    assert view._command is view._joint_command is None
+    assert view._computed_effort is view._applied_effort is None
+    assert dict.__len__(view) == 0
+    assert view._by_type == {}
+    assert view._selector_state is None
+    assert selector_state._closed
+    assert view._control is None
+
+    view._invalidate("stale actuator view")
+
+
+def test_candidate_close_releases_every_resource_after_nested_failures(monkeypatch) -> None:
+    """Candidate close must clear all state while retaining the first nested cleanup failure."""
+    collection = ActuatorCollection(_Simulation())
+    _register_managed(collection, "first", _Control(num_joints=1))
+    candidate = actuator_collection._CollectionGeneration.build(
+        tuple(collection._registrations), collection._sim_context, generation=0
+    )
+    candidate.bind_facade_storage()
+
+    class _FailingStaging:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+            raise RuntimeError("staging close")
+
+    group = candidate.groups["first"]["wheel"]
+    selector_state = candidate.selector_states["first"]
+    store = candidate.stores[IdealPDActuator]
+    failing_staging = _FailingStaging()
+    candidate.backend_parameter_staging["test"] = failing_staging
+    first_error = _StructuredError(31, "group release")
+
+    def fail_group_release() -> None:
+        raise first_error
+
+    def fail_store_release() -> None:
+        raise RuntimeError("store initialization release")
+
+    monkeypatch.setattr(group, "_release_facade_storage", fail_group_release)
+    monkeypatch.setattr(store, "_release_initialization_buffers", fail_store_release)
+
+    with pytest.raises(_StructuredError) as caught:
+        candidate.close()
+
+    assert caught.value is first_error
+    assert any("staging close" in note for note in caught.value.__notes__)
+    assert any("store initialization release" in note for note in caught.value.__notes__)
+    assert selector_state._closed
+    assert (
+        candidate.groups == candidate.selector_states == candidate.backend_parameter_staging == candidate.stores == {}
+    )
+    assert candidate.managed_group_resolutions == {}
+    assert candidate._solver_properties_written == []
+    assert not candidate.joint_store._fields and not candidate.joint_store._articulation_proxies
+    assert not candidate.solver_store._fields and not candidate.solver_store._source_rows
+    assert not store._fields and not store._type_proxies and not store._group_proxies and not store._mapping_proxies
+    assert failing_staging.close_count == 1
+
+    candidate.close()
+
+
+def test_finalization_retains_trigger_when_candidate_close_fails(monkeypatch) -> None:
+    """Rollback must note a close failure without replacing its structured trigger."""
+    collection = ActuatorCollection(_Simulation())
+    trigger = _StructuredError(37, "prepare trigger")
+    _register_managed(collection, "first", _Control(prepare_error=trigger, num_joints=1))
+    close = actuator_collection._CollectionGeneration.close
+
+    def close_then_fail(candidate) -> None:
+        close(candidate)
+        raise RuntimeError("candidate close")
+
+    monkeypatch.setattr(actuator_collection._CollectionGeneration, "close", close_then_fail)
+
+    with pytest.raises(_StructuredError) as caught:
+        collection.finalize()
+
+    assert caught.value is trigger
+    assert any("candidate close" in note for note in caught.value.__notes__)
+
+
 def test_close_marks_collection_closed_after_invalidation_failure() -> None:
     """Closing must reject later registration even when its cleanup reports an error."""
     collection = ActuatorCollection(_Simulation())

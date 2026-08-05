@@ -674,8 +674,11 @@ class _CollectionGeneration:
             candidate.selector_states = {
                 binding.registration.key: _SelectorState(binding) for binding in candidate.bindings
             }
-        except Exception:
-            candidate.close()
+        except Exception as error:
+            try:
+                candidate.close()
+            except Exception as cleanup_error:
+                error.add_note(f"Failed to close the actuator candidate: {cleanup_error}")
             raise
         return candidate
 
@@ -1029,35 +1032,68 @@ class _CollectionGeneration:
 
     def close(self) -> None:
         """Release every candidate-owned allocation and private reference."""
-        for groups in self.groups.values():
-            for group in groups.values():
-                release = getattr(group, "_release_facade_storage", None)
-                if release is not None:
-                    release()
-        for selector_state in self.selector_states.values():
-            selector_state.close()
-        self.selector_states.clear()
-        for staging in self.backend_parameter_staging.values():
-            staging.close()
-        self.backend_parameter_staging.clear()
-        self.solver_store.close()
-        self.joint_store.close()
-        for store in self.stores.values():
-            store._release_initialization_buffers()
-            store._fields.clear()
-            store._type_proxies.clear()
-            store._group_proxies.clear()
-            store._mapping_proxies.clear()
-        self.stores.clear()
-        self.groups.clear()
-        self.managed_group_resolutions.clear()
-        self._solver_properties_written.clear()
+        failures: list[Exception] = []
+        try:
+            for groups in self.groups.values():
+                for group in groups.values():
+                    release = getattr(group, "_release_facade_storage", None)
+                    if release is not None:
+                        try:
+                            release()
+                        except Exception as error:
+                            failures.append(error)
+            for selector_state in self.selector_states.values():
+                try:
+                    selector_state.close()
+                except Exception as error:
+                    failures.append(error)
+            for staging in self.backend_parameter_staging.values():
+                try:
+                    staging.close()
+                except Exception as error:
+                    failures.append(error)
+            try:
+                self.solver_store.close()
+            except Exception as error:
+                failures.append(error)
+            try:
+                self.joint_store.close()
+            except Exception as error:
+                failures.append(error)
+            for store in self.stores.values():
+                try:
+                    store._release_initialization_buffers()
+                except Exception as error:
+                    failures.append(error)
+                finally:
+                    store._fields.clear()
+                    store._type_proxies.clear()
+                    store._group_proxies.clear()
+                    store._mapping_proxies.clear()
+        finally:
+            self.selector_states.clear()
+            self.backend_parameter_staging.clear()
+            self.stores.clear()
+            self.groups.clear()
+            self.managed_group_resolutions.clear()
+            self._solver_properties_written.clear()
+        _raise_cleanup_failures(failures)
 
 
 def _binding_context(binding: _ArticulationBinding) -> str:
     """Describe the articulation groups involved in a binding failure."""
     groups = ", ".join(f"{group.name} ({group.actuator_type.__name__})" for group in binding.layout.group_layouts)
     return f"articulation {binding.registration.key!r}; actuator groups: {groups or '<none>'}"
+
+
+def _raise_cleanup_failures(failures: list[Exception]) -> None:
+    """Raise the first cleanup failure after preserving later failures as notes."""
+    if not failures:
+        return
+    first, *remaining = failures
+    for error in remaining:
+        first.add_note(f"Additional actuator cleanup failure: {error}")
+    raise first
 
 
 class ActuatorCollection(Mapping[str, ActuatorBase]):
@@ -2542,13 +2578,20 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._failure = ""
 
         def _invalidate(self, failure: str) -> None:
+            failures: list[Exception] = []
             self._failure = failure
             self._generation = None
             self._install_token = None
             if self._command is not None:
-                self._command._close()
+                try:
+                    self._command._close()
+                except Exception as error:
+                    failures.append(error)
             if self._joint_command is not None:
-                self._joint_command._close()
+                try:
+                    self._joint_command._close()
+                except Exception as error:
+                    failures.append(error)
             self._command = None
             self._joint_command = None
             self._computed_effort = None
@@ -2556,11 +2599,17 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._backend_parameter_staging = None
             self._has_implicit_actuators = False
             for group in tuple(dict.values(self)):
-                group._release_facade_storage()
+                try:
+                    group._release_facade_storage()
+                except Exception as error:
+                    failures.append(error)
             dict.clear(self)
             if isinstance(self._by_type, ActuatorCollection._GuardedMapping):
                 for type_view in tuple(self._by_type._values.values()):
-                    type_view._release()
+                    try:
+                        type_view._release()
+                    except Exception as error:
+                        failures.append(error)
                 self._by_type._values.clear()
             self._by_type = {}
             selector_state = self._selector_state
@@ -2569,7 +2618,11 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._control = None
             self._native_group_binding_ids = set()
             if selector_state is not None:
-                selector_state.close()
+                try:
+                    selector_state.close()
+                except Exception as error:
+                    failures.append(error)
+            _raise_cleanup_failures(failures)
 
         def _require_selector_state(self) -> _SelectorState:
             """Return the active selector state after generation validation."""
@@ -2728,7 +2781,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     error.add_note(str(restore_error))
             self._invalidate_pending(error, failure="finalization failed")
             if candidate is not None:
-                candidate.close()
+                try:
+                    candidate.close()
+                except Exception as cleanup_error:
+                    error.add_note(f"Failed to close the actuator candidate: {cleanup_error}")
             raise
 
         self._active_generation = candidate
@@ -2758,7 +2814,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             except Exception as restore_error:
                 error.add_note(str(restore_error))
             self._invalidate_pending(error, failure="finalization failed")
-            candidate.close()
+            try:
+                candidate.close()
+            except Exception as cleanup_error:
+                error.add_note(f"Failed to close the actuator candidate: {cleanup_error}")
             error.add_note("Actuator collection finalization rolled back every registration.")
             raise
         candidate.commit_solver_properties()
