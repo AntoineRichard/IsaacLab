@@ -72,19 +72,14 @@ or new dependency.
 
 ## Testing
 
-Focused Hydra utility tests will verify that:
+Add exactly one small regression test in the existing Hydra utility test file. The test resolves the Cartpole task
+with `physics=newton_mjwarp`, captures INFO logs, and checks the private metadata plus the banner's separators and
+physics line. It stops immediately after configuration resolution: it does not launch Kit, initialize a simulator,
+construct an environment, allocate GPU simulation state, or run training.
 
-- explicit physics, renderer, and domain selections are captured with their full active paths;
-- fallback choices are recorded as `default` with the concrete replacement type;
-- nested active presets are included while inactive alternatives are absent;
-- chained presets at one path retain one entry per resolved node;
-- `__resolved_presets__` is immutable and excluded from `to_dict()` output;
-- the INFO banner contains the exact top and bottom separators and one record per preset line;
-- the banner preserves resolution order and uses canonical names for deprecated aliases; and
-- failed resolution emits no banner.
-
-Regression tests are written first and run against the unchanged resolver to confirm that they fail because the
-metadata and banner do not yet exist. The targeted test file is then rerun after the minimal implementation.
+The regression test is written first and run against the unchanged resolver to confirm that it fails because the
+metadata and banner do not yet exist. The same single test is then rerun after the minimal implementation. No matrix
+of physics backends, renderer backends, task types, failure paths, or full training launches is added.
 
 ## Documentation and changelog
 
