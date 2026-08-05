@@ -775,8 +775,12 @@ def test_selection_manifest_is_atomic_with_append_only_history(tmp_path):
         record = _record(benchmark)
         record["identity"]["candidate_sha"] = context.candidate_sha
         record["identity"]["harness_sha256"] = context.harness_sha256
+        record["identity"]["batch_id"] = context.batch_id
         record["identity"]["observation_key"] = f"row-{index}"
         record["identity"]["revision_shas"] = context.revision_shas
+        record["metadata"].update(
+            matrix=context.benchmark_config["matrix"], benchmark_config_sha256=context.benchmark_config_sha256
+        )
         (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
         coordinator.select_attempt(attempt, context)
         attempts.append(str(attempt.relative_to(tmp_path / "run")))
@@ -785,6 +789,66 @@ def test_selection_manifest_is_atomic_with_append_only_history(tmp_path):
     assert json.loads(history[0].read_text())["attempts"] == attempts[:1]
     assert json.loads(history[1].read_text())["attempts"] == attempts
     assert json.loads((tmp_path / "run" / "accepted-attempts.json").read_text())["attempts"] == attempts
+
+
+def test_selection_appends_exact_build_then_runtime_configurations(tmp_path):
+    """The real selection path preserves one configuration identity per matrix batch."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_selection_two_matrix")
+    base = _coordinate_context(benchmark, tmp_path)
+    contexts = {
+        "build": benchmark._CoordinateContext(
+            **{
+                **base.__dict__,
+                "batch_id": "build-01",
+                "benchmark_config": {"matrix": "build"},
+                "benchmark_config_sha256": "b" * 64,
+            }
+        ),
+        "runtime": benchmark._CoordinateContext(
+            **{
+                **base.__dict__,
+                "batch_id": "runtime-01",
+                "benchmark_config": {"matrix": "runtime"},
+                "benchmark_config_sha256": "r" * 64,
+            }
+        ),
+    }
+    coordinator = benchmark.Coordinator(tmp_path / "run", sleep=lambda _: None)
+    for matrix, context in contexts.items():
+        attempt = tmp_path / "run" / "observations" / matrix / "attempt-01"
+        attempt.mkdir(parents=True)
+        record = _record(benchmark)
+        record["identity"].update(
+            batch_id=context.batch_id,
+            candidate_sha=context.candidate_sha,
+            harness_sha256=context.harness_sha256,
+            observation_key=matrix,
+            revision_shas=context.revision_shas,
+        )
+        record["metadata"].update(matrix=matrix, benchmark_config_sha256=context.benchmark_config_sha256)
+        (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
+        coordinator.select_attempt(attempt, context)
+    manifest = json.loads((tmp_path / "run" / "accepted-attempts.json").read_text())
+    assert manifest["benchmark_configs"] == {
+        "build": {"batch_id": "build-01", "sha256": "b" * 64},
+        "runtime": {"batch_id": "runtime-01", "sha256": "r" * 64},
+    }
+    assert len(list((tmp_path / "run" / "selection-history").glob("accepted-attempts-*.json"))) == 2
+    conflicting = benchmark._CoordinateContext(**{**contexts["runtime"].__dict__, "benchmark_config_sha256": "x" * 64})
+    attempt = tmp_path / "run" / "observations" / "runtime-conflict" / "attempt-01"
+    attempt.mkdir(parents=True)
+    record = _record(benchmark)
+    record["identity"].update(
+        batch_id=conflicting.batch_id,
+        candidate_sha=conflicting.candidate_sha,
+        harness_sha256=conflicting.harness_sha256,
+        observation_key="runtime-conflict",
+        revision_shas=conflicting.revision_shas,
+    )
+    record["metadata"].update(matrix="runtime", benchmark_config_sha256=conflicting.benchmark_config_sha256)
+    (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="configuration hash"):
+        coordinator.select_attempt(attempt, conflicting)
 
 
 def test_selection_rejects_attempt_or_manifest_revision_sha_mixture(tmp_path):
@@ -798,10 +862,14 @@ def test_selection_rejects_attempt_or_manifest_revision_sha_mixture(tmp_path):
         attempt.mkdir(parents=True)
         record = _record(benchmark)
         record["identity"].update(
+            batch_id=context.batch_id,
             candidate_sha=context.candidate_sha,
             harness_sha256=context.harness_sha256,
             observation_key=observation_key,
             revision_shas=revision_shas,
+        )
+        record["metadata"].update(
+            matrix=context.benchmark_config["matrix"], benchmark_config_sha256=context.benchmark_config_sha256
         )
         (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
         return attempt
@@ -1835,6 +1903,39 @@ def test_summary_accepts_distinct_build_and_runtime_batch_manifests(tmp_path):
             "h" * 64,
             {"build": "b" * 64, "runtime": "b" * 64},
         )
+    for unsafe in (str(tmp_path / "outside"), "../outside", "missing-01"):
+        with pytest.raises(ValueError, match="batch identity|batch manifest"):
+            summary._validate_batch_manifests(
+                tmp_path,
+                {"build": unsafe},
+                "g" * 40,
+                revisions,
+                "h" * 64,
+                {"build": "b" * 64},
+            )
+    linked = tmp_path / "batches" / "linked-01"
+    linked.symlink_to(tmp_path / "batches" / "build-01", target_is_directory=True)
+    with pytest.raises(ValueError, match="symlinked"):
+        summary._validate_batch_manifests(
+            tmp_path,
+            {"build": "linked-01"},
+            "g" * 40,
+            revisions,
+            "h" * 64,
+            {"build": "b" * 64},
+        )
+    manifest_link = tmp_path / "batches" / "manifest-link"
+    manifest_link.mkdir()
+    (manifest_link / "manifest.json").symlink_to(tmp_path / "batches" / "build-01" / "manifest.json")
+    with pytest.raises(ValueError, match="symlinked"):
+        summary._validate_batch_manifests(
+            tmp_path,
+            {"build": "manifest-link"},
+            "g" * 40,
+            revisions,
+            "h" * 64,
+            {"build": "b" * 64},
+        )
 
 
 def test_summary_rejects_final_schedule_member_and_graph_contract_mutations():
@@ -1938,6 +2039,27 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
     records = [*_complete_build_schedule_records(benchmark), *_complete_runtime_schedule_records(benchmark)]
     batch_ids = {"build": "build-01", "runtime": "runtime-01"}
     config_ids = {"build": "b" * 64, "runtime": "r" * 64}
+    contexts = {
+        matrix: benchmark._CoordinateContext(
+            batch_id=batch_ids[matrix],
+            candidate_sha=revisions["global"],
+            revision_shas=revisions,
+            worktrees=worktrees,
+            harness=harness,
+            harness_sha256=digest,
+            device="cpu",
+            warmup_iterations=10 if matrix == "build" else 100,
+            num_iterations=100 if matrix == "build" else 10000,
+            command=("coordinate", matrix),
+            initial_metadata={},
+            worktree_states={revision: benchmark.WorktreeState(revisions[revision], False) for revision in revisions},
+            lockfile_sha256={revision: revision[0] * 64 for revision in revisions},
+            benchmark_config_sha256=config_ids[matrix],
+            benchmark_config={"matrix": matrix},
+        )
+        for matrix in ("build", "runtime")
+    }
+    coordinator = benchmark.Coordinator(run_root, sleep=lambda _: None)
     selected_paths = []
     for number, record in enumerate(records, start=1):
         attempt = (
@@ -1960,6 +2082,7 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
         for member in record["members"]:
             member["revision_sha"] = revisions[member["revision"]]
         (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
+        coordinator.select_attempt(attempt, contexts[matrix])
         selected_paths.append(str(attempt.relative_to(run_root)))
     for matrix, batch_id in batch_ids.items():
         batch = run_root / "batches" / batch_id / "manifest.json"
@@ -1978,18 +2101,11 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
             ),
             encoding="utf-8",
         )
-    (run_root / "accepted-attempts.json").write_text(
-        json.dumps(
-            {
-                "schema": "actuator_collection_selection/v1",
-                "candidate_sha": revisions["global"],
-                "revision_shas": revisions,
-                "harness_sha256": digest,
-                "attempts": selected_paths,
-            }
-        ),
-        encoding="utf-8",
-    )
+    selection = json.loads((run_root / "accepted-attempts.json").read_text(encoding="utf-8"))
+    assert selection["attempts"] == selected_paths
+    assert selection["benchmark_configs"] == {
+        matrix: {"batch_id": batch_ids[matrix], "sha256": config_ids[matrix]} for matrix in batch_ids
+    }
     output = tmp_path / "summary"
     result = subprocess.run(
         [
@@ -2038,6 +2154,37 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
         text=True,
     )
     assert rejected.returncode != 0 and "mixed selected batch" in rejected.stderr
+    for record in records:
+        if record["metadata"]["matrix"] != "runtime":
+            continue
+        record["identity"]["batch_id"] = "../forged-runtime"
+        attempt = (
+            run_root
+            / "observations"
+            / benchmark._safe_observation_name(record["identity"]["observation_key"])
+            / record["identity"]["attempt_id"]
+            / "attempt.json"
+        )
+        attempt.write_text(json.dumps(record), encoding="utf-8")
+    selection = json.loads((run_root / "accepted-attempts.json").read_text(encoding="utf-8"))
+    selection["benchmark_configs"]["runtime"]["batch_id"] = "../forged-runtime"
+    (run_root / "accepted-attempts.json").write_text(json.dumps(selection), encoding="utf-8")
+    uniformly_forged = subprocess.run(
+        [
+            sys.executable,
+            str(_SUMMARY),
+            "--run_root",
+            str(run_root),
+            "--candidate_sha",
+            revisions["global"],
+            "--output_dir",
+            str(tmp_path / "uniformly-forged-summary"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert uniformly_forged.returncode != 0 and "unsafe batch identity" in uniformly_forged.stderr
 
 
 def test_gpu_telemetry_requires_exactly_twenty_pre_and_post_samples():

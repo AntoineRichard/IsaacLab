@@ -2844,6 +2844,18 @@ class Coordinator:
             raise ValueError("selection harness SHA mismatch")
         if identity.get("revision_shas") != context.revision_shas:
             raise ValueError("attempt revision SHA map mismatch")
+        matrix = context.benchmark_config.get("matrix")
+        if matrix not in {"build", "runtime"}:
+            raise ValueError("selection benchmark matrix identity missing")
+        if identity.get("batch_id") != context.batch_id:
+            raise ValueError("attempt batch identity mismatch")
+        metadata = record.get("metadata") or {}
+        if (
+            metadata.get("matrix") != matrix
+            or metadata.get("benchmark_config_sha256") != context.benchmark_config_sha256
+        ):
+            raise ValueError("attempt benchmark configuration identity mismatch")
+        expected_config = {"batch_id": context.batch_id, "sha256": context.benchmark_config_sha256}
         manifest_path = self.run_root / "accepted-attempts.json"
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -2858,8 +2870,13 @@ class Coordinator:
                 raise ValueError("existing manifest worktree state mismatch")
             if manifest.get("lockfile_sha256") != context.lockfile_sha256:
                 raise ValueError("existing manifest lockfile hash mismatch")
-            if manifest.get("benchmark_config_sha256") != context.benchmark_config_sha256:
+            configurations = manifest.get("benchmark_configs")
+            if not isinstance(configurations, dict):
+                raise ValueError("existing manifest benchmark configuration map missing")
+            existing_config = configurations.get(matrix)
+            if existing_config is not None and existing_config != expected_config:
                 raise ValueError("existing manifest benchmark configuration hash mismatch")
+            configurations[matrix] = expected_config
         else:
             manifest = {
                 "schema": "actuator_collection_selection/v1",
@@ -2868,7 +2885,7 @@ class Coordinator:
                 "harness_sha256": context.harness_sha256,
                 "worktree_states": {revision: asdict(state) for revision, state in context.worktree_states.items()},
                 "lockfile_sha256": context.lockfile_sha256,
-                "benchmark_config_sha256": context.benchmark_config_sha256,
+                "benchmark_configs": {matrix: expected_config},
                 "attempts": [],
             }
         selected_keys = {

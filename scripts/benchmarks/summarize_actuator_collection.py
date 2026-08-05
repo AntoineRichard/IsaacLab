@@ -18,6 +18,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -240,6 +241,11 @@ def load_selected_attempts(run_root: Path, candidate_sha: str) -> LoadedAttempts
     if set(batch_ids) == {"build", "runtime"}:
         if set(config_ids) != set(batch_ids):
             raise ValueError("selected benchmark configuration identity")
+        expected_configs = {
+            matrix: {"batch_id": batch_ids[matrix], "sha256": config_ids[matrix]} for matrix in batch_ids
+        }
+        if manifest.get("benchmark_configs") != expected_configs:
+            raise ValueError("selection benchmark configuration map mismatch")
         _validate_batch_manifests(run_root, batch_ids, candidate_sha, revisions, digest, config_ids)
     return LoadedAttempts(
         manifest, selected, batch_ids, dict(sorted(rejection_counts.items())), len(all_attempts) - len(selected)
@@ -256,7 +262,7 @@ def _validate_batch_manifests(
 ) -> None:
     """Bind each final matrix partition to its immutable coordinator batch manifest."""
     for matrix, batch_id in batch_ids.items():
-        path = run_root / "batches" / batch_id / "manifest.json"
+        path = _safe_batch_manifest_path(run_root, batch_id)
         manifest = _read_json(path, "coordinator batch manifest")
         if (
             manifest.get("schema") != "actuator_collection_batch/v1"
@@ -268,6 +274,25 @@ def _validate_batch_manifests(
             or manifest.get("benchmark_config_sha256") != config_ids[matrix]
         ):
             raise ValueError("coordinator batch manifest identity mismatch")
+
+
+def _safe_batch_manifest_path(run_root: Path, batch_id: str) -> Path:
+    """Resolve one regular coordinator batch manifest beneath the run root."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", batch_id) or batch_id in {".", ".."}:
+        raise ValueError("unsafe batch identity")
+    batch_root = run_root / "batches"
+    batch_dir = batch_root / batch_id
+    manifest = batch_dir / "manifest.json"
+    if any(path.is_symlink() for path in (batch_root, batch_dir, manifest)):
+        raise ValueError("symlinked batch manifest path")
+    try:
+        resolved = manifest.resolve(strict=True)
+        resolved.relative_to(batch_root.resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise ValueError("missing or escaped batch manifest") from error
+    if not resolved.is_file():
+        raise ValueError("batch manifest is not a regular file")
+    return resolved
 
 
 def _schedule_for(matrix: str) -> dict[str, Any]:
