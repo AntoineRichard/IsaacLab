@@ -351,8 +351,8 @@ def test_solver_sidecar_presence_check_avoids_inactive_temporary_containers(devi
 
 
 @pytest.mark.parametrize("device", _available_devices())
-def test_compatibility_projections_use_legacy_fills_and_refresh_held_values_at_compute(device: str) -> None:
-    """Unsupported joints retain fills while direct parameter mutation waits for compute."""
+def test_compatibility_projections_refresh_held_values_through_parameter_setters(device: str) -> None:
+    """Supported parameter setters refresh held projections without replacing their storage."""
     robot = make_finalized_robot(
         groups={"hip": _ideal_cfg(["hip", "knee"]), "ankle": _custom_cfg(["ankle"])}, device=device
     )
@@ -363,8 +363,8 @@ def test_compatibility_projections_use_legacy_fills_and_refresh_held_values_at_c
     torch.testing.assert_close(velocity_limits.torch, torch.tensor([[4.0, 4.0, 0.0], [4.0, 4.0, 0.0]], device=device))
     torch.testing.assert_close(gear_ratio.torch, torch.ones_like(gear_ratio.torch))
 
-    robot.actuators["hip"].velocity_limit.fill_(12.0)
-    assert velocity_limits.torch[0, 0].item() == 4.0
+    robot.actuators["hip"].set_parameter_index("velocity_limit", 12.0)
+    assert velocity_limits.torch[0, 0].item() == 12.0
 
     robot.actuators.compute()
 
@@ -489,7 +489,7 @@ def test_group_views_expose_articulation_joint_metadata_and_proxy_parameters() -
         group.parameters["stiffness"] = group.parameters["damping"]
 
 
-def test_group_and_type_parameter_lookups_are_stable_bidirectional_aliases() -> None:
+def test_group_and_type_parameter_lookups_are_stable_after_parameter_setters() -> None:
     actuators = make_finalized_robot().actuators
     group = actuators["hip"]
     group_parameters = group.parameters
@@ -498,9 +498,9 @@ def test_group_and_type_parameter_lookups_are_stable_bidirectional_aliases() -> 
     assert group.parameters is group_parameters
     assert group_parameters["stiffness"] is group_parameters["stiffness"]
     assert type_parameters["stiffness"] is type_parameters["stiffness"]
-    group.stiffness.fill_(7.0)
+    group.set_parameter_index("stiffness", 7.0)
     torch.testing.assert_close(group_parameters["stiffness"].torch, torch.full((2, 2), 7.0))
-    group_parameters["stiffness"].torch.fill_(9.0)
+    actuators.by_type[IdealPDActuator].set_parameter_index("stiffness", 9.0)
     torch.testing.assert_close(group.stiffness, torch.full((2, 2), 9.0))
 
 
@@ -538,7 +538,7 @@ def test_multiple_articulations_publish_isolated_views_and_arrays() -> None:
         first.by_type[IdealPDActuator].parameters["stiffness"].torch.data_ptr()
         != second.by_type[IdealPDActuator].parameters["stiffness"].torch.data_ptr()
     )
-    first.by_type[IdealPDActuator].parameters["stiffness"].torch.fill_(11.0)
+    first.by_type[IdealPDActuator].set_parameter_index("stiffness", 11.0)
     torch.testing.assert_close(second.by_type[IdealPDActuator].parameters["stiffness"].torch, torch.ones((2, 1)))
 
 
@@ -1493,7 +1493,7 @@ def test_explicit_duplicate_parameter_indices_are_cuda_graph_safe() -> None:
     values.copy_(torch.tensor([[11.0, 12.0], [13.0, 14.0]], device="cuda"))
     env_ids.copy_(torch.tensor([0, 1], dtype=torch.int32, device="cuda"))
     joint_ids.copy_(torch.tensor([0, 1], dtype=torch.int32, device="cuda"))
-    view.parameters["stiffness"].torch.zero_()
+    view.set_parameter_index("stiffness", 0.0)
     torch.cuda.synchronize()
     wp.capture_launch(capture.graph)
     torch.cuda.synchronize()
