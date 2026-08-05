@@ -53,7 +53,6 @@ from isaaclab.actuators import (
 )
 from isaaclab.actuators.actuator_control import _ActuatorParameterWrite
 from isaaclab.assets import ArticulationCfg, get_articulation_name_ordering
-from isaaclab.cloner import ClonePlan
 from isaaclab.controllers import (
     DifferentialIKController,
     DifferentialIKControllerCfg,
@@ -62,7 +61,7 @@ from isaaclab.controllers import (
 )
 from isaaclab.envs.mdp.terminations import joint_effort_out_of_limit
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sim import SimulationCfg, SimulationContext, build_simulation_context
+from isaaclab.sim import SimulationCfg, build_simulation_context
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import compute_pose_error, matrix_from_quat, quat_inv, subtract_frame_transforms
 from isaaclab.utils.version import get_isaac_sim_version, has_kit
@@ -217,18 +216,6 @@ def generate_articulation(
     for i in range(num_articulations):
         sim_utils.create_prim(f"/World/Env_{i}", "Xform", translation=translations[i][:3])
     articulation = Articulation(articulation_cfg.replace(prim_path="/World/Env_.*/Robot"))
-    sim = SimulationContext.instance()
-    assert sim is not None
-    sim.set_clone_plan(
-        ClonePlan(
-            sources=("/World/Env_0/Robot",),
-            destinations=("/World/Env_{}/Robot",),
-            clone_mask=torch.ones((1, num_articulations), dtype=torch.bool, device=device),
-            env_ids=torch.arange(num_articulations, dtype=torch.long, device=device),
-            positions=translations,
-            cfg_rows={articulation._replication_cfg_id: (0,)},
-        )
-    )
 
     return articulation, translations
 
@@ -2116,7 +2103,7 @@ def test_global_actuator_collection_publishes_scoped_view(sim, device):
 
 @pytest.mark.parametrize("device", test_devices())
 def test_global_actuator_collection_applies_all_resolved_solver_properties(sim, device, monkeypatch):
-    """Test that finalized actuator properties reach PhysX before publication."""
+    """Test direct rows resolve independently and publish solver properties before readiness."""
     articulation_cfg = generate_articulation_cfg(
         articulation_type="single_joint_implicit",
         velocity_limit_sim=63.0,
@@ -2130,6 +2117,7 @@ def test_global_actuator_collection_applies_all_resolved_solver_properties(sim, 
     actuator_cfg.dynamic_friction = 0.75
     actuator_cfg.viscous_friction = 0.25
     articulation, _ = generate_articulation(articulation_cfg, num_articulations=2, device=device)
+    assert sim.get_clone_plan() is None
 
     write_methods = (
         "write_joint_effort_limit_to_sim_index",
@@ -2152,7 +2140,13 @@ def test_global_actuator_collection_applies_all_resolved_solver_properties(sim, 
         monkeypatch.setattr(Articulation, method_name, record_write)
 
     validation_count = 0
+    source_env_ids: list[torch.Tensor] = []
     original_validate = Articulation._validate_cfg
+    original_source_properties = PhysxActuatorControl.get_source_joint_properties
+
+    def record_source_properties(control, joint_ids, source_ids):
+        source_env_ids.append(source_ids.clone())
+        return original_source_properties(control, joint_ids, source_ids)
 
     def record_validation(self):
         nonlocal validation_count
@@ -2163,6 +2157,7 @@ def test_global_actuator_collection_applies_all_resolved_solver_properties(sim, 
         return original_validate(self)
 
     monkeypatch.setattr(Articulation, "_validate_cfg", record_validation)
+    monkeypatch.setattr(PhysxActuatorControl, "get_source_joint_properties", record_source_properties)
 
     sim.reset()
 
@@ -2191,6 +2186,8 @@ def test_global_actuator_collection_applies_all_resolved_solver_properties(sim, 
     )
     assert write_counts == dict.fromkeys(write_methods, 1)
     assert validation_count == 1
+    assert len(source_env_ids) == 1
+    torch.testing.assert_close(source_env_ids[0], torch.tensor([0, 1], device=source_env_ids[0].device))
     assert articulation._actuator_control._resolved_property_backend_snapshot is None
     assert articulation._actuator_control._resolved_property_cache_snapshot is None
 

@@ -87,10 +87,9 @@ import isaaclab.utils.string as string_utils  # noqa: E402
 from isaaclab.actuators import ActuatorBase, IdealPDActuatorCfg, ImplicitActuator, ImplicitActuatorCfg  # noqa: E402
 from isaaclab.assets import ArticulationCfg, get_articulation_name_ordering  # noqa: E402
 from isaaclab.assets.articulation import ordering_kernels  # noqa: E402
-from isaaclab.cloner import ClonePlan  # noqa: E402
 from isaaclab.envs.mdp.terminations import joint_effort_out_of_limit  # noqa: E402
 from isaaclab.managers import SceneEntityCfg  # noqa: E402
-from isaaclab.sim import SimulationCfg, SimulationContext, build_simulation_context  # noqa: E402
+from isaaclab.sim import SimulationCfg, build_simulation_context  # noqa: E402
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR  # noqa: E402
 from isaaclab.utils.version import get_isaac_sim_version, has_kit  # noqa: E402
 from isaaclab.utils.warp.launch_cache import _WarpLaunchCache  # noqa: E402
@@ -552,17 +551,6 @@ def generate_articulation(
     for i in range(num_articulations):
         sim_utils.create_prim(f"/World/Env_{i}", "Xform", translation=translations[i][:3])
     articulation = Articulation(articulation_cfg.replace(prim_path="/World/Env_.*/Robot"))
-    sim = SimulationContext.instance()
-    if sim is None:
-        raise RuntimeError("Manual articulation tests require an active simulation context.")
-    sim.set_clone_plan(
-        ClonePlan(
-            sources=("/World/Env_0/Robot",),
-            destinations=("/World/Env_{}/Robot",),
-            clone_mask=torch.ones((1, num_articulations), dtype=torch.bool),
-            cfg_rows={articulation._replication_cfg_id: (0,)},
-        )
-    )
 
     return articulation, translations
 
@@ -570,7 +558,7 @@ def generate_articulation(
 @pytest.mark.parametrize("device", ["cpu"])
 @pytest.mark.parametrize("gravity_enabled", [False])
 def test_actuator_finalization_is_transactional_after_solver_writes(sim, device, gravity_enabled, monkeypatch):
-    """A post-completion failure must restore solver bindings and articulation readiness."""
+    """A direct-row post-completion failure must restore every solver row and readiness."""
     del gravity_enabled
     cfg = generate_articulation_cfg(
         articulation_type="single_joint_implicit",
@@ -595,8 +583,14 @@ def test_actuator_finalization_is_transactional_after_solver_writes(sim, device,
     )
     before_write: dict[int, torch.Tensor] = {}
     after_write: dict[int, torch.Tensor] = {}
+    source_env_ids: list[torch.Tensor] = []
     write_staged = OvPhysxActuatorControl.write_resolved_joint_properties_staged
     complete = OvPhysxActuatorControl.complete_articulation_initialization
+    source_properties = OvPhysxActuatorControl.get_source_joint_properties
+
+    def record_source_properties(control, joint_ids, source_ids):
+        source_env_ids.append(source_ids.clone())
+        return source_properties(control, joint_ids, source_ids)
 
     def record_staged_write(control, properties):
         for tensor_type in solver_bindings:
@@ -611,12 +605,16 @@ def test_actuator_finalization_is_transactional_after_solver_writes(sim, device,
 
     monkeypatch.setattr(OvPhysxActuatorControl, "write_resolved_joint_properties_staged", record_staged_write)
     monkeypatch.setattr(OvPhysxActuatorControl, "complete_articulation_initialization", fail_after_completion)
+    monkeypatch.setattr(OvPhysxActuatorControl, "get_source_joint_properties", record_source_properties)
 
-    articulation, _ = generate_articulation(cfg, num_articulations=1, device=device)
+    articulation, _ = generate_articulation(cfg, num_articulations=2, device=device)
+    assert sim.get_clone_plan() is None
     with pytest.raises(RuntimeError, match="injected post-write completion failure"):
         sim.reset()
 
     assert set(before_write) == set(after_write) == set(solver_bindings)
+    assert len(source_env_ids) == 1
+    torch.testing.assert_close(source_env_ids[0], torch.tensor([0, 1], device=source_env_ids[0].device))
     for tensor_type in solver_bindings:
         assert not torch.equal(after_write[tensor_type], before_write[tensor_type])
         restored = _read_binding_to_torch(articulation, tensor_type, "cpu")
