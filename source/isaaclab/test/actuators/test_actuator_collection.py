@@ -150,11 +150,13 @@ def _assert_collection_outputs_match_exactly(actual: ActuatorCollection, referen
         rtol=0.0,
         atol=0.0,
     )
-    torch.testing.assert_close(actual.computed_torque.torch, reference.computed_torque.torch, rtol=0.0, atol=0.0)
-    torch.testing.assert_close(actual.applied_torque.torch, reference.applied_torque.torch, rtol=0.0, atol=0.0)
     torch.testing.assert_close(
-        actual.soft_joint_vel_limits.torch,
-        reference.soft_joint_vel_limits.torch,
+        actual._computed_torque_ta.torch, reference._computed_torque_ta.torch, rtol=0.0, atol=0.0
+    )
+    torch.testing.assert_close(actual._applied_torque_ta.torch, reference._applied_torque_ta.torch, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(
+        actual._soft_joint_vel_limits_ta.torch,
+        reference._soft_joint_vel_limits_ta.torch,
         rtol=0.0,
         atol=0.0,
     )
@@ -694,14 +696,14 @@ def test_implicit_batch_bypasses_torch_actuator_compute(monkeypatch):
     position_error = collection.command.position.torch - control.joint_pos.torch
     velocity_error = collection.command.velocity.torch - control.joint_vel.torch
     expected_computed = (
-        collection.actuator_stiffness.torch * position_error
-        + collection.actuator_damping.torch * velocity_error
+        collection._actuator_stiffness_ta.torch * position_error
+        + collection._actuator_damping_ta.torch * velocity_error
         + collection.command.effort.torch
     )
     expected_applied = torch.clamp(expected_computed, min=-torch.tensor(28.0), max=torch.tensor(28.0))
     expected_applied[:, [0, 2]] = torch.clamp(expected_computed[:, [0, 2]], min=-16.0, max=16.0)
-    torch.testing.assert_close(collection.computed_torque.torch, expected_computed, rtol=0.0, atol=0.0)
-    torch.testing.assert_close(collection.applied_torque.torch, expected_applied, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(collection._computed_torque_ta.torch, expected_computed, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(collection._applied_torque_ta.torch, expected_applied, rtol=0.0, atol=0.0)
     torch.testing.assert_close(collection.joint_command.position.torch, collection.command.position.torch)
     torch.testing.assert_close(collection.joint_command.velocity.torch, collection.command.velocity.torch)
     torch.testing.assert_close(collection.joint_command.effort.torch, collection.command.effort.torch)
@@ -911,97 +913,6 @@ def test_stateful_subclasses_and_overlapping_groups_remain_unbatched():
     assert len(cross_class._execution_batches) == 3
 
 
-def test_runtime_gains_route_into_aggregate_and_native_hook():
-    control = FakeActuatorControl(joint_names=[f"joint_{index}" for index in range(4)])
-    collection = ActuatorCollection(
-        {
-            "hips": _dc_cfg(
-                ["joint_0", "joint_1"],
-                stiffness=20.0,
-                damping=1.0,
-                effort_limit=40.0,
-                velocity_limit=10.0,
-                saturation_effort=60.0,
-            ),
-            "knees": _dc_cfg(
-                ["joint_2", "joint_3"],
-                stiffness=30.0,
-                damping=2.0,
-                effort_limit=70.0,
-                velocity_limit=20.0,
-                saturation_effort=120.0,
-            ),
-        },
-        control,
-    )
-    env_ids = torch.tensor([1], dtype=torch.long)
-
-    collection.write_actuator_stiffness_to_sim(
-        stiffness=torch.tensor([[71.0, 93.0]]),
-        env_ids=env_ids,
-        joint_ids=torch.tensor([0, 3], dtype=torch.long),
-    )
-
-    torch.testing.assert_close(collection["hips"].stiffness[1, 0], torch.tensor(71.0), rtol=0.0, atol=0.0)
-    torch.testing.assert_close(collection["knees"].stiffness[1, 1], torch.tensor(93.0), rtol=0.0, atol=0.0)
-    torch.testing.assert_close(collection.actuator_stiffness.torch[1, 0], torch.tensor(71.0), rtol=0.0, atol=0.0)
-    torch.testing.assert_close(collection.actuator_stiffness.torch[1, 3], torch.tensor(93.0), rtol=0.0, atol=0.0)
-    assert control.native_gain_writes[-1][0] == "kp"
-
-    collection.write_actuator_damping_to_sim(
-        damping=torch.tensor([[47.0, 29.0]]),
-        env_ids=env_ids,
-        joint_ids=torch.tensor([3, 0], dtype=torch.long),
-    )
-
-    torch.testing.assert_close(collection["knees"].damping[1, 1], torch.tensor(47.0), rtol=0.0, atol=0.0)
-    torch.testing.assert_close(collection["hips"].damping[1, 0], torch.tensor(29.0), rtol=0.0, atol=0.0)
-    torch.testing.assert_close(collection.actuator_damping.torch[1, 3], torch.tensor(47.0), rtol=0.0, atol=0.0)
-    torch.testing.assert_close(collection.actuator_damping.torch[1, 0], torch.tensor(29.0), rtol=0.0, atol=0.0)
-    assert control.native_gain_writes[-1][0] == "kd"
-
-
-def test_aliased_runtime_gain_values_preserve_reordered_routing():
-    control = FakeActuatorControl(num_envs=1, joint_names=["joint_0", "joint_1"])
-    collection = ActuatorCollection(
-        {
-            "all": _ideal_cfg(
-                ["joint_0", "joint_1"],
-                stiffness=1.0,
-                damping=1.0,
-                effort_limit=10.0,
-            )
-        },
-        control,
-    )
-    collection["all"].stiffness.copy_(torch.tensor([[11.0, 22.0]]))
-    aliased_values = collection["all"].stiffness[:, :]
-    env_ids = torch.tensor([0], dtype=torch.long)
-    joint_ids = torch.tensor([1, 0], dtype=torch.long)
-
-    collection.write_actuator_stiffness_to_sim(
-        stiffness=aliased_values,
-        env_ids=env_ids,
-        joint_ids=joint_ids,
-    )
-
-    torch.testing.assert_close(
-        collection["all"].stiffness,
-        torch.tensor([[22.0, 11.0]]),
-        rtol=0.0,
-        atol=0.0,
-    )
-    assert control.native_gain_writes[-1][0] == "kp"
-    torch.testing.assert_close(control.native_gain_writes[-1][2], env_ids, rtol=0.0, atol=0.0)
-    torch.testing.assert_close(control.native_gain_writes[-1][3], joint_ids, rtol=0.0, atol=0.0)
-    torch.testing.assert_close(
-        torch.cat((collection.actuator_stiffness.torch, control.native_gain_writes[-1][1])),
-        torch.tensor([[22.0, 11.0], [11.0, 22.0]]),
-        rtol=0.0,
-        atol=0.0,
-    )
-
-
 def test_native_execution_bypasses_lab_aggregation_and_keeps_group_gains_current(monkeypatch):
     control = NativeFakeActuatorControl(joint_names=[f"joint_{index}" for index in range(4)])
     collection = ActuatorCollection(
@@ -1034,14 +945,6 @@ def test_native_execution_bypasses_lab_aggregation_and_keeps_group_gains_current
 
     monkeypatch.setattr(DCMotor, "compute", fail_compute)
     collection.compute()
-    collection.write_actuator_stiffness_to_sim(
-        stiffness=torch.tensor([[71.0, 93.0]]),
-        env_ids=torch.tensor([1], dtype=torch.long),
-        joint_ids=torch.tensor([0, 3], dtype=torch.long),
-    )
-
-    torch.testing.assert_close(collection["hips"].stiffness[1, 0], torch.tensor(71.0), rtol=0.0, atol=0.0)
-    torch.testing.assert_close(collection["knees"].stiffness[1, 1], torch.tensor(93.0), rtol=0.0, atol=0.0)
 
 
 def test_collection_exports_proxy_arrays():
@@ -1054,10 +957,6 @@ def test_collection_exports_proxy_arrays():
     assert collection.joint_command.position.shape == (2, 3)
     assert collection.joint_command.velocity.shape == (2, 3)
     assert collection.joint_command.effort.shape == (2, 3)
-    assert collection.computed_torque.shape == (2, 3)
-    assert collection.applied_torque.shape == (2, 3)
-    assert collection.soft_joint_vel_limits.shape == (2, 3)
-    assert collection.gear_ratio.shape == (2, 3)
 
 
 def test_collection_accepts_cached_proxy_joint_indices():

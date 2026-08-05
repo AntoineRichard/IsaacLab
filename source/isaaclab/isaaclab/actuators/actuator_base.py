@@ -900,15 +900,30 @@ class ActuatorBase(ABC):
             if name not in {"stiffness", "damping"}:
                 raise AttributeError(f"Managed actuator parameter '{name}' is not allocated.")
             sidecars[name] = self._make_group_local_sidecar(name)
-            warned = self.__dict__.setdefault("_deprecated_sidecar_warnings", set())
-            if name not in warned:
-                warnings.warn(
+            view = self.__dict__.get("_facade_view")
+            if view is None:
+                warned = self.__dict__.setdefault("_deprecated_sidecar_warnings", set())
+                if name not in warned:
+                    warnings.warn(
+                        f"{type(self).__name__}.{name} is a deprecated neural-actuator compatibility sidecar.",
+                        DeprecationWarning,
+                        stacklevel=3,
+                    )
+                    warned.add(name)
+            else:
+                view._warn_deprecated(
+                    f"neural_gain_{name}",
                     f"{type(self).__name__}.{name} is a deprecated neural-actuator compatibility sidecar.",
-                    DeprecationWarning,
-                    stacklevel=3,
+                    stacklevel=4,
                 )
-                warned.add(name)
         return sidecars[name]
+
+    def _refresh_solver_compatibility_sidecar(self, name: str, values: torch.Tensor) -> None:
+        """Refresh an already-materialized solver compatibility sidecar safely."""
+        sidecar = self.__dict__.get("_solver_compatibility_sidecars", {}).get(name)
+        binding = self.__dict__.get("_parameter_binding")
+        if sidecar is not None and binding is not None:
+            sidecar.copy_(values[:, binding.joint_indices])
 
     def _make_group_local_sidecar(self, name: str) -> torch.Tensor:
         """Allocate a group-local sidecar initialized from its resolved value."""

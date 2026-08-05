@@ -106,6 +106,19 @@ class BaseArticulationData(ABC):
         if hasattr(self, "_actuator_collection"):
             setattr(self, "_actuator_collection", None)
 
+    def _get_actuator_compatibility_projection(self, name: str) -> ProxyArray:
+        """Return a warning-free lazy actuator compatibility projection.
+
+        Args:
+            name: Legacy projection name.
+
+        Returns:
+            The stable articulation-order projection owned by the bound actuator facade.
+        """
+        if self._actuator_view is None:
+            raise RuntimeError("Actuator compatibility storage is not bound.")
+        return self._actuator_view._get_compatibility_projection(name)
+
     def _rollback_actuator_initialization(self) -> None:
         """Unbind actuator storage and restore the unprimed data state."""
         self.unbind_actuator_collection()

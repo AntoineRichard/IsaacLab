@@ -187,13 +187,19 @@ def test_develop_target_setters_write_command_aliases_and_warn() -> None:
         torch.testing.assert_close(command[1, joint_ids], values[0])
 
 
-def test_develop_actuator_gain_writers_update_groups_and_backend() -> None:
+def test_deprecated_constructor_exposes_no_unshipped_dense_actuator_surface() -> None:
+    """The legacy constructor does not retain PR-only collection-wide aliases."""
     actuators, control = make_initialized_actuator_fixture()
-    values = torch.tensor([[11.0, 17.0]], device=control.device)
-    actuators.write_actuator_stiffness_to_sim(
-        stiffness=values,
-        env_ids=torch.tensor([0], device=control.device),
-        joint_ids=torch.tensor([0, 1], device=control.device),
-    )
-    torch.testing.assert_close(actuators["shoulder"].stiffness[:1], values)
-    torch.testing.assert_close(control.native_stiffness[:1, :2], values)
+    del control
+
+    for name in (
+        "actuator_stiffness",
+        "actuator_damping",
+        "soft_joint_vel_limits",
+        "gear_ratio",
+        "computed_torque",
+        "applied_torque",
+        "write_actuator_stiffness_to_sim",
+        "write_actuator_damping_to_sim",
+    ):
+        assert not hasattr(actuators, name)

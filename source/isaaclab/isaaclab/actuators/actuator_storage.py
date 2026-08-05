@@ -1596,6 +1596,7 @@ class _JointDomainStore:
         self._fields: dict[str, ProxyArray] = {}
         self._articulation_offsets: dict[int, int] = {}
         self._articulation_proxies: dict[tuple[int, str], ProxyArray] = {}
+        self._compatibility_projections: dict[tuple[int, str], ProxyArray] = {}
 
     def allocate(self, layouts: Sequence[_ArticulationLayout], *, device: str) -> None:
         """Allocate every joint-domain field once for the supplied articulations.
@@ -1650,8 +1651,72 @@ class _JointDomainStore:
             self._articulation_proxies[key] = proxy
         return proxy
 
+    def compatibility_projection(self, name: str, layout: _ArticulationLayout) -> ProxyArray:
+        """Return one lazy articulation-order legacy compatibility projection.
+
+        Args:
+            name: Legacy projection name.
+            layout: Articulation layout that determines the projection shape.
+
+        Returns:
+            A stable ``[num_worlds, num_joints]`` proxy filled with the legacy
+            default until compatible typed parameters are scattered into it.
+        """
+        fills = {"soft_joint_vel_limits": 0.0, "gear_ratio": 1.0}
+        try:
+            fill = fills[name]
+        except KeyError as error:
+            raise KeyError(f"Unknown actuator compatibility projection {name!r}.") from error
+        key = (id(layout), name)
+        projection = self._compatibility_projections.get(key)
+        if projection is None:
+            projection = ProxyArray(
+                wp.full(
+                    (layout.num_worlds, layout.num_joints),
+                    fill,
+                    dtype=wp.float32,
+                    device=self._fields["raw_position"].warp.device,
+                )
+            )
+            self._compatibility_projections[key] = projection
+        return projection
+
+    def refresh_compatibility_projection(
+        self, name: str, layout: _ArticulationLayout, groups: Mapping[str, ActuatorBase]
+    ) -> None:
+        """Refresh an activated projection from configuration-order parameter owners.
+
+        This intentionally does nothing before first access so regular typed
+        actuator construction and execution do not allocate legacy storage.
+        """
+        projection = self._compatibility_projections.get((id(layout), name))
+        if projection is None:
+            return
+        source_name, fill = {
+            "soft_joint_vel_limits": ("velocity_limit", 0.0),
+            "gear_ratio": ("gear_ratio", 1.0),
+        }.get(name, (None, None))
+        if source_name is None:
+            raise KeyError(f"Unknown actuator compatibility projection {name!r}.")
+        projection.warp.fill_(fill)
+        for group_layout in layout.group_layouts:
+            binding = groups[group_layout.name].__dict__.get("_parameter_binding")
+            if binding is None or binding.parameter_proxies is None:
+                continue
+            source = binding.parameter_proxies.get(source_name)
+            if source is not None:
+                projection.torch[:, binding.joint_indices] = source.torch
+
+    def refresh_compatibility_projections(
+        self, layout: _ArticulationLayout, groups: Mapping[str, ActuatorBase]
+    ) -> None:
+        """Refresh every projection that has already been allocated for one articulation."""
+        for name in ("soft_joint_vel_limits", "gear_ratio"):
+            self.refresh_compatibility_projection(name, layout, groups)
+
     def close(self) -> None:
         """Release every flat allocation and cached articulation alias."""
+        self._compatibility_projections.clear()
         self._articulation_proxies.clear()
         self._articulation_offsets.clear()
         self._fields.clear()

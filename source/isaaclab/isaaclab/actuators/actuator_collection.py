@@ -1041,6 +1041,9 @@ class _CollectionGeneration:
                     outputs=[target_computed_effort.warp, target_applied_effort.warp],
                     device=target_computed_effort.warp.device,
                 )
+            groups = self.groups.get(binding.registration.key)
+            if groups is not None:
+                self.joint_store.refresh_compatibility_projections(binding.layout, groups)
 
     def close(self) -> None:
         """Release every candidate-owned allocation and private reference."""
@@ -1659,6 +1662,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._applied_effort: ProxyArray | None = None
             self._backend_parameter_staging: _BackendParameterStaging | None = None
             self._has_implicit_actuators = False
+            self._layout: _ArticulationLayout | None = None
+            self._compatibility_allocations: dict[str, ProxyArray] = {}
+            self._deprecated_warning_keys: set[str] = set()
 
         @property
         def generation(self) -> int:
@@ -1714,6 +1720,77 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 raise RuntimeError("Actuator telemetry storage is not available before the scoped facade is installed.")
             return self._applied_effort
 
+        def _warn_deprecated(self, key: str, message: str, *, stacklevel: int = 3) -> None:
+            """Emit one deprecation warning for this published articulation facade."""
+            self._require_current_generation()
+            if key not in self._deprecated_warning_keys:
+                warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
+                self._deprecated_warning_keys.add(key)
+
+        def _get_compatibility_projection(self, name: str) -> ProxyArray:
+            """Return and refresh one lazy legacy articulation-order projection."""
+            self._require_bindable()
+            projection = self._compatibility_allocations.get(name)
+            if projection is None:
+                generation = self._manager._active_generation
+                layout = self._layout
+                if generation is None or layout is None:
+                    raise RuntimeError(
+                        "Actuator compatibility storage is not available before the scoped facade is installed."
+                    )
+                projection = generation.joint_store.compatibility_projection(name, layout)
+                self._compatibility_allocations[name] = projection
+            self._refresh_compatibility_projection(name)
+            return projection
+
+        def _refresh_compatibility_projection(self, name: str) -> None:
+            """Refresh an already-activated compatibility projection in configuration order."""
+            projection = self._compatibility_allocations.get(name)
+            if projection is None:
+                return
+            generation = self._manager._active_generation
+            layout = self._layout
+            if generation is None or layout is None:
+                raise RuntimeError(
+                    "Actuator compatibility storage is not available before the scoped facade is installed."
+                )
+            generation.joint_store.refresh_compatibility_projection(name, layout, self)
+
+        def _refresh_compatibility_projections(self) -> None:
+            """Refresh only compatibility projections that have been accessed."""
+            for name in tuple(self._compatibility_allocations):
+                self._refresh_compatibility_projection(name)
+
+        def _write_deprecated_actuator_gain(
+            self,
+            name: str,
+            value: torch.Tensor,
+            env_ids: torch.Tensor,
+            joint_ids: torch.Tensor,
+        ) -> None:
+            """Route a deprecated gain writer through capable exact type views."""
+            self._require_execution_ready()
+            self._warn_deprecated(
+                f"actuator_{name}",
+                f"write_actuator_{name}_to_sim is deprecated; use an exact type view's set_parameter_index().",
+                stacklevel=4,
+            )
+            for type_view in self._by_type.values():
+                if name in type_view.parameter_names:
+                    type_view.set_parameter_index(name, value, env_ids=env_ids, joint_ids=joint_ids)
+
+        def write_actuator_stiffness_to_sim(
+            self, *, stiffness: torch.Tensor, env_ids: torch.Tensor, joint_ids: torch.Tensor
+        ) -> None:
+            """Deprecated. Set actuator stiffness through capable exact type views."""
+            self._write_deprecated_actuator_gain("stiffness", stiffness, env_ids, joint_ids)
+
+        def write_actuator_damping_to_sim(
+            self, *, damping: torch.Tensor, env_ids: torch.Tensor, joint_ids: torch.Tensor
+        ) -> None:
+            """Deprecated. Set actuator damping through capable exact type views."""
+            self._write_deprecated_actuator_gain("damping", damping, env_ids, joint_ids)
+
         @property
         def has_implicit_actuators(self) -> bool:
             """Whether this articulation has any implicit actuator groups."""
@@ -1748,6 +1825,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             """Reject execution while a topology mutation requires a safe rebuild."""
             del dt
             self._require_execution_ready()
+            self._refresh_compatibility_projections()
 
         def submit_commands(self) -> None:
             """Submit processed command buffers through the backend control."""
@@ -1910,6 +1988,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._computed_effort = computed_effort
             self._applied_effort = applied_effort
             self._backend_parameter_staging = binding.backend_parameter_staging
+            self._layout = binding.layout
+            self._compatibility_allocations.clear()
+            self._deprecated_warning_keys.clear()
             self._has_implicit_actuators = any(
                 issubclass(group_layout.actuator_type, ImplicitActuator)
                 for group_layout in binding.layout.group_layouts
@@ -2309,6 +2390,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 device=target.warp.device,
             )
             self._route_parameter_side_effect(name, backend_write)
+            self._refresh_compatibility_projections()
 
         def _write_scoped_parameter_mask(
             self,
@@ -2373,6 +2455,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 device=target.warp.device,
             )
             self._route_parameter_side_effect(name, backend_write)
+            self._refresh_compatibility_projections()
 
         @staticmethod
         def _as_torch(value: float | torch.Tensor | wp.array | Sequence[float], target: ProxyArray) -> torch.Tensor:
@@ -2611,6 +2694,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._applied_effort = None
             self._backend_parameter_staging = None
             self._has_implicit_actuators = False
+            self._layout = None
+            self._compatibility_allocations.clear()
+            self._deprecated_warning_keys.clear()
             for group in tuple(dict.values(self)):
                 try:
                     group._release_facade_storage()
@@ -2703,7 +2789,6 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._finalizing = False
         self._closed = False
         self._deprecated_staged_topology_overrides: dict[object, object] = {}
-        self._deprecated_topology_warning_emitted = False
 
     def register_articulation(
         self,
@@ -2858,13 +2943,11 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             if not isinstance(group, ActuatorBase):
                 raise TypeError("Actuator facade values must be ActuatorBase instances.")
             override[group_name] = _copy_actuator_cfg(group.__dict__["cfg"])
-        if not self._deprecated_topology_warning_emitted:
-            warnings.warn(
-                "Mutating Articulation.actuators is deprecated; rebuild the simulation from ArticulationCfg instead.",
-                DeprecationWarning,
-                stacklevel=4,
-            )
-            self._deprecated_topology_warning_emitted = True
+        view._warn_deprecated(
+            "topology_mutation",
+            "Mutating Articulation.actuators is deprecated; rebuild the simulation from ArticulationCfg instead.",
+            stacklevel=4,
+        )
         self._deprecated_staged_topology_overrides[view._key] = override
         self._dirty = True
 
@@ -3248,36 +3331,6 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         """Whether any configured actuator group is implicit."""
         return self._has_implicit_actuators
 
-    @property
-    def computed_torque(self) -> ProxyArray:
-        """Joint torques computed before clipping [N or N·m, depending on joint type]."""
-        return self._computed_torque_ta
-
-    @property
-    def applied_torque(self) -> ProxyArray:
-        """Joint torques applied after clipping [N or N·m, depending on joint type]."""
-        return self._applied_torque_ta
-
-    @property
-    def actuator_stiffness(self) -> ProxyArray:
-        """Actuator-resolved stiffness values [N/m or N·m/rad, depending on joint type]."""
-        return self._actuator_stiffness_ta
-
-    @property
-    def actuator_damping(self) -> ProxyArray:
-        """Actuator-resolved damping values [N·s/m or N·m·s/rad, depending on joint type]."""
-        return self._actuator_damping_ta
-
-    @property
-    def soft_joint_vel_limits(self) -> ProxyArray:
-        """Actuator-resolved soft joint velocity limits [m/s or rad/s, depending on joint type]."""
-        return self._soft_joint_vel_limits_ta
-
-    @property
-    def gear_ratio(self) -> ProxyArray:
-        """Gear ratio for relating motor torques to applied joint torques [dimensionless]."""
-        return self._gear_ratio_ta
-
     """
     Operations.
     """
@@ -3342,31 +3395,12 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         """Submit processed actuator command buffers through the backend control object."""
         self._control.submit_commands(self)
 
-    def write_actuator_stiffness_to_sim(
-        self,
-        *,
-        stiffness: torch.Tensor,
-        env_ids: torch.Tensor,
-        joint_ids: torch.Tensor,
-    ) -> None:
-        """Write actuator stiffness values and propagate them to native controllers."""
-        self._write_actuator_gain("kp", stiffness, env_ids, joint_ids, self._actuator_stiffness)
-
-    def write_actuator_damping_to_sim(
-        self,
-        *,
-        damping: torch.Tensor,
-        env_ids: torch.Tensor,
-        joint_ids: torch.Tensor,
-    ) -> None:
-        """Write actuator damping values and propagate them to native controllers."""
-        self._write_actuator_gain("kd", damping, env_ids, joint_ids, self._actuator_damping)
-
     """
     Internal helpers.
     """
 
     def _allocate_buffers(self) -> None:
+        """Allocate deprecated-constructor execution scratch, not global canonical storage."""
         shape = (self.num_instances, self.num_joints)
         self._joint_pos_target = wp.zeros(shape, dtype=wp.float32, device=self.device)
         self._joint_vel_target = wp.zeros(shape, dtype=wp.float32, device=self.device)
