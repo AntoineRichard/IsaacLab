@@ -73,6 +73,7 @@ from isaaclab.utils.warp import ProxyArray
 ##
 from isaaclab_assets import (  # isort:skip
     ANYMAL_C_CFG,
+    CARTPOLE_CFG,
     FRANKA_PANDA_CFG,
     FRANKA_PANDA_HIGH_PD_CFG,
     SHADOW_HAND_CFG,
@@ -243,6 +244,30 @@ def _clone_physx_solver_properties(articulation: Articulation) -> dict[str, torc
         "armature": wp.to_torch(root_view.get_dof_armatures()).clone(),
         "friction": wp.to_torch(root_view.get_dof_friction_properties()).clone(),
     }
+
+
+def _generate_mixed_implicit_native_cartpole(device: str) -> Articulation:
+    """Generate a two-group Cartpole using PhysX implicit and hosted-Newton drives."""
+    articulation_cfg = CARTPOLE_CFG.replace(
+        actuators={
+            "implicit_cart": ImplicitActuatorCfg(
+                joint_names_expr=["slider_to_cart"],
+                effort_limit_sim=400.0,
+                stiffness=5.0,
+                damping=1.0,
+            ),
+            "native_pole": DCMotorCfg(
+                joint_names_expr=["cart_to_pole"],
+                saturation_effort=120.0,
+                effort_limit=80.0,
+                velocity_limit=7.5,
+                stiffness=10.0,
+                damping=2.0,
+            ),
+        }
+    )
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=2, device=device)
+    return articulation
 
 
 # ---------------------------------------------------------------------------
@@ -2459,6 +2484,93 @@ def test_hosted_newton_public_setters_update_real_dc_motor_components(device):
             wp.to_torch(native_actuator.controller.kp),
             torch.tensor([17.0, 41.0], device=device),
         )
+
+
+@pytest.mark.parametrize("device", test_devices())
+@pytest.mark.parametrize(
+    ("parameter_name", "controller_attr", "value"),
+    [("stiffness", "kp", 23.0), ("damping", "kd", 4.0)],
+)
+def test_mixed_implicit_native_gain_writes_reach_exact_controller(device, parameter_name, controller_attr, value):
+    """Test that mixed native gains bypass articulation-wide implicit staging."""
+    sim_cfg = SimulationCfg(physics=PhysxCfg(), use_newton_actuators=True)
+    with build_simulation_context(device=device, sim_cfg=sim_cfg) as sim:
+        sim._app_control_on_stop_handle = None
+        articulation = _generate_mixed_implicit_native_cartpole(device)
+        sim.reset()
+
+        assert articulation._actuator_control._backend_parameter_staging is not None
+        articulation.actuators["native_pole"].set_parameter_index(parameter_name, value)
+        wp.synchronize_device(device)
+
+        adapter = articulation.newton_actuator_adapter
+        assert adapter is not None
+        assert len(adapter.actuators) == 1
+        destination = getattr(adapter.actuators[0].controller, controller_attr)
+        torch.testing.assert_close(
+            wp.to_torch(destination),
+            torch.full((2,), value, device=device),
+        )
+
+
+@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
+@pytest.mark.parametrize(
+    ("parameter_name", "controller_attr", "initial_value", "replay_value"),
+    [("stiffness", "kp", 10.0, 31.0), ("damping", "kd", 2.0, 6.0)],
+)
+def test_mixed_native_gain_public_setter_replays_cuda_graph(
+    device, parameter_name, controller_attr, initial_value, replay_value
+):
+    """Test that mixed native gain routing remains allocation- and sync-free."""
+    sim_cfg = SimulationCfg(physics=PhysxCfg(), use_newton_actuators=True)
+    with build_simulation_context(device=device, sim_cfg=sim_cfg) as sim:
+        sim._app_control_on_stop_handle = None
+        articulation = _generate_mixed_implicit_native_cartpole(device)
+        sim.reset()
+
+        capture_value = torch.tensor(29.0, dtype=torch.float32, device=device)
+        capture_env_ids = torch.tensor([1], dtype=torch.int64, device=device)
+        with wp.ScopedCapture(device=device, force_module_load=True) as capture:
+            articulation.actuators["native_pole"].set_parameter_index(
+                parameter_name,
+                capture_value,
+                env_ids=capture_env_ids,
+            )
+        capture_value.fill_(replay_value)
+        torch.cuda.synchronize()
+        wp.capture_launch(capture.graph)
+        torch.cuda.synchronize()
+
+        adapter = articulation.newton_actuator_adapter
+        assert adapter is not None
+        assert len(adapter.actuators) == 1
+        destination = getattr(adapter.actuators[0].controller, controller_attr)
+        torch.testing.assert_close(
+            wp.to_torch(destination),
+            torch.tensor([initial_value, replay_value], device=device),
+        )
+
+
+@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
+@pytest.mark.parametrize("parameter_name", ["stiffness", "damping"])
+def test_mixed_implicit_gain_public_setter_rejects_cuda_capture(device, parameter_name):
+    """Test that mixed implicit gain rejection occurs before canonical mutation."""
+    sim_cfg = SimulationCfg(physics=PhysxCfg(), use_newton_actuators=True)
+    with build_simulation_context(device=device, sim_cfg=sim_cfg) as sim:
+        sim._app_control_on_stop_handle = None
+        articulation = _generate_mixed_implicit_native_cartpole(device)
+        sim.reset()
+
+        implicit = articulation.actuators["implicit_cart"]
+        before = getattr(implicit, parameter_name).clone()
+        capture_value = torch.tensor(13.0, dtype=torch.float32, device=device)
+        capture_sentinel = wp.zeros(1, dtype=wp.float32, device=device)
+        with wp.ScopedCapture(device=device):
+            with pytest.raises(RuntimeError, match="not supported during CUDA graph capture"):
+                implicit.set_parameter_index(parameter_name, capture_value)
+            capture_sentinel.zero_()
+
+        torch.testing.assert_close(getattr(implicit, parameter_name), before)
 
 
 @pytest.mark.parametrize("device", test_devices())

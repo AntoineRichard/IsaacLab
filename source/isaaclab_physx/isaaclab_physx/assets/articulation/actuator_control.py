@@ -223,6 +223,7 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         """Reject deferred PhysX drive writes during CUDA graph capture."""
         if (
             name in {"stiffness", "damping"}
+            and issubclass(write.actuator_type, ImplicitActuator)
             and write.backend_parameter_staging is not None
             and wp.get_device(self.device).is_capturing
         ):
@@ -230,7 +231,11 @@ class PhysxActuatorControl(ArticulationActuatorControl):
 
     def write_actuator_parameter(self, name: str, write: _ActuatorParameterWrite) -> None:
         """Route implicit drives or hosted-native parameters through candidate metadata."""
-        if name in {"stiffness", "damping"} and write.backend_parameter_staging is not None:
+        if (
+            name in {"stiffness", "damping"}
+            and issubclass(write.actuator_type, ImplicitActuator)
+            and write.backend_parameter_staging is not None
+        ):
             write.backend_parameter_staging.patch_write(actuator_type=write.actuator_type, name=name, write=write)
             self._dirty_backend_parameters.add(name)
             return
