@@ -2012,8 +2012,11 @@ def test_backend_owner_slots_use_the_last_cross_type_config_group(cfgs, winner_t
         ),
     ],
 )
-def test_later_non_native_group_blocks_every_semantically_owned_backend_field(first_type, second_type, fields) -> None:
-    """A later non-native group owns its schema fields even without a backend route."""
+def test_mixed_same_type_native_groups_are_rejected_before_backend_owner_resolution(
+    first_type, second_type, fields
+) -> None:
+    """Type-disjoint native discovery rejects unsupported same-type ownership."""
+    del fields
     collection = ActuatorCollection(_VariantSimulation())
     control = _SourceResolvingControl()
     control.native_groups = {"native"}
@@ -2027,11 +2030,8 @@ def test_later_non_native_group_blocks_every_semantically_owned_backend_field(fi
     }
     _register_managed(collection, "first", control, cfgs)
 
-    collection.finalize()
-
-    owners = collection._active_generation.selector_states["first"]._backend_owner_slots
-    for field in fields:
-        torch.testing.assert_close(owners[(first_type, field)], torch.full((2,), -1, dtype=torch.int32))
+    with pytest.raises(RuntimeError, match=rf"native/Lab.*{first_type.__name__}.*native.*later"):
+        collection.finalize()
 
 
 def test_direct_schema_less_opaque_group_blocks_common_native_routes_but_not_unrelated_saturation() -> None:

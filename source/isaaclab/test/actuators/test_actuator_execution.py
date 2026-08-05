@@ -156,15 +156,32 @@ class _Control:
 
 
 class _NativeControl(_Control):
-    """Control double that retains Task 10's articulation-wide native bypass."""
+    """Control double with an articulation-wide native ownership set."""
 
     def discover_native_actuators(self, cfgs: Mapping[str, object]) -> set[str]:
         return set(cfgs)
 
-    def compute_native_actuators(self, view, dt: float) -> bool:
+    def compute_native_actuators(self, view, dt: float) -> None:
         del view, dt
         self.native_compute_calls += 1
-        return True
+
+
+class _PartialNativeControl(_Control):
+    """Control double that owns one native explicit group."""
+
+    def __init__(self, device: str, num_worlds: int = 2) -> None:
+        super().__init__(device, num_worlds)
+        self.native_seen_effort: torch.Tensor | None = None
+
+    def discover_native_actuators(self, cfgs: Mapping[str, object]) -> set[str]:
+        del cfgs
+        return {"native_pd"}
+
+    def compute_native_actuators(self, view, dt: float) -> None:
+        del dt
+        self.native_compute_calls += 1
+        view.joint_command.effort.torch[:, 0].copy_(view.command.effort.torch[:, 0])
+        self.native_seen_effort = view.joint_command.effort.torch.clone()
 
 
 class _OpaqueIdealPD(IdealPDActuator):
@@ -289,7 +306,7 @@ def test_plan_does_not_split_ranges_for_different_numeric_parameters(device: str
 
 @pytest.mark.parametrize("device", _available_devices())
 def test_native_articulation_bypass_owns_no_lab_execution_schedule(device: str) -> None:
-    """Keep the established whole-articulation native execution short circuit."""
+    """All-native articulations retain an empty Lab execution schedule."""
     control = _NativeControl(device)
     _, view, _ = _make_plan({"drive": _ideal_cfg(["hip"])}, device=device, control=control)
 
@@ -300,6 +317,39 @@ def test_native_articulation_bypass_owns_no_lab_execution_schedule(device: str) 
     assert plan.static_scatter_epochs == ()
     view.compute(dt=0.005)
     assert control.native_compute_calls == 1
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_mixed_native_and_lab_ranges_compute_only_lab_owned_types(device: str) -> None:
+    """Native ownership excludes only its exact type from the Lab plan."""
+    control = _PartialNativeControl(device)
+    _, view, _ = _make_plan(
+        {"native_pd": _ideal_cfg(["hip"]), "lab_implicit": _implicit_cfg(["knee"])},
+        device=device,
+        control=control,
+    )
+    view.command.effort.torch.copy_(torch.tensor([[13.0, 17.0, 0.0], [19.0, 23.0, 0.0]], device=device))
+
+    view.compute(dt=0.005)
+
+    assert [item.actuator_type for item in view._execution_plan.stateless_ranges] == [ImplicitActuator]
+    assert control.native_compute_calls == 1
+    assert control.native_seen_effort is not None
+    torch.testing.assert_close(view.joint_command.effort.torch[:, 0], view.command.effort.torch[:, 0])
+    torch.testing.assert_close(view.joint_command.effort.torch[:, 1], view.command.effort.torch[:, 1])
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_mixed_same_type_native_ownership_is_rejected_with_context(device: str) -> None:
+    """Mixed ownership within an exact type needs explicit selection staging."""
+    control = _PartialNativeControl(device)
+
+    with pytest.raises(RuntimeError, match=r"native/Lab.*IdealPDActuator.*native_pd.*lab_pd"):
+        _make_plan(
+            {"native_pd": _ideal_cfg(["hip"]), "lab_pd": _ideal_cfg(["knee"])},
+            device=device,
+            control=control,
+        )
 
 
 def _ordinary_outputs(

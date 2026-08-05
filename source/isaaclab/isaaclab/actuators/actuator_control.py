@@ -354,17 +354,14 @@ class ActuatorControl(ABC):
     def finalize_native_actuators(self, collection: ActuatorCollection) -> None:
         """Finalize backend-native masks, callbacks, and telemetry views after group construction."""
 
-    def compute_native_actuators(self, collection: ActuatorCollection, dt: float) -> bool:
-        """Compute backend-native actuator outputs.
+    def compute_native_actuators(self, collection: ActuatorCollection, dt: float) -> None:
+        """Finish backend-native processing after Lab-owned plan ranges run.
 
         Args:
             collection: Collection that owns actuator command and telemetry buffers.
             dt: Physics step size [s].
 
-        Returns:
-            True when native handling replaced the standard Python actuator loop.
         """
-        return False
 
     @abstractmethod
     def submit_commands(self, collection: ActuatorCollection | ActuatorCollection.ArticulationView) -> None:

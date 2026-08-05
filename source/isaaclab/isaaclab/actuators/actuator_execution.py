@@ -106,7 +106,7 @@ class _ArticulationExecutionPlan:
         self._launch_cache = _WarpLaunchCache(control.device)
         self._valid = True
         self._validate_execution: Callable[[], None] | None = None
-        self._native_compute: Callable[[float], bool] | None = None
+        self._native_compute: Callable[[float], None] | None = None
 
     @classmethod
     def build(
@@ -134,24 +134,36 @@ class _ArticulationExecutionPlan:
             }
         )
 
-        # Task 10 retains the backend's established whole-articulation native
-        # bypass. The callback installed after publication skips every range.
-        native_bypass = bool(binding.native_group_names)
+        native_group_names = binding.native_group_names
+        lab_type_groups: dict[type[ActuatorBase], tuple[Any, ...]] = {}
         type_offsets: dict[type[ActuatorBase], int] = {}
         offset = 0
         for actuator_type in _SUPPORTED_TYPES:
             type_layout = layout.type_layouts.get(actuator_type)
             type_offsets[actuator_type] = offset
-            if type_layout is not None and not native_bypass:
+            if type_layout is None:
+                continue
+            type_groups = tuple(group for group in layout.group_layouts if group.actuator_type is actuator_type)
+            native_type_groups = tuple(group for group in type_groups if group.name in native_group_names)
+            lab_groups = tuple(group for group in type_groups if group.name not in native_group_names)
+            if native_type_groups and lab_groups:
+                native_names = ", ".join(group.name for group in native_type_groups)
+                lab_names = ", ".join(group.name for group in lab_groups)
+                raise RuntimeError(
+                    f"Mixed native/Lab ownership within exact type {actuator_type.__name__} "
+                    f"for articulation {binding.registration.key!r}: native [{native_names}], Lab [{lab_names}]."
+                )
+            lab_type_groups[actuator_type] = lab_groups
+            if lab_groups:
                 offset += type_layout.num_dofs
 
         source_buffers: dict[type[ActuatorBase], Mapping[str, ProxyArray]] = {}
         output_buffers: dict[type[ActuatorBase], Mapping[str, ProxyArray]] = {}
         ranges: list[_ExecutionRange] = []
         for actuator_type, type_layout in layout.type_layouts.items():
-            if actuator_type not in _SUPPORTED_TYPES or native_bypass:
+            if actuator_type not in _SUPPORTED_TYPES:
                 continue
-            type_groups = tuple(group for group in layout.group_layouts if group.actuator_type is actuator_type)
+            type_groups = lab_type_groups.get(actuator_type, ())
             if not type_groups:
                 continue
             execution_range = cls._build_range(
@@ -173,16 +185,14 @@ class _ArticulationExecutionPlan:
                 }
             )
 
-        if native_bypass:
-            eager_segments, epochs, schedule = (), (), ()
-        else:
-            eager_segments, epochs, schedule = cls._build_ordered_segments(
-                binding=binding,
-                groups=groups,
-                type_offsets=type_offsets,
-                control=control,
-                selector_state=selector_state,
-            )
+        eager_segments, epochs, schedule = cls._build_ordered_segments(
+            binding=binding,
+            groups=groups,
+            type_offsets=type_offsets,
+            native_group_names=native_group_names,
+            control=control,
+            selector_state=selector_state,
+        )
         implicit_layout = layout.type_layouts.get(ImplicitActuator)
         ideal_layout = layout.type_layouts.get(IdealPDActuator)
         epochs, schedule = cls._bind_static_launches(
@@ -194,8 +204,12 @@ class _ArticulationExecutionPlan:
             num_worlds=layout.num_worlds,
             num_joints=layout.num_joints,
             device=control.device,
-            implicit_count=0 if native_bypass or implicit_layout is None else implicit_layout.num_dofs,
-            ideal_count=0 if native_bypass or ideal_layout is None else ideal_layout.num_dofs,
+            implicit_count=0
+            if not lab_type_groups.get(ImplicitActuator) or implicit_layout is None
+            else implicit_layout.num_dofs,
+            ideal_count=0
+            if not lab_type_groups.get(IdealPDActuator) or ideal_layout is None
+            else ideal_layout.num_dofs,
         )
         return cls(
             control=control,
@@ -321,6 +335,7 @@ class _ArticulationExecutionPlan:
         binding: _ArticulationBinding,
         groups: Mapping[str, ActuatorBase],
         type_offsets: Mapping[type[ActuatorBase], int],
+        native_group_names: frozenset[str],
         control: ActuatorControl,
         selector_state: _SelectorState,
     ) -> tuple[
@@ -332,6 +347,8 @@ class _ArticulationExecutionPlan:
         ordered_entries: list[_StaticScatterEpoch | _EagerSegment] = []
         epoch_layouts: list[Any] = []
         for group_layout in binding.layout.group_layouts:
+            if group_layout.name in native_group_names:
+                continue
             exact_stateless = type(group := groups[group_layout.name]) in _SUPPORTED_TYPES
             if exact_stateless:
                 epoch_layouts.append(group_layout)
@@ -567,7 +584,7 @@ class _ArticulationExecutionPlan:
         self,
         *,
         validate_execution: Callable[[], None],
-        native_compute: Callable[[float], bool] | None,
+        native_compute: Callable[[float], None] | None,
     ) -> None:
         """Install publication-time guards without reading the facade during build."""
         self._validate_execution = validate_execution
@@ -579,8 +596,6 @@ class _ArticulationExecutionPlan:
             raise RuntimeError("stale actuator execution plan")
         if self._validate_execution is not None:
             self._validate_execution()
-        if self._native_compute is not None and self._native_compute(dt):
-            return
         for execution_range in self.stateless_ranges:
             self._run_range(execution_range)
         for entry in self._schedule:
@@ -588,6 +603,8 @@ class _ArticulationExecutionPlan:
                 self._scatter_static_epoch(entry)
             else:
                 self._run_eager(entry)
+        if self._native_compute is not None:
+            self._native_compute(dt)
 
     def _run_range(self, execution_range: _ExecutionRange) -> None:
         self._launch_cache.launch(
