@@ -1264,6 +1264,32 @@ def test_bridge_classifies_serialized_custom_implicit_actuator_without_mutating_
     assert cfg.class_type == serialized_class_type
 
 
+def test_bridge_rejects_invalid_cfg_before_registration_and_allows_retry(monkeypatch) -> None:
+    """Reject invalid configs without leaking registration state into a corrected retry."""
+    context = _make_bridge_context(monkeypatch)
+    articulation = _BridgeArticulation("invalid", 1, [])
+    cfg = articulation.cfg.actuators["drive"]
+    cfg.class_type = len
+    control = _BridgeControl(articulation, [])
+
+    with pytest.raises(TypeError, match="ActuatorBase subclass"):
+        articulation.register_actuators(control)
+
+    collection = context._get_actuator_collection()
+    assert collection.registration_keys == ()
+    assert not collection._views
+    assert cfg.class_type is len
+    assert not hasattr(articulation, "_actuator_control")
+    assert not hasattr(articulation, "actuators")
+
+    cfg.class_type = IdealPDActuator
+    view = articulation.register_actuators(control)
+
+    assert collection.registration_keys == (articulation,)
+    assert articulation._actuator_control is control
+    assert articulation.actuators is view
+
+
 @pytest.mark.parametrize("explicit_type", [IdealPDActuator, _OpaqueIdealPD])
 @pytest.mark.parametrize("explicit_after", [False, True])
 def test_explicit_config_order_blocks_or_enables_implicit_backend_gain_routes(explicit_type, explicit_after) -> None:
