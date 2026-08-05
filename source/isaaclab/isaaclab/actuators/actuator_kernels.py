@@ -5,6 +5,8 @@
 
 """Warp kernels used by actuator collections."""
 
+from __future__ import annotations
+
 from typing import Any
 
 import torch

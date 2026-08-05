@@ -1623,22 +1623,17 @@ class BaseArticulation(AssetBase):
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Set joint position targets into internal buffers.
+        """Deprecated. Use ``actuators.command.set_position_index`` instead.
 
-        .. note::
-            This method expects partial data.
-
-        .. tip::
-            For maximum performance we recommend looking at the actual implementation of the method in the backend.
-            Some backends may provide optimized implementations for masks / indices.
-
-        This function does not apply the joint targets to the simulation. It only fills the buffers with
-        the desired values. To apply the joint targets, call the :meth:`write_data_to_sim` function.
+        This compatibility method emits a :class:`DeprecationWarning` and does not apply targets until
+        :meth:`write_data_to_sim` is called.
 
         Args:
-            target: Joint position targets. Shape is (len(env_ids), len(joint_ids)).
-            joint_ids: The joint indices to set the targets for. Defaults to None (all joints).
-            env_ids: The environment indices to set the targets for. Defaults to None (all instances).
+            target: Position targets [m or rad, depending on joint type], shape
+                ``(num_selected_envs, num_selected_joints)``. When a selector is ``None``, it selects all
+                environments or all joints.
+            joint_ids: Joint indices. ``None`` selects all joints.
+            env_ids: Environment indices. ``None`` selects all environments.
         """
         raise NotImplementedError()
 
@@ -1651,22 +1646,16 @@ class BaseArticulation(AssetBase):
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:
-        """Set joint position targets into internal buffers.
+        """Deprecated. Use ``actuators.command.set_position_mask`` instead.
 
-        .. note::
-            This method expects full data.
-
-        .. tip::
-            For maximum performance we recommend looking at the actual implementation of the method in the backend.
-            Some backends may provide optimized implementations for masks / indices.
-
-        This function does not apply the joint targets to the simulation. It only fills the buffers with
-        the desired values. To apply the joint targets, call the :meth:`write_data_to_sim` function.
+        This compatibility method emits a :class:`DeprecationWarning` and does not apply targets until
+        :meth:`write_data_to_sim` is called.
 
         Args:
-            target: Joint position targets. Shape is (num_instances, num_joints).
-            joint_mask: Joint mask. If None, then all the joints are updated. Shape is (num_joints,).
-            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            target: Full position target buffer [m or rad, depending on joint type], shape
+                ``(num_instances, num_joints)``.
+            joint_mask: Joint mask. ``None`` selects all joints. Shape is ``(num_joints,)``.
+            env_mask: Environment mask. ``None`` selects all environments. Shape is ``(num_instances,)``.
         """
         raise NotImplementedError()
 
@@ -1679,22 +1668,17 @@ class BaseArticulation(AssetBase):
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Set joint velocity targets into internal buffers.
+        """Deprecated. Use ``actuators.command.set_velocity_index`` instead.
 
-        .. note::
-            This method expects partial data.
-
-        .. tip::
-            For maximum performance we recommend looking at the actual implementation of the method in the backend.
-            Some backends may provide optimized implementations for masks / indices.
-
-        This function does not apply the joint targets to the simulation. It only fills the buffers with
-        the desired values. To apply the joint targets, call the :meth:`write_data_to_sim` function.
+        This compatibility method emits a :class:`DeprecationWarning` and does not apply targets until
+        :meth:`write_data_to_sim` is called.
 
         Args:
-            target: Joint velocity targets. Shape is (len(env_ids), len(joint_ids)).
-            joint_ids: The joint indices to set the targets for. Defaults to None (all joints).
-            env_ids: The environment indices to set the targets for. Defaults to None (all instances).
+            target: Velocity targets [m/s or rad/s, depending on joint type], shape
+                ``(num_selected_envs, num_selected_joints)``. When a selector is ``None``, it selects all
+                environments or all joints.
+            joint_ids: Joint indices. ``None`` selects all joints.
+            env_ids: Environment indices. ``None`` selects all environments.
         """
         raise NotImplementedError()
 
@@ -1707,22 +1691,16 @@ class BaseArticulation(AssetBase):
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:
-        """Set joint velocity targets into internal buffers.
+        """Deprecated. Use ``actuators.command.set_velocity_mask`` instead.
 
-        .. note::
-            This method expects full data.
-
-        .. tip::
-            For maximum performance we recommend looking at the actual implementation of the method in the backend.
-            Some backends may provide optimized implementations for masks / indices.
-
-        This function does not apply the joint targets to the simulation. It only fills the buffers with
-        the desired values. To apply the joint targets, call the :meth:`write_data_to_sim` function.
+        This compatibility method emits a :class:`DeprecationWarning` and does not apply targets until
+        :meth:`write_data_to_sim` is called.
 
         Args:
-            target: Joint velocity targets. Shape is (num_instances, num_joints).
-            joint_mask: Joint mask. If None, then all the joints are updated. Shape is (num_joints,).
-            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            target: Full velocity target buffer [m/s or rad/s, depending on joint type], shape
+                ``(num_instances, num_joints)``.
+            joint_mask: Joint mask. ``None`` selects all joints. Shape is ``(num_joints,)``.
+            env_mask: Environment mask. ``None`` selects all environments. Shape is ``(num_instances,)``.
         """
         raise NotImplementedError()
 
@@ -1735,22 +1713,17 @@ class BaseArticulation(AssetBase):
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Set joint efforts into internal buffers.
+        """Deprecated. Use ``actuators.command.set_effort_index`` instead.
 
-        .. note::
-            This method expects partial data.
-
-        .. tip::
-            For maximum performance we recommend looking at the actual implementation of the method in the backend.
-            Some backends may provide optimized implementations for masks / indices.
-
-        This function does not apply the joint targets to the simulation. It only fills the buffers with
-        the desired values. To apply the joint targets, call the :meth:`write_data_to_sim` function.
+        This compatibility method emits a :class:`DeprecationWarning` and does not apply targets until
+        :meth:`write_data_to_sim` is called.
 
         Args:
-            target: Joint effort targets. Shape is (len(env_ids), len(joint_ids)).
-            joint_ids: The joint indices to set the targets for. Defaults to None (all joints).
-            env_ids: The environment indices to set the targets for. Defaults to None (all instances).
+            target: Effort targets [N or N·m, depending on joint type], shape
+                ``(num_selected_envs, num_selected_joints)``. When a selector is ``None``, it selects all
+                environments or all joints.
+            joint_ids: Joint indices. ``None`` selects all joints.
+            env_ids: Environment indices. ``None`` selects all environments.
         """
         raise NotImplementedError()
 
@@ -1763,22 +1736,16 @@ class BaseArticulation(AssetBase):
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:
-        """Set joint efforts into internal buffers.
+        """Deprecated. Use ``actuators.command.set_effort_mask`` instead.
 
-        .. note::
-            This method expects full data.
-
-        .. tip::
-            For maximum performance we recommend looking at the actual implementation of the method in the backend.
-            Some backends may provide optimized implementations for masks / indices.
-
-        This function does not apply the joint targets to the simulation. It only fills the buffers with
-        the desired values. To apply the joint targets, call the :meth:`write_data_to_sim` function.
+        This compatibility method emits a :class:`DeprecationWarning` and does not apply targets until
+        :meth:`write_data_to_sim` is called.
 
         Args:
-            target: Joint effort targets. Shape is (num_instances, num_joints).
-            joint_mask: Joint mask. If None, then all the joints are updated. Shape is (num_joints,).
-            env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            target: Full effort target buffer [N or N·m, depending on joint type], shape
+                ``(num_instances, num_joints)``.
+            joint_mask: Joint mask. ``None`` selects all joints. Shape is ``(num_joints,)``.
+            env_mask: Environment mask. ``None`` selects all environments. Shape is ``(num_instances,)``.
         """
         raise NotImplementedError()
 
@@ -3095,12 +3062,14 @@ class BaseArticulation(AssetBase):
         joint_ids: Sequence[int] | slice | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Set deprecated position targets [m or rad, depending on joint type].
+        """Deprecated. Use ``actuators.command.set_position_index`` instead.
 
         Args:
-            target: Position targets, shape ``(len(env_ids), len(joint_ids))``.
-            joint_ids: Joint indices.
-            env_ids: Environment indices.
+            target: Position targets [m or rad, depending on joint type], shape
+                ``(num_selected_envs, num_selected_joints)``. When a selector is ``None``, it selects all
+                environments or all joints.
+            joint_ids: Joint indices. ``None`` selects all joints.
+            env_ids: Environment indices. ``None`` selects all environments.
         """
         self.actuators._warn_deprecated(
             "set_joint_position_target",
@@ -3116,12 +3085,14 @@ class BaseArticulation(AssetBase):
         joint_ids: Sequence[int] | slice | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Set deprecated velocity targets [m/s or rad/s, depending on joint type].
+        """Deprecated. Use ``actuators.command.set_velocity_index`` instead.
 
         Args:
-            target: Velocity targets, shape ``(len(env_ids), len(joint_ids))``.
-            joint_ids: Joint indices.
-            env_ids: Environment indices.
+            target: Velocity targets [m/s or rad/s, depending on joint type], shape
+                ``(num_selected_envs, num_selected_joints)``. When a selector is ``None``, it selects all
+                environments or all joints.
+            joint_ids: Joint indices. ``None`` selects all joints.
+            env_ids: Environment indices. ``None`` selects all environments.
         """
         self.actuators._warn_deprecated(
             "set_joint_velocity_target",
@@ -3137,12 +3108,14 @@ class BaseArticulation(AssetBase):
         joint_ids: Sequence[int] | slice | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Set deprecated effort targets [N or N·m, depending on joint type].
+        """Deprecated. Use ``actuators.command.set_effort_index`` instead.
 
         Args:
-            target: Effort targets, shape ``(len(env_ids), len(joint_ids))``.
-            joint_ids: Joint indices.
-            env_ids: Environment indices.
+            target: Effort targets [N or N·m, depending on joint type], shape
+                ``(num_selected_envs, num_selected_joints)``. When a selector is ``None``, it selects all
+                environments or all joints.
+            joint_ids: Joint indices. ``None`` selects all joints.
+            env_ids: Environment indices. ``None`` selects all environments.
         """
         self.actuators._warn_deprecated(
             "set_joint_effort_target",

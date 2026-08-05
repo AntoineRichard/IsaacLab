@@ -494,7 +494,9 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def joint_pos_target(self) -> ProxyArray:
-        """Joint position targets commanded by the user [m or rad, depending on joint type].
+        """Deprecated live alias for ``articulation.actuators.command.position``.
+
+        Position targets [m or rad, depending on joint type].
 
         Shape is (num_instances, num_joints), dtype = wp.float32.
         """
@@ -502,7 +504,9 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def joint_vel_target(self) -> ProxyArray:
-        """Joint velocity targets commanded by the user [m/s or rad/s, depending on joint type].
+        """Deprecated live alias for ``articulation.actuators.command.velocity``.
+
+        Velocity targets [m/s or rad/s, depending on joint type].
 
         Shape is (num_instances, num_joints), dtype = wp.float32.
         """
@@ -510,7 +514,9 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def joint_effort_target(self) -> ProxyArray:
-        """Joint effort targets commanded by the user [N or N*m, depending on joint type].
+        """Deprecated live alias for ``articulation.actuators.command.effort``.
+
+        Effort targets [N or N·m, depending on joint type].
 
         Shape is (num_instances, num_joints), dtype = wp.float32.
         """
@@ -524,7 +530,9 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def computed_torque(self) -> ProxyArray:
-        """Joint torques computed from the actuator model (before clipping) [N*m].
+        """Deprecated. Use ``articulation.actuators.computed_effort`` instead.
+
+        Computed effort before clipping [N or N·m, depending on joint type].
 
         Shape is (num_instances, num_joints), dtype = wp.float32.
         """
@@ -532,7 +540,9 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def applied_torque(self) -> ProxyArray:
-        """Joint torques applied from the actuator model (after clipping) [N*m].
+        """Deprecated. Use ``articulation.actuators.applied_effort`` instead.
+
+        Applied effort after clipping [N or N·m, depending on joint type].
 
         Shape is (num_instances, num_joints), dtype = wp.float32.
         """
@@ -693,7 +703,10 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def soft_joint_vel_limits(self) -> ProxyArray:
-        """Soft joint velocity limits for all joints [m/s or rad/s, depending on joint type].
+        """Deprecated dense compatibility projection with no public dense replacement.
+
+        Use ``articulation.actuators[\"<group>\"].parameters[\"velocity_limit\"]`` or an exact-type
+        view. Velocity limits are [m/s or rad/s, depending on joint type].
 
         Shape is (num_instances, num_joints), dtype = wp.float32.
         """
@@ -703,7 +716,10 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def gear_ratio(self) -> ProxyArray:
-        """Gear ratio for relating motor torques to applied joint torques.
+        """Deprecated dense compatibility projection with no public dense replacement.
+
+        Use ``articulation.actuators[\"<group>\"].parameters[\"gear_ratio\"]`` or an exact-type view
+        when the parameter is declared. Gear ratio is [dimensionless].
 
         Shape is (num_instances, num_joints), dtype = wp.float32.
         """

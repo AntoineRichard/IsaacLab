@@ -360,7 +360,7 @@ class BaseArticulationData(ABC):
     @abstractmethod
     @leapp_tensor_semantics(kind=InputKindEnum.COMMAND_JOINT_POSITION)
     def joint_pos_target(self) -> ProxyArray:
-        """Deprecated. Use ``articulation.actuators.command.position`` instead.
+        """Deprecated live alias for ``articulation.actuators.command.position``.
 
         Joint position targets commanded by the user [m or rad, depending on joint type].
         Shape is (num_instances, num_joints), dtype = wp.float32.
@@ -371,7 +371,7 @@ class BaseArticulationData(ABC):
     @abstractmethod
     @leapp_tensor_semantics(kind=InputKindEnum.COMMAND_JOINT_VELOCITY)
     def joint_vel_target(self) -> ProxyArray:
-        """Deprecated. Use ``articulation.actuators.command.velocity`` instead.
+        """Deprecated live alias for ``articulation.actuators.command.velocity``.
 
         Joint velocity targets commanded by the user [m/s or rad/s, depending on joint type].
         Shape is (num_instances, num_joints), dtype = wp.float32.
@@ -382,7 +382,7 @@ class BaseArticulationData(ABC):
     @abstractmethod
     @leapp_tensor_semantics(kind=InputKindEnum.COMMAND_JOINT_TORQUES)
     def joint_effort_target(self) -> ProxyArray:
-        """Deprecated. Use ``articulation.actuators.command.effort`` instead.
+        """Deprecated live alias for ``articulation.actuators.command.effort``.
 
         Joint effort targets commanded by the user [N or N·m, depending on joint type].
         Shape is (num_instances, num_joints), dtype = wp.float32.
@@ -397,7 +397,7 @@ class BaseArticulationData(ABC):
     @abstractmethod
     @leapp_tensor_semantics(kind="state/joint/computed_torque")
     def computed_torque(self) -> ProxyArray:
-        """Deprecated. Use ``articulation.actuators.computed_torque`` instead.
+        """Deprecated. Use ``articulation.actuators.computed_effort`` instead.
 
         Joint torques computed from the actuator model before clipping [N or N·m,
         depending on joint type]. Shape is (num_instances, num_joints), dtype = wp.float32.
@@ -408,7 +408,7 @@ class BaseArticulationData(ABC):
     @abstractmethod
     @leapp_tensor_semantics(kind="state/joint/applied_torque")
     def applied_torque(self) -> ProxyArray:
-        """Deprecated. Use ``articulation.actuators.applied_torque`` instead.
+        """Deprecated. Use ``articulation.actuators.applied_effort`` instead.
 
         Joint torques applied from the actuator model after clipping [N or N·m,
         depending on joint type]. Shape is (num_instances, num_joints), dtype = wp.float32.
@@ -535,7 +535,11 @@ class BaseArticulationData(ABC):
     @abstractmethod
     @leapp_tensor_semantics(const=True)
     def soft_joint_vel_limits(self) -> ProxyArray:
-        """Deprecated. Use ``articulation.actuators.soft_joint_vel_limits`` instead.
+        """Deprecated. Use compact actuator parameter mappings instead.
+
+        Use ``articulation.actuators[\"<group>\"].parameters[\"velocity_limit\"]`` or
+        ``articulation.actuators.by_type[ActuatorType].parameters[\"velocity_limit\"]``.
+        This compatibility property has no public dense replacement.
 
         Soft joint velocity limits for all joints [m/s or rad/s, depending on joint type].
         Shape is (num_instances, num_joints), dtype = wp.float32.
@@ -546,7 +550,11 @@ class BaseArticulationData(ABC):
     @abstractmethod
     @leapp_tensor_semantics(const=True)
     def gear_ratio(self) -> ProxyArray:
-        """Deprecated. Use ``articulation.actuators.gear_ratio`` instead.
+        """Deprecated. Use compact actuator parameter mappings instead.
+
+        Use ``articulation.actuators[\"<group>\"].parameters[\"gear_ratio\"]`` or
+        ``articulation.actuators.by_type[ActuatorType].parameters[\"gear_ratio\"]`` when the
+        parameter is declared. This compatibility property has no public dense replacement.
 
         Gear ratio for relating motor torques to applied joint torques [dimensionless].
         Shape is (num_instances, num_joints), dtype = wp.float32.

@@ -1690,7 +1690,16 @@ class Articulation(BaseArticulation):
         env_ids: torch.Tensor,
         joint_ids: torch.Tensor,
     ) -> None:
-        """Deprecated. Use :meth:`ActuatorCollection.write_actuator_stiffness_to_sim`."""
+        """Deprecated. Use a compact actuator parameter setter instead.
+
+        Use ``actuators[\"<group>\"].set_parameter_index(\"stiffness\", value, env_ids=env_ids, joint_ids=joint_ids)``.
+
+        Args:
+            stiffness: Stiffness [N/m or N·m/rad, depending on joint type] in articulation joint order,
+                shape ``(num_selected_envs, num_selected_joints)``.
+            env_ids: Selected environment rows in articulation order.
+            joint_ids: Selected joint columns in articulation order.
+        """
         self.actuators.write_actuator_stiffness_to_sim(stiffness=stiffness, env_ids=env_ids, joint_ids=joint_ids)
 
     def write_actuator_damping_to_sim(
@@ -1700,7 +1709,16 @@ class Articulation(BaseArticulation):
         env_ids: torch.Tensor,
         joint_ids: torch.Tensor,
     ) -> None:
-        """Deprecated. Use :meth:`ActuatorCollection.write_actuator_damping_to_sim`."""
+        """Deprecated. Use a compact actuator parameter setter instead.
+
+        Use ``actuators[\"<group>\"].set_parameter_index(\"damping\", damping, env_ids=env_ids, joint_ids=joint_ids)``.
+
+        Args:
+            damping: Damping [N·s/m or N·m·s/rad, depending on joint type] in articulation joint order,
+                shape ``(num_selected_envs, num_selected_joints)``.
+            env_ids: Selected environment rows in articulation order.
+            joint_ids: Selected joint columns in articulation order.
+        """
         self.actuators.write_actuator_damping_to_sim(damping=damping, env_ids=env_ids, joint_ids=joint_ids)
 
     def write_joint_position_limit_to_sim_index(
@@ -2512,7 +2530,6 @@ class Articulation(BaseArticulation):
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Deprecated. Use :meth:`ActuatorCollection.Command.set_position_index`."""
         self.actuators._warn_deprecated(
             "set_joint_position_target_index",
             "Articulation.set_joint_position_target_index is deprecated. Use"
@@ -2528,7 +2545,6 @@ class Articulation(BaseArticulation):
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:
-        """Deprecated. Use :meth:`ActuatorCollection.Command.set_position_mask`."""
         self.actuators._warn_deprecated(
             "set_joint_position_target_mask",
             "Articulation.set_joint_position_target_mask is deprecated. Use"
@@ -2544,7 +2560,6 @@ class Articulation(BaseArticulation):
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Deprecated. Use :meth:`ActuatorCollection.Command.set_velocity_index`."""
         self.actuators._warn_deprecated(
             "set_joint_velocity_target_index",
             "Articulation.set_joint_velocity_target_index is deprecated. Use"
@@ -2560,7 +2575,6 @@ class Articulation(BaseArticulation):
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:
-        """Deprecated. Use :meth:`ActuatorCollection.Command.set_velocity_mask`."""
         self.actuators._warn_deprecated(
             "set_joint_velocity_target_mask",
             "Articulation.set_joint_velocity_target_mask is deprecated. Use"
@@ -2576,7 +2590,6 @@ class Articulation(BaseArticulation):
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        """Deprecated. Use :meth:`ActuatorCollection.Command.set_effort_index`."""
         self.actuators._warn_deprecated(
             "set_joint_effort_target_index",
             "Articulation.set_joint_effort_target_index is deprecated. Use"
@@ -2592,7 +2605,6 @@ class Articulation(BaseArticulation):
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:
-        """Deprecated. Use :meth:`ActuatorCollection.Command.set_effort_mask`."""
         self.actuators._warn_deprecated(
             "set_joint_effort_target_mask",
             "Articulation.set_joint_effort_target_mask is deprecated. Use"

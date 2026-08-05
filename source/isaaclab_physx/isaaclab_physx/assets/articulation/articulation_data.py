@@ -435,37 +435,28 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def joint_pos_target(self) -> ProxyArray:
-        """Joint position targets commanded by the user.
+        """Deprecated live alias for ``articulation.actuators.command.position``.
 
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        For an implicit actuator model, the targets are directly set into the simulation.
-        For an explicit actuator model, the targets are used to compute the joint torques (see :attr:`applied_torque`),
-        which are then set into the simulation.
+        Position targets [m or rad, depending on joint type], shape ``(num_instances, num_joints)``,
+        dtype ``wp.float32``.
         """
         return self._get_actuator_collection_proxy("joint_pos_target", "_joint_pos_target", "_joint_pos_target_ta")
 
     @property
     def joint_vel_target(self) -> ProxyArray:
-        """Joint velocity targets commanded by the user.
+        """Deprecated live alias for ``articulation.actuators.command.velocity``.
 
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        For an implicit actuator model, the targets are directly set into the simulation.
-        For an explicit actuator model, the targets are used to compute the joint torques (see :attr:`applied_torque`),
-        which are then set into the simulation.
+        Velocity targets [m/s or rad/s, depending on joint type], shape ``(num_instances, num_joints)``,
+        dtype ``wp.float32``.
         """
         return self._get_actuator_collection_proxy("joint_vel_target", "_joint_vel_target", "_joint_vel_target_ta")
 
     @property
     def joint_effort_target(self) -> ProxyArray:
-        """Joint effort targets commanded by the user.
+        """Deprecated live alias for ``articulation.actuators.command.effort``.
 
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        For an implicit actuator model, the targets are directly set into the simulation.
-        For an explicit actuator model, the targets are used to compute the joint torques (see :attr:`applied_torque`),
-        which are then set into the simulation.
+        Effort targets [N or N·m, depending on joint type], shape ``(num_instances, num_joints)``,
+        dtype ``wp.float32``.
         """
         return self._get_actuator_collection_proxy(
             "joint_effort_target", "_joint_effort_target", "_joint_effort_target_ta"
@@ -477,24 +468,19 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def computed_torque(self) -> ProxyArray:
-        """Joint torques computed from the actuator model (before clipping).
+        """Deprecated. Use ``articulation.actuators.computed_effort`` instead.
 
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        This quantity is the raw torque output from the actuator mode, before any clipping is applied.
-        It is exposed for users who want to inspect the computations inside the actuator model.
-        For instance, to penalize the learning agent for a difference between the computed and applied torques.
+        Computed effort before clipping [N or N·m, depending on joint type], shape
+        ``(num_instances, num_joints)``, dtype ``wp.float32``.
         """
         return self._get_actuator_collection_proxy("computed_torque", "_computed_torque", "_computed_torque_ta")
 
     @property
     def applied_torque(self) -> ProxyArray:
-        """Joint torques applied from the actuator model (after clipping).
+        """Deprecated. Use ``articulation.actuators.applied_effort`` instead.
 
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        These torques are set into the simulation, after clipping the :attr:`computed_torque` based on the
-        actuator model.
+        Applied effort after clipping [N or N·m, depending on joint type], shape
+        ``(num_instances, num_joints)``, dtype ``wp.float32``.
         """
         return self._get_actuator_collection_proxy("applied_torque", "_applied_torque", "_applied_torque_ta")
 
@@ -638,12 +624,11 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def soft_joint_vel_limits(self) -> ProxyArray:
-        """Soft joint velocity limits for all joints.
+        """Deprecated dense compatibility projection with no public dense replacement.
 
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        These are obtained from the actuator model. It may differ from :attr:`joint_vel_limits` if the actuator model
-        has a variable velocity limit model. For instance, in a variable gear ratio actuator model.
+        Use ``articulation.actuators[\"<group>\"].parameters[\"velocity_limit\"]`` or an exact-type
+        view. Velocity limits are [m/s or rad/s, depending on joint type], shape
+        ``(num_instances, num_joints)``, dtype ``wp.float32``.
         """
         return self._get_actuator_collection_proxy(
             "soft_joint_vel_limits", "_soft_joint_vel_limits", "_soft_joint_vel_limits_ta"
@@ -651,9 +636,11 @@ class ArticulationData(BaseArticulationData):
 
     @property
     def gear_ratio(self) -> ProxyArray:
-        """Gear ratio for relating motor torques to applied Joint torques.
+        """Deprecated dense compatibility projection with no public dense replacement.
 
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
+        Use ``articulation.actuators[\"<group>\"].parameters[\"gear_ratio\"]`` or an exact-type view
+        when the parameter is declared. Gear ratio is [dimensionless], shape
+        ``(num_instances, num_joints)``, dtype ``wp.float32``.
         """
         return self._get_actuator_collection_proxy("gear_ratio", "_gear_ratio", "_gear_ratio_ta")
 

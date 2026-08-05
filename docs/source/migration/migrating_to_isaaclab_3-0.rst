@@ -982,8 +982,8 @@ Actuator API Moves to ``ActuatorCollection``
 
 In Isaac Lab 3.x, actuator ownership moves from :class:`~isaaclab.assets.Articulation` to a
 backend-neutral :class:`~isaaclab.actuators.ActuatorCollection`, available as
-:attr:`~isaaclab.assets.Articulation.actuators`. Actuator command setters, actuator gain writers, and
-per-joint actuator telemetry now live on the collection, so the same code path drives every
+:attr:`~isaaclab.assets.Articulation.actuators`. Actuator command setters, compact actuator parameter
+setters, and per-joint actuator telemetry now live on the collection, so the same code path drives every
 physics backend. The collection setters are keyword-only.
 
 
@@ -993,21 +993,32 @@ Method Relocations
 The following methods on :class:`~isaaclab.assets.Articulation` move to the actuator collection.
 The old methods are deprecated and will be removed in a future release:
 
-+---------------------------------------------------------------+-------------------------------------------------+
-| Deprecated                                                    | New                                             |
-+===============================================================+=================================================+
-| ``set_joint_position_target``                                 | ``actuators.command.set_position_index``        |
-+---------------------------------------------------------------+-------------------------------------------------+
-| ``set_joint_velocity_target``                                 | ``actuators.command.set_velocity_index``        |
-+---------------------------------------------------------------+-------------------------------------------------+
-| ``set_joint_effort_target``                                   | ``actuators.command.set_effort_index``          |
-+---------------------------------------------------------------+-------------------------------------------------+
-| ``set_joint_{position,velocity,effort}_target_index/_mask``   | ``actuators.command.set_{position,velocity,``   |
-|                                                               | ``effort}_index/_mask``                         |
-+---------------------------------------------------------------+-------------------------------------------------+
-| ``write_actuator_stiffness_to_sim`` /                         | same names on ``articulation.actuators``        |
-| ``write_actuator_damping_to_sim``                             |                                                 |
-+---------------------------------------------------------------+-------------------------------------------------+
+.. list-table::
+   :header-rows: 1
+
+   * - Deprecated
+     - New
+   * - ``set_joint_position_target``
+     - ``actuators.command.set_position_index``
+   * - ``set_joint_velocity_target``
+     - ``actuators.command.set_velocity_index``
+   * - ``set_joint_effort_target``
+     - ``actuators.command.set_effort_index``
+   * - ``set_joint_{position,velocity,effort}_target_index/_mask``
+     - ``actuators.command.set_{position,velocity,effort}_index/_mask``
+   * - ``write_actuator_stiffness_to_sim`` / ``write_actuator_damping_to_sim``
+     - Compact group/type parameter setter
+
+Use compact group/type parameter setters for runtime gain changes:
+
+.. code-block:: python
+
+   robot.actuators["<group>"].set_parameter_index(
+       "stiffness", stiffness, env_ids=env_ids, joint_ids=joint_ids
+   )
+   robot.actuators["<group>"].set_parameter_index(
+       "damping", damping, env_ids=env_ids, joint_ids=joint_ids
+   )
 
 
 Property Relocations (Data Class)
@@ -1017,29 +1028,38 @@ The following properties on :class:`~isaaclab.assets.ArticulationData` move to t
 collection under the command view. The old properties are deprecated and will be removed in a
 future release:
 
-+------------------------------------------+------------------------------------------+
-| Deprecated                               | New                                      |
-+==========================================+==========================================+
-| ``data.joint_pos_target``                | ``actuators.command.position``           |
-+------------------------------------------+------------------------------------------+
-| ``data.joint_vel_target``                | ``actuators.command.velocity``           |
-+------------------------------------------+------------------------------------------+
-| ``data.joint_effort_target``             | ``actuators.command.effort``             |
-+------------------------------------------+------------------------------------------+
-| ``data.computed_torque``                 | ``actuators.computed_torque``            |
-+------------------------------------------+------------------------------------------+
-| ``data.applied_torque``                  | ``actuators.applied_torque``             |
-+------------------------------------------+------------------------------------------+
-| ``data.soft_joint_vel_limits``           | ``actuators.soft_joint_vel_limits``      |
-+------------------------------------------+------------------------------------------+
-| ``data.gear_ratio``                      | ``actuators.gear_ratio``                 |
-+------------------------------------------+------------------------------------------+
+.. list-table::
+   :header-rows: 1
+
+   * - Deprecated
+     - New
+   * - ``data.joint_pos_target``
+     - ``actuators.command.position``
+   * - ``data.joint_vel_target``
+     - ``actuators.command.velocity``
+   * - ``data.joint_effort_target``
+     - ``actuators.command.effort``
+   * - ``data.computed_torque``
+     - ``actuators.computed_effort``
+   * - ``data.applied_torque``
+     - ``actuators.applied_effort``
+   * - ``data.soft_joint_vel_limits``
+     - Compact ``velocity_limit`` parameter; no public dense replacement.
+   * - ``data.gear_ratio``
+     - Compact ``gear_ratio`` parameter; no public dense replacement.
 
 .. note::
 
    All deprecated methods and properties are forwarders that emit a :class:`DeprecationWarning`
    when used. Your existing code will continue to work, but you should migrate to the new API to
    avoid issues in future releases.
+
+   Dense compatibility projections remain internal; migrate user code to the compact group/type
+   parameter arrays.
+
+For example, use ``actuators["<group>"].parameters["velocity_limit"]`` or
+``actuators.by_type[ActuatorType].parameters["velocity_limit"]``; use the corresponding
+``"gear_ratio"`` parameter mapping when it is declared.
 
 
 Migration Example
@@ -1068,11 +1088,11 @@ Here's a complete example showing how to update your code:
    robot.actuators.command.set_effort_index(value=efforts, joint_ids=joint_ids)
 
    # Reading actuator telemetry from the collection
-   applied = robot.actuators.applied_torque.torch
+   applied = robot.actuators.applied_effort.torch
    position_command = robot.actuators.command.position.torch
 
-For the full runtime API of the actuator collection -- command setters, telemetry buffers, and
-gain writers -- see :ref:`actuators-runtime-api`.
+For the full runtime API of the actuator collection -- command setters, telemetry buffers, and compact
+parameter setters -- see :ref:`actuators-runtime-api`.
 
 
 Quaternion Format

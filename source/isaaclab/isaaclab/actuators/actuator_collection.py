@@ -1706,7 +1706,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
         @property
         def computed_effort(self) -> ProxyArray:
-            """Computed effort [N or N·m, depending on joint type]."""
+            """Computed effort [N or N·m, depending on joint type].
+
+            Values are in articulation joint order with shape ``(num_instances, num_joints)``.
+            """
             self._require_bindable()
             if self._computed_effort is None:
                 raise RuntimeError("Actuator telemetry storage is not available before the scoped facade is installed.")
@@ -1714,7 +1717,10 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
         @property
         def applied_effort(self) -> ProxyArray:
-            """Applied effort [N or N·m, depending on joint type]."""
+            """Applied effort [N or N·m, depending on joint type].
+
+            Values are in articulation joint order with shape ``(num_instances, num_joints)``.
+            """
             self._require_bindable()
             if self._applied_effort is None:
                 raise RuntimeError("Actuator telemetry storage is not available before the scoped facade is installed.")
@@ -1810,24 +1816,42 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         def write_actuator_stiffness_to_sim(
             self, *, stiffness: torch.Tensor, env_ids: torch.Tensor, joint_ids: torch.Tensor
         ) -> None:
-            """Set deprecated actuator stiffness [N/m or N·m/rad, depending on joint type].
+            """Deprecated. Use a compact actuator parameter setter instead.
+
+            Use:
+
+            .. code-block:: python
+
+                actuators["<group>"].set_parameter_index("stiffness", value, env_ids=env_ids, joint_ids=joint_ids)
+
+            An exact-type view's ``set_parameter_index`` is also valid when that view is intentional.
 
             Args:
-                stiffness: Values in articulation order, shape ``(len(env_ids), len(joint_ids))``.
-                env_ids: Environment indices.
-                joint_ids: Joint indices.
+                stiffness: Stiffness [N/m or N·m/rad, depending on joint type] in articulation joint order,
+                    shape ``(num_selected_envs, num_selected_joints)``.
+                env_ids: Selected environment rows in articulation order.
+                joint_ids: Selected joint columns in articulation order.
             """
             self._write_deprecated_actuator_gain("stiffness", stiffness, env_ids, joint_ids)
 
         def write_actuator_damping_to_sim(
             self, *, damping: torch.Tensor, env_ids: torch.Tensor, joint_ids: torch.Tensor
         ) -> None:
-            """Set deprecated actuator damping [N·s/m or N·m·s/rad, depending on joint type].
+            """Deprecated. Use a compact actuator parameter setter instead.
+
+            Use:
+
+            .. code-block:: python
+
+                actuators["<group>"].set_parameter_index("damping", value, env_ids=env_ids, joint_ids=joint_ids)
+
+            An exact-type view's ``set_parameter_index`` is also valid when that view is intentional.
 
             Args:
-                damping: Values in articulation order, shape ``(len(env_ids), len(joint_ids))``.
-                env_ids: Environment indices.
-                joint_ids: Joint indices.
+                damping: Damping [N·s/m or N·m·s/rad, depending on joint type] in articulation joint order,
+                    shape ``(num_selected_envs, num_selected_joints)``.
+                env_ids: Selected environment rows in articulation order.
+                joint_ids: Selected joint columns in articulation order.
             """
             self._write_deprecated_actuator_gain("damping", damping, env_ids, joint_ids)
 

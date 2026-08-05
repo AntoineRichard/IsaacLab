@@ -112,8 +112,8 @@ Where the gains land differs by path, and this is the single most common source 
 
     Because the whole pipeline runs inside :meth:`~isaaclab.assets.Articulation.write_data_to_sim`,
     a command you set is not visible in the simulation until the next physics step. Telemetry
-    buffers (:attr:`~isaaclab.actuators.ActuatorCollection.computed_torque`,
-    :attr:`~isaaclab.actuators.ActuatorCollection.applied_torque`) reflect the most recent step.
+    buffers (:attr:`~isaaclab.actuators.ActuatorCollection.computed_effort`,
+    :attr:`~isaaclab.actuators.ActuatorCollection.applied_effort`) reflect the most recent step.
 
 
 Choosing a model
@@ -530,25 +530,24 @@ arrays through ``.torch`` (or ``.warp``):
 
     desired_position = robot.actuators.command.position.torch
     submitted_effort = robot.actuators.joint_command.effort.torch
-    applied = robot.actuators.applied_torque.torch      # after clipping [N·m or N]
-    computed = robot.actuators.computed_torque.torch   # before clipping [N·m or N]
+    applied = robot.actuators.applied_effort.torch      # after clipping [N or N·m]
+    computed = robot.actuators.computed_effort.torch   # before clipping [N or N·m]
 
-:attr:`~isaaclab.actuators.ActuatorCollection.computed_torque` is the model output before clipping
-and :attr:`~isaaclab.actuators.ActuatorCollection.applied_torque` is the value after clipping (for
+:attr:`~isaaclab.actuators.ActuatorCollection.computed_effort` is the model output before clipping
+and :attr:`~isaaclab.actuators.ActuatorCollection.applied_effort` is the value after clipping (for
 implicit actuators these are the approximate torques the model records for reward/telemetry use).
 
 **Randomizing gains.** To change actuator stiffness or damping at runtime -- for example in a domain
-randomization event -- use the write helpers, which update both the resolved-gain buffers and the
-native controllers:
+randomization event -- check that the optional parameter is available, then update its compact group
+array:
 
 .. code-block:: python
 
-    robot.actuators.write_actuator_stiffness_to_sim(
-        stiffness=new_kp, env_ids=env_ids, joint_ids=joint_ids
-    )
-    robot.actuators.write_actuator_damping_to_sim(
-        damping=new_kd, env_ids=env_ids, joint_ids=joint_ids
-    )
+    group = robot.actuators["<group>"]
+    if "stiffness" in group.parameter_names:
+        group.set_parameter_index("stiffness", new_kp, env_ids=env_ids, joint_ids=joint_ids)
+    if "damping" in group.parameter_names:
+        group.set_parameter_index("damping", new_kd, env_ids=env_ids, joint_ids=joint_ids)
 
 **Lifecycle.** You do not call ``compute()`` or ``submit_commands()`` yourself. The articulation
 runs, in order, ``actuators.reset()`` on env resets and ``actuators.compute()`` followed by
@@ -570,7 +569,7 @@ the collection and emit a :class:`DeprecationWarning`:
 
 The old data reads move too: ``articulation.data.joint_pos_target`` becomes
 ``robot.actuators.command.position``, and ``data.computed_torque`` / ``data.applied_torque`` become
-``robot.actuators.computed_torque`` / ``robot.actuators.applied_torque``. See the
+``robot.actuators.computed_effort`` / ``robot.actuators.applied_effort``. See the
 :doc:`Isaac Lab 3.0 migration guide <../../migration/migrating_to_isaaclab_3-0>` for the full table.
 
 
@@ -680,7 +679,7 @@ of them:
       - Processed position, velocity, and effort staging buffers are pushed through the PhysX Tensor
         API; a fused reorder gather runs first when a non-identity joint ordering is active.
     * - OVPhysX
-      - The post-clip ``applied_torque`` is pushed as the effort together with the raw position and
+      - The post-clip ``applied_effort`` is pushed as the effort together with the raw position and
         velocity target buffers (not the processed staging buffers) via OV ``set_attribute`` tensor
         bindings; every raw setter write is also eagerly mirrored into the binding at set time. A
         fused reorder gather runs first when a non-identity joint ordering is active.
