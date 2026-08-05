@@ -5,10 +5,100 @@
 
 import pytest
 import torch
+from torch.utils._python_dispatch import TorchDispatchMode
 
 from isaaclab.actuators import DCMotorCfg
+from isaaclab.utils.types import ArticulationActions
 
 pytestmark = pytest.mark.integration
+_EXECUTION_DEVICES = [
+    "cpu",
+    pytest.param("cuda:0", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")),
+]
+
+
+def _tensor_fingerprint(
+    tensor: torch.Tensor,
+) -> tuple[int, int, int, tuple[int, ...], tuple[int, ...], torch.dtype, torch.device]:
+    """Return the complete fixed-view identity required by private execution."""
+    return (
+        tensor.data_ptr(),
+        tensor.untyped_storage().data_ptr(),
+        tensor.storage_offset(),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        tensor.dtype,
+        tensor.device,
+    )
+
+
+class _NoNewTensorStorage(TorchDispatchMode):
+    """Reject dispatcher results whose storage was not finalized before execution."""
+
+    def __init__(self, tensors: tuple[torch.Tensor, ...]):
+        super().__init__()
+        self._storage_pointers = {tensor.untyped_storage().data_ptr() for tensor in tensors}
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        result = func(*args, **({} if kwargs is None else kwargs))
+        leaves, _ = torch.utils._pytree.tree_flatten(result)
+        for tensor in leaves:
+            if isinstance(tensor, torch.Tensor):
+                assert tensor.untyped_storage().data_ptr() in self._storage_pointers, func
+        return result
+
+
+def _make_dc_execution_fixture(device: str):
+    """Create a fixed-shape DC motor private-execution fixture."""
+    num_envs, num_joints = 3, 4
+    cfg = DCMotorCfg(
+        joint_names_expr=[f"joint_{index}" for index in range(num_joints)],
+        stiffness=17.0,
+        damping=3.0,
+        effort_limit=60.0,
+        saturation_effort=100.0,
+        velocity_limit=50.0,
+    )
+    actuator = cfg.class_type(
+        cfg,
+        joint_names=[f"joint_{index}" for index in range(num_joints)],
+        joint_ids=list(range(num_joints)),
+        num_envs=num_envs,
+        device=device,
+    )
+    action = ArticulationActions(
+        joint_positions=torch.empty(num_envs, num_joints, device=device),
+        joint_velocities=torch.empty(num_envs, num_joints, device=device),
+        joint_efforts=torch.empty(num_envs, num_joints, device=device),
+        joint_indices=torch.arange(num_joints, device=device),
+    )
+    joint_pos = torch.empty(num_envs, num_joints, device=device)
+    joint_vel = torch.empty(num_envs, num_joints, device=device)
+    return actuator, action, joint_pos, joint_vel
+
+
+def _dc_execution_tensors(actuator, action: ArticulationActions) -> tuple[torch.Tensor, ...]:
+    """Return every DC private execution tensor that must retain its exact view."""
+    return (
+        action.joint_positions,
+        action.joint_velocities,
+        action.joint_efforts,
+        action.joint_indices,
+        actuator.computed_effort,
+        actuator.applied_effort,
+        actuator.stiffness,
+        actuator.damping,
+        actuator.effort_limit,
+        actuator.velocity_limit,
+        actuator.saturation_effort,
+        actuator._effort_limit_lower,
+        actuator._vel_at_effort_lim,
+        actuator._joint_vel,
+        actuator._torque_speed_top,
+        actuator._torque_speed_bottom,
+        actuator._max_effort,
+        actuator._min_effort,
+    )
 
 
 @pytest.mark.parametrize("num_envs", [1, 2])
@@ -183,3 +273,93 @@ def test_dc_motor_clip(num_envs, num_joints, device, test_point):
         expected_clipped_effort[test_point] * torch.ones(num_envs, num_joints, device=device),
         clipped_effort,
     )
+
+
+@pytest.mark.parametrize("device", _EXECUTION_DEVICES)
+def test_dc_motor_private_execution_preserves_fixed_tensor_views(device: str):
+    """Private execution writes every DC result into finalized action, output, and scratch tensors."""
+    actuator, action, joint_pos, joint_vel = _make_dc_execution_fixture(device)
+    tensors = _dc_execution_tensors(actuator, action) + (joint_pos, joint_vel)
+    fingerprints = tuple(_tensor_fingerprint(tensor) for tensor in tensors)
+    objects = (action.joint_positions, action.joint_velocities, action.joint_efforts, action.joint_indices)
+
+    for scale in (1.0, 2.0, -3.0):
+        action.joint_positions.fill_(scale)
+        action.joint_velocities.fill_(-2.0 * scale)
+        action.joint_efforts.fill_(0.5 * scale)
+        joint_pos.fill_(0.25 * scale)
+        joint_vel.fill_(-0.75 * scale)
+        actuator._compute_execution(action, joint_pos, joint_vel)
+        assert all(
+            actual is expected
+            for actual, expected in zip(
+                (action.joint_positions, action.joint_velocities, action.joint_efforts, action.joint_indices),
+                objects,
+                strict=True,
+            )
+        )
+        assert tuple(_tensor_fingerprint(tensor) for tensor in tensors) == fingerprints
+
+
+@pytest.mark.parametrize("device", _EXECUTION_DEVICES)
+def test_dc_motor_private_execution_has_no_new_tensor_storage(device: str):
+    """Private DC execution rejects hidden dispatcher allocations after the warm-up step."""
+    actuator, action, joint_pos, joint_vel = _make_dc_execution_fixture(device)
+    tensors = _dc_execution_tensors(actuator, action) + (joint_pos, joint_vel)
+    action.joint_positions.fill_(1.0)
+    action.joint_velocities.fill_(-2.0)
+    action.joint_efforts.fill_(0.5)
+    joint_pos.fill_(0.25)
+    joint_vel.fill_(-0.75)
+    actuator._compute_execution(action, joint_pos, joint_vel)
+
+    with _NoNewTensorStorage(tensors):
+        actuator._compute_execution(action, joint_pos, joint_vel)
+
+
+@pytest.mark.parametrize("device", _EXECUTION_DEVICES)
+def test_dc_motor_private_execution_matches_public_compute_exactly(device: str):
+    """Private DC execution preserves public float32 arithmetic at random and corner velocities."""
+    actuator, private_action, joint_pos, joint_vel = _make_dc_execution_fixture(device)
+    generator = torch.Generator(device=device).manual_seed(29)
+    corner_velocity = 80.0
+    corner_offsets = torch.tensor(
+        [-corner_velocity - 0.001, -corner_velocity, -corner_velocity + 0.001, corner_velocity - 0.001],
+        device=device,
+    )
+
+    for iteration in range(16):
+        command_pos = torch.randn((3, 4), device=device, generator=generator)
+        command_vel = torch.randn((3, 4), device=device, generator=generator)
+        command_effort = 100.0 * torch.randn((3, 4), device=device, generator=generator)
+        joint_pos.copy_(torch.randn((3, 4), device=device, generator=generator))
+        joint_vel.copy_(torch.randn((3, 4), device=device, generator=generator))
+        if iteration == 0:
+            joint_vel[0].copy_(corner_offsets)
+            joint_vel[1].copy_(-corner_offsets)
+            command_effort[2].copy_(torch.tensor([-60.0, 60.0, -60.001, 60.001], device=device))
+        public_action = ArticulationActions(command_pos.clone(), command_vel.clone(), command_effort.clone())
+        private_action.joint_positions.copy_(command_pos)
+        private_action.joint_velocities.copy_(command_vel)
+        private_action.joint_efforts.copy_(command_effort)
+        private_fields = (private_action.joint_positions, private_action.joint_velocities, private_action.joint_efforts)
+
+        returned = actuator.compute(public_action, joint_pos, joint_vel)
+        expected_computed = actuator.computed_effort.clone()
+        expected_applied = actuator.applied_effort.clone()
+        actuator._compute_execution(private_action, joint_pos, joint_vel)
+
+        assert returned is public_action
+        assert public_action.joint_efforts is actuator.applied_effort
+        assert public_action.joint_positions is None
+        assert public_action.joint_velocities is None
+        assert all(
+            actual is expected
+            for actual, expected in zip(
+                (private_action.joint_positions, private_action.joint_velocities, private_action.joint_efforts),
+                private_fields,
+                strict=True,
+            )
+        )
+        torch.testing.assert_close(actuator.computed_effort, expected_computed, rtol=0.0, atol=0.0)
+        torch.testing.assert_close(actuator.applied_effort, expected_applied, rtol=0.0, atol=0.0)

@@ -197,6 +197,10 @@ class IdealPDActuator(ActuatorBase):
         """Return the exact-class typed storage schema."""
         return _IDEAL_PD_ACTUATOR_SCHEMA
 
+    def __init__(self, cfg: IdealPDActuatorCfg, *args, **kwargs):
+        super().__init__(cfg, *args, **kwargs)
+        self._effort_limit_lower = torch.zeros_like(self.computed_effort)
+
     """
     Operations.
     """
@@ -207,6 +211,17 @@ class IdealPDActuator(ActuatorBase):
     def compute(
         self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
     ) -> ArticulationActions:
+        self._compute_execution(control_action, joint_pos, joint_vel)
+        # Preserve the public action mutation contract.
+        control_action.joint_efforts = self.applied_effort
+        control_action.joint_positions = None
+        control_action.joint_velocities = None
+        return control_action
+
+    def _compute_execution(
+        self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
+    ) -> ArticulationActions:
+        """Compute explicit PD efforts without replacing control-action tensor fields."""
         # compute errors
         torch.sub(control_action.joint_positions, joint_pos, out=self.computed_effort)
         torch.sub(control_action.joint_velocities, joint_vel, out=self.applied_effort)
@@ -215,12 +230,23 @@ class IdealPDActuator(ActuatorBase):
         self.computed_effort.addcmul_(self.damping, self.applied_effort)
         self.computed_effort.add_(control_action.joint_efforts)
         # clip the torques based on the motor limits
-        self.applied_effort.copy_(self._clip_effort(self.computed_effort))
-        # set the computed actions back into the control action
-        control_action.joint_efforts = self.applied_effort
-        control_action.joint_positions = None
-        control_action.joint_velocities = None
+        self._clip_effort_into(self.computed_effort, self.applied_effort)
         return control_action
+
+    def _clip_effort_into(self, effort: torch.Tensor, out: torch.Tensor) -> None:
+        """Clip efforts into a preallocated output tensor."""
+        torch.neg(self.effort_limit, out=self._effort_limit_lower)
+        torch.clamp(effort, min=self._effort_limit_lower, max=self.effort_limit, out=out)
+
+    def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
+        """Clip efforts while preserving the protected out-of-place return contract."""
+        clipped_effort = torch.empty_like(effort)
+        self._clip_effort_into(effort, clipped_effort)
+        return clipped_effort
+
+    def _rebuild_managed_runtime_state(self) -> None:
+        """Rebuild execution scratch after canonical parameter binding."""
+        self._effort_limit_lower = torch.zeros_like(self.computed_effort)
 
 
 class DCMotor(IdealPDActuator):
@@ -296,15 +322,10 @@ class DCMotor(IdealPDActuator):
         if self.cfg.saturation_effort is None:
             raise ValueError("The saturation_effort must be provided for the DC motor actuator model.")
         self.saturation_effort = self._parse_joint_parameter(self.cfg.saturation_effort, None)
-        # find the velocity on the torque-speed curve that intersects effort_limit in the second and fourth quadrant
-        self._vel_at_effort_lim = self.velocity_limit * (1 + self.effort_limit / self.saturation_effort)
-        # prepare joint vel buffer for max effort computation
-        self._joint_vel = torch.zeros_like(self.computed_effort)
-        # create buffer for zeros effort
-        self._zeros_effort = torch.zeros_like(self.computed_effort)
         # check that quantities are provided
         if self.cfg.velocity_limit is None:
             raise ValueError("The velocity limit must be provided for the DC motor actuator model.")
+        self._allocate_execution_scratch()
 
     """
     Operations.
@@ -313,10 +334,14 @@ class DCMotor(IdealPDActuator):
     def compute(
         self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
     ) -> ArticulationActions:
-        # save current joint vel
-        self._joint_vel[:] = joint_vel
-        # calculate the desired joint torques
         return super().compute(control_action, joint_pos, joint_vel)
+
+    def _compute_execution(
+        self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
+    ) -> ArticulationActions:
+        """Compute DC motor efforts without replacing control-action tensor fields."""
+        self._joint_vel.copy_(joint_vel)
+        return super()._compute_execution(control_action, joint_pos, joint_vel)
 
     """
     Helper functions.
@@ -325,31 +350,50 @@ class DCMotor(IdealPDActuator):
     @classmethod
     def _build_execution_actuator(cls, actuators: Sequence[ActuatorBase]) -> ActuatorBase:
         executor = super()._build_execution_actuator(actuators)
-        executor._vel_at_effort_lim = executor.velocity_limit * (1 + executor.effort_limit / executor.saturation_effort)
-        executor._joint_vel = torch.zeros_like(executor.computed_effort)
-        executor._zeros_effort = torch.zeros_like(executor.computed_effort)
+        executor._rebuild_managed_runtime_state()
         return executor
 
     def _rebuild_managed_runtime_state(self) -> None:
         """Rebuild DC motor derived state for the final articulation-world count."""
-        self._vel_at_effort_lim = self.velocity_limit * (1 + self.effort_limit / self.saturation_effort)
+        super()._rebuild_managed_runtime_state()
+        self._allocate_execution_scratch()
+
+    def _allocate_execution_scratch(self) -> None:
+        """Allocate fixed DC motor clipping scratch for the current execution shape."""
+        self._vel_at_effort_lim = torch.zeros_like(self.computed_effort)
         self._joint_vel = torch.zeros_like(self.computed_effort)
-        self._zeros_effort = torch.zeros_like(self.computed_effort)
+        self._torque_speed_top = torch.zeros_like(self.computed_effort)
+        self._torque_speed_bottom = torch.zeros_like(self.computed_effort)
+        self._max_effort = torch.zeros_like(self.computed_effort)
+        self._min_effort = torch.zeros_like(self.computed_effort)
 
     def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
-        # save current joint vel
-        self._vel_at_effort_lim.copy_(self.velocity_limit * (1 + self.effort_limit / self.saturation_effort))
-        self._joint_vel[:] = torch.clip(self._joint_vel, min=-self._vel_at_effort_lim, max=self._vel_at_effort_lim)
-        # compute torque limits
-        torque_speed_top = self.saturation_effort * (1.0 - self._joint_vel / self.velocity_limit)
-        torque_speed_bottom = self.saturation_effort * (-1.0 - self._joint_vel / self.velocity_limit)
-        # -- max limit
-        max_effort = torch.clip(torque_speed_top, max=self.effort_limit)
-        # -- min limit
-        min_effort = torch.clip(torque_speed_bottom, min=-self.effort_limit)
-        # clip the torques based on the motor limits
-        clamped = torch.clip(effort, min=min_effort, max=max_effort)
-        return clamped
+        """Clip efforts while preserving the protected out-of-place return contract."""
+        clipped_effort = torch.empty_like(effort)
+        self._clip_effort_into(effort, clipped_effort)
+        return clipped_effort
+
+    def _clip_effort_into(self, effort: torch.Tensor, out: torch.Tensor) -> None:
+        """Clip DC motor efforts into a preallocated output tensor."""
+        torch.neg(self.effort_limit, out=self._effort_limit_lower)
+        torch.div(self.effort_limit, self.saturation_effort, out=self._max_effort)
+        torch.add(self._max_effort, 1.0, out=self._max_effort)
+        torch.mul(self.velocity_limit, self._max_effort, out=self._vel_at_effort_lim)
+
+        torch.neg(self._vel_at_effort_lim, out=self._min_effort)
+        torch.clamp(self._joint_vel, min=self._min_effort, max=self._vel_at_effort_lim, out=self._joint_vel)
+
+        torch.div(self._joint_vel, self.velocity_limit, out=self._torque_speed_top)
+        torch.sub(1.0, self._torque_speed_top, out=self._torque_speed_top)
+        torch.mul(self.saturation_effort, self._torque_speed_top, out=self._torque_speed_top)
+
+        torch.div(self._joint_vel, self.velocity_limit, out=self._torque_speed_bottom)
+        torch.sub(-1.0, self._torque_speed_bottom, out=self._torque_speed_bottom)
+        torch.mul(self.saturation_effort, self._torque_speed_bottom, out=self._torque_speed_bottom)
+
+        torch.clamp(self._torque_speed_top, max=self.effort_limit, out=self._max_effort)
+        torch.clamp(self._torque_speed_bottom, min=self._effort_limit_lower, out=self._min_effort)
+        torch.clamp(effort, min=self._min_effort, max=self._max_effort, out=out)
 
     @property
     def _saturation_effort(self) -> torch.Tensor:
@@ -398,6 +442,7 @@ class DelayedPDActuator(IdealPDActuator):
 
     def _rebuild_managed_runtime_state(self) -> None:
         """Rebuild delay state for the final articulation-world count."""
+        super()._rebuild_managed_runtime_state()
         self.positions_delay_buffer = DelayBuffer(self.cfg.max_delay, self._num_envs, device=self._device)
         self.velocities_delay_buffer = DelayBuffer(self.cfg.max_delay, self._num_envs, device=self._device)
         self.efforts_delay_buffer = DelayBuffer(self.cfg.max_delay, self._num_envs, device=self._device)
