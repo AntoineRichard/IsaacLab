@@ -25,10 +25,12 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 import warp as wp
 from isaaclab_newton.physics import (
     FeatherstoneSolverCfg,
@@ -169,6 +171,568 @@ def test_control_invalidation_deregisters_telemetry_before_releasing_candidate(m
 
     assert callbacks == []
     assert not candidate["open"]
+
+
+def test_native_actuator_discovery_does_not_mutate_solver_properties(monkeypatch) -> None:
+    """Discovery classifies native groups without changing defaults before source capture."""
+    import isaaclab_newton.assets.articulation.actuator_control as control_module
+
+    from isaaclab.actuators import IdealPDActuatorCfg, ImplicitActuatorCfg
+
+    class _Articulation:
+        _sim_cfg = SimpleNamespace(use_newton_actuators=True)
+        device = "cpu"
+
+        def write_joint_stiffness_to_sim_index(self, **kwargs) -> None:
+            raise AssertionError("native discovery wrote stiffness before source capture")
+
+        def write_joint_damping_to_sim_index(self, **kwargs) -> None:
+            raise AssertionError("native discovery wrote damping before source capture")
+
+        def find_joints(self, joint_names_expr) -> tuple[list[int], list[str]]:
+            return [0], ["joint"]
+
+    monkeypatch.setattr(control_module, "_HAS_NEWTON_ACTUATORS", True)
+    monkeypatch.setattr(NewtonManager, "activate_newton_actuator_path", classmethod(lambda cls: None))
+    control = control_module.NewtonActuatorControl(_Articulation())
+
+    native_groups = control.discover_native_actuators(
+        {
+            "implicit": ImplicitActuatorCfg(joint_names_expr=[".*"]),
+            "explicit": IdealPDActuatorCfg(joint_names_expr=[".*"]),
+        }
+    )
+
+    assert native_groups == {"explicit"}
+
+
+def test_staged_solver_properties_write_each_newton_binding_once(monkeypatch) -> None:
+    """The final merged rowset reaches each supported Newton property binding exactly once."""
+    from isaaclab_newton.assets.articulation.actuator_control import NewtonActuatorControl
+    from isaaclab_newton.benchmark.assets import runtime
+
+    from isaaclab.actuators.actuator_control import _ResolvedSolverProperties, _ResolvedSolverProperty
+    from isaaclab.utils.warp import ProxyArray
+
+    runtime._load_runtime_symbols()
+    with ExitStack() as stack:
+        for module in (
+            "isaaclab_newton.assets.articulation.articulation_data.SimulationManager",
+            "isaaclab_newton.assets.articulation.articulation.SimulationManager",
+        ):
+            stack.enter_context(runtime.create_mock_newton_manager(module, num_instances=2, num_bodies=3, num_joints=2))
+        articulation, _ = runtime.create_test_articulation(num_instances=2, num_bodies=3, num_joints=2, device="cpu")
+
+        property_bindings = {
+            "stiffness": ("write_joint_stiffness_to_sim_mask", "_sim_bind_joint_stiffness_sim"),
+            "damping": ("write_joint_damping_to_sim_mask", "_sim_bind_joint_damping_sim"),
+            "effort_limit_sim": ("write_joint_effort_limit_to_sim_mask", "_sim_bind_joint_effort_limits_sim"),
+            "velocity_limit_sim": ("write_joint_velocity_limit_to_sim_mask", "_sim_bind_joint_vel_limits_sim"),
+            "armature": ("write_joint_armature_to_sim_mask", "_sim_bind_joint_armature"),
+            "friction": (
+                "write_joint_friction_coefficient_to_sim_mask",
+                "_sim_bind_joint_friction_coeff",
+            ),
+        }
+        values = {
+            name: np.arange(4, dtype=np.float32).reshape(2, 2) + offset
+            for offset, name in enumerate((*property_bindings, "dynamic_friction", "viscous_friction"), start=1)
+        }
+        writes = dict.fromkeys(property_bindings, 0)
+        for property_name, (method_name, _) in property_bindings.items():
+            original = getattr(articulation, method_name)
+
+            def counted_write(*, _name=property_name, _original=original, **kwargs) -> None:
+                writes[_name] += 1
+                _original(**kwargs)
+
+            monkeypatch.setattr(articulation, method_name, counted_write)
+
+        properties = {
+            name: _ResolvedSolverProperty(
+                transport="device",
+                source_rows=torch.from_numpy(value[:1].copy()),
+                source_slot_by_backend_row=None,
+                source_assignment=torch.zeros(2, dtype=torch.int32),
+                canonical_target=ProxyArray(wp.array(value, dtype=wp.float32, device="cpu")),
+            )
+            for name, value in values.items()
+        }
+
+        NewtonActuatorControl(articulation).write_resolved_joint_properties_staged(
+            _ResolvedSolverProperties(properties=properties)
+        )
+
+        assert writes == dict.fromkeys(property_bindings, 1)
+        for name, (_, binding_name) in property_bindings.items():
+            np.testing.assert_array_equal(getattr(articulation.data, binding_name).numpy(), values[name])
+
+
+def test_staged_solver_properties_restore_and_commit_actual_newton_bindings() -> None:
+    """Rollback restores exact Newton arrays, while commit makes the staged values durable."""
+    from isaaclab_newton.assets.articulation.actuator_control import NewtonActuatorControl
+    from isaaclab_newton.benchmark.assets import runtime
+
+    from isaaclab.actuators.actuator_control import _ResolvedSolverProperties, _ResolvedSolverProperty
+    from isaaclab.utils.warp import ProxyArray
+
+    runtime._load_runtime_symbols()
+    with ExitStack() as stack:
+        for module in (
+            "isaaclab_newton.assets.articulation.articulation_data.SimulationManager",
+            "isaaclab_newton.assets.articulation.articulation.SimulationManager",
+        ):
+            stack.enter_context(runtime.create_mock_newton_manager(module, num_instances=2, num_bodies=3, num_joints=2))
+        articulation, _ = runtime.create_test_articulation(num_instances=2, num_bodies=3, num_joints=2, device="cpu")
+        binding_names = {
+            "stiffness": "_sim_bind_joint_stiffness_sim",
+            "damping": "_sim_bind_joint_damping_sim",
+            "effort_limit_sim": "_sim_bind_joint_effort_limits_sim",
+            "velocity_limit_sim": "_sim_bind_joint_vel_limits_sim",
+            "armature": "_sim_bind_joint_armature",
+            "friction": "_sim_bind_joint_friction_coeff",
+        }
+        baseline = {name: getattr(articulation.data, binding).numpy().copy() for name, binding in binding_names.items()}
+        values = {
+            name: np.arange(4, dtype=np.float32).reshape(2, 2) + 20 + offset
+            for offset, name in enumerate((*binding_names, "dynamic_friction", "viscous_friction"))
+        }
+        properties = {
+            name: _ResolvedSolverProperty(
+                transport="device",
+                source_rows=torch.from_numpy(value[:1].copy()),
+                source_slot_by_backend_row=None,
+                source_assignment=torch.zeros(2, dtype=torch.int32),
+                canonical_target=ProxyArray(wp.array(value, dtype=wp.float32, device="cpu")),
+            )
+            for name, value in values.items()
+        }
+        payload = _ResolvedSolverProperties(properties=properties)
+        control = NewtonActuatorControl(articulation)
+
+        control.write_resolved_joint_properties_staged(payload)
+        control.restore_resolved_joint_properties()
+
+        for name, binding_name in binding_names.items():
+            np.testing.assert_array_equal(getattr(articulation.data, binding_name).numpy(), baseline[name])
+
+        control.write_resolved_joint_properties_staged(payload)
+        control.commit_resolved_joint_properties()
+        control.restore_resolved_joint_properties()
+
+        for name, binding_name in binding_names.items():
+            np.testing.assert_array_equal(getattr(articulation.data, binding_name).numpy(), values[name])
+
+
+def test_runtime_native_parameter_routes_patch_controller_and_clamping_in_place(monkeypatch) -> None:
+    """Group/type index/mask writes refresh ordered native parameters without runtime allocation."""
+    from isaaclab_newton.assets.articulation.actuator_control import NewtonActuatorControl
+
+    from isaaclab.actuators import DCMotor
+    from isaaclab.actuators.actuator_control import _ActuatorParameterWrite
+    from isaaclab.utils.warp import ProxyArray
+
+    controller = SimpleNamespace(
+        kp=wp.array([30.0, 10.0, 31.0, 11.0], dtype=wp.float32, device="cpu"),
+        kd=wp.array([3.0, 1.0, 3.1, 1.1], dtype=wp.float32, device="cpu"),
+    )
+    dc_clamping = SimpleNamespace(
+        max_motor_effort=wp.array([60.0, 40.0, 61.0, 41.0], dtype=wp.float32, device="cpu"),
+        velocity_limit=wp.array([6.0, 8.0, 6.1, 8.1], dtype=wp.float32, device="cpu"),
+        saturation_effort=wp.array([120.0, 100.0, 121.0, 110.0], dtype=wp.float32, device="cpu"),
+        corner_velocity=wp.zeros(4, dtype=wp.float32, device="cpu"),
+    )
+    ideal_clamping = SimpleNamespace(max_effort=wp.array([60.0, 40.0, 61.0, 41.0], dtype=wp.float32, device="cpu"))
+    actuator = SimpleNamespace(
+        indices=wp.array([1, 3, 7, 9], dtype=wp.uint32, device="cpu"),
+        controller=controller,
+        clamping=[dc_clamping, ideal_clamping],
+    )
+    adapter = SimpleNamespace(actuators=[actuator], num_joints=6)
+    backend_to_user = wp.array([2, 1, 0], dtype=wp.int32, device="cpu")
+    articulation = SimpleNamespace(
+        num_instances=2,
+        num_joints=3,
+        num_fixed_tendons=0,
+        device="cpu",
+        data=SimpleNamespace(has_joint_ordering=True),
+        newton_actuator_adapter=adapter,
+        _joint_backend_to_user_map=lambda: backend_to_user,
+    )
+    control = NewtonActuatorControl(articulation)
+    control._native_dof_offset = 1
+    owner_slots = torch.tensor([0, -1, 1], dtype=torch.int32)
+    parameter_cases = (
+        (
+            "stiffness",
+            controller.kp,
+            [[10.0, 30.0], [11.0, 99.0]],
+            [30.0, 10.0, 99.0, 11.0],
+            {"scope": "group", "env_ids": torch.tensor([1]), "joint_ids": torch.tensor([2])},
+        ),
+        (
+            "damping",
+            controller.kd,
+            [[88.0, 3.0], [1.1, 3.1]],
+            [3.0, 88.0, 3.1, 1.1],
+            {
+                "scope": "group",
+                "env_mask": torch.tensor([True, False]),
+                "joint_mask": torch.tensor([True, False, False]),
+            },
+        ),
+        (
+            "effort_limit",
+            dc_clamping.max_motor_effort,
+            [[40.0, 60.0], [77.0, 61.0]],
+            [60.0, 40.0, 61.0, 77.0],
+            {"scope": "type", "env_ids": torch.tensor([1]), "joint_ids": torch.tensor([0])},
+        ),
+        (
+            "velocity_limit",
+            dc_clamping.velocity_limit,
+            [[8.0, 66.0], [8.1, 6.1]],
+            [66.0, 8.0, 6.1, 8.1],
+            {
+                "scope": "type",
+                "env_mask": torch.tensor([True, False]),
+                "joint_mask": torch.tensor([False, False, True]),
+            },
+        ),
+        (
+            "saturation_effort",
+            dc_clamping.saturation_effort,
+            [[100.0, 120.0], [110.0, 200.0]],
+            [120.0, 100.0, 200.0, 110.0],
+            {
+                "scope": "group",
+                "env_mask": torch.tensor([False, True]),
+                "joint_mask": torch.tensor([False, False, True]),
+            },
+        ),
+    )
+    pointers = {id(array): int(array.ptr) for _, array, *_ in parameter_cases}
+
+    def fail_allocation(*args, **kwargs):
+        raise AssertionError("runtime parameter routing allocated a new buffer")
+
+    monkeypatch.setattr(wp, "zeros", fail_allocation)
+    monkeypatch.setattr(torch, "zeros", fail_allocation)
+    for name, target, canonical_values, expected, selectors in parameter_cases:
+        canonical = ProxyArray(wp.array(canonical_values, dtype=wp.float32, device="cpu"))
+        control.write_actuator_parameter(
+            name,
+            _ActuatorParameterWrite(
+                value=canonical.torch,
+                actuator_type=DCMotor,
+                canonical=canonical,
+                backend_owner_slots=owner_slots,
+                **selectors,
+            ),
+        )
+        np.testing.assert_allclose(target.numpy(), expected)
+        assert int(target.ptr) == pointers[id(target)]
+
+    np.testing.assert_allclose(ideal_clamping.max_effort.numpy(), [60.0, 40.0, 61.0, 77.0])
+    expected_corner_velocity = dc_clamping.velocity_limit.numpy() * (
+        1.0 + dc_clamping.max_motor_effort.numpy() / dc_clamping.saturation_effort.numpy()
+    )
+    np.testing.assert_allclose(dc_clamping.corner_velocity.numpy(), expected_corner_velocity)
+
+
+def test_runtime_implicit_gain_routes_patch_actual_newton_solver_bindings(monkeypatch) -> None:
+    """Canonical group-index and type-mask gain writes update Newton drives in place."""
+    import isaaclab_newton.assets.articulation.actuator_control as control_module
+    from isaaclab_newton.benchmark.assets import runtime
+
+    from isaaclab.actuators import ImplicitActuator
+    from isaaclab.actuators.actuator_control import _ActuatorParameterWrite
+    from isaaclab.utils.warp import ProxyArray
+
+    runtime._load_runtime_symbols()
+    with ExitStack() as stack:
+        for module in (
+            "isaaclab_newton.assets.articulation.articulation_data.SimulationManager",
+            "isaaclab_newton.assets.articulation.articulation.SimulationManager",
+        ):
+            stack.enter_context(runtime.create_mock_newton_manager(module, num_instances=2, num_bodies=4, num_joints=3))
+        articulation, _ = runtime.create_test_articulation(num_instances=2, num_bodies=4, num_joints=3, device="cpu")
+        articulation.newton_actuator_adapter = None
+        control = control_module.NewtonActuatorControl(articulation)
+        stiffness_binding = articulation.data._sim_bind_joint_stiffness_sim
+        damping_binding = articulation.data._sim_bind_joint_damping_sim
+        stiffness_baseline = stiffness_binding.numpy().copy()
+        damping_baseline = damping_binding.numpy().copy()
+        stiffness_values = stiffness_baseline[:, [0, 2]].copy()
+        damping_values = damping_baseline[:, [0, 2]].copy()
+        stiffness_values[1, 1] = 99.0
+        damping_values[0, 0] = 88.0
+        owner_slots = torch.tensor([0, -1, 1], dtype=torch.int32)
+        changes = []
+        monkeypatch.setattr(
+            control_module.SimulationManager,
+            "add_model_change",
+            classmethod(lambda cls, change: changes.append(change)),
+        )
+        stiffness = ProxyArray(wp.array(stiffness_values, dtype=wp.float32, device="cpu"))
+        damping = ProxyArray(wp.array(damping_values, dtype=wp.float32, device="cpu"))
+        stiffness_ptr = int(stiffness_binding.ptr)
+        damping_ptr = int(damping_binding.ptr)
+
+        def fail_allocation(*args, **kwargs):
+            raise AssertionError("runtime implicit gain routing allocated a new buffer")
+
+        monkeypatch.setattr(wp, "zeros", fail_allocation)
+        monkeypatch.setattr(torch, "zeros", fail_allocation)
+        control.write_actuator_parameter(
+            "stiffness",
+            _ActuatorParameterWrite(
+                value=stiffness.torch,
+                actuator_type=ImplicitActuator,
+                canonical=stiffness,
+                env_ids=torch.tensor([1]),
+                joint_ids=torch.tensor([2]),
+                backend_owner_slots=owner_slots,
+                scope="group",
+            ),
+        )
+        control.write_actuator_parameter(
+            "damping",
+            _ActuatorParameterWrite(
+                value=damping.torch,
+                actuator_type=ImplicitActuator,
+                canonical=damping,
+                env_mask=torch.tensor([True, False]),
+                joint_mask=torch.tensor([True, False, False]),
+                backend_owner_slots=owner_slots,
+                scope="type",
+            ),
+        )
+
+        expected_stiffness = stiffness_baseline.copy()
+        expected_stiffness[1, 2] = 99.0
+        expected_damping = damping_baseline.copy()
+        expected_damping[0, 0] = 88.0
+        np.testing.assert_array_equal(stiffness_binding.numpy(), expected_stiffness)
+        np.testing.assert_array_equal(damping_binding.numpy(), expected_damping)
+        assert int(stiffness_binding.ptr) == stiffness_ptr
+        assert int(damping_binding.ptr) == damping_ptr
+        assert len(changes) == 2
+
+
+def test_failed_native_prepare_restores_all_candidate_specific_state(monkeypatch) -> None:
+    """A prepare failure restores every adapter field and removes its exact callback."""
+    import isaaclab_newton.assets.articulation.actuator_control as control_module
+    from newton import Model as NewtonModel
+
+    original = {
+        name: object()
+        for name in (
+            "newton_actuator_adapter",
+            "newton_default_stiffness",
+            "newton_default_damping",
+            "newton_managed_local_joints",
+            "_implicit_dof_mask",
+            "_implicit_dof_mask_owner",
+        )
+    }
+    original_computed_effort = wp.zeros((2, 3), dtype=wp.float32, device="cpu")
+    data = SimpleNamespace(
+        joint_ordering=None,
+        _sim_bind_joint_computed_effort=original_computed_effort,
+        _rollback_actuator_initialization=lambda: None,
+    )
+    articulation = SimpleNamespace(
+        num_instances=2,
+        num_joints=3,
+        num_fixed_tendons=0,
+        device="cpu",
+        data=data,
+        _data=data,
+        _root_view=SimpleNamespace(
+            frequency_layouts={
+                NewtonModel.AttributeFrequency.JOINT_DOF: SimpleNamespace(slice=SimpleNamespace(start=1), indices=None)
+            }
+        ),
+        _rollback_deferred_initialization=lambda: None,
+        **original,
+    )
+    candidate_binding = SimpleNamespace(
+        stiffness=torch.full((2, 3), 10.0),
+        damping=torch.full((2, 3), 2.0),
+        joint_indices=torch.tensor([0, 2], dtype=torch.int32),
+        implicit_dof_mask=wp.zeros(3, dtype=wp.int32, device="cpu"),
+        implicit_dof_mask_owner=torch.zeros(3, dtype=torch.int32),
+        computed_effort_view=wp.zeros((2, 3), dtype=wp.float32, device="cpu"),
+    )
+    adapter = SimpleNamespace(bind_articulation=lambda **kwargs: candidate_binding)
+    monkeypatch.setattr(control_module.SimulationManager, "_adapter", adapter)
+    callbacks = []
+    monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", callbacks)
+
+    def fail_registration(cls, callback) -> None:
+        callbacks.append(callback)
+        raise RuntimeError("post-actuator registration failed")
+
+    monkeypatch.setattr(
+        control_module.SimulationManager,
+        "register_post_actuator_callback",
+        classmethod(fail_registration),
+    )
+    control = control_module.NewtonActuatorControl(articulation)
+    control._native_active = True
+    binding = SimpleNamespace(
+        groups={},
+        command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
+        computed_effort=SimpleNamespace(warp=object()),
+        applied_effort=SimpleNamespace(warp=object()),
+    )
+
+    with pytest.raises(RuntimeError, match="post-actuator registration failed"):
+        control.prepare_actuator_binding(binding)
+
+    for name, value in original.items():
+        assert getattr(articulation, name) is value
+    assert data._sim_bind_joint_computed_effort is original_computed_effort
+    assert control._native_dof_offset is None
+    assert control._post_actuator_callback is None
+    assert callbacks == []
+
+
+def test_failed_finalize_invalidation_clears_fallback_state_before_binding_release(monkeypatch) -> None:
+    """A facade-bind failure removes callback/fallback pointers before shared binding release."""
+    import isaaclab_newton.assets.articulation.actuator_control as control_module
+
+    callbacks = []
+    monkeypatch.setattr(control_module.SimulationManager, "_adapter", None)
+    monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", callbacks)
+
+    def build_mask(groups, num_joints, device):
+        return wp.zeros(num_joints, dtype=wp.int32, device=device), torch.zeros(num_joints, dtype=torch.int32)
+
+    monkeypatch.setattr("isaaclab_newton.actuators.build_implicit_dof_mask", build_mask)
+    data = SimpleNamespace(
+        joint_ordering=None,
+        _sim_bind_joint_computed_effort=None,
+        _rollback_actuator_initialization=lambda: None,
+        bind_actuator_collection=lambda view: (_ for _ in ()).throw(RuntimeError("facade bind failed")),
+    )
+    articulation = SimpleNamespace(
+        num_instances=2,
+        num_joints=3,
+        num_fixed_tendons=0,
+        device="cpu",
+        data=data,
+        _data=data,
+        _rollback_deferred_initialization=lambda: None,
+        newton_actuator_adapter=None,
+        newton_default_stiffness=None,
+        newton_default_damping=None,
+        newton_managed_local_joints=None,
+        _implicit_dof_mask=None,
+        _implicit_dof_mask_owner=None,
+    )
+    control = control_module.NewtonActuatorControl(articulation)
+    control._native_active = True
+    binding = SimpleNamespace(
+        groups={},
+        command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
+        computed_effort=SimpleNamespace(warp=object()),
+        applied_effort=SimpleNamespace(warp=object()),
+    )
+    control.prepare_actuator_binding(binding)
+    assert len(callbacks) == 1
+
+    with pytest.raises(RuntimeError, match="facade bind failed"):
+        control.bind_actuator_view(object())
+    control.invalidate_actuator_view()
+
+    assert callbacks == []
+    assert articulation._implicit_dof_mask is None
+    assert articulation._implicit_dof_mask_owner is None
+    assert data._sim_bind_joint_computed_effort is None
+    assert control._actuator_binding is None
+
+
+def test_stop_ready_rebuild_uses_fresh_fallback_state_and_callback(monkeypatch) -> None:
+    """STOP clears fallback allocations so READY installs fresh pointers and one callback."""
+    import isaaclab_newton.assets.articulation.actuator_control as control_module
+
+    callbacks = []
+    monkeypatch.setattr(control_module.SimulationManager, "_adapter", None)
+    monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", callbacks)
+
+    def build_mask(groups, num_joints, device):
+        return wp.zeros(num_joints, dtype=wp.int32, device=device), torch.zeros(num_joints, dtype=torch.int32)
+
+    monkeypatch.setattr("isaaclab_newton.actuators.build_implicit_dof_mask", build_mask)
+    data = SimpleNamespace(
+        joint_ordering=None,
+        _sim_bind_joint_computed_effort=None,
+        _rollback_actuator_initialization=lambda: None,
+    )
+    articulation = SimpleNamespace(
+        num_instances=2,
+        num_joints=3,
+        num_fixed_tendons=0,
+        device="cpu",
+        data=data,
+        _data=data,
+        _rollback_deferred_initialization=lambda: None,
+        newton_actuator_adapter=None,
+        newton_default_stiffness=None,
+        newton_default_damping=None,
+        newton_managed_local_joints=None,
+        _implicit_dof_mask=None,
+        _implicit_dof_mask_owner=None,
+    )
+    control = control_module.NewtonActuatorControl(articulation)
+    binding = SimpleNamespace(
+        groups={},
+        command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
+        computed_effort=SimpleNamespace(warp=object()),
+        applied_effort=SimpleNamespace(warp=object()),
+    )
+
+    control._native_active = True
+    control.prepare_actuator_binding(binding)
+    first_mask = articulation._implicit_dof_mask
+    first_computed_effort = data._sim_bind_joint_computed_effort
+    first_callback = control._post_actuator_callback
+    control.invalidate_actuator_view()
+
+    assert callbacks == []
+    assert articulation._implicit_dof_mask is None
+    assert articulation._implicit_dof_mask_owner is None
+    assert data._sim_bind_joint_computed_effort is None
+
+    control._native_active = True
+    control.prepare_actuator_binding(binding)
+
+    assert articulation._implicit_dof_mask is not None
+    assert articulation._implicit_dof_mask is not first_mask
+    assert data._sim_bind_joint_computed_effort is not None
+    assert data._sim_bind_joint_computed_effort is not first_computed_effort
+    assert control._post_actuator_callback is not first_callback
+    assert callbacks == [control._post_actuator_callback]
+
+
+def test_articulation_callback_teardown_does_not_partially_invalidate_collection_control(monkeypatch) -> None:
+    """Asset callback teardown leaves atomic generation invalidation to the collection manager."""
+    from isaaclab_newton.assets.articulation.articulation import Articulation
+
+    from isaaclab.assets.asset_base import AssetBase
+
+    invalidations = []
+    monkeypatch.setattr(AssetBase, "_clear_callbacks", lambda self: None)
+    articulation = object.__new__(Articulation)
+    articulation._physics_ready_handle = None
+    articulation._post_step_callback = None
+    articulation._actuator_control = SimpleNamespace(invalidate_actuator_view=lambda: invalidations.append(True))
+
+    articulation._clear_callbacks()
+
+    assert invalidations == []
 
 
 # ---------------------------------------------------------------------------

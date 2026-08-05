@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 import torch
 import warp as wp
+from newton import ModelFlags
 
-from isaaclab.actuators import ActuatorCollection
+from isaaclab.actuators import ActuatorCollection, ImplicitActuator
 from isaaclab.actuators.actuator_control import ArticulationActuatorControl, _ActuatorParameterWrite
 from isaaclab.assets.articulation import ordering_kernels
 
@@ -24,6 +25,7 @@ from isaaclab_newton.physics import NewtonManager as SimulationManager
 if TYPE_CHECKING:
     from isaaclab.actuators.actuator_base_cfg import ActuatorBaseCfg
     from isaaclab.actuators.actuator_collection import _ArticulationBinding
+    from isaaclab.actuators.actuator_control import _ResolvedSolverProperties
 
     from .articulation import Articulation
 
@@ -43,17 +45,23 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         """
         super().__init__(articulation)
         self._native_active = False
+        self._native_dof_offset: int | None = None
         self._post_actuator_callback = None
+        self._solver_property_snapshots: list[tuple[wp.array, wp.array]] | None = None
+        self._candidate_state_snapshot: tuple[tuple[object, str, object], ...] | None = None
 
-    def discover_native_actuators(self, cfgs: dict[str, ActuatorBaseCfg]) -> set[str]:
-        """Discover native groups and synchronously prepare solver drive ownership."""
+    def discover_native_actuators(self, cfgs: Mapping[str, ActuatorBaseCfg]) -> set[str]:
+        """Classify native groups without mutating solver properties.
+
+        Args:
+            cfgs: Logical actuator configurations in declaration order.
+
+        Returns:
+            Names of groups physically owned by Newton actuators.
+        """
         articulation = self._articulation
+        self._native_active = False
         articulation._has_newton_actuators = False
-        articulation._implicit_dof_mask = None
-        articulation.newton_actuator_adapter = None
-        articulation.newton_default_stiffness = None
-        articulation.newton_default_damping = None
-        articulation.newton_managed_local_joints = None
 
         use_newton_actuators = getattr(articulation._sim_cfg, "use_newton_actuators", False)
         if use_newton_actuators and not _HAS_NEWTON_ACTUATORS:
@@ -70,31 +78,104 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         SimulationManager.activate_newton_actuator_path()
 
         native_group_names: set[str] = set()
-        explicit_joint_ids: list[int] = []
         for actuator_name, actuator_cfg in cfgs.items():
             if self._is_implicit_cfg(actuator_cfg):
                 continue
             native_group_names.add(actuator_name)
-            joint_ids, _ = articulation.find_joints(actuator_cfg.joint_names_expr)
-            explicit_joint_ids.extend(int(joint_id) for joint_id in joint_ids)
-
-        if explicit_joint_ids:
-            explicit_ids_t = torch.tensor(
-                sorted(set(explicit_joint_ids)),
-                dtype=torch.int32,
-                device=self.device,
-            )
-            articulation.write_joint_stiffness_to_sim_index(stiffness=0.0, joint_ids=explicit_ids_t)
-            articulation.write_joint_damping_to_sim_index(damping=0.0, joint_ids=explicit_ids_t)
 
         return native_group_names
 
+    def write_resolved_joint_properties_staged(self, properties: _ResolvedSolverProperties) -> None:
+        """Write the final device-resident property rowset to Newton once per field.
+
+        Args:
+            properties: Clone-resolved candidate properties in user joint order.
+        """
+        property_writers = (
+            ("stiffness", "write_joint_stiffness_to_sim_mask", "stiffness"),
+            ("damping", "write_joint_damping_to_sim_mask", "damping"),
+            ("effort_limit_sim", "write_joint_effort_limit_to_sim_mask", "limits"),
+            ("velocity_limit_sim", "write_joint_velocity_limit_to_sim_mask", "limits"),
+            ("armature", "write_joint_armature_to_sim_mask", "armature"),
+            (
+                "friction",
+                "write_joint_friction_coefficient_to_sim_mask",
+                "joint_friction_coeff",
+            ),
+        )
+        resolved_writes: list[tuple[str, str, wp.array]] = []
+        for property_name, writer_name, argument_name in property_writers:
+            resolved = properties.properties[property_name]
+            if resolved.transport != "device" or resolved.canonical_target is None:
+                raise RuntimeError(f"Newton requires a device canonical target for solver property '{property_name}'.")
+            resolved_writes.append((writer_name, argument_name, resolved.canonical_target.warp))
+
+        if self._solver_property_snapshots is not None:
+            raise RuntimeError("Newton solver-property staging is already active for this articulation.")
+        data = self._articulation.data
+        property_buffers = (
+            ("_sim_bind_joint_stiffness_sim", "_joint_stiffness_user"),
+            ("_sim_bind_joint_damping_sim", "_joint_damping_user"),
+            ("_sim_bind_joint_effort_limits_sim", "_joint_effort_limits_user"),
+            ("_sim_bind_joint_vel_limits_sim", "_joint_vel_limits_user"),
+            ("_sim_bind_joint_armature", "_joint_armature_user"),
+            ("_sim_bind_joint_friction_coeff", "_joint_friction_coeff_user"),
+        )
+        snapshots: list[tuple[wp.array, wp.array]] = []
+        for backend_name, user_name in property_buffers:
+            backend_buffer = getattr(data, backend_name)
+            snapshots.append((backend_buffer, wp.clone(backend_buffer)))
+            user_buffer = getattr(data, user_name)
+            if user_buffer is not None:
+                snapshots.append((user_buffer, wp.clone(user_buffer)))
+        self._solver_property_snapshots = snapshots
+
+        try:
+            for writer_name, argument_name, value in resolved_writes:
+                getattr(self._articulation, writer_name)(**{argument_name: value})
+        except Exception:
+            self.restore_resolved_joint_properties()
+            raise
+
+    def restore_resolved_joint_properties(self) -> None:
+        """Restore the pre-candidate Newton property arrays after rollback."""
+        snapshots = self._solver_property_snapshots
+        if snapshots is None:
+            return
+        try:
+            for target, snapshot in snapshots:
+                target.assign(snapshot)
+        finally:
+            self._solver_property_snapshots = None
+
+    def commit_resolved_joint_properties(self) -> None:
+        """Release rollback snapshots after candidate publication."""
+        self._solver_property_snapshots = None
+
     def prepare_actuator_binding(self, binding: _ArticulationBinding) -> None:
-        """Prepare native adapter state from the private candidate binding."""
+        """Prepare native adapter state from the private candidate binding.
+
+        Args:
+            binding: Unpublished articulation binding owned by the candidate generation.
+        """
         self._unregister_post_actuator_callback()
         super().prepare_actuator_binding(binding)
         if not self._native_active:
             return
+
+        self._snapshot_candidate_state()
+        try:
+            self._prepare_native_actuator_binding(binding)
+        except Exception as error:
+            for cleanup in (self._unregister_post_actuator_callback, self._restore_candidate_state):
+                try:
+                    cleanup()
+                except Exception as cleanup_error:
+                    error.add_note(f"Failed to roll back Newton actuator preparation: {cleanup_error}")
+            raise
+
+    def _prepare_native_actuator_binding(self, binding: _ArticulationBinding) -> None:
+        """Install generation-specific native or fallback state."""
 
         from newton import Model as NewtonModel  # noqa: PLC0415
 
@@ -134,6 +215,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             articulation._implicit_dof_mask = native_binding.implicit_dof_mask
             articulation._implicit_dof_mask_owner = native_binding.implicit_dof_mask_owner
             articulation._data._sim_bind_joint_computed_effort = native_binding.computed_effort_view
+            self._native_dof_offset = arti_start
         else:
             articulation._implicit_dof_mask, articulation._implicit_dof_mask_owner = build_implicit_dof_mask(
                 dict(binding.groups), self.num_joints, self.device
@@ -168,35 +250,173 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             )
 
         self._post_actuator_callback = _post_actuator
-        try:
-            SimulationManager.register_post_actuator_callback(_post_actuator)
-        except Exception:
-            self._unregister_post_actuator_callback()
-            raise
+        SimulationManager.register_post_actuator_callback(_post_actuator)
 
     def invalidate_actuator_view(self) -> None:
-        """Deregister candidate telemetry before releasing its private binding."""
-        self._unregister_post_actuator_callback()
-        super().invalidate_actuator_view()
+        """Restore candidate state before releasing the private binding."""
+        failures: list[Exception] = []
+        for cleanup in (self._unregister_post_actuator_callback, self._restore_candidate_state):
+            try:
+                cleanup()
+            except Exception as error:
+                failures.append(error)
+        try:
+            super().invalidate_actuator_view()
+        except Exception as error:
+            failures.append(error)
+        if failures:
+            first, *remaining = failures
+            for error in remaining:
+                first.add_note(f"Additional Newton actuator invalidation failure: {error}")
+            raise first
+
+    def _snapshot_candidate_state(self) -> None:
+        """Retain and clear every field replaced by native candidate preparation."""
+        if self._candidate_state_snapshot is not None:
+            raise RuntimeError("Newton actuator candidate state is already installed.")
+        articulation = self._articulation
+        state_fields = (
+            (articulation, "newton_actuator_adapter"),
+            (articulation, "newton_default_stiffness"),
+            (articulation, "newton_default_damping"),
+            (articulation, "newton_managed_local_joints"),
+            (articulation, "_implicit_dof_mask"),
+            (articulation, "_implicit_dof_mask_owner"),
+            (articulation._data, "_sim_bind_joint_computed_effort"),
+        )
+        self._candidate_state_snapshot = tuple(
+            (owner, name, getattr(owner, name, None)) for owner, name in state_fields
+        )
+        for owner, name in state_fields:
+            setattr(owner, name, None)
+        self._native_dof_offset = None
+
+    def _restore_candidate_state(self) -> None:
+        """Best-effort restore of every generation-specific articulation field."""
+        snapshot = getattr(self, "_candidate_state_snapshot", None)
+        self._native_dof_offset = None
+        if snapshot is None:
+            return
+        self._candidate_state_snapshot = None
+        failures: list[Exception] = []
+        for owner, name, value in snapshot:
+            try:
+                setattr(owner, name, value)
+            except Exception as error:
+                failures.append(error)
+        if failures:
+            first, *remaining = failures
+            for error in remaining:
+                first.add_note(f"Additional Newton candidate-state restore failure: {error}")
+            raise first
 
     def _unregister_post_actuator_callback(self) -> None:
         """Remove this control's exact telemetry callback, if still registered."""
         callback = self._post_actuator_callback
         if callback is not None:
-            SimulationManager.unregister_post_actuator_callback(callback)
-            self._post_actuator_callback = None
+            try:
+                SimulationManager.unregister_post_actuator_callback(callback)
+            finally:
+                self._post_actuator_callback = None
 
     def write_actuator_parameter(self, name: str, write: _ActuatorParameterWrite) -> None:
-        """Defer native controller parameter side effects until canonical pointer binding.
+        """Apply one canonical parameter update to Newton-owned runtime state.
 
-        The current Newton adapter owns copied gain/output snapshots.  Routing a
-        canonical typed-storage update through it would require compacting the
-        scoped selector, copying the selected values, and potentially syncing.
-        Task 11 replaces those snapshots with direct candidate-store pointers;
-        only then can this hook update native parameters allocation- and
-        synchronization-free.
+        Args:
+            name: Canonical actuator parameter name.
+            write: Exact-type canonical storage and backend ownership metadata.
         """
-        del name, write
+        from isaaclab_newton.actuators import kernels as actuator_kernels  # noqa: PLC0415
+
+        articulation = self._articulation
+        canonical = write.canonical
+        if canonical is None:
+            raise RuntimeError("Newton parameter writes require canonical exact-type storage.")
+        owner_slots = write.backend_owner_slots
+        if isinstance(owner_slots, torch.Tensor):
+            if owner_slots.dtype is not torch.int32 or owner_slots.ndim != 1:
+                raise TypeError("Newton backend owner slots must be a one-dimensional int32 tensor.")
+            owner_slots_wp = wp.from_torch(owner_slots, dtype=wp.int32)
+        elif isinstance(owner_slots, wp.array):
+            owner_slots_wp = owner_slots
+        else:
+            raise TypeError("Newton parameter writes require backend owner slots.")
+
+        if issubclass(write.actuator_type, ImplicitActuator) and name in {"stiffness", "damping"}:
+            data = articulation.data
+            if name == "stiffness":
+                backend_buffer = data._sim_bind_joint_stiffness_sim
+                user_buffer = data._joint_stiffness_user
+            else:
+                backend_buffer = data._sim_bind_joint_damping_sim
+                user_buffer = data._joint_damping_user
+            has_joint_ordering = data.has_joint_ordering
+            wp.launch(
+                actuator_kernels.patch_implicit_solver_parameter,
+                dim=(self.num_instances, self.num_joints),
+                inputs=[
+                    canonical.warp,
+                    owner_slots_wp,
+                    articulation._joint_user_to_backend_map(),
+                    has_joint_ordering,
+                ],
+                outputs=[backend_buffer if user_buffer is None else user_buffer, backend_buffer],
+                device=self.device,
+            )
+            SimulationManager.add_model_change(ModelFlags.JOINT_DOF_PROPERTIES)
+            return
+
+        adapter = getattr(articulation, "newton_actuator_adapter", None)
+        if adapter is None or self._native_dof_offset is None:
+            return
+
+        backend_to_user = articulation._joint_backend_to_user_map()
+        has_joint_ordering = articulation.data.has_joint_ordering
+        clamping_attributes = {
+            "effort_limit": ("max_motor_effort", "max_effort"),
+            "velocity_limit": ("velocity_limit",),
+            "saturation_effort": ("saturation_effort",),
+        }
+        for actuator in adapter.actuators:
+            targets: list[tuple[object, str]] = []
+            controller_attribute = {"stiffness": "kp", "damping": "kd"}.get(name)
+            if controller_attribute is not None and hasattr(actuator.controller, controller_attribute):
+                targets.append((actuator.controller, controller_attribute))
+            for clamping in actuator.clamping:
+                for attribute in clamping_attributes.get(name, ()):
+                    if hasattr(clamping, attribute):
+                        targets.append((clamping, attribute))
+
+            for component, attribute in targets:
+                target = getattr(component, attribute)
+                wp.launch(
+                    actuator_kernels.patch_native_actuator_parameter,
+                    dim=actuator.indices.shape[0],
+                    inputs=[
+                        actuator.indices,
+                        canonical.warp,
+                        owner_slots_wp,
+                        backend_to_user,
+                        self._native_dof_offset,
+                        self.num_joints,
+                        adapter.num_joints,
+                        self.num_instances,
+                        has_joint_ordering,
+                    ],
+                    outputs=[target],
+                    device=self.device,
+                )
+                if attribute in {"max_motor_effort", "velocity_limit", "saturation_effort"} and all(
+                    hasattr(component, field)
+                    for field in ("saturation_effort", "velocity_limit", "max_motor_effort", "corner_velocity")
+                ):
+                    wp.launch(
+                        actuator_kernels.recompute_dc_motor_corner_velocity,
+                        dim=actuator.indices.shape[0],
+                        inputs=[component.saturation_effort, component.velocity_limit, component.max_motor_effort],
+                        outputs=[component.corner_velocity],
+                        device=self.device,
+                    )
 
     def submit_commands(self, collection: ActuatorCollection | ActuatorCollection.ArticulationView) -> None:
         articulation = self._articulation
@@ -267,7 +487,15 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 device=self.device,
             )
 
-    def reset_native_actuators(self, env_ids: Sequence[int] | slice) -> None:
+    def reset_native_actuators(
+        self,
+        env_ids: Sequence[int] | torch.Tensor | wp.array(dtype=wp.int32) | wp.array(dtype=wp.int64) | slice,
+    ) -> None:
+        """Reset Newton-native actuator state for selected environments.
+
+        Args:
+            env_ids: Environment indices to reset, or a full slice.
+        """
         if self._native_active and SimulationManager._adapter is not None:
             SimulationManager._adapter.reset(env_ids)
 

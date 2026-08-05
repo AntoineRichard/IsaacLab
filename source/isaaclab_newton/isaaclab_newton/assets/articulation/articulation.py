@@ -3385,9 +3385,6 @@ class Articulation(BaseArticulation):
         if hasattr(self, "_physics_ready_handle") and self._physics_ready_handle is not None:
             self._physics_ready_handle.deregister()
             self._physics_ready_handle = None
-        actuator_control = getattr(self, "_actuator_control", None)
-        if actuator_control is not None:
-            actuator_control.invalidate_actuator_view()
         # Remove the post-step republish hook registered in ``_create_buffers`` so the
         # bound method does not linger on ``NewtonManager._post_step_callbacks`` after
         # this articulation is gone (registered only for non-identity ordering).

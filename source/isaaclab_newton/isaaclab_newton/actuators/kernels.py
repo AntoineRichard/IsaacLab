@@ -150,6 +150,73 @@ def patch_actuator_param_kernel(
         dst[i] = values[e_pos, j_pos]
 
 
+@wp.kernel(enable_backward=False)
+def patch_native_actuator_parameter(
+    indices: wp.array(dtype=wp.uint32),
+    canonical: wp.array2d(dtype=wp.float32),
+    owner_slots: wp.array(dtype=wp.int32),
+    backend_to_user: wp.array(dtype=wp.int32),
+    dof_offset: int,
+    num_articulation_joints: int,
+    env_stride: int,
+    num_envs: int,
+    has_joint_ordering: bool,
+    dst: wp.array(dtype=wp.float32),
+):
+    """Gather config-winning canonical values into one native component array."""
+    i = wp.tid()
+    relative_dof = int(indices[i]) - dof_offset
+    if relative_dof >= 0:
+        env_id = relative_dof // env_stride
+        if env_id < num_envs:
+            backend_joint_id = relative_dof - env_id * env_stride
+            if backend_joint_id >= 0 and backend_joint_id < num_articulation_joints:
+                user_joint_id = backend_joint_id
+                if has_joint_ordering:
+                    user_joint_id = backend_to_user[backend_joint_id]
+                compact_slot = owner_slots[user_joint_id]
+                if compact_slot >= 0:
+                    dst[i] = canonical[env_id, compact_slot]
+
+
+@wp.kernel(enable_backward=False)
+def recompute_dc_motor_corner_velocity(
+    saturation_effort: wp.array(dtype=wp.float32),
+    velocity_limit: wp.array(dtype=wp.float32),
+    max_motor_effort: wp.array(dtype=wp.float32),
+    corner_velocity: wp.array(dtype=wp.float32),
+):
+    """Refresh the DC-motor derived corner velocity after a parameter write."""
+    i = wp.tid()
+    saturation = saturation_effort[i]
+    velocity = velocity_limit[i]
+    if saturation > 0.0:
+        corner_velocity[i] = velocity * (1.0 + max_motor_effort[i] / saturation)
+    else:
+        corner_velocity[i] = velocity
+
+
+@wp.kernel(enable_backward=False)
+def patch_implicit_solver_parameter(
+    canonical: wp.array2d(dtype=wp.float32),
+    owner_slots: wp.array(dtype=wp.int32),
+    user_to_backend: wp.array(dtype=wp.int32),
+    has_joint_ordering: bool,
+    user_buffer: wp.array2d(dtype=wp.float32),
+    backend_buffer: wp.array2d(dtype=wp.float32),
+):
+    """Gather winning implicit gains into user and Newton backend arrays."""
+    env_id, user_joint_id = wp.tid()
+    compact_slot = owner_slots[user_joint_id]
+    if compact_slot >= 0:
+        value = canonical[env_id, compact_slot]
+        backend_joint_id = user_joint_id
+        if has_joint_ordering:
+            user_buffer[env_id, user_joint_id] = value
+            backend_joint_id = user_to_backend[user_joint_id]
+        backend_buffer[env_id, backend_joint_id] = value
+
+
 # ---------------------------------------------------------------------------
 # Articulation-level kernels: in-graph post-actuator hook.
 # ---------------------------------------------------------------------------

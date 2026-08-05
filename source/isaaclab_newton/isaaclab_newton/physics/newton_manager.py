@@ -3057,6 +3057,9 @@ class NewtonManager(PhysicsManager):
         integrator on the same iteration. Multiple articulations register
         their own implicit-DOF telemetry / FF-routing kernels here; all
         registered callbacks fire in registration order each step.
+
+        Args:
+            callback: Graph-safe zero-argument callback to invoke after actuator stepping.
         """
         cls._post_actuator_callbacks.append(callback)
 
@@ -3068,6 +3071,9 @@ class NewtonManager(PhysicsManager):
         therefore use identity rather than equality so a distinct callable with
         custom equality semantics remains registered.  Repeated cleanup is a
         safe no-op.
+
+        Args:
+            callback: Exact callback object to remove when present.
         """
         for index, registered_callback in enumerate(cls._post_actuator_callbacks):
             if registered_callback is callback:
