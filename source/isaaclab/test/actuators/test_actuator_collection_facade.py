@@ -539,6 +539,7 @@ def test_multiple_articulations_publish_isolated_views_and_arrays() -> None:
         != second.by_type[IdealPDActuator].parameters["stiffness"].torch.data_ptr()
     )
     first.by_type[IdealPDActuator].set_parameter_index("stiffness", 11.0)
+    torch.testing.assert_close(first.by_type[IdealPDActuator].parameters["stiffness"].torch, torch.full((2, 1), 11.0))
     torch.testing.assert_close(second.by_type[IdealPDActuator].parameters["stiffness"].torch, torch.ones((2, 1)))
 
 
