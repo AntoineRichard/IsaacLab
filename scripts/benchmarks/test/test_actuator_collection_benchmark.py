@@ -162,6 +162,8 @@ def test_graph_capture_failure_is_rejected_not_eager():
     result = benchmark.measure_runtime(adapter, benchmark.runtime_matrix("global")[1], 1, 1)
     assert result["status"] == "rejected"
     assert result["effective_execution"] is None
+    assert result["counters"]["capture"] is not None
+    assert result["counters"]["replay"] is None
 
 
 def test_cpu_b1_smoke_builds_and_applies_once(tmp_path):
@@ -436,3 +438,102 @@ def test_gpu_telemetry_requires_exactly_twenty_pre_and_post_samples():
         "required telemetry unavailable"
     ]
     assert benchmark.validate_pair_telemetry([sample] * 20, [sample] * 20, "cuda:0") == []
+
+
+def test_workload_preserves_each_requested_group_as_a_distinct_joint_domain():
+    """A B5/12 workload must not silently collapse the twelve groups to three joints."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_group_domains")
+    row = next(
+        candidate
+        for candidate in benchmark.expand_build_matrix("B5")
+        if candidate.actuator_types == ("ideal_pd",) and candidate.groups == 12
+    )
+    workload = benchmark.make_workload(row, "cpu")
+    assert workload.joint_names == tuple(f"joint_{index}" for index in range(12))
+    assert len(workload.group_values) == 12
+    assert [values[0] for values in workload.group_values] == [float(index + 1) for index in range(12)]
+
+
+def test_global_introspection_reads_real_generation_owners_not_dictionary_keys():
+    """Canonical allocation data must come from stores, plans, staging, and joint storage."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_real_introspection")
+
+    class Owner:
+        def __init__(self, ptr, nbytes):
+            self.warp = type("Warp", (), {"ptr": ptr, "device": "cuda:0", "nbytes": nbytes})()
+
+    canonical = Owner(3, 24)
+    staging = Owner(5, 40)
+    store = type("Store", (), {"_fields": {"stiffness": canonical}})()
+    plan = type("Plan", (), {"_staging": {"implicit": staging}})()
+    binding = type("Binding", (), {"execution_plan": plan, "backend_parameter_staging": staging})()
+    generation = type(
+        "Generation",
+        (),
+        {"stores": {object: store}, "joint_store": type("Joint", (), {"_fields": {}})(), "bindings": (binding,)},
+    )()
+
+    report = benchmark._GlobalIntrospector().inspect(generation)
+    assert report["canonical_allocation_count"] == 1
+    assert report["canonical_allocation_bytes"] == 24
+    assert report["plan_staging_owner_count"] == 1
+    assert report["plan_staging_owner_bytes"] == 40
+
+
+def test_global_b0_b2_b6_and_b8_probes_exercise_manager_lifecycle_and_projections():
+    """Global-only rows must use manager finalization, lazy projections, clear, and re-registration."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_global_lifecycle")
+    results = {
+        case: benchmark.run_global_structural_case(
+            benchmark.make_workload(benchmark.expand_build_matrix(case)[0], "cpu")
+        )
+        for case in ("B0", "B2", "B6", "B8")
+    }
+    assert results["B0"]["cleared"] is True
+    assert results["B2"]["articulation_count"] == 2
+    assert results["B6"]["projection_states"] == ("untouched", "first", "repeated", "both")
+    assert results["B6"]["projection_launches"] >= 2
+    assert results["B8"]["re_registered"] is True
+
+
+def test_global_adapter_reports_only_current_generation_structural_owners():
+    """A real global B1 adapter must expose concrete current-generation structural ownership."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_live_introspection")
+    adapter = benchmark._GlobalCollectionAdapter("global", "cpu")
+    workload = benchmark.make_workload(benchmark.expand_build_matrix("B1")[0], "cpu")
+    try:
+        adapter.build_workload(workload)
+        report = adapter.introspect()
+        assert report is not None
+        assert report["canonical_allocation_count"] > 0
+        assert report["descriptor_count"] > 0
+        assert report["plan_staging_owner_count"] > 0
+    finally:
+        adapter.close()
+
+
+def test_b7_builds_deterministic_local_neural_and_eager_fallback_groups():
+    """B7 must create neural, delayed, remotized, and opaque groups without a download."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_b7")
+    row = benchmark.expand_build_matrix("B7")[0]
+    adapter = benchmark._GlobalCollectionAdapter("global", "cpu")
+    workload = benchmark.make_workload(row, "cpu")
+    try:
+        adapter.build_workload(workload)
+        adapter.first_application(workload)
+        assert set(adapter.view) == {"group_0", "group_1", "group_2", "group_3"}
+        neural = adapter.view["group_0"]
+        delayed = adapter.view["group_1"]
+        remotized = adapter.view["group_2"]
+        opaque = adapter.view["group_3"]
+        assert neural.computed_effort[0, 0].item() == pytest.approx(0.2)
+        first_delayed_effort = delayed.applied_effort[0, 0].item()
+        adapter.view.command.position.torch.fill_(0.2)
+        adapter.run_execution(1)
+        assert delayed.applied_effort[0, 0].item() != first_delayed_effort
+        assert abs(remotized.applied_effort[0, 0].item()) <= 20.0
+        assert type(opaque).__name__ == "_OpaqueIdealPD"
+        plan = adapter.view._execution_plan
+        assert plan is not None and not plan.stateless_ranges and len(plan.eager_segments) == 4
+    finally:
+        adapter.close()

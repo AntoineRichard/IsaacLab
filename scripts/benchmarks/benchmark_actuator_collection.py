@@ -17,6 +17,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import math
 import os
 import shutil
 import stat
@@ -110,6 +111,7 @@ class _Workload:
     joint_names: tuple[str, ...]
     group_values: tuple[tuple[float, ...], ...]
     first_command: tuple[float, ...]
+    network_file: str | None = None
 
 
 def build_matrix() -> tuple[BuildCase, ...]:
@@ -326,7 +328,8 @@ def make_workload(row: BuildRow, device: str) -> _Workload:
         for group in range(max(row.groups, 1))
     )
     joint_names = tuple(f"joint_{index}" for index in range(max(row.groups, 1)))
-    return _Workload(row, device, joint_names, values, (0.1, 0.2, 0.3))
+    network_file = _tiny_mlp_checkpoint(device) if row.case == "B7" else None
+    return _Workload(row, device, joint_names, values, (0.1, 0.2, 0.3), network_file)
 
 
 class _Adapter(Protocol):
@@ -362,6 +365,8 @@ class _MemoryAdapter:
         self.applications += count
 
     def close(self) -> None:
+        if self.workload is not None and self.workload.network_file is not None:
+            Path(self.workload.network_file).unlink(missing_ok=True)
         self.workload = None
 
     def introspect(self) -> dict[str, Any] | None:
@@ -545,15 +550,29 @@ class _DriverControl:
 
 def _group_cfgs(workload: _Workload) -> dict[str, Any]:
     """Build ordered real config objects with non-overlapping joint ownership."""
-    from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, IdealPDActuatorCfg, ImplicitActuatorCfg
+    from isaaclab.actuators.actuator_net_cfg import ActuatorNetMLPCfg
+    from isaaclab.actuators.actuator_pd import IdealPDActuator
+    from isaaclab.actuators.actuator_pd_cfg import (
+        DCMotorCfg,
+        DelayedPDActuatorCfg,
+        IdealPDActuatorCfg,
+        ImplicitActuatorCfg,
+        RemotizedPDActuatorCfg,
+    )
 
     types = workload.row.actuator_types
     configs: dict[str, Any] = {}
     for index in range(workload.row.groups):
         actuator_type = types[index % len(types)]
-        cfg_type = {"implicit": ImplicitActuatorCfg, "ideal_pd": IdealPDActuatorCfg, "dc_motor": DCMotorCfg}.get(
-            actuator_type
-        )
+        cfg_type = {
+            "implicit": ImplicitActuatorCfg,
+            "ideal_pd": IdealPDActuatorCfg,
+            "dc_motor": DCMotorCfg,
+            "neural": ActuatorNetMLPCfg,
+            "delayed": DelayedPDActuatorCfg,
+            "remotized": RemotizedPDActuatorCfg,
+            "opaque": IdealPDActuatorCfg,
+        }.get(actuator_type)
         if cfg_type is None:
             raise RuntimeError(f"unsupported real fixture actuator type: {actuator_type}")
         values: dict[str, Any] = {
@@ -567,8 +586,47 @@ def _group_cfgs(workload: _Workload) -> dict[str, Any]:
             values.update(stiffness=None, damping=None, effort_limit=None, velocity_limit=None)
         if actuator_type == "dc_motor":
             values["saturation_effort"] = 100.0
+        if actuator_type == "neural":
+            values.update(
+                saturation_effort=100.0,
+                network_file=workload.network_file,
+                pos_scale=1.0,
+                vel_scale=1.0,
+                torque_scale=1.0,
+                input_order="pos_vel",
+                input_idx=(0,),
+            )
+        if actuator_type == "delayed":
+            values.update(min_delay=1, max_delay=1)
+        if actuator_type == "remotized":
+            values.update(
+                min_delay=1,
+                max_delay=1,
+                joint_parameter_lookup=[[-1.0, 1.0, 20.0], [0.0, 1.0, 20.0], [1.0, 1.0, 20.0]],
+            )
+        if actuator_type == "opaque":
+
+            class _OpaqueIdealPD(IdealPDActuator):
+                """Driver-owned exact subclass used to retain the eager fallback boundary."""
+
+            values["class_type"] = _OpaqueIdealPD
         configs[f"group_{index}"] = cfg_type(**values)
     return configs
+
+
+def _tiny_mlp_checkpoint(device: str) -> str:
+    """Create one deterministic local TorchScript checkpoint without network access."""
+    import torch
+
+    class _TinyMLP(torch.nn.Module):
+        def forward(self, values: torch.Tensor) -> torch.Tensor:
+            return 2.0 * values[:, :1] + 3.0 * values[:, 1:2]
+
+    file_descriptor, path = tempfile.mkstemp(prefix="isaaclab-actuator-benchmark-", suffix=".pt")
+    os.close(file_descriptor)
+    module = torch.jit.trace(_TinyMLP().eval(), torch.zeros((1, 2), device=device))
+    module.save(path)
+    return path
 
 
 class _DevelopAdapter(_MemoryAdapter):
@@ -577,14 +635,45 @@ class _DevelopAdapter(_MemoryAdapter):
     def build_workload(self, workload: _Workload) -> None:
         import torch
 
-        from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
+        from isaaclab.actuators.actuator_net import ActuatorNetMLP
+        from isaaclab.actuators.actuator_pd import (
+            DCMotor,
+            DelayedPDActuator,
+            IdealPDActuator,
+            ImplicitActuator,
+            RemotizedPDActuator,
+        )
 
         self.workload = workload
         self.groups = []
-        concrete = {"implicit": ImplicitActuator, "ideal_pd": IdealPDActuator, "dc_motor": DCMotor}
+        self._direct_zero = torch.zeros((workload.row.num_worlds, 1), device=workload.device)
+        self._direct_position = torch.full(
+            (workload.row.num_worlds, 1), workload.first_command[0], device=workload.device
+        )
+        from isaaclab.utils.types import ArticulationActions
+
+        self._direct_actions = [
+            ArticulationActions(
+                joint_positions=self._direct_position,
+                joint_velocities=self._direct_zero,
+                joint_efforts=self._direct_zero,
+            )
+            for _ in range(workload.row.groups)
+        ]
+        concrete = {
+            "implicit": ImplicitActuator,
+            "ideal_pd": IdealPDActuator,
+            "dc_motor": DCMotor,
+            "neural": ActuatorNetMLP,
+            "delayed": DelayedPDActuator,
+            "remotized": RemotizedPDActuator,
+            "opaque": None,
+        }
         for name, cfg in _group_cfgs(workload).items():
             index = int(name.rsplit("_", 1)[1])
             group_type = concrete[workload.row.actuator_types[index % len(workload.row.actuator_types)]]
+            if group_type is None:
+                group_type = cfg.class_type
             defaults = torch.zeros((workload.row.num_worlds, 1), device=workload.device)
             if workload.row.num_sources > 1:
                 defaults[:, 0] = torch.arange(2, 2 + workload.row.num_sources, device=workload.device)[
@@ -608,24 +697,28 @@ class _DevelopAdapter(_MemoryAdapter):
                 )
             )
 
-    def first_application(self, workload: _Workload) -> None:
-        import torch
-
-        from isaaclab.utils.types import ArticulationActions
-
-        for group in self.groups:
-            shape = (workload.row.num_worlds, 1)
-            zeros = torch.zeros(shape, device=workload.device)
+    def _apply(self) -> None:
+        workload = self.workload
+        if workload is None:
+            raise RuntimeError("direct adapter workload is not built")
+        for group, action in zip(self.groups, self._direct_actions):
+            action.joint_positions = self._direct_position
+            action.joint_velocities = self._direct_zero
+            action.joint_efforts = self._direct_zero
             group.compute(
-                ArticulationActions(
-                    joint_positions=torch.full(shape, workload.first_command[0], device=workload.device),
-                    joint_velocities=zeros,
-                    joint_efforts=zeros,
-                ),
-                zeros,
-                zeros,
+                action,
+                self._direct_zero,
+                self._direct_zero,
             )
+
+    def first_application(self, workload: _Workload) -> None:
+        self._apply()
         self.applications += 1
+
+    def run_execution(self, count: int) -> None:
+        for _ in range(count):
+            self._apply()
+        self.applications += count
 
 
 class _CurrentPrAdapter(_MemoryAdapter):
@@ -681,25 +774,37 @@ class _GlobalCollectionAdapter(_MemoryAdapter):
                     sources=sources,
                     destinations=("/World/envs/env_{}",),
                     clone_mask=clone_mask,
-                    cfg_rows={1: tuple(range(workload.row.num_sources))},
+                    cfg_rows={
+                        index + 1: tuple(range(workload.row.num_sources))
+                        for index in range(workload.row.num_articulations)
+                    },
                 )
 
             def get_clone_plan(self) -> Any:
                 return self.plan
 
         self.workload = workload
-        self.control = _DriverControl(
-            workload.device, workload.row.num_worlds, workload.joint_names, workload.row.num_sources
-        )
+        self._cfgs = _group_cfgs(workload)
         self.manager = ActuatorCollection(_Simulation())
-        self.view = self.manager.register_articulation(
-            key="benchmark",
-            cfgs=_group_cfgs(workload),
-            control=self.control,
-            replication_cfg_id=1,
-            debug_validation=False,
-            debug_value_resolution=False,
-        )
+        self.controls = []
+        self.views = []
+        for index in range(workload.row.num_articulations):
+            control = _DriverControl(
+                workload.device, workload.row.num_worlds, workload.joint_names, workload.row.num_sources
+            )
+            self.controls.append(control)
+            self.views.append(
+                self.manager.register_articulation(
+                    key=f"benchmark-{index}",
+                    cfgs=self._cfgs,
+                    control=control,
+                    replication_cfg_id=index + 1,
+                    debug_validation=False,
+                    debug_value_resolution=False,
+                )
+            )
+        self.control = self.controls[0]
+        self.view = self.views[0]
         self.manager.finalize()
         if not self.manager.is_finalized or not self.view.is_ready or self.view._execution_plan is None:
             raise RuntimeError("global collection lifecycle probe failed")
@@ -723,10 +828,77 @@ class _GlobalCollectionAdapter(_MemoryAdapter):
             self.view.submit_commands()
         self.applications += count
 
+    def warmup_execution(self, row: RuntimeRow) -> bool:
+        """Capture the scoped plan and accept only a live graph."""
+        if row.requested_execution != "graph":
+            return True
+        plan = self.view._execution_plan
+        if plan is None:
+            return False
+        plan.warmup_and_capture()
+        return plan._full_graph is not None or plan._prefix_graph is not None
+
+    def introspect(self) -> dict[str, Any] | None:
+        """Return allocation ownership from the manager's live generation only."""
+        generation = getattr(self.manager, "_active_generation", None)
+        return None if generation is None else _GlobalIntrospector().inspect(generation)
+
     def close(self) -> None:
         if hasattr(self, "manager"):
             self.manager.clear_generation()
+        for cfg in getattr(self, "_cfgs", {}).values():
+            if (path := getattr(cfg, "network_file", None)) is not None:
+                Path(path).unlink(missing_ok=True)
         super().close()
+
+
+def run_global_structural_case(workload: _Workload) -> dict[str, Any]:
+    """Run one global-only lifecycle/projection observation without timing it."""
+    if workload.row.case == "B0":
+        from isaaclab.actuators.actuator_collection import ActuatorCollection
+
+        class _EmptySimulation:
+            def get_clone_plan(self) -> None:
+                return None
+
+        manager = ActuatorCollection(_EmptySimulation())
+        manager.finalize()
+        manager.clear_generation()
+        return {"cleared": True}
+
+    adapter = _GlobalCollectionAdapter("global", workload.device)
+    try:
+        adapter.build_workload(workload)
+        if workload.row.case == "B2":
+            return {"articulation_count": len(adapter.manager.registration_keys)}
+        if workload.row.case == "B6":
+            states = ["untouched"]
+            adapter.view._get_compatibility_projection("soft_joint_vel_limits")
+            states.append("first")
+            adapter.view._get_compatibility_projection("soft_joint_vel_limits")
+            states.append("repeated")
+            adapter.view._get_compatibility_projection("gear_ratio")
+            states.append("both")
+            adapter.view.compute()
+            plan = adapter.view._execution_plan
+            return {
+                "projection_states": tuple(states),
+                "projection_launches": len(getattr(plan, "_compatibility_projection_refreshes", {})),
+            }
+        if workload.row.case == "B8":
+            old_view = adapter.view
+            adapter.manager.clear_generation()
+            try:
+                old_view.compute()
+            except RuntimeError:
+                stale = True
+            else:
+                stale = False
+            adapter.build_workload(workload)
+            return {"re_registered": stale and adapter.manager.is_finalized}
+        raise ValueError(f"not a global structural case: {workload.row.case}")
+    finally:
+        adapter.close()
 
 
 def _import_actuator_collection() -> Any:
@@ -763,23 +935,63 @@ def select_adapter(revision: str, device: str) -> _Adapter | RevisionCapability:
 
 def measure_runtime(adapter: _Adapter, row: RuntimeRow, warmups: int, iterations: int) -> dict[str, Any]:
     """Measure one runtime mode without relabelling failed graph capture."""
-    if row.requested_execution == "graph" and not adapter.warmup_execution(row):
-        return {
-            "status": "rejected",
-            "requested_execution": "graph",
-            "effective_execution": None,
-            "reason": "graph capture failed",
-        }
-    adapter.run_execution(warmups)
-    started = time.perf_counter_ns()
-    adapter.run_execution(iterations)
-    elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
+    import warp as wp
+
+    capture = _ScopedInstrumentation(wp)
+    if row.requested_execution == "graph":
+        with capture:
+            captured = adapter.warmup_execution(row)
+        if not captured:
+            return {
+                "status": "rejected",
+                "requested_execution": "graph",
+                "effective_execution": None,
+                "reason": "graph capture failed",
+                "counters": {"capture": capture.as_record(), "replay": None},
+            }
+    allocation_before = _steady_allocation_bytes(getattr(adapter, "device", "cpu"))
+    replay = _ScopedInstrumentation(wp)
+    with replay:
+        adapter.run_execution(warmups)
+        elapsed_ms = _time_runtime_execution(adapter, iterations)
+    allocation_after = _steady_allocation_bytes(getattr(adapter, "device", "cpu"))
     return {
         "status": "accepted",
         "requested_execution": row.requested_execution,
         "effective_execution": row.effective_execution,
         "timing": {"samples_ms": [elapsed_ms]},
+        "counters": {
+            "capture": capture.as_record(),
+            "replay": replay.as_record(),
+            "steady_allocation_delta_bytes": allocation_after - allocation_before,
+        },
     }
+
+
+def _time_runtime_execution(adapter: _Adapter, iterations: int) -> float:
+    """Time actual replay with CUDA events, or use a CPU-only smoke fallback."""
+    if getattr(adapter, "device", "cpu").startswith("cuda"):
+        import torch
+
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        adapter.run_execution(iterations)
+        end.record()
+        end.synchronize()
+        return start.elapsed_time(end)
+    started = time.perf_counter_ns()
+    adapter.run_execution(iterations)
+    return (time.perf_counter_ns() - started) / 1_000_000
+
+
+def _steady_allocation_bytes(device: str) -> int:
+    """Read the existing Torch allocation counter without forcing synchronization."""
+    if not device.startswith("cuda"):
+        return 0
+    import torch
+
+    return torch.cuda.memory_allocated(device)
 
 
 class _ScopedInstrumentation:
@@ -816,6 +1028,14 @@ class _ScopedInstrumentation:
         if not final_timing_sync:
             self.d2h_readbacks += 1
 
+    def as_record(self) -> dict[str, Any]:
+        """Return only benchmark-side launch/readback observations for this scope."""
+        return {
+            "launches": dict(self.launches),
+            "h2d_bytes": self.h2d_bytes,
+            "d2h_readbacks": self.d2h_readbacks,
+        }
+
 
 def observe_runtime_scopes(adapter: _Adapter, iterations: int) -> list[str]:
     """Keep capture and replay observation boundaries distinct."""
@@ -830,18 +1050,72 @@ class _GlobalIntrospector:
     """Read actual finalized generation owners without analytical layout guesses."""
 
     def inspect(self, generation: Any) -> dict[str, Any]:
-        owners = [*getattr(generation, "stores", ()), *getattr(generation, "plans", ())]
-        unique: dict[tuple[Any, Any], Any] = {}
-        for owner in owners:
-            key = (getattr(owner, "device", None), getattr(owner, "ptr", None))
-            if key[1] is not None:
-                unique[key] = owner
+        stores = getattr(generation, "stores", {})
+        store_values = stores.values() if hasattr(stores, "values") else stores
+        canonical = self._owners_from([*store_values, getattr(generation, "joint_store", None)])
+        bindings = tuple(getattr(generation, "bindings", ()))
+        staging = self._owners_from(
+            [getattr(binding, "execution_plan", None) for binding in bindings]
+            + [getattr(binding, "backend_parameter_staging", None) for binding in bindings]
+            + list(getattr(generation, "backend_parameter_staging", {}).values())
+        )
         return {
-            "canonical_allocation_count": len(unique),
-            "canonical_allocation_bytes": sum(getattr(owner, "nbytes", 0) for owner in unique.values()),
-            "descriptor_count": len(getattr(generation, "stores", ())),
-            "plan_staging_owner_count": len(getattr(generation, "plans", ())),
+            "canonical_allocation_count": len(canonical),
+            "canonical_allocation_bytes": sum(size for _, size in canonical.values()),
+            "descriptor_count": sum(len(getattr(store, "_fields", {})) for store in store_values),
+            "plan_staging_owner_count": len(staging),
+            "plan_staging_owner_bytes": sum(size for _, size in staging.values()),
+            "projection_bytes": 0,
+            "projection_launches": 0,
+            "pointer_replacements": 0,
+            "clear_state_ownership": None,
         }
+
+    @staticmethod
+    def _owners_from(roots: list[Any]) -> dict[tuple[str, int], tuple[Any, int]]:
+        """Collect allocation leaves from real current-generation owners only."""
+        found: dict[tuple[str, int], tuple[Any, int]] = {}
+        visited: set[int] = set()
+
+        def visit(value: Any) -> None:
+            if value is None or id(value) in visited:
+                return
+            visited.add(id(value))
+            raw = getattr(value, "warp", value)
+            if (ptr := getattr(raw, "ptr", None)) is not None:
+                nbytes = int(getattr(raw, "nbytes", 0))
+                if nbytes == 0 and hasattr(raw, "shape") and hasattr(raw, "dtype"):
+                    try:
+                        import warp as wp
+
+                        nbytes = math.prod(raw.shape) * wp.types.type_size_in_bytes(raw.dtype)
+                    except Exception:
+                        nbytes = 0
+                found[(str(getattr(raw, "device", "unknown")), int(ptr))] = (raw, nbytes)
+                return
+            if isinstance(value, dict):
+                for item in value.values():
+                    visit(item)
+                return
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    visit(item)
+                return
+            for name in (
+                "_fields",
+                "_targets",
+                "_owner_slots",
+                "staging",
+                "_staging",
+                "stateless_ranges",
+                "eager_segments",
+                "static_scatter_epochs",
+            ):
+                visit(getattr(value, name, None))
+
+        for root in roots:
+            visit(root)
+        return found
 
 
 def prepare_harness(run_root: Path, source: Path) -> tuple[Path, str]:
@@ -999,12 +1273,14 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(selected.reason)
     adapter = selected
     workload = make_workload(row, args.device)
-    adapter.build_workload(workload)
-    adapter.first_application(workload)
-    output = args.output_path / row_key(row).replace(":", "_")
-    attempt = allocate_attempt_dir(output)
-    write_attempt_atomically(attempt, _smoke_record(args, row, adapter))
-    adapter.close()
+    try:
+        adapter.build_workload(workload)
+        adapter.first_application(workload)
+        output = args.output_path / row_key(row).replace(":", "_")
+        attempt = allocate_attempt_dir(output)
+        write_attempt_atomically(attempt, _smoke_record(args, row, adapter))
+    finally:
+        adapter.close()
     return 0
 
 
