@@ -142,11 +142,6 @@ def create_test_articulation(
     object.__setattr__(articulation, "_ALL_INDICES_WP", all_indices_wp)
     object.__setattr__(articulation, "_ALL_BODY_INDICES_WP", all_body_indices_wp)
 
-    # Initialize joint targets
-    object.__setattr__(articulation, "_joint_pos_target_sim", torch.zeros(num_instances, num_joints, device=device))
-    object.__setattr__(articulation, "_joint_vel_target_sim", torch.zeros(num_instances, num_joints, device=device))
-    object.__setattr__(articulation, "_joint_effort_target_sim", torch.zeros(num_instances, num_joints, device=device))
-
     # Cached .view() wrappers
     object.__setattr__(articulation, "_root_link_pose_w_f32", None)
     object.__setattr__(articulation, "_root_com_vel_w_f32", None)
@@ -187,12 +182,38 @@ def create_test_articulation(
         articulation, "_cpu_body_inertia", wp.zeros((N, B, 9), dtype=wp.float32, device="cpu", pinned=True)
     )
 
-    from isaaclab.actuators import ActuatorCollection
+    from isaaclab.utils.warp import ProxyArray
 
     from isaaclab_physx.assets.articulation.actuator_control import PhysxActuatorControl
 
     control = PhysxActuatorControl(articulation)
-    object.__setattr__(articulation, "actuators", ActuatorCollection({}, control))
+    command = SimpleNamespace(
+        position=ProxyArray(wp.zeros((N, J), dtype=wp.float32, device=device)),
+        velocity=ProxyArray(wp.zeros((N, J), dtype=wp.float32, device=device)),
+        effort=ProxyArray(wp.zeros((N, J), dtype=wp.float32, device=device)),
+    )
+
+    class _MockActuatorCollection:
+        """Minimal scoped actuator facade used by PhysX benchmark targets."""
+
+        def __init__(self) -> None:
+            self.command = command
+            self.joint_command = SimpleNamespace(
+                position=ProxyArray(wp.zeros((N, J), dtype=wp.float32, device=device)),
+                velocity=ProxyArray(wp.zeros((N, J), dtype=wp.float32, device=device)),
+                effort=ProxyArray(wp.zeros((N, J), dtype=wp.float32, device=device)),
+            )
+
+        def reset(self, env_ids=None) -> None:
+            del env_ids
+
+        def compute(self, dt: float = 0.0) -> None:
+            del dt
+
+        def submit_commands(self) -> None:
+            control.submit_commands(self)
+
+    object.__setattr__(articulation, "actuators", _MockActuatorCollection())
     data.bind_actuator_collection(articulation.actuators)
 
     return articulation, mock_view, None

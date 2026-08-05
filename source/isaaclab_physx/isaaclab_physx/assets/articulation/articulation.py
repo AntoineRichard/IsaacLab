@@ -20,7 +20,6 @@ from prettytable import PrettyTable
 
 from pxr import UsdPhysics
 
-from isaaclab.actuators import ActuatorCollection
 from isaaclab.assets.articulation import ordering_kernels
 from isaaclab.assets.articulation.base_articulation import BaseArticulation
 from isaaclab.sim.utils.queries import resolve_matching_prims_from_source
@@ -3967,14 +3966,6 @@ class Articulation(BaseArticulation):
         self._process_cfg()
         self._process_actuators_cfg()
         self._process_tendons()
-        # validate configuration
-        self._validate_cfg()
-        # update the robot data
-        self.update(0.0)
-        # log joint information
-        self._log_articulation_info()
-        # Let the articulation data know that it is fully instantiated and ready to use.
-        self.data.is_primed = True
 
     def _resolve_joint_dof_signs(self) -> tuple[int, ...]:
         """Resolve joint directions once from the source USD."""
@@ -4003,6 +3994,12 @@ class Articulation(BaseArticulation):
         wp.copy(self._cpu_env_ids_all, self._ALL_INDICES)
         self._cpu_env_ids = wp.empty(self.num_instances, dtype=wp.int32, device="cpu", pinned=True)
         self._cpu_env_ids_views: dict[int, wp.array] = {}
+        self._cpu_joint_stiffness = wp.zeros(
+            (self.num_instances, self.num_joints), dtype=wp.float32, device="cpu", pinned=True
+        )
+        self._cpu_joint_damping = wp.zeros(
+            (self.num_instances, self.num_joints), dtype=wp.float32, device="cpu", pinned=True
+        )
 
         # external wrench composer
         self._instantaneous_wrench_composer = WrenchComposer(self)
@@ -4017,11 +4014,6 @@ class Articulation(BaseArticulation):
         self._resolve_and_install_ordering_maps()
         self._ordering_configure_backend_staging()
         # tendon names are set in _process_tendons function
-
-        # -- joint commands (sent to the simulation after actuator processing)
-        self._joint_pos_target_sim = wp.zeros_like(self.data.joint_pos_target, device=self.device)
-        self._joint_vel_target_sim = wp.zeros_like(self.data.joint_pos_target, device=self.device)
-        self._joint_effort_target_sim = wp.zeros_like(self.data.joint_pos_target, device=self.device)
 
         # soft joint position limits (recommended not to be too close to limits).
         wp.launch(
@@ -4134,16 +4126,7 @@ class Articulation(BaseArticulation):
 
     def _process_actuators_cfg(self):
         """Process actuator configs through :class:`ActuatorCollection`."""
-        self._actuator_control = PhysxActuatorControl(self)
-        self.actuators = ActuatorCollection(
-            self.cfg.actuators,
-            self._actuator_control,
-            debug_value_resolution=self.cfg.actuator_value_resolution_debug_print,
-        )
-        self._has_implicit_actuators = self.actuators.has_implicit_actuators
-        self._has_newton_actuators = self._actuator_control.native_active
-        self._physx_actuator_wrapper = self._actuator_control._physx_actuator_wrapper
-        self._data.bind_actuator_collection(self.actuators)
+        self._register_actuator_collection(PhysxActuatorControl(self))
 
     def _process_tendons(self):
         """Process fixed and spatial tendons."""

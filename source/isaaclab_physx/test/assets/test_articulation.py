@@ -42,6 +42,7 @@ import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
 from isaaclab.actuators import ActuatorBase, IdealPDActuatorCfg, ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, get_articulation_name_ordering
+from isaaclab.cloner import ClonePlan
 from isaaclab.controllers import (
     DifferentialIKController,
     DifferentialIKControllerCfg,
@@ -50,7 +51,7 @@ from isaaclab.controllers import (
 )
 from isaaclab.envs.mdp.terminations import joint_effort_out_of_limit
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sim import build_simulation_context
+from isaaclab.sim import SimulationContext, build_simulation_context
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import compute_pose_error, matrix_from_quat, quat_inv, subtract_frame_transforms
 from isaaclab.utils.version import get_isaac_sim_version, has_kit
@@ -203,6 +204,18 @@ def generate_articulation(
     for i in range(num_articulations):
         sim_utils.create_prim(f"/World/Env_{i}", "Xform", translation=translations[i][:3])
     articulation = Articulation(articulation_cfg.replace(prim_path="/World/Env_.*/Robot"))
+    sim = SimulationContext.instance()
+    assert sim is not None
+    sim.set_clone_plan(
+        ClonePlan(
+            sources=("/World/Env_0/Robot",),
+            destinations=("/World/Env_{}/Robot",),
+            clone_mask=torch.ones((1, num_articulations), dtype=torch.bool, device=device),
+            env_ids=torch.arange(num_articulations, dtype=torch.long, device=device),
+            positions=translations,
+            cfg_rows={articulation._replication_cfg_id: (0,)},
+        )
+    )
 
     return articulation, translations
 
@@ -2008,7 +2021,7 @@ def test_reset(sim, num_articulations, device, monkeypatch):
 
     monkeypatch.setattr(actuator, "reset", record_actuator_reset)
     articulation.reset()
-    assert reset_env_ids == [None]
+    assert reset_env_ids == [slice(None)]
 
     # Reset should zero external forces and torques
     assert not articulation._instantaneous_wrench_composer.active
@@ -2035,6 +2048,51 @@ def test_reset(sim, num_articulations, device, monkeypatch):
         assert torch.count_nonzero(articulation._instantaneous_wrench_composer.out_torque_b.torch) == num_bodies * 3
         assert torch.count_nonzero(articulation._permanent_wrench_composer.out_force_b.torch) == num_bodies * 3
         assert torch.count_nonzero(articulation._permanent_wrench_composer.out_torque_b.torch) == num_bodies * 3
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_global_actuator_collection_publishes_scoped_view(sim, device):
+    """Test that PhysX owns no duplicate public-order actuator command buffers."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
+    sim.reset()
+
+    assert articulation.actuators.is_ready
+    assert articulation.data._actuator_view is articulation.actuators
+    assert not hasattr(articulation, "_joint_pos_target_sim")
+    assert not hasattr(articulation, "_joint_vel_target_sim")
+    assert not hasattr(articulation, "_joint_effort_target_sim")
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_global_actuator_collection_submits_processed_joint_commands(sim, device):
+    """Test that PhysX submits the scoped processed command rather than raw input."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
+    sim.reset()
+
+    articulation.actuators.command.position.torch.fill_(-1.0)
+    articulation.actuators.joint_command.position.torch.fill_(0.25)
+    articulation.write_data_to_sim()
+
+    torch.testing.assert_close(
+        wp.to_torch(articulation.root_view.get_dof_position_targets()),
+        torch.full((1, 1), 0.25, device=device),
+    )
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_global_implicit_gain_write_flushes_at_submission(sim, device):
+    """Test that an implicit gain write reaches PhysX at the next submit boundary."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
+    sim.reset()
+
+    articulation.actuators["joint"].set_parameter_index("stiffness", 37.0)
+    articulation.write_data_to_sim()
+
+    stiffness = wp.to_torch(articulation.root_view.get_dof_stiffnesses())
+    torch.testing.assert_close(stiffness, torch.full((1, 1), 37.0, device=stiffness.device))
 
 
 @pytest.mark.parametrize("num_articulations", [1, 2])

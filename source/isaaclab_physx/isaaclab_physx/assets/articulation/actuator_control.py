@@ -17,12 +17,17 @@ import warp as wp
 
 from isaaclab.actuators import ActuatorCollection
 from isaaclab.actuators.actuator_control import ArticulationActuatorControl
+from isaaclab.actuators.actuator_pd import ImplicitActuator
 from isaaclab.assets.articulation import ordering_kernels
 from isaaclab.sim.utils.queries import find_first_matching_prim
 
 from isaaclab_physx.physics import PhysxManager as SimulationManager
 
 if TYPE_CHECKING:
+    from isaaclab.actuators.actuator_collection import _ArticulationBinding
+    from isaaclab.actuators.actuator_control import _ActuatorParameterWrite
+    from isaaclab.actuators.actuator_storage import _BackendParameterStaging
+
     from .articulation import Articulation
 
 _HAS_NEWTON_ACTUATORS = importlib.util.find_spec("isaaclab_newton.actuators") is not None
@@ -46,6 +51,58 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         self._all_joint_mask: wp.array | None = None
         self._native_actuator_graphs: tuple[wp.Graph, wp.Graph] | None = None
         self._native_actuator_graph_index = 0
+        self._backend_parameter_staging: _BackendParameterStaging | None = None
+        self._dirty_backend_parameters: set[str] = set()
+
+    def invalidate_actuator_view(self) -> None:
+        """Release candidate-owned parameter staging after rollback or STOP."""
+        self._dirty_backend_parameters.clear()
+        self._backend_parameter_staging = None
+        super().invalidate_actuator_view()
+
+    def preflight_actuator_parameter_write(self, name: str, write: _ActuatorParameterWrite) -> None:
+        """Reject deferred PhysX drive writes during CUDA graph capture."""
+        del write
+        if name in {"stiffness", "damping"} and wp.get_device(self.device).is_capturing:
+            raise RuntimeError("PhysX implicit actuator drive updates are not supported during CUDA graph capture.")
+
+    def write_actuator_parameter(self, name: str, write: _ActuatorParameterWrite) -> None:
+        """Patch candidate-owned drive staging and defer the host boundary to submit."""
+        if name not in {"stiffness", "damping"}:
+            return
+        staging = write.backend_parameter_staging
+        if staging is None:
+            return
+        staging.patch_write(actuator_type=write.actuator_type, name=name, write=write)
+        self._dirty_backend_parameters.add(name)
+
+    def _flush_dirty_backend_parameters(self) -> None:
+        """Coalesce pending implicit drive writes into one full-row PhysX call per property."""
+        staging = self._backend_parameter_staging
+        if staging is None or not self._dirty_backend_parameters:
+            return
+        articulation = self._articulation
+        for name in tuple(self._dirty_backend_parameters):
+            target = staging.target(ImplicitActuator, name)
+            if name == "stiffness":
+                backend_target = articulation._get_backend_ordered_joint_buffer(
+                    target.warp, articulation.data._joint_stiffness_backend
+                )
+                wp.copy(articulation.data._joint_stiffness, target.warp)
+                wp.copy(articulation._cpu_joint_stiffness, backend_target)
+                articulation.root_view.set_dof_stiffnesses(
+                    articulation._cpu_joint_stiffness, indices=articulation._cpu_env_ids_all
+                )
+            else:
+                backend_target = articulation._get_backend_ordered_joint_buffer(
+                    target.warp, articulation.data._joint_damping_backend
+                )
+                wp.copy(articulation.data._joint_damping, target.warp)
+                wp.copy(articulation._cpu_joint_damping, backend_target)
+                articulation.root_view.set_dof_dampings(
+                    articulation._cpu_joint_damping, indices=articulation._cpu_env_ids_all
+                )
+        self._dirty_backend_parameters.clear()
 
     def resolve_env_mask(self, env_mask: wp.array | None) -> wp.array:
         """Resolve an optional environment mask to a full Warp bool mask.
@@ -85,7 +142,8 @@ class PhysxActuatorControl(ArticulationActuatorControl):
             joint_ids=actuator.joint_indices,
         )
 
-    def prepare_native_actuators(self, collection: ActuatorCollection, actuator_cfgs: dict) -> set[str]:
+    def discover_native_actuators(self, actuator_cfgs: dict) -> set[str]:
+        """Discover hosted-Newton groups without dereferencing a pending facade."""
         articulation = self._articulation
         articulation._physx_actuator_wrapper = None
         articulation.newton_actuator_adapter = None
@@ -106,25 +164,33 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         if not (use_newton_actuators and _HAS_NEWTON_ACTUATORS):
             return set()
 
-        from isaaclab_newton.actuators import NewtonActuatorAdapter, PhysxActuatorWrapper  # noqa: PLC0415
+        self._native_active = True
+        articulation._has_newton_actuators = True
+        return {name for name, actuator_cfg in actuator_cfgs.items() if not self._is_implicit_cfg(actuator_cfg)}
+
+    def prepare_actuator_binding(self, binding: _ArticulationBinding) -> None:
+        """Build hosted-Newton wrappers from private candidate binding aliases."""
+        super().prepare_actuator_binding(binding)
+        self._backend_parameter_staging = binding.backend_parameter_staging
+        if not self._native_active:
+            return
+
+        from isaaclab_newton.actuators import (  # noqa: PLC0415
+            NewtonActuatorAdapter,
+            PhysxActuatorWrapper,
+            build_implicit_dof_mask,
+        )
 
         from isaaclab.sim.utils.stage import get_current_stage  # noqa: PLC0415
 
-        self._native_active = True
-        articulation._has_newton_actuators = True
-
-        native_group_names = {
-            name for name, actuator_cfg in actuator_cfgs.items() if not self._is_implicit_cfg(actuator_cfg)
-        }
-
+        articulation = self._articulation
         self._physx_actuator_wrapper = PhysxActuatorWrapper.create(
             num_envs=self.num_instances,
             num_joints=self.num_joints,
             device=self.device,
         )
         articulation._physx_actuator_wrapper = self._physx_actuator_wrapper
-
-        if native_group_names:
+        if binding.native_group_names:
             first_prim = find_first_matching_prim(articulation.cfg.prim_path)
             art_prim_path = str(first_prim.GetPath()) if first_prim is not None else None
             adapter = NewtonActuatorAdapter.from_usd(
@@ -138,49 +204,39 @@ class PhysxActuatorControl(ArticulationActuatorControl):
             wrapper = self._physx_actuator_wrapper
             wrapper.joint_q = articulation._data.joint_pos.warp.reshape(-1)
             wrapper.joint_qd = articulation._data.joint_vel.warp.reshape(-1)
-            wrapper.joint_target_pos = collection.command.position.warp.reshape(-1)
-            wrapper.joint_target_vel = collection.command.velocity.warp.reshape(-1)
-            wrapper.joint_act = collection.command.effort.warp.reshape(-1)
+            assert binding.command is not None
+            wrapper.joint_target_pos = binding.command.position.warp.reshape(-1)
+            wrapper.joint_target_vel = binding.command.velocity.warp.reshape(-1)
+            wrapper.joint_act = binding.command.effort.warp.reshape(-1)
             adapter.finalize(wrapper)
             articulation.newton_actuator_adapter = adapter
-            articulation.write_joint_stiffness_to_sim_index(stiffness=0.0, joint_ids=adapter.joint_indices)
-            articulation.write_joint_damping_to_sim_index(damping=0.0, joint_ids=adapter.joint_indices)
-
-        return native_group_names
-
-    def finalize_native_actuators(self, collection: ActuatorCollection) -> None:
-        if not self._native_active:
-            return
-        from isaaclab_newton.actuators import build_implicit_dof_mask  # noqa: PLC0415
-
-        articulation = self._articulation
-        if articulation.newton_actuator_adapter is not None:
-            binding = articulation.newton_actuator_adapter.bind_articulation(
-                lab_actuators=dict(collection.items()),
+            assert binding.groups is not None
+            native_binding = adapter.bind_articulation(
+                lab_actuators=dict(binding.groups),
                 dof_offset=0,
                 num_joints=self.num_joints,
             )
-            articulation.newton_default_stiffness = binding.stiffness
-            articulation.newton_default_damping = binding.damping
-            articulation.newton_managed_local_joints = binding.joint_indices
-            articulation._implicit_dof_mask = binding.implicit_dof_mask
-            articulation._implicit_dof_mask_owner = binding.implicit_dof_mask_owner
-            articulation._data._sim_bind_joint_computed_effort = binding.computed_effort_view
-            wp.copy(collection._actuator_stiffness, wp.from_torch(binding.stiffness))
-            wp.copy(collection._actuator_damping, wp.from_torch(binding.damping))
-        else:
-            articulation._implicit_dof_mask, articulation._implicit_dof_mask_owner = build_implicit_dof_mask(
-                dict(collection.items()),
-                self.num_joints,
-                self.device,
-            )
-            articulation._data._sim_bind_joint_computed_effort = wp.zeros(
-                (self.num_instances, self.num_joints),
-                dtype=wp.float32,
-                device=self.device,
-            )
+            articulation.newton_default_stiffness = native_binding.stiffness
+            articulation.newton_default_damping = native_binding.damping
+            articulation.newton_managed_local_joints = native_binding.joint_indices
+            articulation._implicit_dof_mask = native_binding.implicit_dof_mask
+            articulation._implicit_dof_mask_owner = native_binding.implicit_dof_mask_owner
+            articulation._data._sim_bind_joint_computed_effort = native_binding.computed_effort_view
+            return
 
-    def compute_native_actuators(self, collection: ActuatorCollection, dt: float) -> bool:
+        assert binding.groups is not None
+        articulation._implicit_dof_mask, articulation._implicit_dof_mask_owner = build_implicit_dof_mask(
+            dict(binding.groups), self.num_joints, self.device
+        )
+        assert binding.computed_effort is not None
+        articulation._data._sim_bind_joint_computed_effort = binding.computed_effort.warp
+
+    def finalize_native_actuators(self, collection: ActuatorCollection) -> None:
+        """Deprecated collection-constructor hook retained for third-party callers."""
+        del collection
+        return
+
+    def compute_native_actuators(self, collection: ActuatorCollection.ArticulationView, dt: float) -> bool:
         if not self._native_active:
             return False
 
@@ -216,12 +272,12 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         self._run_native_actuator_kernels(collection)
         return True
 
-    def _run_native_actuator_kernels(self, collection: ActuatorCollection) -> None:
+    def _run_native_actuator_kernels(self, collection: ActuatorCollection.ArticulationView) -> None:
         from isaaclab_newton.actuators import kernels as actuator_kernels  # noqa: PLC0415
 
         articulation = self._articulation
         wrapper = self._physx_actuator_wrapper
-        wrapper.joint_f_2d.assign(collection._joint_effort_target)
+        wrapper.joint_f_2d.assign(collection.command.effort.warp)
         if articulation.newton_actuator_adapter is not None:
             articulation.newton_actuator_adapter.step(wrapper, wrapper, SimulationManager.get_physics_dt())
 
@@ -231,8 +287,8 @@ class PhysxActuatorControl(ArticulationActuatorControl):
             inputs=[
                 articulation._data.joint_pos.warp,
                 articulation._data.joint_vel.warp,
-                collection._joint_pos_target,
-                collection._joint_vel_target,
+                collection.command.position.warp,
+                collection.command.velocity.warp,
                 articulation._data.joint_stiffness.warp,
                 articulation._data.joint_damping.warp,
                 articulation._data.joint_effort_limits.warp,
@@ -243,13 +299,13 @@ class PhysxActuatorControl(ArticulationActuatorControl):
                 False,
             ],
             outputs=[
-                collection._computed_torque,
-                collection._applied_torque,
+                collection.computed_effort.warp,
+                collection.applied_effort.warp,
             ],
             device=self.device,
         )
 
-    def _capture_native_actuator_graphs(self, collection: ActuatorCollection) -> None:
+    def _capture_native_actuator_graphs(self, collection: ActuatorCollection.ArticulationView) -> None:
         adapter = self._articulation.newton_actuator_adapter
         if adapter is None:
             return
@@ -270,8 +326,9 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         self._native_actuator_graphs = tuple(graphs) if graphs else ()
         self._native_actuator_graph_index = 0
 
-    def submit_commands(self, collection: ActuatorCollection) -> None:
+    def submit_commands(self, collection: ActuatorCollection.ArticulationView) -> None:
         articulation = self._articulation
+        self._flush_dirty_backend_parameters()
         # Gate on the articulation-level mirrors (kept in lockstep with
         # ``self._native_active`` / ``self._physx_actuator_wrapper`` by
         # :meth:`prepare_native_actuators`) exactly as the pre-collection
@@ -281,13 +338,13 @@ class PhysxActuatorControl(ArticulationActuatorControl):
             # Newton fast path: pos/vel targets pass straight through; ``joint_f_2d`` already
             # merges Newton's explicit-DOF output with user feedforward.
             user_effort = articulation._physx_actuator_wrapper.joint_f_2d
-            user_pos_target = collection._joint_pos_target
-            user_vel_target = collection._joint_vel_target
+            user_pos_target = collection.command.position.warp
+            user_vel_target = collection.command.velocity.warp
         else:
             # Standard Lab actuator path: push the processed staging buffers PhysX-side.
-            user_effort = collection._joint_effort_target_sim
-            user_pos_target = collection._joint_pos_target_sim
-            user_vel_target = collection._joint_vel_target_sim
+            user_effort = collection.joint_command.effort.warp
+            user_pos_target = collection.joint_command.position.warp
+            user_vel_target = collection.joint_command.velocity.warp
 
         if articulation.data.has_joint_ordering:
             # One fused gather replaces the per-target reorder launches. PhysX has no
