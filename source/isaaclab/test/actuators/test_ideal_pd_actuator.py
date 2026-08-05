@@ -107,13 +107,11 @@ def _literal_ideal_pd_reference(
     effort_limit: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Evaluate the pre-change IdealPD equations in their original operation order."""
-    computed_effort = torch.empty_like(joint_pos)
-    velocity_error = torch.empty_like(joint_vel)
-    torch.sub(action.joint_positions, joint_pos, out=computed_effort)
-    torch.sub(action.joint_velocities, joint_vel, out=velocity_error)
-    computed_effort.mul_(stiffness)
-    computed_effort.addcmul_(damping, velocity_error)
-    computed_effort.add_(action.joint_efforts)
+    computed_effort = (
+        stiffness * (action.joint_positions - joint_pos)
+        + damping * (action.joint_velocities - joint_vel)
+        + action.joint_efforts
+    )
     applied_effort = torch.clip(computed_effort, min=-effort_limit, max=effort_limit)
     return computed_effort, applied_effort
 

@@ -73,6 +73,12 @@ def _make_cuda_plan(*, actuator_types: tuple[type, ...], tmp_path) -> _CudaPlan:
     return _CudaPlan(articulation._execution_plan, articulation, control, torch.cuda.Stream(device="cuda"))
 
 
+def _make_cuda_plan_for_groups(groups: dict[str, object]) -> _CudaPlan:
+    """Build a CUDA plan for explicit caller-defined actuator groups."""
+    _, articulation, control = _make_plan(groups, device="cuda")
+    return _CudaPlan(articulation._execution_plan, articulation, control, torch.cuda.Stream(device="cuda"))
+
+
 def _fill_canonical_inputs(plan: _CudaPlan, *, command: float, position: float, velocity: float) -> None:
     """Write distinct real Torch values into every stable CUDA input allocation."""
     with torch.cuda.stream(plan.stream):
@@ -109,6 +115,14 @@ def _clone_applied_effort(plan: _CudaPlan) -> torch.Tensor:
     """Clone graph output on the same non-default Torch/Warp stream."""
     with torch.cuda.stream(plan.stream):
         result = plan.articulation.applied_effort.torch.clone()
+    torch.cuda.current_stream().wait_stream(plan.stream)
+    return result
+
+
+def _clone_group_efforts(plan: _CudaPlan, names: tuple[str, ...]) -> tuple[torch.Tensor, ...]:
+    """Clone exact group outputs after work on the plan stream completes."""
+    with torch.cuda.stream(plan.stream):
+        result = tuple(plan.articulation[name].applied_effort.clone() for name in names)
     torch.cuda.current_stream().wait_stream(plan.stream)
     return result
 
@@ -198,6 +212,46 @@ def test_fully_graphable_plan_replays_one_complete_graph(monkeypatch, tmp_path) 
     plan.compute()
     assert replayed == [plan.execution._full_graph]
     monkeypatch.setattr(plan.execution, "_scatter_static_epoch", original_scatter)
+
+
+def test_graph_replay_aggregates_differently_parameterized_explicit_groups(monkeypatch) -> None:
+    """Graph replay retains one exact-type range with distinct group parameters."""
+    group_names = ("ideal_hip", "ideal_knee", "dc_hip", "dc_knee")
+    plan = _make_cuda_plan_for_groups(
+        {
+            "ideal_hip": _ideal_cfg(["hip"], stiffness=2.0, damping=0.5),
+            "ideal_knee": _ideal_cfg(["knee"], stiffness=7.0, damping=2.0),
+            "dc_hip": _dc_cfg(["hip"], stiffness=2.0, damping=0.5),
+            "dc_knee": _dc_cfg(["knee"], stiffness=5.0, damping=1.25),
+        }
+    )
+    plan.warmup_and_capture()
+
+    assert plan.execution._full_graph is not None
+    ranges = {execution_range.actuator_type: execution_range for execution_range in plan.execution.stateless_ranges}
+    assert ranges[IdealPDActuator].group_names == ("ideal_hip", "ideal_knee")
+    assert ranges[DCMotor].group_names == ("dc_hip", "dc_knee")
+    pointers = _all_plan_pointers(plan)
+    replayed = []
+    original_capture_launch = wp.capture_launch
+
+    def _record_capture_launch(graph, *args, **kwargs) -> None:
+        replayed.append(graph)
+        original_capture_launch(graph, *args, **kwargs)
+
+    monkeypatch.setattr(wp, "capture_launch", _record_capture_launch)
+    _fill_canonical_inputs(plan, command=1.0, position=0.25, velocity=-0.5)
+    plan.compute()
+    first = _clone_group_efforts(plan, group_names)
+    _fill_canonical_inputs(plan, command=1.5, position=-0.1, velocity=0.2)
+    plan.compute()
+    second = _clone_group_efforts(plan, group_names)
+
+    assert replayed == [plan.execution._full_graph, plan.execution._full_graph]
+    assert not torch.equal(first[0], first[1])
+    assert not torch.equal(first[2], first[3])
+    assert all(not torch.equal(before, after) for before, after in zip(first, second, strict=True))
+    assert _all_plan_pointers(plan) == pointers
 
 
 def test_mixed_plan_captures_prefix_then_runs_eager_and_cached_scatter(monkeypatch, tmp_path) -> None:

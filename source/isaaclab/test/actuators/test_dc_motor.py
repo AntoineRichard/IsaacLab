@@ -119,13 +119,11 @@ def _literal_dc_motor_reference(
     saturation_effort: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Evaluate the pre-change DC motor equations in their original operation order."""
-    computed_effort = torch.empty_like(joint_pos)
-    velocity_error = torch.empty_like(joint_vel)
-    torch.sub(action.joint_positions, joint_pos, out=computed_effort)
-    torch.sub(action.joint_velocities, joint_vel, out=velocity_error)
-    computed_effort.mul_(stiffness)
-    computed_effort.addcmul_(damping, velocity_error)
-    computed_effort.add_(action.joint_efforts)
+    computed_effort = (
+        stiffness * (action.joint_positions - joint_pos)
+        + damping * (action.joint_velocities - joint_vel)
+        + action.joint_efforts
+    )
 
     velocity_at_effort_limit = velocity_limit * (1 + effort_limit / saturation_effort)
     clipped_joint_velocity = torch.clip(joint_vel, min=-velocity_at_effort_limit, max=velocity_at_effort_limit)

@@ -236,7 +236,8 @@ class IdealPDActuator(ActuatorBase):
         torch.sub(control_action.joint_velocities, joint_vel, out=self.applied_effort)
         # calculate the desired joint torques
         self.computed_effort.mul_(self.stiffness)
-        self.computed_effort.addcmul_(self.damping, self.applied_effort)
+        self.applied_effort.mul_(self.damping)
+        self.computed_effort.add_(self.applied_effort)
         self.computed_effort.add_(control_action.joint_efforts)
 
     def _clip_effort_into(self, effort: torch.Tensor, out: torch.Tensor) -> None:
