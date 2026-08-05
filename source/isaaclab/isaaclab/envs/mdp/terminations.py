@@ -142,7 +142,9 @@ class joint_vel_out_of_limit(ManagerTermBase):
 
     def __call__(self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
         # compute any violations
-        limits = self._asset.data.soft_joint_vel_limits.torch[:, self._joint_ids]
+        limits = self._asset.data._get_actuator_compatibility_projection("soft_joint_vel_limits").torch[
+            :, self._joint_ids
+        ]
         return torch.any(torch.abs(self._asset.data.joint_vel.torch[:, self._joint_ids]) > limits, dim=1)
 
 

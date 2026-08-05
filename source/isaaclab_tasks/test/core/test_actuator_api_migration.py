@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import ast
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,10 +16,12 @@ import torch
 
 from isaaclab.benchmark import MethodBenchmarkDefinition, MethodBenchmarkRunner, MethodBenchmarkRunnerConfig
 from isaaclab.benchmark.asset_suites import get_asset_benchmark_suite, resolve_method_benchmarks
-from isaaclab.envs.mdp import observations, rewards, terminations
+from isaaclab.envs import DirectRLEnv
+from isaaclab.envs.mdp import events, observations, rewards, terminations
 from isaaclab.managers import SceneEntityCfg
 
 from isaaclab_tasks.contrib.anymal_c_direct.anymal_c_env import AnymalCEnv
+from isaaclab_tasks.contrib.velocity.config.spot.mdp import events as spot_events
 from isaaclab_tasks.core.cartpole.cartpole_direct_env import CartpoleEnv
 
 
@@ -96,6 +99,106 @@ def test_anymal_action_preserves_default_command_selectors() -> None:
     environment._apply_action()
 
     assert command.calls == [{"value": environment._processed_actions}]
+
+
+class _SoftLimitData:
+    """Data fake that rejects the public velocity-limit compatibility alias."""
+
+    def __init__(self) -> None:
+        self.default_joint_pos = _proxy([[0.0, 0.0], [0.0, 0.0]])
+        self.default_joint_vel = _proxy([[0.0, 0.0], [0.0, 0.0]])
+        self.default_root_pose = _proxy([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]] * 2)
+        self.default_root_vel = _proxy([[0.0] * 6] * 2)
+        self.soft_joint_pos_limits = _proxy([[[-1.0, 1.0], [-1.0, 1.0]], [[-1.0, 1.0], [-1.0, 1.0]]])
+        self.joint_vel = _proxy([[0.0, 0.0], [0.0, 0.0]])
+        self.requests: list[str] = []
+
+    @property
+    def soft_joint_vel_limits(self):
+        raise AssertionError("consumer accessed deprecated soft_joint_vel_limits")
+
+    def _get_actuator_compatibility_projection(self, name: str) -> SimpleNamespace:
+        self.requests.append(name)
+        assert name == "soft_joint_vel_limits"
+        return _proxy([[2.0, 3.0], [2.0, 3.0]])
+
+
+class _SoftLimitAsset:
+    """Articulation fake with the data and writers needed by reset consumers."""
+
+    def __init__(self) -> None:
+        self.data = _SoftLimitData()
+        self.device = "cpu"
+        self._ALL_INDICES = torch.tensor([0, 1])
+        self.writes: list[tuple[str, torch.Tensor]] = []
+
+    def find_joints(self, _name: str) -> tuple[list[int], list[str]]:
+        return [0], ["joint"]
+
+    def write_joint_position_to_sim_index(self, *, position: torch.Tensor, **_kwargs) -> None:
+        self.writes.append(("position", position))
+
+    def write_joint_velocity_to_sim_index(self, *, velocity: torch.Tensor, **_kwargs) -> None:
+        self.writes.append(("velocity", velocity))
+
+    def write_root_pose_to_sim_index(self, **_kwargs) -> None:
+        pass
+
+    def write_root_velocity_to_sim_index(self, **_kwargs) -> None:
+        pass
+
+
+def test_soft_limit_consumers_use_the_warning_free_compatibility_projection(monkeypatch) -> None:
+    """All reset, termination, and reward consumers bypass the deprecated public data alias."""
+    asset = _SoftLimitAsset()
+    env_ids = torch.tensor([1, 0])
+    asset_cfg = SceneEntityCfg("robot")
+    environment = SimpleNamespace(scene={"robot": asset}, device="cpu")
+
+    events.reset_joints_by_scale(environment, env_ids, (1.0, 1.0), (1.0, 1.0), asset_cfg)
+    events.reset_joints_by_offset(environment, env_ids, (0.0, 0.0), (0.0, 0.0), asset_cfg)
+
+    monkeypatch.setattr(events.ManagerTermBase, "__init__", lambda self, cfg, env: None)
+    range_cfg = SimpleNamespace(
+        params={
+            "position_range": {"joint": (None, None)},
+            "velocity_range": {"joint": (None, None)},
+        }
+    )
+    range_term = events.reset_joints_within_limits_range(range_cfg, environment)
+    range_term(environment, env_ids, **range_cfg.params)
+
+    monkeypatch.setattr(terminations.ManagerTermBase, "__init__", lambda self, cfg, env: None)
+    termination = terminations.joint_vel_out_of_limit(SimpleNamespace(params={"asset_cfg": asset_cfg}), environment)
+    torch.testing.assert_close(termination(environment), torch.tensor([False, False]))
+
+    cartpole = object.__new__(CartpoleEnv)
+    cartpole._is_closed = True
+    cartpole.cartpole = asset
+    cartpole.cfg = SimpleNamespace(
+        initial_cart_position_range=(0.0, 0.0),
+        initial_cart_velocity_range=(0.0, 0.0),
+        initial_pole_angle_range=(0.0, 0.0),
+        initial_pole_velocity_range=(0.0, 0.0),
+    )
+    cartpole._cart_dof_idx = [0]
+    cartpole._pole_dof_idx = [1]
+    cartpole.reset_time_outs = torch.tensor([False, True])
+    cartpole.extras = {}
+    cartpole.scene = SimpleNamespace(env_origins=torch.zeros((2, 3)))
+    cartpole.joint_pos = torch.zeros((2, 2))
+    cartpole.joint_vel = torch.zeros((2, 2))
+    monkeypatch.setattr(DirectRLEnv, "_reset_idx", lambda self, env_ids: None)
+    cartpole._reset_idx(env_ids)
+
+    spot_events.reset_joints_around_default(environment, env_ids, (0.0, 0.0), (0.0, 0.0), asset_cfg)
+
+    asset.data.joint_vel = _proxy([[4.0, 1.0], [1.0, 4.0]])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        torch.testing.assert_close(rewards.joint_vel_limits(environment, 0.5, asset_cfg), torch.tensor([1.0, 1.0]))
+
+    assert asset.data.requests == ["soft_joint_vel_limits"] * 8
 
 
 def test_articulation_benchmark_commands_target_the_canonical_command_api() -> None:
@@ -178,6 +281,7 @@ _DEPRECATED_ATTRIBUTES = {
     "set_joint_effort_target_index",
     "set_joint_effort_target_mask",
 }
+_DEPRECATED_DATA_ATTRIBUTES = {"soft_joint_vel_limits"}
 _COMPATIBILITY_SOURCES = {
     "source/isaaclab/isaaclab/actuators/actuator_collection.py",
     "source/isaaclab/isaaclab/assets/articulation/base_articulation.py",
@@ -205,6 +309,15 @@ _COMPATIBILITY_TEST_SCOPES = {
     "source/isaaclab/test/test_mock_interfaces/test_mock_assets.py": {
         "test_set_joint_position_target",
     },
+    "source/isaaclab_physx/test/assets/test_articulation.py": {
+        "test_global_actuator_legacy_data_aliases_are_live_once",
+    },
+    "source/isaaclab_ovphysx/test/assets/test_articulation.py": {
+        "test_global_actuator_legacy_data_aliases_are_live_once",
+    },
+    "source/isaaclab_newton/test/assets/test_articulation.py": {
+        "test_global_actuator_legacy_data_aliases_are_live_once",
+    },
 }
 
 
@@ -224,7 +337,14 @@ def test_non_experimental_runtime_sources_do_not_use_deprecated_actuator_apis() 
         tree = ast.parse(source.read_text(), filename=relative_source)
         parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr in _DEPRECATED_ATTRIBUTES:
+            is_deprecated_actuator_api = isinstance(node, ast.Attribute) and node.attr in _DEPRECATED_ATTRIBUTES
+            is_deprecated_data_api = (
+                isinstance(node, ast.Attribute)
+                and node.attr in _DEPRECATED_DATA_ATTRIBUTES
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "data"
+            )
+            if is_deprecated_actuator_api or is_deprecated_data_api:
                 scope = node
                 while scope in parents and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     scope = parents[scope]

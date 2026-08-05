@@ -49,7 +49,7 @@ def reset_joints_around_default(
     joint_min_pos = torch.clamp(joint_min_pos, min=joint_pos_limits[..., 0], max=joint_pos_limits[..., 1])
     joint_max_pos = torch.clamp(joint_max_pos, min=joint_pos_limits[..., 0], max=joint_pos_limits[..., 1])
     # clip vel to range
-    joint_vel_abs_limits = asset.data.soft_joint_vel_limits.torch[env_ids]
+    joint_vel_abs_limits = asset.data._get_actuator_compatibility_projection("soft_joint_vel_limits").torch[env_ids]
     joint_min_vel = torch.clamp(joint_min_vel, min=-joint_vel_abs_limits, max=joint_vel_abs_limits)
     joint_max_vel = torch.clamp(joint_max_vel, min=-joint_vel_abs_limits, max=joint_vel_abs_limits)
     # sample these values randomly

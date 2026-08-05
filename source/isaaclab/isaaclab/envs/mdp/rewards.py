@@ -223,7 +223,8 @@ def joint_vel_limits(
     # compute out of limits constraints
     out_of_limits = (
         torch.abs(asset.data.joint_vel.torch[:, asset_cfg.joint_ids])
-        - asset.data.soft_joint_vel_limits.torch[:, asset_cfg.joint_ids] * soft_ratio
+        - asset.data._get_actuator_compatibility_projection("soft_joint_vel_limits").torch[:, asset_cfg.joint_ids]
+        * soft_ratio
     )
     # clip to max error = 1 rad/s per joint to avoid huge penalties
     out_of_limits = out_of_limits.clip_(min=0.0, max=1.0)

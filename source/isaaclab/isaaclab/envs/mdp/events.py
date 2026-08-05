@@ -1292,8 +1292,10 @@ class randomize_actuator_gains(ManagerTermBase):
         for actuator in self.asset.actuators.values():
             if not isinstance(actuator, ImplicitActuator):
                 joint_ids = actuator.joint_indices
-                self.default_joint_stiffness[:, joint_ids] = actuator.stiffness
-                self.default_joint_damping[:, joint_ids] = actuator.damping
+                if "stiffness" in actuator.parameter_names:
+                    self.default_joint_stiffness[:, joint_ids] = actuator.stiffness
+                if "damping" in actuator.parameter_names:
+                    self.default_joint_damping[:, joint_ids] = actuator.damping
         # Same for explicit Newton actuators on either backend — their kp/kd
         # live on the per-actuator controller arrays (not on a Lab Actuator
         # object), so the asset exposes a per-articulation snapshot taken
@@ -1337,12 +1339,6 @@ class randomize_actuator_gains(ManagerTermBase):
                 data, params, dim_0_ids=None, dim_1_ids=actuator_indices, operation=operation, distribution=distribution
             )
 
-        actuator_writer = getattr(self.asset, "actuators", self.asset)
-        if not hasattr(actuator_writer, "write_actuator_stiffness_to_sim"):
-            actuator_writer = self.asset
-        if not hasattr(actuator_writer, "write_actuator_stiffness_to_sim"):
-            actuator_writer = None
-
         # Loop through actuators and randomize gains
         for actuator in self.asset.actuators.values():
             if isinstance(self.asset_cfg.joint_ids, slice):
@@ -1372,32 +1368,28 @@ class randomize_actuator_gains(ManagerTermBase):
             else:
                 writer_joint_ids = global_indices.to(device=self.asset.device, dtype=torch.long)
             # Randomize stiffness
-            if stiffness_distribution_params is not None:
+            if stiffness_distribution_params is not None and "stiffness" in actuator.parameter_names:
                 stiffness = actuator.stiffness[env_ids].clone()
                 stiffness[:, actuator_indices] = self.default_joint_stiffness[env_ids][:, global_indices].clone()
                 randomize(stiffness, stiffness_distribution_params)
-                actuator.stiffness[env_ids] = stiffness
+                actuator.set_parameter_index(
+                    "stiffness", stiffness[:, actuator_indices], env_ids=env_ids, joint_ids=writer_joint_ids
+                )
                 if isinstance(actuator, ImplicitActuator):
                     self.asset.write_joint_stiffness_to_sim_index(
                         stiffness=stiffness[:, actuator_indices], joint_ids=writer_joint_ids, env_ids=env_ids
                     )
-                if actuator_writer is not None:
-                    actuator_writer.write_actuator_stiffness_to_sim(
-                        stiffness=stiffness[:, actuator_indices], env_ids=env_ids, joint_ids=writer_joint_ids
-                    )
             # Randomize damping
-            if damping_distribution_params is not None:
+            if damping_distribution_params is not None and "damping" in actuator.parameter_names:
                 damping = actuator.damping[env_ids].clone()
                 damping[:, actuator_indices] = self.default_joint_damping[env_ids][:, global_indices].clone()
                 randomize(damping, damping_distribution_params)
-                actuator.damping[env_ids] = damping
+                actuator.set_parameter_index(
+                    "damping", damping[:, actuator_indices], env_ids=env_ids, joint_ids=writer_joint_ids
+                )
                 if isinstance(actuator, ImplicitActuator):
                     self.asset.write_joint_damping_to_sim_index(
                         damping=damping[:, actuator_indices], joint_ids=writer_joint_ids, env_ids=env_ids
-                    )
-                if actuator_writer is not None:
-                    actuator_writer.write_actuator_damping_to_sim(
-                        damping=damping[:, actuator_indices], env_ids=env_ids, joint_ids=writer_joint_ids
                     )
 
 
@@ -2085,7 +2077,9 @@ def reset_joints_by_scale(
     joint_pos_limits = asset.data.soft_joint_pos_limits.torch[iter_env_ids, asset_cfg.joint_ids]
     joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
     # clamp joint vel to limits
-    joint_vel_limits = asset.data.soft_joint_vel_limits.torch[iter_env_ids, asset_cfg.joint_ids]
+    joint_vel_limits = asset.data._get_actuator_compatibility_projection("soft_joint_vel_limits").torch[
+        iter_env_ids, asset_cfg.joint_ids
+    ]
     joint_vel = joint_vel.clamp_(-joint_vel_limits, joint_vel_limits)
 
     # set into the physics simulation
@@ -2126,7 +2120,9 @@ def reset_joints_by_offset(
     joint_pos_limits = asset.data.soft_joint_pos_limits.torch[iter_env_ids, asset_cfg.joint_ids]
     joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
     # clamp joint vel to limits
-    joint_vel_limits = asset.data.soft_joint_vel_limits.torch[iter_env_ids, asset_cfg.joint_ids]
+    joint_vel_limits = asset.data._get_actuator_compatibility_projection("soft_joint_vel_limits").torch[
+        iter_env_ids, asset_cfg.joint_ids
+    ]
     joint_vel = joint_vel.clamp_(-joint_vel_limits, joint_vel_limits)
 
     # set into the physics simulation
@@ -2224,7 +2220,9 @@ class reset_joints_within_limits_range(ManagerTermBase):
         self._pos_ranges = self._pos_ranges[self._pos_joint_ids]
 
         # create buffers to store the joint velocity range
-        soft_joint_vel_limits_torch = self._asset.data.soft_joint_vel_limits.torch[0]
+        soft_joint_vel_limits_torch = self._asset.data._get_actuator_compatibility_projection(
+            "soft_joint_vel_limits"
+        ).torch[0]
         self._vel_ranges = torch.stack([-soft_joint_vel_limits_torch, soft_joint_vel_limits_torch], dim=1)
         # parse joint velocity ranges
         vel_joint_ids = []
@@ -2283,7 +2281,9 @@ class reset_joints_within_limits_range(ManagerTermBase):
                 self._vel_ranges[:, 0], self._vel_ranges[:, 1], joint_vel_shape, device=joint_vel.device
             )
             # clip the joint velocities to the joint limits
-            joint_vel_limits = self._asset.data.soft_joint_vel_limits.torch[0, self._vel_joint_ids]
+            joint_vel_limits = self._asset.data._get_actuator_compatibility_projection("soft_joint_vel_limits").torch[
+                0, self._vel_joint_ids
+            ]
             joint_vel = joint_vel.clamp(-joint_vel_limits, joint_vel_limits)
 
         # set into the physics simulation
