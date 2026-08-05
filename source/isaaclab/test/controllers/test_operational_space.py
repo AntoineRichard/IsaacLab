@@ -1526,7 +1526,7 @@ def _run_op_space_controller(
             default_joint_vel = robot.data.default_joint_vel.torch.clone()
             robot.write_joint_position_to_sim_index(position=default_joint_pos)
             robot.write_joint_velocity_to_sim_index(velocity=default_joint_vel)
-            robot.set_joint_effort_target_index(target=zero_joint_efforts)  # Set zero torques in the initial step
+            robot.actuators.command.set_effort_index(value=zero_joint_efforts)  # Set zero torques in the initial step
             robot.write_data_to_sim()
             robot.reset()
             # reset contact sensor
@@ -1572,7 +1572,7 @@ def _run_op_space_controller(
                 current_joint_vel=joint_vel,
                 nullspace_joint_pos_target=joint_centers,
             )
-            robot.set_joint_effort_target_index(target=joint_efforts, joint_ids=arm_joint_ids)
+            robot.actuators.command.set_effort_index(value=joint_efforts, joint_ids=arm_joint_ids)
             robot.write_data_to_sim()
 
         # update marker positions

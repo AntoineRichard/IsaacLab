@@ -791,8 +791,8 @@ def test_live_anymal_c_manual_joint_ordering_reorders_joint_targets(sim, device)
     joint_index = torch.arange(articulation.num_joints, dtype=torch.float32, device=device).unsqueeze(0)
     position_target = -0.25 + 0.031 * joint_index
     velocity_target = 0.07 + 0.017 * joint_index
-    articulation.set_joint_position_target_index(target=position_target)
-    articulation.set_joint_velocity_target_index(target=velocity_target)
+    articulation.actuators.command.set_position_index(value=position_target)
+    articulation.actuators.command.set_velocity_index(value=velocity_target)
     articulation.write_data_to_sim()
 
     backend_position_target = _read_binding_to_torch(articulation, TT.DOF_POSITION_TARGET, device)
@@ -996,7 +996,7 @@ def test_reversed_body_ordering_wrench_composes_from_backend_pose_without_shadow
     )
 
     # Step once so the link poses are non-trivial (rotated), giving the quaternion rotation teeth.
-    articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+    articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
     articulation.write_data_to_sim()
     sim.step()
     articulation.update(sim.cfg.dt)
@@ -2002,14 +2002,14 @@ def test_joint_effort_limits(sim, num_articulations, device, add_ground_plane):
     assert articulation.is_initialized
 
     # Case A: no clipping → should NOT terminate
-    articulation._data.computed_torque.torch.zero_()
-    articulation._data.applied_torque.torch.zero_()
+    articulation.actuators.computed_effort.torch.zero_()
+    articulation.actuators.applied_effort.torch.zero_()
     out = joint_effort_out_of_limit(env, robot_all)  # [N]
     assert torch.all(~out)
 
     # Case B: simulate clipping → should terminate
-    articulation._data.computed_torque.torch.fill_(100.0)  # pretend controller commanded 100
-    articulation._data.applied_torque.torch.fill_(50.0)  # pretend actuator clipped to 50
+    articulation.actuators.computed_effort.torch.fill_(100.0)  # pretend controller commanded 100
+    articulation.actuators.applied_effort.torch.fill_(50.0)  # pretend actuator clipped to 50
     out = joint_effort_out_of_limit(env, robot_all)  # [N]
     assert torch.all(out)
 
@@ -2088,7 +2088,7 @@ def test_external_force_buffer(sim, num_articulations, device):
         )
 
         # apply action to the articulation
-        articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+        articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
         articulation.write_data_to_sim()
 
         # perform step
@@ -2144,7 +2144,7 @@ def test_external_force_on_single_body(sim, num_articulations, device):
         # perform simulation
         for _ in range(100):
             # apply action to the articulation
-            articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+            articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
             articulation.write_data_to_sim()
             # perform step
             sim.step()
@@ -2238,7 +2238,7 @@ def test_external_force_on_single_body_at_position(sim, num_articulations, devic
         # perform simulation
         for _ in range(100):
             # apply action to the articulation
-            articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+            articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
             articulation.write_data_to_sim()
             # perform step
             sim.step()
@@ -2296,7 +2296,7 @@ def test_external_force_on_multiple_bodies(sim, num_articulations, device):
         # perform simulation
         for _ in range(100):
             # apply action to the articulation
-            articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+            articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
             articulation.write_data_to_sim()
             # perform step
             sim.step()
@@ -2389,7 +2389,7 @@ def test_external_force_on_multiple_bodies_at_position(sim, num_articulations, d
         # perform simulation
         for _ in range(100):
             # apply action to the articulation
-            articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+            articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
             articulation.write_data_to_sim()
             # perform step
             sim.step()
@@ -2848,7 +2848,7 @@ def test_apply_joint_command(sim, num_articulations, device, add_ground_plane):
     joint_pos[:, 3] = 0.0
 
     # apply action to the articulation
-    articulation.set_joint_position_target_index(target=joint_pos)
+    articulation.actuators.command.set_position_index(value=joint_pos)
     articulation.write_data_to_sim()
 
     for _ in range(100):

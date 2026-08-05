@@ -189,7 +189,7 @@ def test_partitioning_isolates_articulation(enable_scene_partition):
             (scene.num_envs, robot.num_joints), generator=rng, device=device
         )
         robot.write_joint_position_to_sim_index(position=target_pos)
-        robot.set_joint_position_target_index(target=target_pos)
+        robot.actuators.command.set_position_index(value=target_pos)
         for _ in range(4):
             scene.write_data_to_sim()
             sim.step()

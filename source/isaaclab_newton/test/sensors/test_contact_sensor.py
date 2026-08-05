@@ -876,7 +876,7 @@ def test_finger_contact_sensor_isolation(device: str, use_mujoco_contacts: bool,
         default_jvel = hand.data.default_joint_vel.torch.clone()
         hand.write_joint_position_to_sim_index(position=default_jpos)
         hand.write_joint_velocity_to_sim_index(velocity=default_jvel)
-        hand.set_joint_position_target_index(target=default_jpos)
+        hand.actuators.command.set_position_index(value=default_jpos)
 
         hand_world_pos = hand.data.root_link_pose_w.torch[:, :3]
         drop_pose = drop_object.data.root_link_pose_w.torch.clone()

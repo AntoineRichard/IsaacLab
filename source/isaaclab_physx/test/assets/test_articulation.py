@@ -1286,14 +1286,14 @@ def test_joint_effort_limits(sim, num_articulations, device, add_ground_plane):
     assert articulation.is_initialized
 
     # Case A: no clipping → should NOT terminate
-    articulation._data.computed_torque.torch.zero_()
-    articulation._data.applied_torque.torch.zero_()
+    articulation.actuators.computed_effort.torch.zero_()
+    articulation.actuators.applied_effort.torch.zero_()
     out = joint_effort_out_of_limit(env, robot_all)  # [N]
     assert torch.all(~out)
 
     # Case B: simulate clipping → should terminate
-    articulation._data.computed_torque.torch.fill_(100.0)  # pretend controller commanded 100
-    articulation._data.applied_torque.torch.fill_(50.0)  # pretend actuator clipped to 50
+    articulation.actuators.computed_effort.torch.fill_(100.0)  # pretend controller commanded 100
+    articulation.actuators.applied_effort.torch.fill_(50.0)  # pretend actuator clipped to 50
     out = joint_effort_out_of_limit(env, robot_all)  # [N]
     assert torch.all(out)
 
@@ -1372,7 +1372,7 @@ def test_external_force_buffer(sim, num_articulations, device):
         )
 
         # apply action to the articulation
-        articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+        articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
         articulation.write_data_to_sim()
 
         # perform step
@@ -1428,7 +1428,7 @@ def test_external_force_on_single_body(sim, num_articulations, device):
         # perform simulation
         for _ in range(100):
             # apply action to the articulation
-            articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+            articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
             articulation.write_data_to_sim()
             # perform step
             sim.step()
@@ -1522,7 +1522,7 @@ def test_external_force_on_single_body_at_position(sim, num_articulations, devic
         # perform simulation
         for _ in range(100):
             # apply action to the articulation
-            articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+            articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
             articulation.write_data_to_sim()
             # perform step
             sim.step()
@@ -1580,7 +1580,7 @@ def test_external_force_on_multiple_bodies(sim, num_articulations, device):
         # perform simulation
         for _ in range(100):
             # apply action to the articulation
-            articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+            articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
             articulation.write_data_to_sim()
             # perform step
             sim.step()
@@ -1673,7 +1673,7 @@ def test_external_force_on_multiple_bodies_at_position(sim, num_articulations, d
         # perform simulation
         for _ in range(100):
             # apply action to the articulation
-            articulation.set_joint_position_target_index(target=articulation.data.default_joint_pos.torch.clone())
+            articulation.actuators.command.set_position_index(value=articulation.data.default_joint_pos.torch.clone())
             articulation.write_data_to_sim()
             # perform step
             sim.step()
@@ -2663,7 +2663,7 @@ def test_apply_joint_command(sim, num_articulations, device, add_ground_plane):
     joint_pos[:, 3] = 0.0
 
     # apply action to the articulation
-    articulation.set_joint_position_target_index(target=joint_pos)
+    articulation.actuators.command.set_position_index(value=joint_pos)
     articulation.write_data_to_sim()
 
     for _ in range(100):
@@ -3524,9 +3524,9 @@ def test_get_gravity_compensation_forces_static_equilibrium(sim, num_articulatio
         # ``gravity_compensation_forces`` shape is ``(N, num_joints + num_base_dofs)``
         # — leading ``num_base_dofs`` floating-base entries (0 on fixed-base) followed
         # by the actuated-joint entries. Slice past the floating-base entries so the
-        # remaining tensor aligns with ``set_joint_effort_target`` (actuated only).
+        # remaining tensor aligns with ``actuators.command.set_effort_index`` (actuated only).
         tau_gc = articulation.data.gravity_compensation_forces.torch[:, articulation.num_base_dofs :]
-        articulation.set_joint_effort_target(tau_gc)
+        articulation.actuators.command.set_effort_index(value=tau_gc)
         articulation.write_data_to_sim()
         sim.step()
         articulation.update(sim.cfg.dt)
@@ -3582,7 +3582,7 @@ def test_franka_ik_tracking_accuracy(sim, device, articulation_type, gravity_ena
 
         joint_pos_des = ik.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
 
-        robot.set_joint_position_target(joint_pos_des, joint_ids=arm_joint_ids)
+        robot.actuators.command.set_position_index(value=joint_pos_des, joint_ids=arm_joint_ids)
         robot.write_data_to_sim()
         sim.step()
         robot.update(sim.cfg.dt)
@@ -3653,7 +3653,7 @@ def test_franka_osc_tracking_accuracy(sim, device, articulation_type, gravity_en
             gravity=None,
         )
 
-        robot.set_joint_effort_target(joint_efforts, joint_ids=arm_joint_ids)
+        robot.actuators.command.set_effort_index(value=joint_efforts, joint_ids=arm_joint_ids)
         robot.write_data_to_sim()
         sim.step()
         robot.update(sim.cfg.dt)
@@ -3755,7 +3755,7 @@ def _run_osc_stay_still_under_gravity(
             mass_matrix=mass_matrix,
             gravity=gravity,
         )
-        robot.set_joint_effort_target(joint_efforts, joint_ids=arm_joint_ids)
+        robot.actuators.command.set_effort_index(value=joint_efforts, joint_ids=arm_joint_ids)
         robot.write_data_to_sim()
         sim.step()
         robot.update(sim.cfg.dt)

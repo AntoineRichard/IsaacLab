@@ -155,7 +155,7 @@ def main():
         # perform 4 steps
         for _ in range(decimation):
             # apply actions
-            robot.set_joint_position_target(robot.data.default_joint_pos)
+            robot.actuators.command.set_position_index(value=robot.data.default_joint_pos)
             # write commands to sim
             robot.write_data_to_sim()
             # perform step

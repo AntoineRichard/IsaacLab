@@ -189,7 +189,7 @@ def test_frame_transformer_feet_wrt_base(sim):
 
         # set joint targets
         robot_actions = default_actions + 0.5 * torch.randn_like(default_actions)
-        scene.articulations["robot"].set_joint_position_target_index(target=robot_actions)
+        scene.articulations["robot"].actuators.command.set_position_index(value=robot_actions)
         # write data to sim
         scene.write_data_to_sim()
         # perform step
@@ -294,7 +294,7 @@ def test_frame_transformer_feet_wrt_thigh(sim):
 
         # set joint targets
         robot_actions = default_actions + 0.5 * torch.randn_like(default_actions)
-        scene.articulations["robot"].set_joint_position_target_index(target=robot_actions)
+        scene.articulations["robot"].actuators.command.set_position_index(value=robot_actions)
         # write data to sim
         scene.write_data_to_sim()
         # perform step
@@ -379,7 +379,7 @@ def test_frame_transformer_robot_body_to_external_cube(sim):
 
         # set joint targets
         robot_actions = default_actions + 0.5 * torch.randn_like(default_actions)
-        scene.articulations["robot"].set_joint_position_target_index(target=robot_actions)
+        scene.articulations["robot"].actuators.command.set_position_index(value=robot_actions)
         # write data to sim
         scene.write_data_to_sim()
         # perform step
@@ -576,7 +576,7 @@ def test_frame_transformer_all_bodies(sim):
 
         # set joint targets
         robot_actions = default_actions + 0.5 * torch.randn_like(default_actions)
-        scene.articulations["robot"].set_joint_position_target_index(target=robot_actions)
+        scene.articulations["robot"].actuators.command.set_position_index(value=robot_actions)
         # write data to sim
         scene.write_data_to_sim()
         # perform step

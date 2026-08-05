@@ -13,9 +13,12 @@ from types import SimpleNamespace
 
 import torch
 
+from isaaclab.benchmark import MethodBenchmarkDefinition, MethodBenchmarkRunner, MethodBenchmarkRunnerConfig
+from isaaclab.benchmark.asset_suites import get_asset_benchmark_suite, resolve_method_benchmarks
 from isaaclab.envs.mdp import observations, rewards, terminations
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.benchmark.asset_suites import get_asset_benchmark_suite, resolve_method_benchmarks
+
+from isaaclab_tasks.contrib.anymal_c_direct.anymal_c_env import AnymalCEnv
 from isaaclab_tasks.core.cartpole.cartpole_direct_env import CartpoleEnv
 
 
@@ -75,6 +78,26 @@ def test_cartpole_action_uses_canonical_effort_command() -> None:
     assert command.calls == [(environment.actions, [1])]
 
 
+def test_anymal_action_preserves_default_command_selectors() -> None:
+    """Catch a regression that adds selectors to a full Anymal command."""
+    command = SimpleNamespace(calls=[])
+
+    def set_position_index(**kwargs) -> None:
+        command.calls.append(kwargs)
+
+    command.set_position_index = set_position_index
+    robot = _DeprecatedActuatorAccess()
+    robot.actuators = SimpleNamespace(command=command)
+    environment = object.__new__(AnymalCEnv)
+    environment._is_closed = True
+    environment._robot = robot
+    environment._processed_actions = torch.tensor([[1.0, 2.0]])
+
+    environment._apply_action()
+
+    assert command.calls == [{"value": environment._processed_actions}]
+
+
 def test_articulation_benchmark_commands_target_the_canonical_command_api() -> None:
     """Catch benchmark workloads that invoke deprecated articulation command setters."""
     definitions = resolve_method_benchmarks(
@@ -102,6 +125,46 @@ def test_articulation_benchmark_commands_target_the_canonical_command_api() -> N
     )
 
 
+def test_method_benchmark_runner_invokes_dotted_index_and_mask_commands() -> None:
+    """Catch dotted command paths that resolve to skipped benchmarks instead of real methods."""
+    calls: dict[str, list[dict[str, object]]] = {"index": [], "mask": []}
+
+    def set_position_index(**kwargs) -> None:
+        calls["index"].append(kwargs)
+
+    def set_position_mask(**kwargs) -> None:
+        calls["mask"].append(kwargs)
+
+    target = SimpleNamespace(
+        actuators=SimpleNamespace(
+            command=SimpleNamespace(set_position_index=set_position_index, set_position_mask=set_position_mask)
+        )
+    )
+    index_inputs = {"value": object(), "env_ids": object(), "joint_ids": object()}
+    mask_inputs = {"value": object(), "env_mask": object(), "joint_mask": object()}
+    definitions = [
+        MethodBenchmarkDefinition(
+            name="position_index",
+            method_name="actuators.command.set_position_index",
+            input_generators={"literal": lambda _config: index_inputs},
+        ),
+        MethodBenchmarkDefinition(
+            name="position_mask",
+            method_name="actuators.command.set_position_mask",
+            input_generators={"literal": lambda _config: mask_inputs},
+        ),
+    ]
+    runner = object.__new__(MethodBenchmarkRunner)
+    runner._config = MethodBenchmarkRunnerConfig(num_iterations=1, warmup_steps=0, device="cpu")
+    runner._modes_to_run = None
+    runner.update_manual_recorders = lambda: None
+    runner.add_measurement = lambda *_args, **_kwargs: None
+
+    runner.run_benchmarks(definitions, target)
+
+    assert calls == {"index": [index_inputs, index_inputs], "mask": [mask_inputs, mask_inputs]}
+
+
 _DEPRECATED_ATTRIBUTES = {
     "applied_torque",
     "computed_torque",
@@ -125,6 +188,23 @@ _COMPATIBILITY_SOURCES = {
     "source/isaaclab_ovphysx/isaaclab_ovphysx/assets/articulation/articulation_data.py",
     "source/isaaclab_physx/isaaclab_physx/assets/articulation/articulation.py",
     "source/isaaclab_physx/isaaclab_physx/assets/articulation/articulation_data.py",
+    "source/isaaclab/isaaclab/test/mock_interfaces/assets/mock_articulation.py",
+}
+_COMPATIBILITY_TEST_SCOPES = {
+    # These scopes exercise the collection storage object's own output fields. Their names coincide
+    # with deprecated articulation-level aliases, but they are not deprecated collection consumers.
+    "source/isaaclab/test/actuators/test_actuator_collection.py": {
+        "_assert_collection_outputs_match_exactly",
+        "test_implicit_batch_bypasses_torch_actuator_compute",
+        "test_collection_exports_proxy_arrays",
+    },
+    # These tests intentionally preserve released compatibility behavior.
+    "source/isaaclab/test/assets/test_articulation_ordering_iface.py": {
+        "test_newton_data_aliases_are_bound_to_nested_actuator_view",
+    },
+    "source/isaaclab/test/test_mock_interfaces/test_mock_assets.py": {
+        "test_set_joint_position_target",
+    },
 }
 
 
@@ -136,15 +216,21 @@ def test_non_experimental_runtime_sources_do_not_use_deprecated_actuator_apis() 
     for source in sources:
         relative_source = source.relative_to(root).as_posix()
         if (
-            "/test/" in relative_source
-            or relative_source in _COMPATIBILITY_SOURCES
+            relative_source in _COMPATIBILITY_SOURCES
             or "/isaaclab_experimental/" in relative_source
             or "/isaaclab_tasks_experimental/" in relative_source
         ):
             continue
         tree = ast.parse(source.read_text(), filename=relative_source)
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in _DEPRECATED_ATTRIBUTES:
+                scope = node
+                while scope in parents and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    scope = parents[scope]
+                scope_name = scope.name if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)) else None
+                if scope_name in _COMPATIBILITY_TEST_SCOPES.get(relative_source, set()):
+                    continue
                 offenders.append(f"{relative_source}:{node.lineno}:{node.attr}")
 
     assert not offenders, "Deprecated actuator APIs remain in runtime sources:\n" + "\n".join(sorted(offenders))

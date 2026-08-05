@@ -112,7 +112,7 @@ def main():
             # reset command
             print(">>>>>>>> Reset!")
         # apply action to the robot
-        robot.set_joint_position_target(robot.data.default_joint_pos.torch.clone())
+        robot.actuators.command.set_position_index(value=robot.data.default_joint_pos.torch.clone())
         robot.write_data_to_sim()
         # perform step
         sim.step()

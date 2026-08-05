@@ -1826,7 +1826,7 @@ class TestArticulationOrderingWriteParity:
         from the raw commanded target, e.g. once explicit actuators clip or otherwise transform it)
         to the ``DOF_ACTUATION_FORCE`` binding. That push must use its own backend-order scratch
         buffer rather than ``_joint_effort_target_backend``, because the latter is also the staging
-        that :meth:`~isaaclab_ovphysx.assets.articulation.Articulation.set_joint_effort_target_index`
+        that :meth:`~isaaclab.actuators.ActuatorCollection.ArticulationView.Command.set_effort_index`
         reuses for unselected joints on a partial write. If the two were the same buffer, a partial
         write would resurrect stale applied torque for every joint it did not touch.
         """
@@ -1848,12 +1848,12 @@ class TestArticulationOrderingWriteParity:
         # Persist raw effort targets through the public setter, in backend order via the
         # ``_joint_effort_target_backend`` mirror.
         raw_targets = np.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
-        art.set_joint_effort_target_mask(target=torch.tensor(raw_targets, dtype=torch.float32, device=art.device))
+        art.actuators.command.set_effort_mask(value=torch.tensor(raw_targets, dtype=torch.float32, device=art.device))
 
         # Simulate an actuator model computing an applied torque that differs from the raw
         # target, then run one full simulation step.
         applied_torque = raw_targets + 100.0
-        art.data._applied_torque.assign(wp.array(applied_torque, dtype=wp.float32, device=art.device))
+        art.actuators.applied_effort.warp.assign(wp.array(applied_torque, dtype=wp.float32, device=art.device))
         art.write_data_to_sim()
 
         pushed_after_step = raw_backend.bindings[TT.DOF_ACTUATION_FORCE]._data.copy()
@@ -1864,7 +1864,7 @@ class TestArticulationOrderingWriteParity:
         joint_ids = wp.array([1], dtype=wp.int32, device=art.device)
         env_ids = wp.array([0, 1], dtype=wp.int32, device=art.device)
         new_target = torch.tensor([[901.0], [902.0]], dtype=torch.float32, device=art.device)
-        art.set_joint_effort_target_index(target=new_target, joint_ids=joint_ids, env_ids=env_ids)
+        art.actuators.command.set_effort_index(value=new_target, joint_ids=joint_ids, env_ids=env_ids)
 
         expected_targets = raw_targets.copy()
         expected_targets[:, 1] = new_target.cpu().numpy()[:, 0]

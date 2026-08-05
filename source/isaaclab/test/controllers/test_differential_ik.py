@@ -180,7 +180,7 @@ def _run_ik_controller(
             joint_vel = robot.data.default_joint_vel.torch.clone()
             # joint_pos *= sample_uniform(0.9, 1.1, joint_pos.shape, joint_pos.device)
             robot.write_joint_state_to_sim(joint_pos, joint_vel)
-            robot.set_joint_position_target(joint_pos)
+            robot.actuators.command.set_position_index(value=joint_pos)
             robot.write_data_to_sim()
             # randomize root state yaw, ik should work regardless base rotation
             root_state = robot.data.root_state_w.torch.clone()
@@ -216,7 +216,7 @@ def _run_ik_controller(
             joint_pos_des = diff_ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
 
         # apply actions
-        robot.set_joint_position_target(joint_pos_des, arm_joint_ids)
+        robot.actuators.command.set_position_index(value=joint_pos_des, joint_ids=arm_joint_ids)
         robot.write_data_to_sim()
         # perform step
         sim.step(render=False)

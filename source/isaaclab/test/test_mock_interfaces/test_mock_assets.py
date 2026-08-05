@@ -38,10 +38,10 @@ def test_binary_joint_action_uses_cached_proxy_warp_view():
     expected_selector = robot.find_joints(["joint_0", "joint_2"], preserve_order=True, as_proxy=True)[0]
     received_selectors = []
 
-    def record_target(*, target, joint_ids=None, env_ids=None):
+    def record_target(*, value, joint_ids=None, env_ids=None):
         received_selectors.append(joint_ids)
 
-    robot.set_joint_position_target_index = record_target
+    robot.actuators = SimpleNamespace(command=SimpleNamespace(set_position_index=record_target))
     env = SimpleNamespace(scene={"robot": robot}, num_envs=2, device="cpu")
     cfg = BinaryJointPositionActionCfg(
         asset_name="robot",

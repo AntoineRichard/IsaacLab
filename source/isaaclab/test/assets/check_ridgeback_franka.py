@@ -135,8 +135,8 @@ def run_simulator(sim: sim_utils.SimulationContext, robot: Articulation):
             actions[:, 3:10] = torch.rand(robot.num_instances, 7, device=robot.device)
             actions[:, 3:10] += robot.data.default_joint_pos[:, 3:10]
         # apply action
-        robot.set_joint_velocity_target(actions[:, :3], joint_ids=[0, 1, 2])
-        robot.set_joint_position_target(actions[:, 3:], joint_ids=[3, 4, 5, 6, 7, 8, 9, 10, 11])
+        robot.actuators.command.set_velocity_index(value=actions[:, :3], joint_ids=[0, 1, 2])
+        robot.actuators.command.set_position_index(value=actions[:, 3:], joint_ids=[3, 4, 5, 6, 7, 8, 9, 10, 11])
         robot.write_data_to_sim()
         # perform step
         sim.step()

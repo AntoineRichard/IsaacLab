@@ -210,10 +210,10 @@ def _run_simulation(
             target_vel = torch.zeros_like(init_pos)
             effort_target = None if feedforward is None else torch.full_like(init_pos, feedforward)
 
-        articulation.set_joint_position_target_index(target=target_pos)
-        articulation.set_joint_velocity_target_index(target=target_vel)
+        articulation.actuators.command.set_position_index(value=target_pos)
+        articulation.actuators.command.set_velocity_index(value=target_vel)
         if effort_target is not None:
-            articulation.set_joint_effort_target_index(target=effort_target)
+            articulation.actuators.command.set_effort_index(value=effort_target)
 
         recorded_pos, recorded_vel = [], []
         recorded_computed, recorded_applied = [], []
@@ -230,8 +230,8 @@ def _run_simulation(
                     articulation.update(dt)
             recorded_pos.append(wp.to_torch(articulation.data.joint_pos).clone())
             recorded_vel.append(wp.to_torch(articulation.data.joint_vel).clone())
-            recorded_computed.append(wp.to_torch(articulation.data.computed_torque).clone())
-            recorded_applied.append(wp.to_torch(articulation.data.applied_torque).clone())
+            recorded_computed.append(articulation.actuators.computed_effort.torch.clone())
+            recorded_applied.append(articulation.actuators.applied_effort.torch.clone())
             if use_newton_actuators:
                 recorded_adapter_computed.append(wp.to_torch(articulation.data._sim_bind_joint_computed_effort).clone())
                 recorded_adapter_applied.append(wp.to_torch(articulation.data._sim_bind_joint_effort).clone())
@@ -502,10 +502,10 @@ def _run_anymal_and_cartpole(use_newton_actuators: bool, *, num_steps: int = NUM
 
         init_anymal = wp.to_torch(anymal.data.joint_pos).clone()
         init_cartpole = wp.to_torch(cartpole.data.joint_pos).clone()
-        anymal.set_joint_position_target_index(target=init_anymal + TARGET_OFFSET)
-        anymal.set_joint_velocity_target_index(target=torch.zeros_like(init_anymal))
-        cartpole.set_joint_position_target_index(target=init_cartpole + TARGET_OFFSET)
-        cartpole.set_joint_velocity_target_index(target=torch.zeros_like(init_cartpole))
+        anymal.actuators.command.set_position_index(value=init_anymal + TARGET_OFFSET)
+        anymal.actuators.command.set_velocity_index(value=torch.zeros_like(init_anymal))
+        cartpole.actuators.command.set_position_index(value=init_cartpole + TARGET_OFFSET)
+        cartpole.actuators.command.set_velocity_index(value=torch.zeros_like(init_cartpole))
 
         pos_anymal, pos_cartpole = [], []
         for _ in range(num_steps):
@@ -956,8 +956,8 @@ class TestActuatorStateReset(unittest.TestCase):
         init_pos = wp.to_torch(articulation.data.joint_pos).clone()
         target_pos = init_pos + TARGET_OFFSET
         target_vel = torch.zeros_like(init_pos)
-        articulation.set_joint_position_target_index(target=target_pos)
-        articulation.set_joint_velocity_target_index(target=target_vel)
+        articulation.actuators.command.set_position_index(value=target_pos)
+        articulation.actuators.command.set_velocity_index(value=target_vel)
         for _ in range(RESET_WARMUP_STEPS):
             articulation.write_data_to_sim()
             sim.step()
@@ -1207,8 +1207,8 @@ def _run_authoring_introspection(actuator_cfgs: dict) -> dict:
         init_pos = wp.to_torch(articulation.data.joint_pos).clone()
         target_pos = init_pos + TARGET_OFFSET
         target_vel = torch.zeros_like(init_pos)
-        articulation.set_joint_position_target_index(target=target_pos)
-        articulation.set_joint_velocity_target_index(target=target_vel)
+        articulation.actuators.command.set_position_index(value=target_pos)
+        articulation.actuators.command.set_velocity_index(value=target_vel)
 
         recorded_pos = []
         for _ in range(NUM_STEPS):

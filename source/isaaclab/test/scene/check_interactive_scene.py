@@ -144,8 +144,8 @@ def main():
         # perform this loop at policy control freq (50 Hz)
         for _ in range(4):
             # set joint targets
-            scene.articulations["robot_1"].set_joint_position_target(robot_1_actions)
-            scene.articulations["robot_2"].set_joint_position_target(robot_2_actions)
+            scene.articulations["robot_1"].actuators.command.set_position_index(value=robot_1_actions)
+            scene.articulations["robot_2"].actuators.command.set_position_index(value=robot_2_actions)
             # write data to sim
             scene.write_data_to_sim()
             # perform step
