@@ -183,6 +183,8 @@ class _ArticulationExecutionPlan:
                 control=control,
                 selector_state=selector_state,
             )
+        implicit_layout = layout.type_layouts.get(ImplicitActuator)
+        ideal_layout = layout.type_layouts.get(IdealPDActuator)
         epochs, schedule = cls._bind_static_launches(
             epochs=epochs,
             schedule=schedule,
@@ -192,10 +194,8 @@ class _ArticulationExecutionPlan:
             num_worlds=layout.num_worlds,
             num_joints=layout.num_joints,
             device=control.device,
-            implicit_count=0
-            if native_bypass
-            else layout.type_layouts.get(ImplicitActuator, _EmptyTypeLayout()).num_dofs,
-            ideal_count=0 if native_bypass else layout.type_layouts.get(IdealPDActuator, _EmptyTypeLayout()).num_dofs,
+            implicit_count=0 if native_bypass or implicit_layout is None else implicit_layout.num_dofs,
+            ideal_count=0 if native_bypass or ideal_layout is None else ideal_layout.num_dofs,
         )
         return cls(
             control=control,
@@ -708,10 +708,3 @@ class _ArticulationExecutionPlan:
         self.static_scatter_epochs = ()
         self._schedule = ()
         self._control = None
-
-
-@dataclass(frozen=True)
-class _EmptyTypeLayout:
-    """Zero-width fallback for missing exact-type layouts."""
-
-    num_dofs: int = 0

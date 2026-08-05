@@ -735,6 +735,51 @@ def test_stateless_launch_arguments_and_cached_commands_stay_stable_after_parame
     assert _plan_state_fingerprint(plan, view) == warm_state
 
 
+def _eager_gather_fingerprint(segment) -> tuple[object, ...]:
+    """Capture fixed eager-gather aliases without inspecting dynamic output scatters."""
+    return (
+        segment.gather_key,
+        id(segment.gather_key),
+        segment.gather_dim,
+        id(segment.gather_dim),
+        id(segment.gather_inputs),
+        id(segment.gather_outputs),
+        tuple((name, _storage_metadata(value)) for name, value in segment.staging.items()),
+        _storage_metadata(segment.joint_indices),
+        _storage_metadata(segment.action.joint_indices),
+    )
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_warmed_eager_gather_aliases_and_cuda_command_stay_stable(device: str) -> None:
+    """Keep a static/eager/static plan's fixed eager gather aliases stable after warm-up."""
+    opaque_cfg = _ideal_cfg(["knee"])
+    opaque_cfg.class_type = _OpaqueIdealPD
+    groups = {
+        "first": _implicit_cfg(["hip"]),
+        "opaque": opaque_cfg,
+        "last": _ideal_cfg(["ankle"]),
+    }
+    _, view, control = _make_plan(groups, device=device)
+    _set_literal_inputs(view, control)
+    plan = view._execution_plan
+    eager_segment = plan.eager_segments[0]
+    eager_key = ("eager_gather", eager_segment.group_name)
+
+    assert eager_segment.gather_key == eager_key
+    view.compute()
+    warm_fingerprint = _eager_gather_fingerprint(eager_segment)
+    cached_command = plan._launch_cache._commands.get(eager_key)
+    view.compute()
+
+    assert _eager_gather_fingerprint(eager_segment) == warm_fingerprint
+    if device == "cuda":
+        assert cached_command is not None
+        assert plan._launch_cache._commands[eager_key] is cached_command
+    else:
+        assert eager_key not in plan._launch_cache._commands
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA cached launch commands")
 def test_warmed_stateless_cuda_plan_constructs_no_plan_boundary_arrays_or_synchronizes(monkeypatch) -> None:
     """Keep a warmed all-stateless CUDA execution path allocation and synchronization free."""
