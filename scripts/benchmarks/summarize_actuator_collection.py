@@ -40,7 +40,7 @@ class LoadedAttempts:
 
     manifest: dict[str, Any]
     selected: list[dict[str, Any]]
-    batch_id: str
+    batch_ids: dict[str, str]
     rejected_reasons: dict[str, int]
     unselected_attempt_count: int
 
@@ -180,7 +180,8 @@ def load_selected_attempts(run_root: Path, candidate_sha: str) -> LoadedAttempts
     selected: list[dict[str, Any]] = []
     selected_paths: set[Path] = set()
     keys: set[str] = set()
-    batch_id: str | None = None
+    batch_ids: dict[str, str] = {}
+    config_ids: dict[str, str] = {}
     driver = _driver()
     for raw in manifest["attempts"]:
         attempt = _relative_attempt_path(run_root, raw)
@@ -209,10 +210,20 @@ def load_selected_attempts(run_root: Path, candidate_sha: str) -> LoadedAttempts
         expected_parent = run_root / "observations" / driver._safe_observation_name(observation)
         if attempt.parent != expected_parent.resolve():
             raise ValueError("selected observation directory identity mismatch")
-        if batch_id is None:
-            batch_id = identity.get("batch_id")
-        elif identity.get("batch_id") != batch_id:
+        matrix = (record.get("metadata") or {}).get("matrix")
+        recorded_batch = identity.get("batch_id")
+        if not isinstance(matrix, str) or not isinstance(recorded_batch, str) or not recorded_batch:
+            raise ValueError("selected batch identity")
+        if matrix in batch_ids and batch_ids[matrix] != recorded_batch:
             raise ValueError("mixed selected batch identity")
+        batch_ids[matrix] = recorded_batch
+        config = (record.get("metadata") or {}).get("benchmark_config_sha256")
+        if config is not None:
+            if not isinstance(config, str) or len(config) != 64:
+                raise ValueError("selected benchmark configuration identity")
+            if matrix in config_ids and config_ids[matrix] != config:
+                raise ValueError("mixed selected benchmark configuration identity")
+            config_ids[matrix] = config
         keys.add(observation)
         _validate_harness(record, run_root, digest)
         _validate_worktrees(record, revisions)
@@ -226,11 +237,37 @@ def load_selected_attempts(run_root: Path, candidate_sha: str) -> LoadedAttempts
         record = _read_json(document, "unselected attempt")
         if record.get("schema") == _ATTEMPT_SCHEMA and record.get("status") == "rejected":
             rejection_counts[_rejection_reason(record)] += 1
-    if not isinstance(batch_id, str) or not batch_id:
-        raise ValueError("selected batch identity")
+    if set(batch_ids) == {"build", "runtime"}:
+        if set(config_ids) != set(batch_ids):
+            raise ValueError("selected benchmark configuration identity")
+        _validate_batch_manifests(run_root, batch_ids, candidate_sha, revisions, digest, config_ids)
     return LoadedAttempts(
-        manifest, selected, batch_id, dict(sorted(rejection_counts.items())), len(all_attempts) - len(selected)
+        manifest, selected, batch_ids, dict(sorted(rejection_counts.items())), len(all_attempts) - len(selected)
     )
+
+
+def _validate_batch_manifests(
+    run_root: Path,
+    batch_ids: dict[str, str],
+    candidate_sha: str,
+    revisions: dict[str, str],
+    harness_sha256: str,
+    config_ids: dict[str, str],
+) -> None:
+    """Bind each final matrix partition to its immutable coordinator batch manifest."""
+    for matrix, batch_id in batch_ids.items():
+        path = run_root / "batches" / batch_id / "manifest.json"
+        manifest = _read_json(path, "coordinator batch manifest")
+        if (
+            manifest.get("schema") != "actuator_collection_batch/v1"
+            or manifest.get("batch_id") != batch_id
+            or manifest.get("matrix") != matrix
+            or manifest.get("candidate_sha") != candidate_sha
+            or manifest.get("revision_shas") != revisions
+            or manifest.get("harness_sha256") != harness_sha256
+            or manifest.get("benchmark_config_sha256") != config_ids[matrix]
+        ):
+            raise ValueError("coordinator batch manifest identity mismatch")
 
 
 def _schedule_for(matrix: str) -> dict[str, Any]:
@@ -585,7 +622,7 @@ def summarize_run(run_root: Path, candidate_sha: str, bootstrap_seed: int = 42) 
         "candidate_sha": candidate_sha,
         "bootstrap_seed": bootstrap_seed,
         "selection_identity": {
-            "batch_id": loaded.batch_id,
+            "batch_ids": loaded.batch_ids,
             "revision_shas": loaded.manifest["revision_shas"],
             "harness_sha256": loaded.manifest["harness_sha256"],
             "selected_attempt_paths": loaded.manifest["attempts"],
@@ -624,7 +661,7 @@ def _normalized_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     selection = report.get("selection_identity", {})
     common = {
         "candidate_sha": report["candidate_sha"],
-        "batch_id": selection.get("batch_id"),
+        "batch_ids": selection.get("batch_ids", {}),
         "revision_shas": selection.get("revision_shas", {}),
         "harness_sha256": selection.get("harness_sha256"),
         "selected_attempt_paths": selection.get("selected_attempt_paths", []),

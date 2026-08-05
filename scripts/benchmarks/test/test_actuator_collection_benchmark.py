@@ -1793,6 +1793,50 @@ def test_summary_accepts_complete_combined_build_and_runtime_schedule():
     summary._validate_schedule(records)
 
 
+def test_summary_accepts_distinct_build_and_runtime_batch_manifests(tmp_path):
+    """Final build-01/runtime-01 evidence is strict per matrix, not globally."""
+    summary = _load(_SUMMARY, "actuator_benchmark_summary_batch_manifests")
+    revisions = {"develop": "d" * 40, "current": "c" * 40, "global": "g" * 40}
+    for matrix, batch_id in (("build", "build-01"), ("runtime", "runtime-01")):
+        manifest = tmp_path / "batches" / batch_id / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema": "actuator_collection_batch/v1",
+                    "batch_id": batch_id,
+                    "matrix": matrix,
+                    "candidate_sha": "g" * 40,
+                    "revision_shas": revisions,
+                    "harness_sha256": "h" * 64,
+                    "benchmark_config_sha256": "b" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+    summary._validate_batch_manifests(
+        tmp_path,
+        {"build": "build-01", "runtime": "runtime-01"},
+        "g" * 40,
+        revisions,
+        "h" * 64,
+        {"build": "b" * 64, "runtime": "b" * 64},
+    )
+    runtime_manifest = tmp_path / "batches" / "runtime-01" / "manifest.json"
+    payload = json.loads(runtime_manifest.read_text(encoding="utf-8"))
+    payload["matrix"] = "build"
+    runtime_manifest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="batch manifest identity"):
+        summary._validate_batch_manifests(
+            tmp_path,
+            {"build": "build-01", "runtime": "runtime-01"},
+            "g" * 40,
+            revisions,
+            "h" * 64,
+            {"build": "b" * 64, "runtime": "b" * 64},
+        )
+
+
 def test_summary_rejects_final_schedule_member_and_graph_contract_mutations():
     """A missing row, swapped member, or eager graph relabel cannot reach statistics."""
     benchmark = _load(_BENCHMARK, "actuator_benchmark_summary_final_schedule_driver")
@@ -1892,6 +1936,8 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
     digest = hashlib.sha256(harness.read_bytes()).hexdigest()
     harness.with_name("benchmark_actuator_collection.sha256").write_text(digest + "\n", encoding="utf-8")
     records = [*_complete_build_schedule_records(benchmark), *_complete_runtime_schedule_records(benchmark)]
+    batch_ids = {"build": "build-01", "runtime": "runtime-01"}
+    config_ids = {"build": "b" * 64, "runtime": "r" * 64}
     selected_paths = []
     for number, record in enumerate(records, start=1):
         attempt = (
@@ -1901,13 +1947,37 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
             / record["identity"]["attempt_id"]
         )
         attempt.mkdir(parents=True)
-        record["identity"].update(candidate_sha=revisions["global"], revision_shas=revisions, harness_sha256=digest)
+        matrix = record["metadata"]["matrix"]
+        record["identity"].update(
+            candidate_sha=revisions["global"],
+            revision_shas=revisions,
+            harness_sha256=digest,
+            batch_id=batch_ids[matrix],
+        )
+        record["metadata"]["benchmark_config_sha256"] = config_ids[matrix]
         record["paths"]["harness"] = str(harness)
         record["paths"]["worktrees"] = {revision: str(path) for revision, path in worktrees.items()}
         for member in record["members"]:
             member["revision_sha"] = revisions[member["revision"]]
         (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
         selected_paths.append(str(attempt.relative_to(run_root)))
+    for matrix, batch_id in batch_ids.items():
+        batch = run_root / "batches" / batch_id / "manifest.json"
+        batch.parent.mkdir(parents=True)
+        batch.write_text(
+            json.dumps(
+                {
+                    "schema": "actuator_collection_batch/v1",
+                    "batch_id": batch_id,
+                    "matrix": matrix,
+                    "candidate_sha": revisions["global"],
+                    "revision_shas": revisions,
+                    "harness_sha256": digest,
+                    "benchmark_config_sha256": config_ids[matrix],
+                }
+            ),
+            encoding="utf-8",
+        )
     (run_root / "accepted-attempts.json").write_text(
         json.dumps(
             {
@@ -1942,6 +2012,32 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
     assert revisions["global"] in reports["benchmark-summary.json"]
     assert "develop-cached_eager__global-graph" in reports["benchmark-summary.csv"]
     assert "capability" in reports["benchmark-summary.md"]
+    mixed = next(record for record in records if record["metadata"]["matrix"] == "runtime")
+    mixed["identity"]["batch_id"] = "forged-runtime-batch"
+    mixed_attempt = (
+        run_root
+        / "observations"
+        / benchmark._safe_observation_name(mixed["identity"]["observation_key"])
+        / mixed["identity"]["attempt_id"]
+        / "attempt.json"
+    )
+    mixed_attempt.write_text(json.dumps(mixed), encoding="utf-8")
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(_SUMMARY),
+            "--run_root",
+            str(run_root),
+            "--candidate_sha",
+            revisions["global"],
+            "--output_dir",
+            str(tmp_path / "rejected-summary"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0 and "mixed selected batch" in rejected.stderr
 
 
 def test_gpu_telemetry_requires_exactly_twenty_pre_and_post_samples():
