@@ -1071,6 +1071,7 @@ class _CollectionGeneration:
                     store._group_proxies.clear()
                     store._mapping_proxies.clear()
         finally:
+            self.bindings = ()
             self.selector_states.clear()
             self.backend_parameter_staging.clear()
             self.stores.clear()

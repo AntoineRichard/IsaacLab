@@ -2205,6 +2205,7 @@ def test_candidate_close_releases_every_resource_after_nested_failures(monkeypat
     assert (
         candidate.groups == candidate.selector_states == candidate.backend_parameter_staging == candidate.stores == {}
     )
+    assert candidate.bindings == ()
     assert candidate.managed_group_resolutions == {}
     assert candidate._solver_properties_written == []
     assert not candidate.joint_store._fields and not candidate.joint_store._articulation_proxies
