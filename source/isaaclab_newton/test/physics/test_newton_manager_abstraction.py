@@ -838,7 +838,8 @@ def test_hosted_materialization_resolves_each_joint_recipe_once(monkeypatch) -> 
     assert counts == {"controller": 2, "clamping": 2, "signature": 2}
 
 
-def test_native_adapter_direct_binding_keeps_canonical_pointers_without_copy_or_sync(monkeypatch) -> None:
+@pytest.mark.parametrize("device", ("cpu", *(str(device) for device in wp.get_cuda_devices())))
+def test_native_adapter_direct_binding_keeps_canonical_pointers_without_copy_or_sync(monkeypatch, device: str) -> None:
     """Compatible native ranges bind canonical pointers without copying or synchronizing."""
     from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
 
@@ -848,18 +849,18 @@ def test_native_adapter_direct_binding_keeps_canonical_pointers_without_copy_or_
         pass
 
     canonical = {
-        name: ProxyArray(wp.zeros((2, 2), dtype=wp.float32, device="cpu"))
+        name: ProxyArray(wp.zeros((2, 2), dtype=wp.float32, device=device))
         for name in ("stiffness", "damping", "computed_effort", "applied_effort")
     }
     controller = SimpleNamespace(
-        kp=wp.zeros(4, dtype=wp.float32, device="cpu"), kd=wp.zeros(4, dtype=wp.float32, device="cpu")
+        kp=wp.zeros(4, dtype=wp.float32, device=device), kd=wp.zeros(4, dtype=wp.float32, device=device)
     )
     actuator = SimpleNamespace(
-        indices=wp.array([0, 1, 2, 3], dtype=wp.uint32, device="cpu"),
+        indices=wp.array([0, 1, 2, 3], dtype=wp.uint32, device=device),
         controller=controller,
         clamping=(),
-        _computed_forces=wp.zeros(4, dtype=wp.float32, device="cpu"),
-        _applied_forces=wp.zeros(4, dtype=wp.float32, device="cpu"),
+        _computed_forces=wp.zeros(4, dtype=wp.float32, device=device),
+        _applied_forces=wp.zeros(4, dtype=wp.float32, device=device),
     )
     group = SimpleNamespace(_parameter_binding=SimpleNamespace(arrays=canonical))
     binding = SimpleNamespace(
@@ -882,7 +883,7 @@ def test_native_adapter_direct_binding_keeps_canonical_pointers_without_copy_or_
     )
     adapter = object.__new__(NewtonActuatorAdapter)
     adapter.actuators = [actuator]
-    adapter._device = "cpu"
+    adapter._device = device
     adapter.num_joints = 2
     signature = ("native",)
     adapter._actuators_by_signature = {signature: actuator}
@@ -893,21 +894,43 @@ def test_native_adapter_direct_binding_keeps_canonical_pointers_without_copy_or_
     def _forbid(*args, **kwargs):
         raise AssertionError("direct canonical binding must not copy, synchronize, or read host values")
 
-    original_install = adapter._install_direct_pointer_binding
+    canonical_pointers = {value.warp.ptr for value in canonical.values()}
+    original_copy = wp.copy
+    original_to = torch.Tensor.to
 
-    def _guarded_install(*args, **kwargs):
-        with monkeypatch.context() as guarded:
-            for method in ("clone", "cpu", "numpy", "tolist", "item", "copy_"):
-                guarded.setattr(torch.Tensor, method, _forbid)
-            guarded.setattr(wp, "copy", _forbid)
-            guarded.setattr(wp, "synchronize", _forbid)
-            if hasattr(wp, "synchronize_device"):
-                guarded.setattr(wp, "synchronize_device", _forbid)
-            return original_install(*args, **kwargs)
+    def _forbid_canonical_copy(destination, source, *args, **kwargs):
+        # Warp initializes small routing-metadata arrays through ``wp.copy``.
+        # Only canonical value storage must remain copy-free during binding.
+        arrays = (destination, source)
+        if any(isinstance(array, wp.array) and array.ptr in canonical_pointers for array in arrays):
+            _forbid()
+        return original_copy(destination, source, *args, **kwargs)
 
-    monkeypatch.setattr(adapter, "_install_direct_pointer_binding", _guarded_install)
+    def _forbid_host_to(tensor, *args, **kwargs):
+        target = kwargs.get("device")
+        if target is None and args:
+            if isinstance(args[0], torch.Tensor):
+                target = args[0].device
+            elif isinstance(args[0], (str, torch.device, int)):
+                target = args[0]
+        if target is not None:
+            target_device = torch.device(target)
+            if target_device.type == "cpu" and tensor.device.type != "cpu":
+                _forbid()
+        return original_to(tensor, *args, **kwargs)
 
-    native_binding = adapter.bind_articulation(binding, dof_offset=0)
+    with monkeypatch.context() as guarded:
+        for method in ("clone", "cpu", "numpy", "tolist", "item", "copy_"):
+            guarded.setattr(torch.Tensor, method, _forbid)
+        guarded.setattr(torch.Tensor, "to", _forbid_host_to)
+        guarded.setattr(wp, "copy", _forbid_canonical_copy)
+        guarded.setattr(wp, "clone", _forbid)
+        guarded.setattr(wp.array, "numpy", _forbid)
+        for method in ("synchronize", "synchronize_device", "synchronize_event", "synchronize_stream"):
+            if hasattr(wp, method):
+                guarded.setattr(wp, method, _forbid)
+
+        native_binding = adapter.bind_articulation(binding, dof_offset=0)
 
     (native_range,) = native_binding.ranges
     assert native_range.direct
