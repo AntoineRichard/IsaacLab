@@ -449,7 +449,7 @@ class _CollectionGeneration:
         self.selector_states: dict[object, _SelectorState] = {}
         self.backend_parameter_staging: dict[object, _BackendParameterStaging] = {}
         self._solver_properties_written: list[_ArticulationBinding] = []
-        self._execution_plans: list[_ArticulationExecutionPlan] = []
+        self._pending_execution_plans: list[_ArticulationExecutionPlan] = []
 
     @classmethod
     def build(
@@ -895,8 +895,9 @@ class _CollectionGeneration:
 
     def bind_facade_storage(self) -> None:
         """Construct exact logical groups and bind candidate-owned typed arrays."""
+        bindings = self.bindings
         updated_bindings: list[_ArticulationBinding] = []
-        for binding in self.bindings:
+        for binding in bindings:
             groups: dict[str, ActuatorBase] = {}
             control = binding.registration.control
             selector_state = self.selector_states[binding.registration.key]
@@ -1016,11 +1017,12 @@ class _CollectionGeneration:
             execution_plan = _ArticulationExecutionPlan.build(
                 binding=candidate_binding,
                 control=control,
-                generation=self.generation,
+                selector_state=selector_state,
             )
-            self._execution_plans.append(execution_plan)
+            self._pending_execution_plans.append(execution_plan)
             updated_bindings.append(replace(candidate_binding, execution_plan=execution_plan))
         self.bindings = tuple(updated_bindings)
+        self._pending_execution_plans.clear()
 
     def publish_effort_telemetry(self) -> None:
         """Publish exact-type effort outputs in stable articulation joint order."""
@@ -1056,14 +1058,21 @@ class _CollectionGeneration:
     def close(self) -> None:
         """Release every candidate-owned allocation and private reference."""
         failures: list[Exception] = []
+
+        def _invalidate_plan(plan: _ArticulationExecutionPlan) -> None:
+            try:
+                plan.invalidate()
+            except Exception as error:
+                failures.append(error)
+
         try:
-            plans = [*self._execution_plans, *(binding.execution_plan for binding in self.bindings)]
-            for plan in plans:
-                if plan is not None:
-                    try:
-                        plan.invalidate()
-                    except Exception as error:
-                        failures.append(error)
+            if self._pending_execution_plans:
+                for plan in self._pending_execution_plans:
+                    _invalidate_plan(plan)
+            else:
+                for binding in self.bindings:
+                    if binding.execution_plan is not None:
+                        _invalidate_plan(binding.execution_plan)
             for groups in self.groups.values():
                 for group in groups.values():
                     release = getattr(group, "_release_facade_storage", None)
@@ -1108,7 +1117,7 @@ class _CollectionGeneration:
             self.groups.clear()
             self.managed_group_resolutions.clear()
             self._solver_properties_written.clear()
-            self._execution_plans.clear()
+            self._pending_execution_plans.clear()
         _raise_cleanup_failures(failures)
 
 
@@ -1893,19 +1902,21 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 env_ids: Signed environment indices to reset, or ``None`` for
                     every articulation instance.
             """
-            self._require_execution_ready()
             resolved_env_ids = slice(None) if env_ids is None else env_ids
             execution_plan = self._execution_plan
             if execution_plan is None:
-                raise RuntimeError("stale actuator view")
+                raise RuntimeError(self._failure)
             execution_plan.reset(resolved_env_ids)
 
         def compute(self, dt: float = 0.0) -> None:
-            """Reject execution while a topology mutation requires a safe rebuild."""
-            self._require_execution_ready()
+            """Compute processed actuator commands and telemetry.
+
+            Args:
+                dt: Physics step size [s].
+            """
             execution_plan = self._execution_plan
             if execution_plan is None:
-                raise RuntimeError("stale actuator view")
+                raise RuntimeError(self._failure)
             execution_plan.compute(dt)
             self._refresh_compatibility_projections()
 
@@ -2092,15 +2103,17 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._by_type = ActuatorCollection._GuardedMapping(self, type_views, selector_state.token)
             self._debug_validation = binding.registration.debug_validation
             self._control = binding.registration.control
-            native_compute = getattr(self._control, "compute_native_actuators", None)
-            if native_compute is None:
-
-                def native_compute(_view, _dt) -> bool:
-                    return False
+            native_compute = None
+            if binding.registration.native_group_names:
+                native_compute = getattr(self._control, "compute_native_actuators", None)
 
             execution_plan.set_runtime_hooks(
                 validate_execution=self._require_execution_ready,
-                native_compute=lambda dt, native_compute=native_compute: native_compute(self, dt),
+                native_compute=(
+                    (lambda dt, native_compute=native_compute: native_compute(self, dt))
+                    if native_compute is not None
+                    else None
+                ),
             )
             self._native_group_binding_ids = {
                 id(groups[name].__dict__["_parameter_binding"])

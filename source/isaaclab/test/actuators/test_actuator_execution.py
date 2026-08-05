@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections import defaultdict
 from collections.abc import Mapping
 
 import pytest
@@ -22,6 +23,7 @@ from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, DelayedPDActuatorCfg,
 from isaaclab.cloner import ClonePlan
 from isaaclab.utils.types import ArticulationActions
 from isaaclab.utils.warp import ProxyArray
+from isaaclab.utils.warp.launch_cache import _WarpLaunchCache
 
 
 def _available_devices() -> tuple[str, ...]:
@@ -55,6 +57,7 @@ class _Control:
         self._joint_vel = ProxyArray(wp.zeros((num_worlds, len(self._joint_names)), dtype=wp.float32, device=device))
         self.submissions = 0
         self.native_resets = 0
+        self.native_compute_calls = 0
 
     @property
     def num_instances(self) -> int:
@@ -160,6 +163,7 @@ class _NativeControl(_Control):
 
     def compute_native_actuators(self, view, dt: float) -> bool:
         del view, dt
+        self.native_compute_calls += 1
         return True
 
 
@@ -295,20 +299,29 @@ def test_native_articulation_bypass_owns_no_lab_execution_schedule(device: str) 
     assert plan.eager_segments == ()
     assert plan.static_scatter_epochs == ()
     view.compute(dt=0.005)
+    assert control.native_compute_calls == 1
 
 
-def _ordinary_outputs(actuator_type, cfgs: Mapping[str, object], control: _Control) -> tuple[torch.Tensor, ...]:
+def _ordinary_outputs(
+    actuator_type,
+    cfgs: Mapping[str, object],
+    control: _Control,
+    inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+) -> tuple[torch.Tensor, ...]:
     """Run separate ordinary actuators as an aggregation-independent oracle."""
     expected_position = torch.zeros((control.num_instances, control.num_joints), device=control.device)
     expected_velocity = torch.zeros_like(expected_position)
     expected_effort = torch.zeros_like(expected_position)
     expected_computed = torch.zeros_like(expected_position)
     expected_applied = torch.zeros_like(expected_position)
-    raw_position = torch.tensor([[1.0, -1.5], [-2.5, 3.0]], dtype=torch.float32, device=control.device)
-    raw_velocity = torch.tensor([[0.5, -1.0], [-2.0, 2.5]], dtype=torch.float32, device=control.device)
-    raw_effort = torch.tensor([[1.25, -2.25], [-4.25, 5.25]], dtype=torch.float32, device=control.device)
-    joint_position = torch.tensor([[0.25, -0.75], [-0.5, 0.75]], dtype=torch.float32, device=control.device)
-    joint_velocity = torch.tensor([[1.5, -2.0], [-3.0, 3.5]], dtype=torch.float32, device=control.device)
+    if inputs is None:
+        raw_position = torch.tensor([[1.0, -1.5], [-2.5, 3.0]], dtype=torch.float32, device=control.device)
+        raw_velocity = torch.tensor([[0.5, -1.0], [-2.0, 2.5]], dtype=torch.float32, device=control.device)
+        raw_effort = torch.tensor([[1.25, -2.25], [-4.25, 5.25]], dtype=torch.float32, device=control.device)
+        joint_position = torch.tensor([[0.25, -0.75], [-0.5, 0.75]], dtype=torch.float32, device=control.device)
+        joint_velocity = torch.tensor([[1.5, -2.0], [-3.0, 3.5]], dtype=torch.float32, device=control.device)
+    else:
+        raw_position, raw_velocity, raw_effort, joint_position, joint_velocity = inputs
 
     for joint_id, (_, source_cfg) in enumerate(cfgs.items()):
         cfg = copy.deepcopy(source_cfg)
@@ -347,6 +360,15 @@ def _ordinary_outputs(actuator_type, cfgs: Mapping[str, object], control: _Contr
     return expected_position, expected_velocity, expected_effort, expected_computed, expected_applied
 
 
+def _random_execution_inputs(control: _Control, seed: int) -> tuple[torch.Tensor, ...]:
+    """Create deterministic high-entropy command and state tensors for one device."""
+    generator = torch.Generator(device=control.device).manual_seed(seed)
+    return tuple(
+        torch.randn((control.num_instances, control.num_joints), generator=generator, device=control.device) * 11.0
+        for _ in range(5)
+    )
+
+
 @pytest.mark.parametrize("device", _available_devices())
 @pytest.mark.parametrize("actuator_type", [ImplicitActuator, IdealPDActuator, DCMotor])
 def test_aggregated_range_matches_independent_groups_exactly(actuator_type, device: str) -> None:
@@ -364,6 +386,32 @@ def test_aggregated_range_matches_independent_groups_exactly(actuator_type, devi
     _set_literal_inputs(view, control)
 
     expected = _ordinary_outputs(actuator_type, groups, control)
+    view.compute(dt=0.005)
+
+    torch.testing.assert_close(view.joint_command.position.torch[:, :2], expected[0][:, :2], rtol=0.0, atol=0.0)
+    torch.testing.assert_close(view.joint_command.velocity.torch[:, :2], expected[1][:, :2], rtol=0.0, atol=0.0)
+    torch.testing.assert_close(view.joint_command.effort.torch[:, :2], expected[2][:, :2], rtol=0.0, atol=0.0)
+    torch.testing.assert_close(view.computed_effort.torch[:, :2], expected[3][:, :2], rtol=0.0, atol=0.0)
+    torch.testing.assert_close(view.applied_effort.torch[:, :2], expected[4][:, :2], rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("seed", [0, 1, 17])
+def test_implicit_range_matches_randomized_ordinary_oracle_exactly(device: str, seed: int) -> None:
+    """Catch CUDA contraction that changes the ordinary implicit result by one ULP."""
+    groups = {
+        "first": _implicit_cfg(["hip"], stiffness=3.125, damping=0.875),
+        "second": _implicit_cfg(["knee"], stiffness=5.75, damping=1.625),
+    }
+    _, view, control = _make_plan(groups, device=device)
+    inputs = _random_execution_inputs(control, seed)
+    view.command.position.torch.copy_(inputs[0])
+    view.command.velocity.torch.copy_(inputs[1])
+    view.command.effort.torch.copy_(inputs[2])
+    control.joint_pos.torch.copy_(inputs[3])
+    control.joint_vel.torch.copy_(inputs[4])
+
+    expected = _ordinary_outputs(ImplicitActuator, groups, control, inputs)
     view.compute(dt=0.005)
 
     torch.testing.assert_close(view.joint_command.position.torch[:, :2], expected[0][:, :2], rtol=0.0, atol=0.0)
@@ -425,25 +473,54 @@ def test_delayed_and_subclass_groups_remain_ordered_eager_segments(device: str) 
 
 
 @pytest.mark.parametrize("device", _available_devices())
-def test_eager_none_outputs_preserve_static_field_owners_across_barriers(device: str) -> None:
+def test_eager_none_outputs_preserve_static_field_owners_across_barriers(monkeypatch, device: str) -> None:
     """Catch a static final owner table that ignores an eager runtime ``None`` output."""
     opaque_cfg = _ideal_cfg(["hip"], stiffness=4.0)
     opaque_cfg.class_type = _EffortOnlyOpaque
     groups = {
         "implicit": _implicit_cfg(["hip"], stiffness=2.0),
         "opaque": opaque_cfg,
-        "last": _ideal_cfg(["hip"], stiffness=7.0),
+        "last": _ideal_cfg(["knee"], stiffness=7.0),
     }
     _, view, control = _make_plan(groups, device=device)
     _set_literal_inputs(view, control)
+    plan = view._execution_plan
+    dispatches = []
+    outputs = []
+    original_scatter = plan._scatter_static_epoch
+    original_eager = plan._run_eager
+    original_compute = view["opaque"].compute
+
+    def _record_scatter(epoch) -> None:
+        dispatches.append(("static", epoch.group_names))
+        original_scatter(epoch)
+
+    def _record_eager(segment) -> None:
+        dispatches.append(("eager", segment.group_name))
+        original_eager(segment)
+
+    def _record_none_outputs(*args, **kwargs):
+        output = original_compute(*args, **kwargs)
+        outputs.append(output)
+        return output
+
+    monkeypatch.setattr(plan, "_scatter_static_epoch", _record_scatter)
+    monkeypatch.setattr(plan, "_run_eager", _record_eager)
+    monkeypatch.setattr(view["opaque"], "compute", _record_none_outputs)
 
     view.compute()
 
+    assert dispatches == [("static", ("implicit",)), ("eager", "opaque"), ("static", ("last",))]
+    assert outputs[0].joint_positions is None
+    assert outputs[0].joint_velocities is None
     torch.testing.assert_close(view.joint_command.position.torch[:, 0], view.command.position.torch[:, 0])
     torch.testing.assert_close(view.joint_command.velocity.torch[:, 0], view.command.velocity.torch[:, 0])
-    torch.testing.assert_close(view.joint_command.effort.torch[:, 0], view["last"].applied_effort[:, 0])
-    torch.testing.assert_close(view.computed_effort.torch[:, 0], view["last"].computed_effort[:, 0])
-    torch.testing.assert_close(view.applied_effort.torch[:, 0], view["last"].applied_effort[:, 0])
+    torch.testing.assert_close(view.joint_command.effort.torch[:, 0], view["opaque"].applied_effort[:, 0])
+    torch.testing.assert_close(view.computed_effort.torch[:, 0], view["opaque"].computed_effort[:, 0])
+    torch.testing.assert_close(view.applied_effort.torch[:, 0], view["opaque"].applied_effort[:, 0])
+    torch.testing.assert_close(view.joint_command.effort.torch[:, 1], view["last"].applied_effort[:, 0])
+    torch.testing.assert_close(view.computed_effort.torch[:, 1], view["last"].computed_effort[:, 0])
+    torch.testing.assert_close(view.applied_effort.torch[:, 1], view["last"].applied_effort[:, 0])
 
 
 @pytest.mark.parametrize("device", _available_devices())
@@ -461,26 +538,240 @@ def test_plan_rejects_dirty_then_stale_generation(device: str) -> None:
 
 
 @pytest.mark.parametrize("device", _available_devices())
-def test_plan_reuses_stable_staging_and_one_compute_per_stateless_type(monkeypatch, device: str) -> None:
-    """Catch plan-owned scratch or dispatch that scales with homogeneous group count."""
-    groups = {f"group_{index}": _ideal_cfg(["hip"], stiffness=float(index + 1)) for index in range(12)}
+@pytest.mark.parametrize("group_count", [1, 3, 12])
+def test_all_stateless_plan_reuses_one_compute_and_one_fused_scatter(
+    monkeypatch, device: str, group_count: int
+) -> None:
+    """Catch group-count-dependent stateless compute or final scatter dispatch."""
+    groups = {
+        **{f"ideal_{index}": _ideal_cfg(["hip"], stiffness=float(index + 1)) for index in range(group_count)},
+        **{f"dc_{index}": _dc_cfg(["knee"], stiffness=float(index + 4)) for index in range(group_count)},
+        **{f"implicit_{index}": _implicit_cfg(["ankle"], stiffness=float(index + 7)) for index in range(group_count)},
+    }
     _, view, control = _make_plan(groups, device=device)
     _set_literal_inputs(view, control)
     plan = view._execution_plan
-    execution_range = plan.stateless_ranges[0]
-    pointers_before = tuple(array.torch.data_ptr() for array in execution_range.staging.values())
-    calls = 0
-    original_compute = IdealPDActuator.compute
+    range_calls = []
+    scatter_calls = []
+    launch_arguments = []
+    original_run_range = plan._run_range
+    original_scatter = plan._scatter_static_epoch
+    original_launch = _WarpLaunchCache.launch
 
-    def _count_compute(self, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original_compute(self, *args, **kwargs)
+    def _count_range(execution_range) -> None:
+        range_calls.append(execution_range.actuator_type)
+        original_run_range(execution_range)
 
-    monkeypatch.setattr(IdealPDActuator, "compute", _count_compute)
+    def _count_scatter(epoch) -> None:
+        scatter_calls.append(epoch.group_names)
+        original_scatter(epoch)
+
+    def _record_launch(self, key, kernel, *, dim, inputs, outputs) -> None:
+        launch_arguments.append((key, id(key), id(dim), id(inputs), id(outputs)))
+        original_launch(self, key, kernel, dim=dim, inputs=inputs, outputs=outputs)
+
+    monkeypatch.setattr(plan, "_run_range", _count_range)
+    monkeypatch.setattr(plan, "_scatter_static_epoch", _count_scatter)
+    monkeypatch.setattr(_WarpLaunchCache, "launch", _record_launch)
     view.compute()
     view.compute()
 
-    assert calls == 2
-    assert tuple(array.torch.data_ptr() for array in execution_range.staging.values()) == pointers_before
+    assert range_calls == [IdealPDActuator, DCMotor, ImplicitActuator] * 2
+    assert scatter_calls == [tuple(groups)] * 2
     assert len(plan.static_scatter_epochs) == 1
+    assert all(isinstance(execution_range.gather_dim, tuple) for execution_range in plan.stateless_ranges)
+    assert all(isinstance(execution_range.gather_key, tuple) for execution_range in plan.stateless_ranges)
+    implicit_range = next(
+        execution_range
+        for execution_range in plan.stateless_ranges
+        if execution_range.actuator_type is ImplicitActuator
+    )
+    assert isinstance(implicit_range.implicit_inputs, tuple)
+    assert isinstance(implicit_range.implicit_outputs, tuple)
+    epoch = plan.static_scatter_epochs[0]
+    assert isinstance(epoch.scatter_dim, tuple)
+    assert isinstance(epoch.scatter_inputs, tuple)
+    assert isinstance(epoch.scatter_outputs, tuple)
+
+    by_key = {}
+    for key, key_id, dim_id, inputs_id, outputs_id in launch_arguments:
+        by_key.setdefault(key, []).append((key_id, dim_id, inputs_id, outputs_id))
+    assert all(len({value[0] for value in values}) == 1 for values in by_key.values())
+    assert all(len({value[1] for value in values}) == 1 for values in by_key.values())
+    assert all(len({value[2] for value in values}) == 1 for values in by_key.values())
+    assert all(len({value[3] for value in values}) == 1 for values in by_key.values())
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_plan_reuses_selector_joint_id_aliases(device: str) -> None:
+    """Use candidate selector aliases instead of duplicate per-plan joint-ID buffers."""
+    opaque_cfg = _ideal_cfg(["knee"])
+    opaque_cfg.class_type = _OpaqueIdealPD
+    _, view, _ = _make_plan({"ideal": _ideal_cfg(["hip"]), "opaque": opaque_cfg}, device=device)
+
+    plan = view._execution_plan
+    selector_state = view._selector_state
+    execution_range = plan.stateless_ranges[0]
+    eager_segment = plan.eager_segments[0]
+
+    assert execution_range.joint_indices is selector_state.type_joint_ids_wp(IdealPDActuator)
+    assert execution_range.action.joint_indices is selector_state.type_joint_ids(IdealPDActuator)
+    assert eager_segment.joint_indices is selector_state._group_joint_ids_wp["opaque"]
+    assert eager_segment.action.joint_indices is selector_state._group_joint_ids["opaque"]
+
+
+def _storage_metadata(value: object) -> object:
+    """Describe a Torch, Warp, or proxy storage alias without reading its values."""
+    if isinstance(value, ProxyArray):
+        return ("proxy", id(value), _storage_metadata(value.warp), _storage_metadata(value.torch))
+    if isinstance(value, torch.Tensor):
+        return (
+            "torch",
+            id(value),
+            value.untyped_storage().data_ptr(),
+            value.data_ptr(),
+            value.storage_offset(),
+            tuple(value.shape),
+            tuple(value.stride()),
+            value.dtype,
+            str(value.device),
+        )
+    if isinstance(value, wp.array):
+        tensor = wp.to_torch(value)
+        return (
+            "warp",
+            id(value),
+            value.ptr,
+            tuple(value.shape),
+            value.dtype,
+            str(value.device),
+            tensor.untyped_storage().data_ptr(),
+            tensor.data_ptr(),
+            tensor.storage_offset(),
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+            tensor.dtype,
+            str(tensor.device),
+        )
+    return value
+
+
+def _plan_state_fingerprint(plan, view) -> tuple[tuple[str, object], ...]:
+    """Capture every Task-10-owned launch alias by a stable descriptive name."""
+    aliases = {}
+    for execution_range in plan.stateless_ranges:
+        range_name = execution_range.actuator_type.__name__
+        for name, value in execution_range.staging.items():
+            aliases[f"range:{range_name}:staging:{name}"] = _storage_metadata(value)
+        aliases[f"range:{range_name}:selector_ids"] = _storage_metadata(execution_range.joint_indices)
+        action = execution_range.action
+        if action is not None:
+            for name, value in (
+                ("position", action.joint_positions),
+                ("velocity", action.joint_velocities),
+                ("effort", action.joint_efforts),
+                ("joint_ids", action.joint_indices),
+            ):
+                aliases[f"range:{range_name}:action:{name}"] = _storage_metadata(value)
+        binding = execution_range.executor.__dict__["_parameter_binding"]
+        for name, value in binding.arrays.items():
+            aliases[f"range:{range_name}:parameter:{name}"] = _storage_metadata(value)
+    for epoch_index, epoch in enumerate(plan.static_scatter_epochs):
+        for name, value in epoch.owner_slots_by_field.items():
+            aliases[f"epoch:{epoch_index}:owner:{name}"] = _storage_metadata(value)
+    for name, value in (
+        ("raw_position", view.command.position),
+        ("raw_velocity", view.command.velocity),
+        ("raw_effort", view.command.effort),
+        ("processed_position", view.joint_command.position),
+        ("processed_velocity", view.joint_command.velocity),
+        ("processed_effort", view.joint_command.effort),
+        ("computed_effort", view.computed_effort),
+        ("applied_effort", view.applied_effort),
+    ):
+        aliases[f"joint_domain:{name}"] = _storage_metadata(value)
+    return tuple(sorted(aliases.items()))
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_stateless_launch_arguments_and_cached_commands_stay_stable_after_parameter_write(
+    monkeypatch, device: str
+) -> None:
+    """Keep fixed launch aliases and CUDA command objects across public parameter writes."""
+    groups = {
+        "ideal": _ideal_cfg(["hip"]),
+        "dc": _dc_cfg(["knee"]),
+        "implicit": _implicit_cfg(["ankle"]),
+    }
+    _, view, control = _make_plan(groups, device=device)
+    _set_literal_inputs(view, control)
+    plan = view._execution_plan
+    arguments = defaultdict(list)
+    original_launch = _WarpLaunchCache.launch
+
+    def _record_launch(self, key, kernel, *, dim, inputs, outputs) -> None:
+        arguments[key].append(
+            (
+                id(key),
+                id(dim),
+                id(inputs),
+                id(outputs),
+                tuple(_storage_metadata(value) for value in inputs),
+                tuple(_storage_metadata(value) for value in outputs),
+            )
+        )
+        original_launch(self, key, kernel, dim=dim, inputs=inputs, outputs=outputs)
+
+    monkeypatch.setattr(_WarpLaunchCache, "launch", _record_launch)
+    view.compute()
+    cached_commands = dict(plan._launch_cache._commands)
+    warm_state = _plan_state_fingerprint(plan, view)
+    view.by_type[IdealPDActuator].set_parameter_index("stiffness", 9.0)
+    view.compute()
+
+    assert arguments
+    assert all(len(history) == 2 and history[0] == history[1] for history in arguments.values())
+    assert all(plan._launch_cache._commands[key] is command for key, command in cached_commands.items())
+    assert _plan_state_fingerprint(plan, view) == warm_state
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA cached launch commands")
+def test_warmed_stateless_cuda_plan_constructs_no_plan_boundary_arrays_or_synchronizes(monkeypatch) -> None:
+    """Keep a warmed all-stateless CUDA execution path allocation and synchronization free."""
+    from isaaclab.actuators import actuator_execution
+
+    groups = {
+        "ideal": _ideal_cfg(["hip"]),
+        "dc": _dc_cfg(["knee"]),
+        "implicit": _implicit_cfg(["ankle"]),
+    }
+    _, view, control = _make_plan(groups, device="cuda")
+    _set_literal_inputs(view, control)
+    view.compute()
+
+    def _forbid(*_args, **_kwargs):
+        raise AssertionError("warmed Task-10 execution constructed an array or synchronized the host")
+
+    original_to = torch.Tensor.to
+
+    def _forbid_cpu_transfer(tensor, *args, **kwargs):
+        device = kwargs.get("device", args[0] if args else None)
+        if isinstance(device, (str, torch.device)) and torch.device(device).type == "cpu":
+            _forbid()
+        return original_to(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(actuator_execution.wp, "array", _forbid)
+    monkeypatch.setattr(actuator_execution.wp, "empty", _forbid)
+    monkeypatch.setattr(actuator_execution.wp, "zeros", _forbid)
+    monkeypatch.setattr(actuator_execution.wp, "from_torch", _forbid)
+    for name in ("synchronize", "synchronize_device", "synchronize_stream"):
+        if hasattr(actuator_execution.wp, name):
+            monkeypatch.setattr(actuator_execution.wp, name, _forbid)
+    monkeypatch.setattr(torch.cuda, "synchronize", _forbid)
+    monkeypatch.setattr(torch.Tensor, "cpu", _forbid)
+    monkeypatch.setattr(torch.Tensor, "tolist", _forbid)
+    monkeypatch.setattr(torch.Tensor, "item", _forbid)
+    monkeypatch.setattr(torch.Tensor, "to", _forbid_cpu_transfer)
+
+    view.compute()
+    view.compute()

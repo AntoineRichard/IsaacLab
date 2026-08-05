@@ -2529,8 +2529,8 @@ def test_context_ready_snapshot_finalizes_order_ten_registration_and_stop_replay
     assert registered[1] is not old
 
 
-def test_plan_build_failure_invalidates_already_installed_candidate_plans_and_allows_retry(monkeypatch) -> None:
-    """Candidate plan construction remains transactional before facade publication."""
+def test_pre_return_plan_build_failure_invalidates_prior_candidate_plan_and_allows_retry(monkeypatch) -> None:
+    """A real plan-build exception releases prior candidate bindings before publication."""
     from isaaclab.actuators import actuator_execution
 
     cfgs = {
@@ -2546,24 +2546,27 @@ def test_plan_build_failure_invalidates_already_installed_candidate_plans_and_al
     second = _register_managed(collection, "second", _SourceResolvingControl(), cfgs)
     original_build = actuator_execution._ArticulationExecutionPlan.build
     built_plans = []
+    build_attempts = 0
 
-    def _fail_after_build(cls, **kwargs):
+    def _fail_before_second_build(cls, **kwargs):
+        nonlocal build_attempts
+        if build_attempts == 1:
+            raise RuntimeError("injected pre-return execution plan build failure")
         plan = original_build(**kwargs)
         built_plans.append(plan)
-        if len(built_plans) == 2:
-            raise RuntimeError("injected execution plan build failure")
+        build_attempts += 1
         return plan
 
     with monkeypatch.context() as patch:
         patch.setattr(
             actuator_execution._ArticulationExecutionPlan,
             "build",
-            classmethod(_fail_after_build),
+            classmethod(_fail_before_second_build),
         )
-        with pytest.raises(RuntimeError, match="injected execution plan build failure"):
+        with pytest.raises(RuntimeError, match="injected pre-return execution plan build failure"):
             collection.finalize()
 
-    assert len(built_plans) == 2
+    assert len(built_plans) == 1
     assert not built_plans[0]._valid
     assert not first.is_ready and not second.is_ready
     with pytest.raises(RuntimeError, match="finalization failed"):
@@ -2613,15 +2616,20 @@ def test_stop_releases_the_published_execution_plan_before_staling_its_view() ->
         )
     }
     collection = ActuatorCollection(_VariantSimulation())
-    view = _register_managed(collection, "first", _SourceResolvingControl(), cfgs)
+    control = _SourceResolvingControl()
+    view = _register_managed(collection, "first", control, cfgs)
     collection.finalize()
     plan = view._execution_plan
 
     collection.clear_generation()
 
     assert not plan._valid
+    assert plan._control is None
     assert plan.stateless_ranges == ()
     assert plan.eager_segments == ()
+    assert plan.static_scatter_epochs == ()
+    assert plan._schedule == ()
+    assert plan._launch_cache._commands == {}
     with pytest.raises(RuntimeError, match="stale"):
         plan.compute()
     with pytest.raises(RuntimeError, match="stale actuator view"):

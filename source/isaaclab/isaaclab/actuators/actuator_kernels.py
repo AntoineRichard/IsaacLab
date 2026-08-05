@@ -362,7 +362,7 @@ def gather_actuator_batch(
     batch_joint_vel[env_id, batch_joint_id] = joint_vel[env_id, joint_id]
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def compute_implicit_actuator_range(
     command_pos: wp.array2d(dtype=wp.float32),
     command_vel: wp.array2d(dtype=wp.float32),
