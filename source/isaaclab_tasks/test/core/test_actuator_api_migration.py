@@ -281,7 +281,12 @@ _DEPRECATED_ATTRIBUTES = {
     "set_joint_effort_target_index",
     "set_joint_effort_target_mask",
 }
-_DEPRECATED_DATA_ATTRIBUTES = {"soft_joint_vel_limits"}
+_DEPRECATED_DATA_ATTRIBUTES = {
+    "joint_effort_target",
+    "joint_pos_target",
+    "joint_vel_target",
+    "soft_joint_vel_limits",
+}
 _COMPATIBILITY_SOURCES = {
     "source/isaaclab/isaaclab/actuators/actuator_collection.py",
     "source/isaaclab/isaaclab/assets/articulation/base_articulation.py",
@@ -305,6 +310,12 @@ _COMPATIBILITY_TEST_SCOPES = {
     # These tests intentionally preserve released compatibility behavior.
     "source/isaaclab/test/assets/test_articulation_ordering_iface.py": {
         "test_newton_data_aliases_are_bound_to_nested_actuator_view",
+        "test_physx_newton_actuator_forces_are_written_in_backend_order",
+    },
+    "source/isaaclab/test/assets/test_articulation_iface.py": {
+        "test_joint_effort_target",
+        "test_joint_pos_target",
+        "test_joint_vel_target",
     },
     "source/isaaclab/test/test_mock_interfaces/test_mock_assets.py": {
         "test_set_joint_position_target",
