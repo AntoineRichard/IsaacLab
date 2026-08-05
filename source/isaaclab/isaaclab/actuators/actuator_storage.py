@@ -17,6 +17,7 @@ import torch
 import warp as wp
 
 from isaaclab.utils.warp import ProxyArray
+from isaaclab.utils.warp.launch_cache import _WarpLaunchCache
 
 from . import actuator_kernels
 
@@ -51,6 +52,35 @@ def _publish_construction_stream(
     """Make Warp construction writes visible to the caller's Torch stream."""
     if torch_stream is not None and caller_stream is not None and torch_stream.cuda_stream != caller_stream.cuda_stream:
         caller_stream.wait_stream(torch_stream)
+
+
+@dataclass(frozen=True)
+class _CompatibilityProjectionRefresh:
+    """One fixed fill/scatter launch sequence for a legacy projection."""
+
+    fill_key: tuple[str, int, str]
+    fill_dim: tuple[int, int]
+    fill_value: float
+    target: wp.array2d(dtype=wp.float32)
+    scatters: tuple[tuple[tuple[str, int, str, int], tuple[int, int], tuple[object, object]], ...]
+
+    def launch(self, launch_cache: _WarpLaunchCache) -> None:
+        """Run the prebound launch sequence without facade traversal."""
+        launch_cache.launch(
+            self.fill_key,
+            actuator_kernels.fill_compatibility_projection,
+            dim=self.fill_dim,
+            inputs=(self.fill_value,),
+            outputs=(self.target,),
+        )
+        for key, dim, inputs in self.scatters:
+            launch_cache.launch(
+                key,
+                actuator_kernels.scatter_compatibility_projection,
+                dim=dim,
+                inputs=inputs,
+                outputs=(self.target,),
+            )
 
 
 class _GuardedIterator(Iterator[Any]):
@@ -1706,6 +1736,41 @@ class _JointDomainStore:
             source = binding.parameter_proxies.get(source_name)
             if source is not None:
                 projection.torch[:, binding.joint_indices] = source.torch
+
+    def bind_compatibility_projection_refresh(
+        self, name: str, layout: _ArticulationLayout, groups: Mapping[str, ActuatorBase]
+    ) -> _CompatibilityProjectionRefresh:
+        """Bind fixed Warp launches for one already allocated compatibility projection."""
+        projection = self.compatibility_projection(name, layout)
+        source_name, fill = {
+            "soft_joint_vel_limits": ("velocity_limit", 0.0),
+            "gear_ratio": ("gear_ratio", 1.0),
+        }.get(name, (None, None))
+        if source_name is None:
+            raise KeyError(f"Unknown actuator compatibility projection {name!r}.")
+        scatters = []
+        for group_index, group_layout in enumerate(layout.group_layouts):
+            binding = groups[group_layout.name].__dict__.get("_parameter_binding")
+            if binding is None or binding.parameter_proxies is None:
+                continue
+            source = binding.parameter_proxies.get(source_name)
+            if source is None:
+                continue
+            joint_indices = wp.from_torch(binding.joint_indices, dtype=wp.int32)
+            scatters.append(
+                (
+                    ("compatibility_scatter", id(layout), name, group_index),
+                    (layout.num_worlds, binding.joint_indices.shape[0]),
+                    (source.warp, joint_indices),
+                )
+            )
+        return _CompatibilityProjectionRefresh(
+            fill_key=("compatibility_fill", id(layout), name),
+            fill_dim=(layout.num_worlds, layout.num_joints),
+            fill_value=fill,
+            target=projection.warp,
+            scatters=tuple(scatters),
+        )
 
     def refresh_compatibility_projections(
         self, layout: _ArticulationLayout, groups: Mapping[str, ActuatorBase]

@@ -16,6 +16,22 @@ from isaaclab.utils.warp.index_kernel import IndexKernelDispatcher
 
 
 @wp.kernel(enable_backward=False)
+def fill_compatibility_projection(value: float, target: wp.array2d(dtype=wp.float32)):
+    """Fill one compatibility projection with its legacy default."""
+    env_id, joint_id = wp.tid()
+    target[env_id, joint_id] = value
+
+
+@wp.kernel(enable_backward=False)
+def scatter_compatibility_projection(
+    source: wp.array2d(dtype=wp.float32), joint_indices: wp.array(dtype=wp.int32), target: wp.array2d(dtype=wp.float32)
+):
+    """Scatter one fixed group parameter source into a compatibility projection."""
+    env_id, source_joint_id = wp.tid()
+    target[env_id, joint_indices[source_joint_id]] = source[env_id, source_joint_id]
+
+
+@wp.kernel(enable_backward=False)
 def write_2d_float_with_indices(
     source: wp.array2d(dtype=wp.float32),
     env_ids: wp.array(dtype=Any),

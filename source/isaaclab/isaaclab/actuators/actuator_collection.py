@@ -1776,7 +1776,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 if execution_plan is None:
                     raise RuntimeError(self._failure)
                 execution_plan.register_compatibility_projection(
-                    name, lambda: self._refresh_compatibility_projection(name)
+                    name, generation.joint_store.bind_compatibility_projection_refresh(name, layout, self)
                 )
             self._refresh_compatibility_projection(name)
             return projection
@@ -1792,6 +1792,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 raise RuntimeError(
                     "Actuator compatibility storage is not available before the scoped facade is installed."
                 )
+            execution_plan = self._execution_plan
+            if execution_plan is not None and execution_plan.refresh_compatibility_projection(name):
+                return
             generation.joint_store.refresh_compatibility_projection(name, layout, self)
 
         def _refresh_compatibility_projections(self) -> None:

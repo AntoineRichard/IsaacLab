@@ -18,7 +18,10 @@ from isaaclab.actuators.actuator_net import ActuatorNetMLP
 from isaaclab.actuators.actuator_net_cfg import ActuatorNetMLPCfg
 from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+pytestmark = [
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available"),
+    pytest.mark.filterwarnings("ignore:.*torch.jit.*:DeprecationWarning"),
+]
 
 
 @dataclass(frozen=True)
@@ -136,13 +139,32 @@ def test_warp_torch_interop_capture_uses_changed_pointer_stable_inputs(tmp_path)
     _assert_matches_eager_literal(second, command=3.0, position=-0.75, velocity=0.5)
 
 
-def test_default_torch_stream_uses_a_dedicated_graph_stream(tmp_path) -> None:
+def test_default_torch_stream_uses_a_dedicated_graph_stream(monkeypatch, tmp_path) -> None:
     """Catch default-stream callers that silently lose graph capture or ordering."""
     plan = _make_cuda_plan(actuator_types=(DCMotor,), tmp_path=tmp_path)
+    warmed_streams = []
+    original_warmup = plan.execution._warmup_graphable_prefix
+
+    def _record_warmup() -> None:
+        warmed_streams.append(torch.cuda.current_stream().cuda_stream)
+        original_warmup()
+
+    monkeypatch.setattr(plan.execution, "_warmup_graphable_prefix", _record_warmup)
     plan.execution.warmup_and_capture()
     assert plan.execution._full_graph is not None
     assert plan.execution._graph_torch_stream is not None
     assert plan.execution._graph_torch_stream.cuda_stream != torch.cuda.current_stream().cuda_stream
+    assert warmed_streams == [plan.execution._graph_torch_stream.cuda_stream]
+    original_event = torch.cuda.Event
+
+    def _forbid_event(*args, **kwargs):
+        raise AssertionError("replay allocated a CUDA event")
+
+    def _forbid_wait_stream(*args, **kwargs):
+        raise AssertionError("replay used an allocating wait_stream barrier")
+
+    monkeypatch.setattr(torch.cuda, "Event", _forbid_event)
+    monkeypatch.setattr(torch.cuda.Stream, "wait_stream", _forbid_wait_stream)
     plan.articulation.command.position.torch.fill_(3.0)
     plan.articulation.command.velocity.torch.fill_(3.0)
     plan.articulation.command.effort.torch.fill_(3.0)
@@ -151,6 +173,7 @@ def test_default_torch_stream_uses_a_dedicated_graph_stream(tmp_path) -> None:
     plan.articulation.compute()
     expected = min(max(2.0 * 3.75 + 0.5 * 2.5 + 3.0, -15.0), 15.0)
     torch.testing.assert_close(plan.articulation.applied_effort.torch[:, 2], torch.full((2,), expected, device="cuda"))
+    monkeypatch.setattr(torch.cuda, "Event", original_event)
 
 
 def test_fully_graphable_plan_replays_one_complete_graph(monkeypatch, tmp_path) -> None:
@@ -211,6 +234,22 @@ def test_mixed_plan_captures_prefix_then_runs_eager_and_cached_scatter(monkeypat
     assert len(cached_scatter) == 1
 
 
+def test_mixed_prefix_refreshes_registered_projection(tmp_path) -> None:
+    """Catch a prefix replay that returns before its compatibility epilogue."""
+    plan = _make_cuda_plan(actuator_types=(IdealPDActuator, ActuatorNetMLP), tmp_path=tmp_path)
+    plan.warmup_and_capture()
+    assert plan.execution._prefix_graph is not None
+    held = plan.articulation._get_compatibility_projection("soft_joint_vel_limits").torch
+    with torch.cuda.stream(plan.stream):
+        plan.articulation["group_0"].velocity_limit.fill_(7.0)
+    plan.compute()
+    torch.cuda.current_stream().wait_stream(plan.stream)
+    expected = torch.zeros_like(held)
+    expected[:, 1].fill_(7.0)
+    expected[:, 2].fill_(10.0)
+    torch.testing.assert_close(held, expected, rtol=0.0, atol=0.0)
+
+
 def test_capture_failure_falls_back_for_the_generation(monkeypatch, tmp_path) -> None:
     """Catch a failed capture retried on every frame instead of using cached eager launches."""
     plan = _make_cuda_plan(actuator_types=(DCMotor,), tmp_path=tmp_path)
@@ -245,6 +284,7 @@ def test_projection_activated_after_capture_refreshes_outside_graph(tmp_path) ->
     plan.warmup_and_capture()
     assert plan.execution._post_graph_projection_launches == ()
     held = plan.articulation._get_compatibility_projection("soft_joint_vel_limits").torch
+    assert any(key[0] == "compatibility_fill" for key in plan.execution._launch_cache._commands)
     with torch.cuda.stream(plan.stream):
         plan.articulation["group_0"].velocity_limit.fill_(7.0)
     plan.compute()
@@ -254,6 +294,24 @@ def test_projection_activated_after_capture_refreshes_outside_graph(tmp_path) ->
     torch.testing.assert_close(held, expected, rtol=0.0, atol=0.0)
     assert len(plan.execution._post_graph_projection_launches) == 1
     assert plan.execution._full_graph is not None
+
+
+def test_outer_capture_eager_fallback_refreshes_registered_projection(tmp_path) -> None:
+    """Catch outer capture fallback that leaves a full-graph projection stale."""
+    plan = _make_cuda_plan(actuator_types=(DCMotor,), tmp_path=tmp_path)
+    plan.warmup_and_capture()
+    held = plan.articulation._get_compatibility_projection("soft_joint_vel_limits").torch
+    with torch.cuda.stream(plan.stream):
+        plan.articulation["group_0"].velocity_limit.fill_(7.0)
+        stream = wp.stream_from_torch(plan.stream)
+        with wp.ScopedStream(stream, sync_enter=False):
+            with wp.ScopedCapture(stream=stream) as capture:
+                plan.compute()
+        wp.capture_launch(capture.graph, stream=stream)
+    torch.cuda.current_stream().wait_stream(plan.stream)
+    expected = torch.zeros_like(held)
+    expected[:, 2].fill_(7.0)
+    torch.testing.assert_close(held, expected, rtol=0.0, atol=0.0)
 
 
 def test_plan_invalidation_releases_graphs_and_recorded_launches(tmp_path) -> None:
