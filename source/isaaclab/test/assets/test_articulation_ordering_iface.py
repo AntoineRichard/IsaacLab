@@ -1988,10 +1988,10 @@ class TestArticulationOperations:
             ("joint_pos_target", art.actuators.command.position),
             ("joint_vel_target", art.actuators.command.velocity),
             ("joint_effort_target", art.actuators.command.effort),
-            ("computed_torque", art.actuators.computed_torque),
-            ("applied_torque", art.actuators.applied_torque),
-            ("soft_joint_vel_limits", art.actuators.soft_joint_vel_limits),
-            ("gear_ratio", art.actuators.gear_ratio),
+            ("computed_torque", art.actuators.computed_effort),
+            ("applied_torque", art.actuators.applied_effort),
+            ("soft_joint_vel_limits", art.actuators._get_compatibility_projection("soft_joint_vel_limits")),
+            ("gear_ratio", art.actuators._get_compatibility_projection("gear_ratio")),
         )
         for data_name, actuator_value in aliases:
             with pytest.warns(DeprecationWarning, match=f"ArticulationData.{data_name} is deprecated"):

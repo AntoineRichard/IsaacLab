@@ -51,6 +51,7 @@ device state, this is the supported pattern.
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -3567,6 +3568,48 @@ def test_set_material_properties(sim, num_articulations, device, add_ground_plan
     # Read back from the simulation and verify the round-trip.
     materials_check = wp.to_torch(view.get_attribute(TT.SHAPE_FRICTION_AND_RESTITUTION))
     torch.testing.assert_close(materials_check, materials)
+
+
+@pytest.mark.parametrize("num_articulations", [1])
+@pytest.mark.parametrize("device", test_devices())
+def test_global_actuator_legacy_data_aliases_are_live_once(sim, num_articulations, device):
+    """Expose deprecated data aliases through the published actuator facade once."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=num_articulations, device=device)
+    sim.reset()
+
+    aliases = (
+        ("joint_pos_target", articulation.actuators.command.position),
+        ("joint_vel_target", articulation.actuators.command.velocity),
+        ("joint_effort_target", articulation.actuators.command.effort),
+        ("computed_torque", articulation.actuators.computed_effort),
+        ("applied_torque", articulation.actuators.applied_effort),
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for alias, expected in aliases:
+            actual = getattr(articulation.data, alias)
+            assert actual.torch.data_ptr() == expected.torch.data_ptr()
+            assert getattr(articulation.data, alias) is actual
+    assert len(caught) == len(aliases)
+    assert all(issubclass(warning.category, DeprecationWarning) for warning in caught)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        velocity_limits = articulation.data.soft_joint_vel_limits
+        gear_ratio = articulation.data.gear_ratio
+        assert articulation.data.soft_joint_vel_limits is velocity_limits
+        assert articulation.data.gear_ratio is gear_ratio
+    assert len(caught) == 2
+    assert set(articulation.actuators._compatibility_allocations) == {"soft_joint_vel_limits", "gear_ratio"}
+    assert not hasattr(articulation, "write_actuator_stiffness_to_sim")
+    assert not hasattr(articulation, "write_actuator_damping_to_sim")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        articulation.data.joint_stiffness
+        articulation.data.joint_damping
+    assert not caught
 
 
 if __name__ == "__main__":

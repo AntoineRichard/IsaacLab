@@ -135,15 +135,28 @@ class ArticulationData(BaseArticulationData):
                 "joint_vel_target": "velocity",
                 "joint_effort_target": "effort",
             }.get(name)
-            replacement = f"command.{command_field}" if command_field is not None else name
-            warnings.warn(
-                f"ArticulationData.{name} is deprecated. Use articulation.actuators.{replacement} instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            if command_field is not None:
+                collection._warn_deprecated(
+                    f"data_{name}",
+                    f"ArticulationData.{name} is deprecated. Use "
+                    f"articulation.actuators.command.{command_field} instead.",
+                    stacklevel=3,
+                )
+                return getattr(collection.command, command_field)
+            effort_name = {"computed_torque": "computed_effort", "applied_torque": "applied_effort"}.get(name)
+            if effort_name is not None:
+                collection._warn_deprecated(
+                    f"data_{name}",
+                    f"ArticulationData.{name} is deprecated. Use articulation.actuators.{effort_name} instead.",
+                    stacklevel=3,
+                )
+                return getattr(collection, effort_name)
+            collection._warn_deprecated(
+                f"data_{name}",
+                f"ArticulationData.{name} is deprecated; use the relevant typed actuator parameter instead.",
+                stacklevel=3,
             )
-            return (
-                getattr(collection.command, command_field) if command_field is not None else getattr(collection, name)
-            )
+            return self._get_actuator_compatibility_projection(name)
         proxy = getattr(self, proxy_name)
         if proxy is None:
             proxy = ProxyArray(getattr(self, buffer_name))

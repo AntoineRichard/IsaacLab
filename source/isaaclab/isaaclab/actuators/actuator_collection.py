@@ -1761,6 +1761,18 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             for name in tuple(self._compatibility_allocations):
                 self._refresh_compatibility_projection(name)
 
+        def _refresh_solver_compatibility_sidecars(self, name: str, values: torch.Tensor) -> None:
+            """Refresh already materialized group solver sidecars after a backend write.
+
+            Args:
+                name: Solver parameter name.
+                values: Complete articulation-order parameter values.
+            """
+            if not self.is_ready:
+                return
+            for actuator in dict.values(self):
+                actuator._refresh_solver_compatibility_sidecar(name, values)
+
         def _write_deprecated_actuator_gain(
             self,
             name: str,
@@ -1782,13 +1794,25 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         def write_actuator_stiffness_to_sim(
             self, *, stiffness: torch.Tensor, env_ids: torch.Tensor, joint_ids: torch.Tensor
         ) -> None:
-            """Deprecated. Set actuator stiffness through capable exact type views."""
+            """Set deprecated actuator stiffness [N/m or N·m/rad, depending on joint type].
+
+            Args:
+                stiffness: Values in articulation order, shape ``(len(env_ids), len(joint_ids))``.
+                env_ids: Environment indices.
+                joint_ids: Joint indices.
+            """
             self._write_deprecated_actuator_gain("stiffness", stiffness, env_ids, joint_ids)
 
         def write_actuator_damping_to_sim(
             self, *, damping: torch.Tensor, env_ids: torch.Tensor, joint_ids: torch.Tensor
         ) -> None:
-            """Deprecated. Set actuator damping through capable exact type views."""
+            """Set deprecated actuator damping [N·s/m or N·m·s/rad, depending on joint type].
+
+            Args:
+                damping: Values in articulation order, shape ``(len(env_ids), len(joint_ids))``.
+                env_ids: Environment indices.
+                joint_ids: Joint indices.
+            """
             self._write_deprecated_actuator_gain("damping", damping, env_ids, joint_ids)
 
         @property
@@ -3296,6 +3320,13 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
     def __setitem__(self, name: str, actuator: ActuatorBase) -> None:
         raise TypeError("ActuatorCollection membership is fixed after initialization.")
+
+    def _warn_deprecated(self, key: str, message: str, *, stacklevel: int = 3) -> None:
+        """Emit one deprecation warning for the legacy collection construction path."""
+        warning_keys = self.__dict__.setdefault("_deprecated_warning_keys", set())
+        if key not in warning_keys:
+            warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
+            warning_keys.add(key)
 
     """
     Properties.

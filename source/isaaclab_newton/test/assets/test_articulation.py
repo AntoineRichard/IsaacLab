@@ -28,6 +28,7 @@ simulation_app = AppLauncher(headless=True, device=resolve_test_sim_device()).ap
 """Rest everything follows."""
 
 import sys
+import warnings
 from copy import copy, deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -1003,8 +1004,14 @@ def test_newton_actuator_gain_writes_map_public_joint_subset_to_backend(
     stiffness = torch.tensor([[101.0, 106.0, 110.0]], device=articulation.device)
     damping = torch.tensor([[11.0, 16.0, 20.0]], device=articulation.device)
 
-    articulation.write_actuator_stiffness_to_sim(stiffness=stiffness, env_ids=env_ids, joint_ids=joint_ids)
-    articulation.write_actuator_damping_to_sim(damping=damping, env_ids=env_ids, joint_ids=joint_ids)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        articulation.write_actuator_stiffness_to_sim(stiffness=stiffness, env_ids=env_ids, joint_ids=joint_ids)
+        articulation.write_actuator_damping_to_sim(damping=damping, env_ids=env_ids, joint_ids=joint_ids)
+        articulation.write_actuator_stiffness_to_sim(stiffness=stiffness, env_ids=env_ids, joint_ids=joint_ids)
+        articulation.write_actuator_damping_to_sim(damping=damping, env_ids=env_ids, joint_ids=joint_ids)
+    assert len(caught) == 2
+    assert all(issubclass(warning.category, DeprecationWarning) for warning in caught)
 
     backend_joint_ids = torch.tensor(
         articulation.joint_ordering.user_to_backend_indices,
@@ -1017,6 +1024,50 @@ def test_newton_actuator_gain_writes_map_public_joint_subset_to_backend(
     expected_damping[env_ids.unsqueeze(1), backend_joint_ids.unsqueeze(0)] = damping
     torch.testing.assert_close(gather_controller_parameter("kp"), expected_stiffness)
     torch.testing.assert_close(gather_controller_parameter("kd"), expected_damping)
+
+
+@pytest.mark.parametrize("num_articulations", [1])
+@pytest.mark.parametrize("device", ["cpu"])
+@pytest.mark.parametrize("gravity_enabled", [False])
+@pytest.mark.parametrize("articulation_type", ["anymal"])
+def test_global_actuator_legacy_data_aliases_are_live_once(
+    sim, num_articulations, device, gravity_enabled, articulation_type
+):
+    """Expose deprecated data aliases through the published actuator facade once."""
+    articulation_cfg = generate_articulation_cfg(articulation_type=articulation_type)
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations, device=sim.device)
+    sim.reset()
+
+    aliases = (
+        ("joint_pos_target", articulation.actuators.command.position),
+        ("joint_vel_target", articulation.actuators.command.velocity),
+        ("joint_effort_target", articulation.actuators.command.effort),
+        ("computed_torque", articulation.actuators.computed_effort),
+        ("applied_torque", articulation.actuators.applied_effort),
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for alias, expected in aliases:
+            actual = getattr(articulation.data, alias)
+            assert actual.torch.data_ptr() == expected.torch.data_ptr()
+            assert getattr(articulation.data, alias) is actual
+    assert len(caught) == len(aliases)
+    assert all(issubclass(warning.category, DeprecationWarning) for warning in caught)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        velocity_limits = articulation.data.soft_joint_vel_limits
+        gear_ratio = articulation.data.gear_ratio
+        assert articulation.data.soft_joint_vel_limits is velocity_limits
+        assert articulation.data.gear_ratio is gear_ratio
+    assert len(caught) == 2
+    assert set(articulation.actuators._compatibility_allocations) == {"soft_joint_vel_limits", "gear_ratio"}
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        articulation.data.joint_stiffness
+        articulation.data.joint_damping
+    assert not caught
 
 
 @pytest.mark.parametrize("num_articulations", [1])
@@ -1300,8 +1351,8 @@ def test_newton_rebind_preserves_lab_owned_actuator_gains(
 
     # Prime: explicit (IdealPD) actuators keep their PD in the collection-owned records,
     # while the solver's sim gains are zeroed so it applies no PD on these DOFs.
-    np.testing.assert_allclose(articulation.actuators.actuator_stiffness.warp.numpy(), 40.0)
-    np.testing.assert_allclose(articulation.actuators.actuator_damping.warp.numpy(), 5.0)
+    np.testing.assert_allclose(articulation.actuators["legs"].stiffness.warp.numpy(), 40.0)
+    np.testing.assert_allclose(articulation.actuators["legs"].damping.warp.numpy(), 5.0)
     np.testing.assert_allclose(data._sim_bind_joint_stiffness_sim.numpy(), 0.0)
     np.testing.assert_allclose(data._sim_bind_joint_damping_sim.numpy(), 0.0)
 
@@ -1326,8 +1377,8 @@ def test_newton_rebind_preserves_lab_owned_actuator_gains(
     data._create_simulation_bindings()
 
     # The collection-owned actuator gains must survive the rebind unchanged...
-    np.testing.assert_allclose(articulation.actuators.actuator_stiffness.warp.numpy(), 40.0)
-    np.testing.assert_allclose(articulation.actuators.actuator_damping.warp.numpy(), 5.0)
+    np.testing.assert_allclose(articulation.actuators["legs"].stiffness.warp.numpy(), 40.0)
+    np.testing.assert_allclose(articulation.actuators["legs"].damping.warp.numpy(), 5.0)
     # ...while the sim-owned mirrors track the solver's freshly seeded (sentinel) gains.
     if has_ordering:
         np.testing.assert_allclose(data._joint_stiffness_user.numpy(), sentinel_ke)

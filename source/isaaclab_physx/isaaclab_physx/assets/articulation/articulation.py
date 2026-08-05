@@ -1376,6 +1376,9 @@ class Articulation(BaseArticulation):
             self.data._joint_stiffness, self.data._joint_stiffness_backend
         )
         self.root_view.set_dof_stiffnesses(wp.clone(joint_stiffness_backend, device="cpu"), indices=cpu_env_ids)
+        refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
+        if refresh_sidecars is not None:
+            refresh_sidecars("stiffness", self.data.joint_stiffness.torch)
 
     def write_joint_stiffness_to_sim_mask(
         self,
@@ -1480,6 +1483,9 @@ class Articulation(BaseArticulation):
             self.data._joint_damping, self.data._joint_damping_backend
         )
         self.root_view.set_dof_dampings(wp.clone(joint_damping_backend, device="cpu"), indices=cpu_env_ids)
+        refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
+        if refresh_sidecars is not None:
+            refresh_sidecars("damping", self.data.joint_damping.torch)
 
     def write_actuator_stiffness_to_sim(
         self,
@@ -1489,12 +1495,6 @@ class Articulation(BaseArticulation):
         joint_ids: torch.Tensor,
     ) -> None:
         """Deprecated. Use :meth:`ActuatorCollection.write_actuator_stiffness_to_sim`."""
-        warnings.warn(
-            "Articulation.write_actuator_stiffness_to_sim is deprecated. Use"
-            " articulation.actuators.write_actuator_stiffness_to_sim instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         self.actuators.write_actuator_stiffness_to_sim(stiffness=stiffness, env_ids=env_ids, joint_ids=joint_ids)
 
     def write_actuator_damping_to_sim(
@@ -1505,12 +1505,6 @@ class Articulation(BaseArticulation):
         joint_ids: torch.Tensor,
     ) -> None:
         """Deprecated. Use :meth:`ActuatorCollection.write_actuator_damping_to_sim`."""
-        warnings.warn(
-            "Articulation.write_actuator_damping_to_sim is deprecated. Use"
-            " articulation.actuators.write_actuator_damping_to_sim instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         self.actuators.write_actuator_damping_to_sim(damping=damping, env_ids=env_ids, joint_ids=joint_ids)
 
     def write_joint_damping_to_sim_mask(
@@ -1954,6 +1948,9 @@ class Articulation(BaseArticulation):
         )
         self.root_view.set_dof_armatures(wp.clone(joint_armature_backend, device="cpu"), indices=cpu_env_ids)
         self.data._reset_dynamics(mass_matrix=True)
+        refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
+        if refresh_sidecars is not None:
+            refresh_sidecars("armature", self.data.joint_armature.torch)
 
     def write_joint_armature_to_sim_mask(
         self,
@@ -2689,11 +2686,11 @@ class Articulation(BaseArticulation):
         full_data: bool = False,
     ) -> None:
         """Deprecated. Use :meth:`ActuatorCollection.Command.set_position_index`."""
-        warnings.warn(
+        self.actuators._warn_deprecated(
+            "set_joint_position_target_index",
             "Articulation.set_joint_position_target_index is deprecated. Use"
             " articulation.actuators.command.set_position_index instead.",
-            DeprecationWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
         self.actuators.command.set_position_index(
             value=target, joint_ids=joint_ids, env_ids=env_ids, full_data=full_data
@@ -2707,11 +2704,11 @@ class Articulation(BaseArticulation):
         env_mask: wp.array | None = None,
     ) -> None:
         """Deprecated. Use :meth:`ActuatorCollection.Command.set_position_mask`."""
-        warnings.warn(
+        self.actuators._warn_deprecated(
+            "set_joint_position_target_mask",
             "Articulation.set_joint_position_target_mask is deprecated. Use"
             " articulation.actuators.command.set_position_mask instead.",
-            DeprecationWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
         self.actuators.command.set_position_mask(value=target, joint_mask=joint_mask, env_mask=env_mask)
 
@@ -2724,11 +2721,11 @@ class Articulation(BaseArticulation):
         full_data: bool = False,
     ) -> None:
         """Deprecated. Use :meth:`ActuatorCollection.Command.set_velocity_index`."""
-        warnings.warn(
+        self.actuators._warn_deprecated(
+            "set_joint_velocity_target_index",
             "Articulation.set_joint_velocity_target_index is deprecated. Use"
             " articulation.actuators.command.set_velocity_index instead.",
-            DeprecationWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
         self.actuators.command.set_velocity_index(
             value=target, joint_ids=joint_ids, env_ids=env_ids, full_data=full_data
@@ -2742,11 +2739,11 @@ class Articulation(BaseArticulation):
         env_mask: wp.array | None = None,
     ) -> None:
         """Deprecated. Use :meth:`ActuatorCollection.Command.set_velocity_mask`."""
-        warnings.warn(
+        self.actuators._warn_deprecated(
+            "set_joint_velocity_target_mask",
             "Articulation.set_joint_velocity_target_mask is deprecated. Use"
             " articulation.actuators.command.set_velocity_mask instead.",
-            DeprecationWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
         self.actuators.command.set_velocity_mask(value=target, joint_mask=joint_mask, env_mask=env_mask)
 
@@ -2759,11 +2756,11 @@ class Articulation(BaseArticulation):
         full_data: bool = False,
     ) -> None:
         """Deprecated. Use :meth:`ActuatorCollection.Command.set_effort_index`."""
-        warnings.warn(
+        self.actuators._warn_deprecated(
+            "set_joint_effort_target_index",
             "Articulation.set_joint_effort_target_index is deprecated. Use"
             " articulation.actuators.command.set_effort_index instead.",
-            DeprecationWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
         self.actuators.command.set_effort_index(value=target, joint_ids=joint_ids, env_ids=env_ids, full_data=full_data)
 
@@ -2775,11 +2772,11 @@ class Articulation(BaseArticulation):
         env_mask: wp.array | None = None,
     ) -> None:
         """Deprecated. Use :meth:`ActuatorCollection.Command.set_effort_mask`."""
-        warnings.warn(
+        self.actuators._warn_deprecated(
+            "set_joint_effort_target_mask",
             "Articulation.set_joint_effort_target_mask is deprecated. Use"
             " articulation.actuators.command.set_effort_mask instead.",
-            DeprecationWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
         self.actuators.command.set_effort_mask(value=target, joint_mask=joint_mask, env_mask=env_mask)
 
