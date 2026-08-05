@@ -128,7 +128,6 @@ class ArticulationData(BaseArticulationData):
         self._has_reversed_joints = False
         # pinned-host staging buffers for CPU-only bindings (keyed by tensor_type)
         self._cpu_staging_buffers: dict[int, wp.array] = {}
-        self._actuator_collection: ActuatorCollection | None = None
 
         # obtain gravity from the simulation configuration (fall back to standard
         # gravity when the simulation has not been configured yet, e.g. in unit tests)
@@ -157,26 +156,17 @@ class ArticulationData(BaseArticulationData):
         """Whether the articulation data is fully instantiated and ready to use."""
         return self._is_primed
 
-    def bind_actuator_collection(self, actuators: ActuatorCollection) -> None:
-        """Bind collection-owned actuator buffers for deprecated data aliases."""
-        self._actuator_collection = actuators
-        self._joint_pos_target = actuators.command.position.warp
-        self._joint_vel_target = actuators.command.velocity.warp
-        self._joint_effort_target = actuators.command.effort.warp
-        self._computed_torque = actuators.computed_torque.warp
-        self._applied_torque = actuators.applied_torque.warp
-        self._soft_joint_vel_limits = actuators.soft_joint_vel_limits.warp
-        self._gear_ratio = actuators.gear_ratio.warp
-        self._joint_pos_target_ta = actuators.command.position
-        self._joint_vel_target_ta = actuators.command.velocity
-        self._joint_effort_target_ta = actuators.command.effort
-        self._computed_torque_ta = actuators.computed_torque
-        self._applied_torque_ta = actuators.applied_torque
-        self._soft_joint_vel_limits_ta = actuators.soft_joint_vel_limits
-        self._gear_ratio_ta = actuators.gear_ratio
+    def bind_actuator_collection(self, actuators: ActuatorCollection.ArticulationView) -> None:
+        """Bind the published scoped actuator facade without resolving aliases.
+
+        Compatibility projections are intentionally lazy and owned by the
+        collection facade.  Binding runs while the finalization transaction is
+        still completing, so it must retain only the pointer.
+        """
+        super().bind_actuator_collection(actuators)
 
     def _get_actuator_collection_proxy(self, name: str, buffer_name: str, proxy_name: str) -> ProxyArray:
-        collection = self._actuator_collection
+        collection = self._actuator_view
         if collection is not None:
             command_field = {
                 "joint_pos_target": "position",

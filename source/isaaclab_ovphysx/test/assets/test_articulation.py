@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -76,18 +77,20 @@ pytest.importorskip("ovphysx.types", reason="ovphysx wheel not installed")
 
 from isaaclab_ovphysx import tensor_types as TT  # noqa: E402
 from isaaclab_ovphysx.assets import Articulation  # noqa: E402
+from isaaclab_ovphysx.assets.articulation.actuator_control import OvPhysxActuatorControl  # noqa: E402
 from isaaclab_ovphysx.assets.articulation.articulation_data import ArticulationData  # noqa: E402
 from isaaclab_ovphysx.physics import OvPhysxCfg  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
 import isaaclab.utils.string as string_utils  # noqa: E402
-from isaaclab.actuators import ActuatorBase, IdealPDActuatorCfg, ImplicitActuatorCfg  # noqa: E402
+from isaaclab.actuators import ActuatorBase, IdealPDActuatorCfg, ImplicitActuator, ImplicitActuatorCfg  # noqa: E402
 from isaaclab.assets import ArticulationCfg, get_articulation_name_ordering  # noqa: E402
 from isaaclab.assets.articulation import ordering_kernels  # noqa: E402
+from isaaclab.cloner import ClonePlan  # noqa: E402
 from isaaclab.envs.mdp.terminations import joint_effort_out_of_limit  # noqa: E402
 from isaaclab.managers import SceneEntityCfg  # noqa: E402
-from isaaclab.sim import SimulationCfg, build_simulation_context  # noqa: E402
+from isaaclab.sim import SimulationCfg, SimulationContext, build_simulation_context  # noqa: E402
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR  # noqa: E402
 from isaaclab.utils.version import get_isaac_sim_version, has_kit  # noqa: E402
 from isaaclab.utils.warp.launch_cache import _WarpLaunchCache  # noqa: E402
@@ -110,6 +113,164 @@ _OMNI_PHYSX_SCHEMAS_GAP_REASON = (
 _SPATIAL_TENDON_OVSTAGE_GAP_REASON = (
     "OVPhysX 0.5.9 segfaults while attaching OVStage scenes containing spatial tendon schemas."
 )
+
+
+def test_actuator_data_binding_keeps_only_the_scoped_view_pointer():
+    """A pending facade must bind without resolving its lazy command aliases."""
+
+    class PendingView:
+        @property
+        def command(self):
+            raise AssertionError("OVPhysX data binding must not resolve a pending command facade")
+
+    data = ArticulationData.__new__(ArticulationData)
+    data._actuator_view = None
+    pending = PendingView()
+
+    data.bind_actuator_collection(pending)
+
+    assert data._actuator_view is pending
+
+
+def test_process_actuators_registers_the_ovphysx_control_without_binding_data():
+    """OVPhysX must defer data binding until collection publication completes."""
+
+    articulation = object.__new__(Articulation)
+    pending = object()
+    register = Mock(return_value=pending)
+    object.__setattr__(articulation, "_register_actuator_collection", register)
+    object.__setattr__(articulation, "_initialize_handle", None)
+    object.__setattr__(articulation, "_invalidate_initialize_handle", None)
+    object.__setattr__(articulation, "_prim_deletion_handle", None)
+    object.__setattr__(articulation, "_debug_vis_handle", None)
+    object.__setattr__(
+        articulation,
+        "cfg",
+        SimpleNamespace(actuators={}, actuator_value_resolution_debug_print=False),
+    )
+
+    articulation._process_actuators_cfg()
+
+    register.assert_called_once()
+    assert isinstance(register.call_args.args[0], OvPhysxActuatorControl)
+
+
+def test_actuator_control_submits_scoped_processed_commands_and_preserves_raw_effort_staging():
+    """Applied effort submission must not overwrite the persistent raw effort mirror."""
+
+    raw_effort = wp.array([[3.0, 0.0]], dtype=wp.float32, device="cpu")
+    processed_position = wp.array([[1.0, 2.0]], dtype=wp.float32, device="cpu")
+    processed_velocity = wp.array([[4.0, 5.0]], dtype=wp.float32, device="cpu")
+    applied_effort = wp.array([[6.0, 7.0]], dtype=wp.float32, device="cpu")
+    persistent_raw_effort = wp.zeros((1, 2), dtype=wp.float32, device="cpu")
+    root_view = Mock()
+    articulation = SimpleNamespace(
+        num_instances=1,
+        num_joints=2,
+        device="cpu",
+        data=SimpleNamespace(has_joint_ordering=False),
+        _can_write_effort=True,
+        _can_write_pos_target=True,
+        _can_write_vel_target=True,
+        _has_implicit_actuators=True,
+        _joint_pos_target_backend=None,
+        _joint_vel_target_backend=None,
+        _joint_effort_target_backend=persistent_raw_effort,
+        _applied_torque_backend=None,
+        _root_view=root_view,
+        _get_backend_ordered_joint_buffer=lambda user_buffer, _backend_buffer: user_buffer,
+    )
+    control = OvPhysxActuatorControl(articulation)
+    view = SimpleNamespace(
+        command=SimpleNamespace(effort=SimpleNamespace(warp=raw_effort)),
+        joint_command=SimpleNamespace(
+            position=SimpleNamespace(warp=processed_position),
+            velocity=SimpleNamespace(warp=processed_velocity),
+        ),
+        applied_effort=SimpleNamespace(warp=applied_effort),
+    )
+
+    control.stage_user_command("effort", view, None, None, None, None)
+    control.submit_commands(view)
+
+    calls = root_view.set_attribute.call_args_list
+    assert calls[0].args == (TT.DOF_ACTUATION_FORCE, raw_effort)
+    assert calls[1].args == (TT.DOF_ACTUATION_FORCE, applied_effort)
+    assert calls[2].args == (TT.DOF_POSITION_TARGET, processed_position)
+    assert calls[3].args == (TT.DOF_VELOCITY_TARGET, processed_velocity)
+
+
+def test_implicit_drive_updates_patch_signed_selectors_and_coalesce_before_cpu_submission():
+    """Implicit drive writes must defer one complete CPU binding update per property."""
+
+    drive_target = wp.array([[8.0, 9.0]], dtype=wp.float32, device="cpu")
+    root_view = Mock()
+    staging_calls = []
+
+    class Staging:
+        def patch_write(self, *, actuator_type, name, write):
+            staging_calls.append((actuator_type, name, write))
+
+        def target(self, actuator_type, name):
+            assert actuator_type is ImplicitActuator
+            assert name == "stiffness"
+            return SimpleNamespace(warp=drive_target)
+
+    articulation = SimpleNamespace(
+        num_instances=1,
+        num_joints=2,
+        device="cpu",
+        data=SimpleNamespace(
+            _joint_stiffness_backend=None,
+            _cpu_joint_stiffness=wp.zeros((1, 2), dtype=wp.float32, device="cpu"),
+        ),
+        _root_view=root_view,
+        _get_backend_ordered_joint_buffer=lambda user_buffer, _backend_buffer: user_buffer,
+    )
+    control = OvPhysxActuatorControl(articulation)
+    staging = Staging()
+    signed_env_ids = torch.tensor([-1], dtype=torch.int32)
+    write = SimpleNamespace(
+        actuator_type=ImplicitActuator,
+        backend_parameter_staging=staging,
+        env_ids=signed_env_ids,
+        joint_ids=torch.tensor([1], dtype=torch.int32),
+    )
+
+    control.write_actuator_parameter("stiffness", write)
+    control.write_actuator_parameter("stiffness", write)
+    control._flush_implicit_drive_properties(SimpleNamespace(_backend_parameter_staging=staging))
+
+    assert staging_calls == [(ImplicitActuator, "stiffness", write), (ImplicitActuator, "stiffness", write)]
+    assert staging_calls[0][2].env_ids is signed_env_ids
+    root_view.set_attribute.assert_called_once_with(TT.DOF_STIFFNESS, articulation.data._cpu_joint_stiffness)
+    torch.testing.assert_close(wp.to_torch(articulation.data._cpu_joint_stiffness), torch.tensor([[8.0, 9.0]]))
+
+
+def test_implicit_drive_updates_reject_cuda_capture(mocker):
+    """CPU-only OVPhysX drive writes must be rejected before canonical mutation in capture."""
+
+    control = OvPhysxActuatorControl(SimpleNamespace(device="cuda:0"))
+    mocker.patch(
+        "isaaclab_ovphysx.assets.articulation.actuator_control.wp.get_device",
+        return_value=SimpleNamespace(is_cuda=True, is_capturing=True),
+    )
+
+    with pytest.raises(RuntimeError, match="not capture-safe"):
+        control.preflight_actuator_parameter_write("damping", SimpleNamespace())
+
+
+def test_runtime_articulation_mock_exposes_only_nested_command_views():
+    """Runtime benchmark mocks must not recreate deprecated dense actuator aliases."""
+
+    from isaaclab_ovphysx.benchmark.assets.runtime import _MockActuatorCollection
+
+    view = _MockActuatorCollection(num_instances=1, num_joints=2, device="cpu")
+
+    assert view.command.position.warp.shape == (1, 2)
+    assert view.joint_command.velocity.warp.shape == (1, 2)
+    assert view.applied_effort.warp.shape == (1, 2)
+    assert not hasattr(view, "_joint_pos_target")
 
 
 def test_cached_read_launches_reset_on_ordering_and_invalidation():
@@ -391,6 +552,17 @@ def generate_articulation(
     for i in range(num_articulations):
         sim_utils.create_prim(f"/World/Env_{i}", "Xform", translation=translations[i][:3])
     articulation = Articulation(articulation_cfg.replace(prim_path="/World/Env_.*/Robot"))
+    sim = SimulationContext.instance()
+    if sim is None:
+        raise RuntimeError("Manual articulation tests require an active simulation context.")
+    sim.set_clone_plan(
+        ClonePlan(
+            sources=("/World/Env_0/Robot",),
+            destinations=("/World/Env_{}/Robot",),
+            clone_mask=torch.ones((1, num_articulations), dtype=torch.bool),
+            cfg_rows={articulation._replication_cfg_id: (0,)},
+        )
+    )
 
     return articulation, translations
 

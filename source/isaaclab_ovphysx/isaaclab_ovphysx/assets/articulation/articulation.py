@@ -20,7 +20,6 @@ import warp as wp
 from pxr import Usd, UsdPhysics
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import ActuatorCollection
 from isaaclab.assets.articulation import ordering_kernels
 from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.assets.articulation.base_articulation import BaseArticulation
@@ -3966,15 +3965,9 @@ class Articulation(BaseArticulation):
         self._can_write_pos_target = self._get_binding(TT.DOF_POSITION_TARGET) is not None
         self._can_write_vel_target = self._get_binding(TT.DOF_VELOCITY_TARGET) is not None
 
-        # validate the resolved configuration AFTER actuator/tendon processing
-        # so the values reflect any overrides applied by the actuator models
-        self._validate_cfg()
-
-        # prime the data by performing the first read
-        self.update(0.0)
-
-        # mark data as ready
-        self._data.is_primed = True
+        # The collection's completion callback validates, primes, logs, and
+        # completes deferred initialization only after every solver-property
+        # write and scoped-facade binding has succeeded.
 
     def _resolve_joint_dof_signs(self, stage: Usd.Stage) -> tuple[int, ...]:
         """Resolve joint directions once from the source USD."""
@@ -4242,15 +4235,8 @@ class Articulation(BaseArticulation):
     """
 
     def _process_actuators_cfg(self) -> None:
-        """Build actuator instances and delegate runtime ownership to the collection."""
-        self._actuator_control = OvPhysxActuatorControl(self)
-        self.actuators = ActuatorCollection(
-            self.cfg.actuators,
-            self._actuator_control,
-            debug_value_resolution=self.cfg.actuator_value_resolution_debug_print,
-        )
-        self._has_implicit_actuators = self.actuators.has_implicit_actuators
-        self._data.bind_actuator_collection(self.actuators)
+        """Register OVPhysX actuator configuration for transactional publication."""
+        self._register_actuator_collection(OvPhysxActuatorControl(self))
 
     """
     Internal helpers -- Debugging.

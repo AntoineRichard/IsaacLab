@@ -10,9 +10,61 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import warp as wp
+
 from isaaclab.benchmark.asset_suites.types import AssetBenchmarkTargets
+from isaaclab.utils.warp import ProxyArray
 
 args = SimpleNamespace(no_shape_checks=False)
+
+
+class _MockActuatorCollection:
+    """Nested scoped actuator facade used by the articulation benchmark target."""
+
+    class Command:
+        """Raw articulation-order command aliases."""
+
+        def __init__(self, position: ProxyArray, velocity: ProxyArray, effort: ProxyArray) -> None:
+            self.position = position
+            self.velocity = velocity
+            self.effort = effort
+
+    class JointCommand:
+        """Processed articulation-order command aliases."""
+
+        def __init__(self, position: ProxyArray, velocity: ProxyArray, effort: ProxyArray) -> None:
+            self.position = position
+            self.velocity = velocity
+            self.effort = effort
+
+    def __init__(self, *, num_instances: int, num_joints: int, device: str, control=None) -> None:
+        """Allocate only the nested command and applied-effort views used by benchmarks."""
+        shape = (num_instances, num_joints)
+        self.command = self.Command(
+            ProxyArray(wp.zeros(shape, dtype=wp.float32, device=device)),
+            ProxyArray(wp.zeros(shape, dtype=wp.float32, device=device)),
+            ProxyArray(wp.zeros(shape, dtype=wp.float32, device=device)),
+        )
+        self.joint_command = self.JointCommand(
+            ProxyArray(wp.zeros(shape, dtype=wp.float32, device=device)),
+            ProxyArray(wp.zeros(shape, dtype=wp.float32, device=device)),
+            ProxyArray(wp.zeros(shape, dtype=wp.float32, device=device)),
+        )
+        self.applied_effort = ProxyArray(wp.zeros(shape, dtype=wp.float32, device=device))
+        self._control = control
+
+    def compute(self, dt: float = 0.0) -> None:
+        """Keep benchmark actuator execution intentionally inert."""
+        del dt
+
+    def submit_commands(self) -> None:
+        """Route benchmark command submission through the real backend adapter."""
+        if self._control is not None:
+            self._control.submit_commands(self)
+
+    def reset(self, env_ids=None) -> None:
+        """Keep benchmark reset intentionally inert."""
+        del env_ids
 
 
 def _load_runtime_symbols() -> None:
@@ -77,13 +129,19 @@ def create_test_articulation(
     object.__setattr__(articulation, "_has_implicit_actuators", False)
     articulation._create_buffers()
 
-    from isaaclab.actuators import ActuatorCollection
-
     from isaaclab_ovphysx.assets.articulation.actuator_control import OvPhysxActuatorControl
 
     control = OvPhysxActuatorControl(articulation)
-    object.__setattr__(articulation, "actuators", ActuatorCollection({}, control))
-    data.bind_actuator_collection(articulation.actuators)
+    object.__setattr__(
+        articulation,
+        "actuators",
+        _MockActuatorCollection(
+            num_instances=num_instances,
+            num_joints=num_joints,
+            device=device,
+            control=control,
+        ),
+    )
 
     return articulation, mock_view
 
