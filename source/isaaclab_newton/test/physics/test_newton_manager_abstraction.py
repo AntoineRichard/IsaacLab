@@ -838,8 +838,8 @@ def test_hosted_materialization_resolves_each_joint_recipe_once(monkeypatch) -> 
     assert counts == {"controller": 2, "clamping": 2, "signature": 2}
 
 
-def test_native_adapter_direct_range_aliases_private_canonical_type_storage() -> None:
-    """Compatible native ranges keep controller and output pointers canonical."""
+def test_native_adapter_direct_binding_keeps_canonical_pointers_without_copy_or_sync(monkeypatch) -> None:
+    """Compatible native ranges bind canonical pointers without copying or synchronizing."""
     from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
 
     from isaaclab.utils.warp import ProxyArray
@@ -889,6 +889,23 @@ def test_native_adapter_direct_range_aliases_private_canonical_type_storage() ->
     adapter._joint_signatures = {"joint_0": signature, "joint_1": signature}
     adapter._dof_signatures = {}
     adapter._actuator_dof_indices = {signature: (0, 1)}
+
+    def _forbid(*args, **kwargs):
+        raise AssertionError("direct canonical binding must not copy, synchronize, or read host values")
+
+    original_install = adapter._install_direct_pointer_binding
+
+    def _guarded_install(*args, **kwargs):
+        with monkeypatch.context() as guarded:
+            for method in ("clone", "cpu", "numpy", "tolist", "item", "copy_"):
+                guarded.setattr(torch.Tensor, method, _forbid)
+            guarded.setattr(wp, "copy", _forbid)
+            guarded.setattr(wp, "synchronize", _forbid)
+            if hasattr(wp, "synchronize_device"):
+                guarded.setattr(wp, "synchronize_device", _forbid)
+            return original_install(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_install_direct_pointer_binding", _guarded_install)
 
     native_binding = adapter.bind_articulation(binding, dof_offset=0)
 

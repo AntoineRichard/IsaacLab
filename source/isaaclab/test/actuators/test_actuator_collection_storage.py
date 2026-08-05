@@ -793,6 +793,31 @@ def test_heterogeneous_layout_expands_four_prototypes_to_4096_worlds(device: str
     torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
 
 
+@pytest.mark.parametrize("device", ["cpu", *(str(device) for device in wp.get_cuda_devices())])
+def test_homogeneous_layout_expands_one_prototype_values_and_assignment_to_all_clones(device: str) -> None:
+    """Catch clone expansion that preserves only one prototype row instead of every clone."""
+    num_worlds = 7
+    cfg = object()
+    layout = _build_articulation_layout(
+        replication_cfg_id=id(cfg),
+        clone_plan=_make_clone_plan(cfg, torch.ones((1, num_worlds), dtype=torch.bool, device=device)),
+        registrations=(
+            _prototype_registration(
+                "robot",
+                2,
+                (_group_registration("drive", (0, 1), (4.0, 9.0)),),
+            ),
+        ),
+    )
+    store = actuator_storage._TypedStore(IdealPDActuator)
+    store.allocate((layout,), device=device)
+
+    actual = store.type_proxy(layout.type_layouts[IdealPDActuator], "stiffness").torch
+    expected = torch.tensor([[4.0, 9.0]] * num_worlds, device=device)
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(layout.prototype_assignment, torch.zeros(num_worlds, dtype=torch.int32, device=device))
+
+
 def test_layout_proxies_cache_one_torch_alias_and_device_csr_copy() -> None:
     store, articulation, group = make_two_articulation_store()
     layout = articulation._layout.type_layouts[IdealPDActuator]

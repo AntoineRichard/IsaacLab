@@ -19,8 +19,15 @@ from torch.utils._python_dispatch import TorchDispatchMode
 
 from isaaclab.actuators import ActuatorCollection
 from isaaclab.actuators.actuator_control import ActuatorJointProperties
+from isaaclab.actuators.actuator_net_cfg import ActuatorNetMLPCfg
 from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
-from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, DelayedPDActuatorCfg, IdealPDActuatorCfg, ImplicitActuatorCfg
+from isaaclab.actuators.actuator_pd_cfg import (
+    DCMotorCfg,
+    DelayedPDActuatorCfg,
+    IdealPDActuatorCfg,
+    ImplicitActuatorCfg,
+    RemotizedPDActuatorCfg,
+)
 from isaaclab.cloner import ClonePlan
 from isaaclab.utils.types import ArticulationActions
 from isaaclab.utils.warp import ProxyArray
@@ -238,6 +245,39 @@ def _delayed_cfg(joints: list[str]) -> DelayedPDActuatorCfg:
         velocity_limit=20.0,
         min_delay=0,
         max_delay=1,
+    )
+
+
+def _remotized_cfg(joints: list[str]) -> RemotizedPDActuatorCfg:
+    return RemotizedPDActuatorCfg(
+        joint_names_expr=joints,
+        stiffness=2.0,
+        damping=0.5,
+        min_delay=0,
+        max_delay=1,
+        joint_parameter_lookup=[[0.0, 1.0, 25.0], [1.0, 1.0, 25.0]],
+    )
+
+
+def _mlp_cfg(tmp_path, joints: list[str]) -> ActuatorNetMLPCfg:
+    """Create a deterministic local network without fetching a checkpoint."""
+    network = torch.nn.Linear(2, 1)
+    with torch.no_grad():
+        network.weight.copy_(torch.tensor([[2.0, 3.0]]))
+        network.bias.zero_()
+    network_file = tmp_path / "actuator_net.pt"
+    torch.jit.trace(network, torch.zeros((1, 2))).save(str(network_file))
+    return ActuatorNetMLPCfg(
+        joint_names_expr=joints,
+        effort_limit=15.0,
+        velocity_limit=10.0,
+        saturation_effort=25.0,
+        network_file=str(network_file),
+        pos_scale=1.0,
+        vel_scale=1.0,
+        torque_scale=1.0,
+        input_order="pos_vel",
+        input_idx=(0,),
     )
 
 
@@ -538,6 +578,48 @@ def test_delayed_and_subclass_groups_remain_ordered_eager_segments(device: str) 
     plan = view._execution_plan
     assert [segment.group_name for segment in plan.eager_segments] == ["delayed", "opaque"]
     assert all(segment.group_names == (segment.group_name,) for segment in plan.eager_segments)
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("fallback", ("neural", "delayed_stateful", "remotized_stateful", "custom"))
+def test_non_graphable_groups_each_form_an_eager_fallback_segment(tmp_path, fallback: str, device: str) -> None:
+    """Catch planner aggregation of neural, stateful, remotized, or opaque groups."""
+    if fallback == "neural":
+        cfg = _mlp_cfg(tmp_path, ["hip"])
+    elif fallback == "delayed_stateful":
+        cfg = _delayed_cfg(["hip"])
+    elif fallback == "remotized_stateful":
+        cfg = _remotized_cfg(["hip"])
+    else:
+        cfg = _ideal_cfg(["hip"])
+        cfg.class_type = _OpaqueIdealPD
+
+    _, view, _ = _make_plan({fallback: cfg}, device=device)
+
+    plan = view._execution_plan
+    assert plan.stateless_ranges == ()
+    assert [segment.group_name for segment in plan.eager_segments] == [fallback]
+    assert plan.eager_segments[0].group_names == (fallback,)
+    if fallback == "custom":
+        assert type(view[fallback]) is _OpaqueIdealPD
+    else:
+        assert view[fallback]._parameter_schema().stateful
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_neural_deprecated_gain_sidecar_warns_but_does_not_change_real_execution(tmp_path, device: str) -> None:
+    """Catch deprecated neural gain compatibility values entering neural torque computation."""
+    _, view, control = _make_plan({"neural": _mlp_cfg(tmp_path, ["ankle"])}, device=device)
+    neural = view["neural"]
+    with pytest.warns(DeprecationWarning, match="stiffness"):
+        neural.stiffness.fill_(1000.0)
+    _set_literal_inputs(view, control)
+
+    view.compute(dt=0.005)
+
+    expected = torch.tensor([[9.5], [-16.5]], dtype=torch.float32, device=device)
+    torch.testing.assert_close(neural.computed_effort, expected, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(neural.applied_effort, torch.tensor([[9.5], [-15.0]], device=device), rtol=0.0, atol=0.0)
 
 
 @pytest.mark.parametrize("device", _available_devices())
