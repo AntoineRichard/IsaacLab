@@ -15,10 +15,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import importlib.metadata as importlib_metadata
 import importlib.util
 import json
 import math
 import os
+import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -103,7 +106,66 @@ class TelemetrySample:
     sm_clock_mhz: float | None
     memory_clock_mhz: float | None
     throttle_reasons: str | None
-    compute_pids: tuple[int, ...]
+    compute_pids: tuple[int, ...] | None
+
+
+@dataclass(frozen=True)
+class WorktreeState:
+    """Resolved state of one comparison worktree."""
+
+    head_sha: str
+    dirty: bool
+
+
+@dataclass(frozen=True)
+class _Observation:
+    """One atomic pair or singleton owned by one attempt directory."""
+
+    matrix: str
+    row_key: str
+    kind: str
+    phase: str
+    comparison: str
+    mode_pair: str
+    pair_id: str
+    order: str
+    revisions: tuple[str, ...]
+    requested_executions: tuple[str, ...]
+    child_rows: tuple[dict[str, Any], ...]
+    boundary: str
+    unsupported_reason: str | None = None
+
+    @property
+    def observation_key(self) -> str:
+        """Return the complete revision-independent observation identity."""
+        return "|".join(
+            (
+                self.matrix,
+                self.row_key,
+                self.comparison,
+                self.mode_pair,
+                self.pair_id,
+                self.order,
+                self.phase,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class _CoordinateContext:
+    """Validated immutable inputs shared by every batch observation."""
+
+    batch_id: str
+    candidate_sha: str
+    revision_shas: dict[str, str]
+    worktrees: dict[str, Path]
+    harness: Path
+    harness_sha256: str
+    device: str
+    warmup_iterations: int
+    num_iterations: int
+    command: tuple[str, ...]
+    initial_metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -184,6 +246,141 @@ def row_key(row: BuildRow | RuntimeRow) -> str:
     return f"{row.actuator_type}:g{row.groups}:{row.requested_execution}"
 
 
+def _row_payload(row: BuildRow | RuntimeRow) -> dict[str, Any]:
+    """Return a JSON-normalized row payload suitable for a child command."""
+    return json.loads(json.dumps(asdict(row), sort_keys=True))
+
+
+def _balanced_orders(baseline: str, repetitions: int) -> tuple[tuple[str, str, tuple[str, str]], ...]:
+    if repetitions <= 0 or repetitions % 2:
+        raise ValueError("pair repetitions must be a positive even number")
+    baseline_code = {"develop": "D", "current": "C"}[baseline]
+    half = repetitions // 2
+    return tuple(
+        (
+            f"{number:02}",
+            f"{baseline_code}-G" if number <= half else f"G-{baseline_code}",
+            (baseline, "global") if number <= half else ("global", baseline),
+        )
+        for number in range(1, repetitions + 1)
+    )
+
+
+def build_coordinate_schedule(cold_repetitions: int, pair_repetitions: int) -> tuple[_Observation, ...]:
+    """Expand the frozen construction schedule into atomic observations."""
+    observations: list[_Observation] = []
+    for row in expand_build_matrix():
+        payload = _row_payload(row)
+        boundary = "empty_finalize_clear" if row.case == "B0" else "resolved_construction_to_first_application"
+        observations.append(
+            _Observation(
+                "build",
+                row_key(row),
+                "singleton",
+                "structural",
+                "global-only",
+                "global-structural",
+                "01",
+                "G",
+                ("global",),
+                ("structural",),
+                (payload,),
+                boundary,
+            )
+        )
+        if row.case == "B0":
+            for revision, order in (("develop", "D"), ("current", "C")):
+                observations.append(
+                    _Observation(
+                        "build",
+                        row_key(row),
+                        "singleton",
+                        "unsupported",
+                        "historical-capability",
+                        f"{revision}-unsupported",
+                        "01",
+                        order,
+                        (revision,),
+                        ("structural",),
+                        (payload,),
+                        boundary,
+                        "empty global collection lifecycle unavailable",
+                    )
+                )
+        if row.global_only or row.case == "B0":
+            continue
+        for phase, repetitions in (("cold", cold_repetitions), ("warm", pair_repetitions)):
+            for baseline in ("develop", "current"):
+                for pair_id, order, revisions in _balanced_orders(baseline, repetitions):
+                    observations.append(
+                        _Observation(
+                            "build",
+                            row_key(row),
+                            "pair",
+                            phase,
+                            f"{baseline}-global",
+                            f"{baseline}-{phase}__global-{phase}",
+                            pair_id,
+                            order,
+                            revisions,
+                            (phase, phase),
+                            (payload, payload),
+                            boundary,
+                        )
+                    )
+    return tuple(observations)
+
+
+def runtime_coordinate_schedule(pair_repetitions: int) -> tuple[_Observation, ...]:
+    """Expand supported runtime pairs and standalone graph capability evidence."""
+    observations: list[_Observation] = []
+    for actuator_type in ("implicit", "ideal_pd", "dc_motor"):
+        for groups in (1, 3, 12):
+            for revision, order in (("develop", "D"), ("current", "C")):
+                unsupported = RuntimeRow(actuator_type, groups, "graph", None)
+                observations.append(
+                    _Observation(
+                        "runtime",
+                        row_key(unsupported),
+                        "singleton",
+                        "capability",
+                        "historical-capability",
+                        f"{revision}-graph",
+                        "01",
+                        order,
+                        (revision,),
+                        ("graph",),
+                        (_row_payload(unsupported),),
+                        "runtime_application",
+                        "graph execution unavailable on historical actuator path",
+                    )
+                )
+            for baseline in ("develop", "current"):
+                for global_execution in ("graph", "cached_eager"):
+                    mode_pair = f"{baseline}-cached_eager__global-{global_execution}"
+                    baseline_row = RuntimeRow(actuator_type, groups, "cached_eager", "cached_eager")
+                    global_row = RuntimeRow(actuator_type, groups, global_execution, global_execution)
+                    for pair_id, order, revisions in _balanced_orders(baseline, pair_repetitions):
+                        rows_by_revision = {baseline: baseline_row, "global": global_row}
+                        observations.append(
+                            _Observation(
+                                "runtime",
+                                row_key(global_row),
+                                "pair",
+                                "runtime",
+                                f"{baseline}-global",
+                                mode_pair,
+                                pair_id,
+                                order,
+                                revisions,
+                                tuple(rows_by_revision[revision].requested_execution for revision in revisions),
+                                tuple(_row_payload(rows_by_revision[revision]) for revision in revisions),
+                                "runtime_application",
+                            )
+                        )
+    return tuple(observations)
+
+
 def _require_revision(revision: str) -> None:
     if revision not in _REVISIONS:
         raise ValueError(f"unknown revision: {revision}")
@@ -191,6 +388,7 @@ def _require_revision(revision: str) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse and validate driver arguments before heavyweight imports."""
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("build", "runtime", "coordinate"), required=True)
     parser.add_argument("--case", choices=("all", *(case.name for case in build_matrix())), default="all")
@@ -216,8 +414,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output_path", type=Path, required=False, default=Path("actuator-benchmarks"))
     parser.add_argument("--matrix", choices=("build", "runtime"), default="build")
     parser.add_argument("--run_root", type=Path)
-    parser.add_argument("--repetitions", type=int, default=6)
-    args = parser.parse_args(argv)
+    parser.add_argument("--develop_worktree", type=Path)
+    parser.add_argument("--develop_sha")
+    parser.add_argument("--current_worktree", type=Path)
+    parser.add_argument("--current_sha")
+    parser.add_argument("--global_worktree", type=Path)
+    parser.add_argument("--global_sha")
+    parser.add_argument("--cold_repetitions", type=int, default=6)
+    parser.add_argument("--pair_repetitions", type=int, default=6)
+    args = parser.parse_args(raw_argv)
+    args.exact_command = (str(Path(__file__).resolve()), *raw_argv)
     for name in (
         "num_worlds",
         "num_sources",
@@ -225,7 +431,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "groups",
         "warmup_iterations",
         "num_iterations",
-        "repetitions",
+        "cold_repetitions",
+        "pair_repetitions",
     ):
         value = getattr(args, name)
         if value is not None and value <= 0:
@@ -256,6 +463,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ]
         if missing:
             parser.error("--final_run requires " + ", ".join("--" + name for name in missing))
+    if args.mode == "coordinate":
+        child_only = (
+            "revision",
+            "revision_sha",
+            "observation_key",
+            "attempt_id",
+            "phase",
+            "child_row",
+            "harness_sha256",
+        )
+        if args.final_run or any(getattr(args, name) is not None for name in child_only):
+            parser.error("--mode coordinate does not accept child-only arguments")
+        required = (
+            "develop_worktree",
+            "develop_sha",
+            "current_worktree",
+            "current_sha",
+            "global_worktree",
+            "global_sha",
+            "candidate_sha",
+            "run_root",
+        )
+        missing = [name for name in required if not getattr(args, name)]
+        if args.batch_id == "cpu-smoke":
+            missing.append("batch_id")
+        if missing:
+            parser.error("--mode coordinate requires " + ", ".join("--" + name for name in missing))
+        if args.candidate_sha != args.global_sha:
+            parser.error("--candidate_sha must equal --global_sha")
+        for name in ("develop_sha", "current_sha", "global_sha", "candidate_sha"):
+            value = getattr(args, name)
+            if not re.fullmatch(r"[0-9a-fA-F]{40}", value):
+                parser.error(f"--{name} must be a full 40-character Git SHA")
+        if args.pair_repetitions % 2 or args.cold_repetitions % 2:
+            parser.error("coordinate repetition counts must be even for balanced ordering")
+    elif any(
+        getattr(args, name) is not None
+        for name in (
+            "develop_worktree",
+            "develop_sha",
+            "current_worktree",
+            "current_sha",
+            "global_worktree",
+            "global_sha",
+            "run_root",
+        )
+    ):
+        parser.error("coordinate-only worktree arguments require --mode coordinate")
     if args.benchmark_formatter != "schema":
         parser.error("--benchmark_formatter must be schema for actuator_collection_attempt/v1")
     return args
@@ -316,6 +571,8 @@ def write_attempt_atomically(attempt_dir: Path, record: dict[str, Any]) -> Path:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=attempt_dir, delete=False) as handle:
         json.dump(record, handle, indent=2, sort_keys=True)
         handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
         temp = Path(handle.name)
     try:
         os.link(temp, target)
@@ -323,6 +580,7 @@ def write_attempt_atomically(attempt_dir: Path, record: dict[str, Any]) -> Path:
         raise
     finally:
         temp.unlink(missing_ok=True)
+    _fsync_directory(attempt_dir)
     return target
 
 
@@ -1731,12 +1989,13 @@ class _GlobalIntrospector:
 
 def prepare_harness(run_root: Path, source: Path) -> tuple[Path, str]:
     """Copy, digest, and make an immutable candidate driver for a final batch."""
+    run_root.mkdir(parents=True, exist_ok=True)
     harness = run_root / "harness"
-    harness.mkdir(parents=True, exist_ok=True)
     target = harness / "benchmark_actuator_collection.py"
     digest_path = harness / "benchmark_actuator_collection.sha256"
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    if target.exists() or digest_path.exists():
+    source_bytes = source.read_bytes()
+    digest = hashlib.sha256(source_bytes).hexdigest()
+    if harness.exists():
         if (
             not target.exists()
             or not digest_path.exists()
@@ -1745,9 +2004,35 @@ def prepare_harness(run_root: Path, source: Path) -> tuple[Path, str]:
         ):
             raise ValueError("immutable harness digest differs")
         return target, digest
-    shutil.copyfile(source, target)
-    digest_path.write_text(digest + "\n", encoding="utf-8")
-    target.chmod(target.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    temporary = Path(tempfile.mkdtemp(prefix=".harness-", dir=run_root))
+    temporary_target = temporary / target.name
+    temporary_digest = temporary / digest_path.name
+    try:
+        with temporary_target.open("wb") as handle:
+            handle.write(source_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        with temporary_digest.open("w", encoding="utf-8") as handle:
+            handle.write(digest + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_target.chmod(temporary_target.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        temporary_digest.chmod(temporary_digest.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        _fsync_directory(temporary)
+        try:
+            temporary.rename(harness)
+        except FileExistsError:
+            if (
+                not target.exists()
+                or not digest_path.exists()
+                or digest_path.read_text().strip() != digest
+                or hashlib.sha256(target.read_bytes()).hexdigest() != digest
+            ):
+                raise ValueError("immutable harness digest differs") from None
+        _fsync_directory(run_root)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
     return target, digest
 
 
@@ -1770,7 +2055,15 @@ def validate_pair_telemetry(pre: list[TelemetrySample], post: list[TelemetrySamp
     if len(pre) != 20 or len(post) != 20:
         return ["required telemetry unavailable"]
     reasons: list[str] = []
-    if any(sample.utilization_pct is None or sample.temperature_c is None for sample in [*pre, *post]):
+    if any(
+        sample.temperature_c is None
+        or sample.utilization_pct is None
+        or sample.sm_clock_mhz is None
+        or sample.memory_clock_mhz is None
+        or sample.throttle_reasons is None
+        or sample.compute_pids is None
+        for sample in [*pre, *post]
+    ):
         reasons.append("required telemetry unavailable")
     if any((sample.utilization_pct or 0) >= 5 for sample in pre):
         reasons.append("pre-run utilization >= 5%")
@@ -1783,39 +2076,801 @@ def validate_pair_telemetry(pre: list[TelemetrySample], post: list[TelemetrySamp
     return reasons
 
 
-class Coordinator:
-    """Parent-only process coordinator; it does not import target actuator packages."""
+class _TelemetrySampler:
+    """Sample one CUDA device with NVML and a defensive nvidia-smi fallback."""
 
-    def __init__(self, run_root: Path, runner: Any = None) -> None:
-        self.run_root = run_root
-        self.runner = runner or self._run
+    def sample(self, device_index: int) -> TelemetrySample:
+        """Return one best-effort telemetry sample for ``device_index``."""
+        timestamp = time.time()
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+            try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(device_index)
+                utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                throttle = pynvml.nvmlDeviceGetCurrentClocksThrottleReasons(handle)
+                try:
+                    processes = pynvml.nvmlDeviceGetComputeRunningProcesses_v3(handle)
+                except AttributeError:
+                    processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
+                return TelemetrySample(
+                    timestamp,
+                    float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)),
+                    float(utilization.gpu),
+                    float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM)),
+                    float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)),
+                    "" if throttle == 0 else hex(int(throttle)),
+                    tuple(sorted(int(process.pid) for process in processes)),
+                )
+            finally:
+                pynvml.nvmlShutdown()
+        except Exception:
+            return self._sample_nvidia_smi(device_index, timestamp)
 
     @staticmethod
-    def _run(command: list[str]) -> dict[str, Any]:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    def _sample_nvidia_smi(device_index: int, timestamp: float) -> TelemetrySample:
+        query = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--id={device_index}",
+                "--query-gpu=temperature.gpu,utilization.gpu,clocks.sm,clocks.mem,clocks_throttle_reasons.active",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        process_query = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--id={device_index}",
+                "--query-compute-apps=pid",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if query.returncode != 0:
+            return TelemetrySample(timestamp, None, None, None, None, None, None)
+        try:
+            fields = [field.strip() for field in query.stdout.strip().split(",")]
+            if len(fields) != 5:
+                raise ValueError("incomplete nvidia-smi row")
+            pids = (
+                tuple(sorted(int(line.strip()) for line in process_query.stdout.splitlines() if line.strip().isdigit()))
+                if process_query.returncode == 0
+                else None
+            )
+            throttle = "" if fields[4].lower() in {"0x0000000000000000", "0", "not active"} else fields[4]
+            return TelemetrySample(
+                timestamp,
+                float(fields[0]),
+                float(fields[1]),
+                float(fields[2]),
+                float(fields[3]),
+                throttle,
+                pids,
+            )
+        except (TypeError, ValueError):
+            return TelemetrySample(timestamp, None, None, None, None, None, None)
+
+
+def _collect_initial_metadata() -> dict[str, Any]:
+    """Collect import-safe host, GPU, and installed-distribution identity."""
+    versions: dict[str, str | None] = {}
+    for distribution in ("isaaclab", "isaacsim", "torch", "warp-lang", "newton"):
+        try:
+            versions[distribution] = importlib_metadata.version(distribution)
+        except importlib_metadata.PackageNotFoundError:
+            versions[distribution] = None
+    try:
+        gpu_query = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,driver_version",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        gpu = (
+            [line.strip() for line in gpu_query.stdout.splitlines() if line.strip()]
+            if gpu_query.returncode == 0
+            else []
+        )
+    except OSError:
+        gpu = []
+    return {
+        "timestamp_s": time.time(),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "gpu": gpu,
+        "versions": versions,
+    }
+
+
+def _device_index(device: str) -> int:
+    if device == "cuda":
+        return 0
+    match = re.fullmatch(r"cuda:(\d+)", device)
+    if not match:
+        raise ValueError(f"invalid CUDA device: {device}")
+    return int(match.group(1))
+
+
+def _safe_observation_name(observation_key: str) -> str:
+    readable = re.sub(r"[^A-Za-z0-9_.-]+", "-", observation_key).strip("-")[:96]
+    digest = hashlib.sha256(observation_key.encode()).hexdigest()[:12]
+    return f"{readable}-{digest}"
+
+
+def _write_json_replace(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        temp = Path(handle.name)
+    os.replace(temp, path)
+    _fsync_directory(path.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes on POSIX filesystems."""
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+class Coordinator:
+    """Coordinate immutable observations without importing target actuator APIs."""
+
+    _MAX_ATTEMPTS = 20
+
+    def __init__(
+        self,
+        run_root: Path,
+        runner: Any = None,
+        telemetry_sampler: Any = None,
+        worktree_probe: Any = None,
+        sleep: Any = time.sleep,
+    ) -> None:
+        self.run_root = run_root.resolve()
+        self.runner = runner or self._run
+        self.telemetry_sampler = telemetry_sampler or _TelemetrySampler().sample
+        self.worktree_probe = worktree_probe or self._probe_worktree
+        self.sleep = sleep
+
+    @staticmethod
+    def _run(command: list[str], *, cwd: Path, env: dict[str, str]) -> dict[str, Any]:
+        result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, check=False)
         return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
 
-    def schedule_cold_children(
-        self, rows: list[BuildRow] | tuple[BuildRow, ...], repetitions: int
-    ) -> list[dict[str, Any]]:
-        results = []
-        for row in rows:
-            for repetition in range(repetitions):
-                results.append(
-                    self.runner(
-                        [
-                            sys.executable,
-                            "benchmark_actuator_collection.py",
-                            "--child_row",
-                            row_key(row),
-                            "--phase",
-                            "cold",
-                            "--attempt_id",
-                            f"attempt-{repetition + 1:02}",
-                        ]
-                    )
-                )
-        return results
+    @staticmethod
+    def _probe_worktree(path: Path) -> WorktreeState:
+        head = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+        )
+        if head.returncode != 0:
+            raise ValueError(f"cannot resolve worktree SHA: {path}: {head.stderr.strip()}")
+        status = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True, check=False
+        )
+        if status.returncode != 0:
+            raise ValueError(f"cannot inspect worktree cleanliness: {path}: {status.stderr.strip()}")
+        return WorktreeState(head.stdout.strip(), bool(status.stdout.strip()))
+
+    def _cache_path(self, revision_sha: str) -> Path:
+        artifact_root = self.run_root.parent.parent if self.run_root.parent.name == "runs" else self.run_root.parent
+        cache = (artifact_root / "cache" / revision_sha).resolve()
+        cache.mkdir(parents=True, exist_ok=True)
+        return cache
+
+    def _sample_window(self, device: str) -> list[TelemetrySample]:
+        if not device.startswith("cuda"):
+            return []
+        device_index = _device_index(device)
+        samples: list[TelemetrySample] = []
+        for index in range(20):
+            try:
+                samples.append(self.telemetry_sampler(device_index))
+            except Exception:
+                samples.append(TelemetrySample(time.time(), None, None, None, None, None, None))
+            if index != 19:
+                self.sleep(0.25)
+        return samples
+
+    def _validate_worktrees(self, args: argparse.Namespace) -> tuple[dict[str, Path], dict[str, str]]:
+        worktrees = {
+            revision: getattr(args, f"{revision}_worktree").resolve() for revision in ("develop", "current", "global")
+        }
+        shas = {revision: getattr(args, f"{revision}_sha") for revision in ("develop", "current", "global")}
+        for revision in ("develop", "current", "global"):
+            path = worktrees[revision]
+            wrapper = path / "isaaclab.sh"
+            if not path.is_dir() or not wrapper.is_file():
+                raise ValueError(f"{revision} worktree or isaaclab.sh is missing: {path}")
+            state = self.worktree_probe(path)
+            if state is None:
+                raise ValueError(f"{revision} worktree probe returned no state")
+            if state.head_sha != shas[revision]:
+                raise ValueError(f"{revision} worktree SHA mismatch: expected {shas[revision]}, got {state.head_sha}")
+            if state.dirty:
+                raise ValueError(f"{revision} worktree is dirty")
+        return worktrees, shas
+
+    def coordinate(self, args: argparse.Namespace) -> None:
+        """Validate and execute one complete immutable coordinate batch."""
+        batch_dir = self.run_root / "batches" / args.batch_id
+        if batch_dir.exists():
+            raise FileExistsError(f"batch already exists: {batch_dir}")
+        if args.candidate_sha != args.global_sha:
+            raise ValueError("candidate SHA differs from global SHA")
+        worktrees, revision_shas = self._validate_worktrees(args)
+        harness, digest = prepare_harness(self.run_root, Path(__file__).resolve())
+        try:
+            batch_dir.mkdir(parents=True)
+        except FileExistsError:
+            raise FileExistsError(f"batch already exists: {batch_dir}") from None
+        context = _CoordinateContext(
+            args.batch_id,
+            args.candidate_sha,
+            revision_shas,
+            worktrees,
+            harness.resolve(),
+            digest,
+            args.device,
+            args.warmup_iterations,
+            args.num_iterations,
+            tuple(args.exact_command),
+            _collect_initial_metadata(),
+        )
+        batch_manifest = {
+            "schema": "actuator_collection_batch/v1",
+            "batch_id": args.batch_id,
+            "matrix": args.matrix,
+            "candidate_sha": args.candidate_sha,
+            "revision_shas": revision_shas,
+            "harness_sha256": digest,
+            "device": args.device,
+            "cold_repetitions": args.cold_repetitions,
+            "pair_repetitions": args.pair_repetitions,
+            "command": list(context.command),
+            "initial_metadata": context.initial_metadata,
+            "prewarm": {
+                revision: {
+                    "revision_sha": revision_shas[revision],
+                    "cache_path": str(self._cache_path(revision_shas[revision])),
+                    "result": f"prewarm/prewarm-{revision}.json",
+                }
+                for revision in ("develop", "current", "global")
+            },
+        }
+        _write_json_replace(batch_dir / "manifest.json", batch_manifest)
+        self._prewarm_revisions(context, batch_dir)
+        observations = (
+            build_coordinate_schedule(args.cold_repetitions, args.pair_repetitions)
+            if args.matrix == "build"
+            else runtime_coordinate_schedule(args.pair_repetitions)
+        )
+        for observation in observations:
+            self.run_until_selected(observation, context)
+
+    def _worktree_error(self, revision: str, context: _CoordinateContext) -> str | None:
+        try:
+            state = self.worktree_probe(context.worktrees[revision].resolve())
+        except Exception as error:
+            return f"worktree probe failed: {type(error).__name__}: {error}"
+        if state is None:
+            return "worktree probe returned no state"
+        if state.head_sha != context.revision_shas[revision]:
+            return f"worktree SHA changed: expected {context.revision_shas[revision]}, got {state.head_sha}"
+        if state.dirty:
+            return "worktree became dirty"
+        return None
+
+    def _prewarm_revisions(self, context: _CoordinateContext, batch_dir: Path) -> None:
+        """Populate each exact revision cache in its own unmeasured child process."""
+        row = expand_build_matrix("B1")[0]
+        payload = _row_payload(row)
+        root = batch_dir / "prewarm"
+        root.mkdir()
+        for revision, order in (("develop", "D"), ("current", "C"), ("global", "G")):
+            observation = _Observation(
+                "build",
+                row_key(row),
+                "singleton",
+                "compile_prewarm",
+                "compile-prewarm",
+                f"{revision}-compile-prewarm",
+                "00",
+                order,
+                (revision,),
+                ("compile_prewarm",),
+                (payload,),
+                "resolved_construction_to_first_application",
+            )
+            member, failure = self._launch_member(observation, context, root, 0)
+            evidence = {
+                "schema": "actuator_collection_prewarm/v1",
+                "revision": revision,
+                "revision_sha": context.revision_shas[revision],
+                "harness_sha256": context.harness_sha256,
+                "cache_path": str(self._cache_path(context.revision_shas[revision])),
+                "member": member,
+                "status": "rejected" if failure else "accepted",
+                "reason": failure,
+            }
+            evidence_path = root / f"prewarm-{revision}.json"
+            with evidence_path.open("x", encoding="utf-8") as handle:
+                json.dump(evidence, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            if failure:
+                raise RuntimeError(f"{revision} compile prewarm failed: {failure}")
+
+    def _launch_member(
+        self,
+        observation: _Observation,
+        context: _CoordinateContext,
+        attempt: Path,
+        member_index: int,
+    ) -> tuple[dict[str, Any], str | None]:
+        revision = observation.revisions[member_index]
+        revision_sha = context.revision_shas[revision]
+        member_dir = attempt / "members" / revision
+        member_dir.mkdir(parents=True)
+        child_row = observation.child_rows[member_index]
+        command = [
+            str((context.worktrees[revision] / "isaaclab.sh").resolve()),
+            "-p",
+            str(context.harness),
+            "--mode",
+            observation.matrix,
+            "--revision",
+            revision,
+            "--revision_sha",
+            revision_sha,
+            "--candidate_sha",
+            context.candidate_sha,
+            "--observation_key",
+            observation.observation_key,
+            "--attempt_id",
+            attempt.name,
+            "--phase",
+            observation.phase,
+            "--child_row",
+            json.dumps(child_row, sort_keys=True, separators=(",", ":")),
+            "--harness_sha256",
+            context.harness_sha256,
+            "--batch_id",
+            context.batch_id,
+            "--final_run",
+            "--warmup_iterations",
+            str(context.warmup_iterations),
+            "--num_iterations",
+            str(context.num_iterations),
+            "--device",
+            context.device,
+            "--benchmark_formatter",
+            "schema",
+            "--output_path",
+            str(member_dir),
+        ]
+        cache_path = self._cache_path(revision_sha)
+        environment = os.environ.copy()
+        environment["WARP_CACHE_PATH"] = str(cache_path)
+        before_error = self._worktree_error(revision, context)
+        if before_error:
+            process = {"returncode": -1, "stdout": "", "stderr": before_error}
+        else:
+            try:
+                process = self.runner(command, cwd=context.worktrees[revision].resolve(), env=environment)
+            except Exception as error:
+                process = {
+                    "returncode": -1,
+                    "stdout": "",
+                    "stderr": f"runner failed: {type(error).__name__}: {error}",
+                }
+        after_error = self._worktree_error(revision, context)
+        process_record = {
+            "command": command,
+            "returncode": int(process.get("returncode", -1)),
+            "stdout": process.get("stdout", ""),
+            "stderr": process.get("stderr", ""),
+        }
+        result_path = member_dir / "member.json"
+        failure: str | None = None
+        payload: dict[str, Any] | None = None
+        if result_path.is_file():
+            try:
+                payload = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                failure = f"invalid child member result: {type(error).__name__}: {error}"
+        else:
+            failure = "child member result missing"
+        expected_identity = {
+            "batch_id": context.batch_id,
+            "observation_key": observation.observation_key,
+            "attempt_id": attempt.name,
+            "candidate_sha": context.candidate_sha,
+            "harness_sha256": context.harness_sha256,
+        }
+        if payload is not None:
+            if payload.get("schema") != "actuator_collection_member/v1":
+                failure = "child member schema mismatch"
+            elif payload.get("identity") != expected_identity:
+                failure = "child member identity mismatch"
+            elif payload.get("revision") != revision or payload.get("revision_sha") != revision_sha:
+                failure = "child member revision identity mismatch"
+            elif payload.get("matrix") != observation.matrix or payload.get("phase") != observation.phase:
+                failure = "child member phase identity mismatch"
+            elif payload.get("child_row") != child_row:
+                failure = "child member row identity mismatch"
+            elif payload.get("status") != "accepted":
+                failure = payload.get("reason") or f"child member status {payload.get('status')}"
+        if process_record["returncode"] != 0:
+            failure = f"child exited with return code {process_record['returncode']}"
+        if before_error:
+            failure = f"worktree invalid before child execution: {before_error}"
+        elif after_error:
+            failure = f"worktree changed after child execution: {after_error}"
+        if payload is not None and isinstance(payload.get("member"), dict):
+            member = dict(payload["member"])
+            member["metadata"] = payload.get("metadata", {})
+        else:
+            requested = observation.requested_executions[member_index]
+            member = {
+                "revision": revision,
+                "requested_execution": requested,
+                "effective_execution": requested,
+                "revision_sha": revision_sha,
+                "adapter": None,
+                "resolved_row": child_row,
+                "source_emulation": False,
+                "capability": {"supported": True, "reason": None},
+                "timing": None,
+                "counters": {},
+                "structural": None,
+            }
+        requested = observation.requested_executions[member_index]
+        if member.get("revision") != revision or member.get("revision_sha") != revision_sha:
+            failure = "member revision identity mismatch"
+        elif member.get("requested_execution") != requested:
+            failure = "member execution identity mismatch"
+        elif member.get("resolved_row") != child_row:
+            failure = "member resolved row identity mismatch"
+        member["process"] = process_record
+        if failure:
+            member["failure"] = {"phase": observation.phase, "reason": failure}
+        return member, failure
+
+    @staticmethod
+    def _unsupported_member(observation: _Observation, context: _CoordinateContext) -> dict[str, Any]:
+        revision = observation.revisions[0]
+        return {
+            "revision": revision,
+            "requested_execution": observation.requested_executions[0],
+            "effective_execution": None,
+            "revision_sha": context.revision_shas[revision],
+            "adapter": None,
+            "resolved_row": observation.child_rows[0],
+            "source_emulation": False,
+            "capability": {"supported": False, "reason": observation.unsupported_reason},
+            "timing": None,
+            "counters": {},
+            "structural": None,
+            "process": {"command": [], "returncode": None, "stdout": "", "stderr": ""},
+        }
+
+    def run_observation(self, observation: _Observation, context: _CoordinateContext) -> Path:
+        """Execute and immutably publish exactly one pair or singleton attempt."""
+        observation_path = self.run_root / "observations" / _safe_observation_name(observation.observation_key)
+        attempt = allocate_attempt_dir(observation_path)
+        pre = self._sample_window(context.device) if observation.kind == "pair" else []
+        members: list[dict[str, Any]] = []
+        child_failures: list[str] = []
+        if observation.unsupported_reason is not None:
+            members.append(self._unsupported_member(observation, context))
+        else:
+            for member_index in range(len(observation.revisions)):
+                member, failure = self._launch_member(observation, context, attempt, member_index)
+                members.append(member)
+                if failure:
+                    child_failures.append(f"{observation.revisions[member_index]}: {failure}")
+        post = self._sample_window(context.device) if observation.kind == "pair" else []
+        telemetry_reasons = validate_pair_telemetry(pre, post, context.device) if observation.kind == "pair" else []
+        rejection_reasons = [*child_failures, *telemetry_reasons]
+        if observation.unsupported_reason is not None:
+            status = "unsupported"
+        else:
+            status = "rejected" if rejection_reasons else "accepted"
+        identity = AttemptIdentity(
+            context.batch_id,
+            observation.observation_key,
+            attempt.name,
+            context.candidate_sha,
+            context.revision_shas,
+            context.harness_sha256,
+        )
+        cache_paths = {
+            revision: str(self._cache_path(context.revision_shas[revision])) for revision in observation.revisions
+        }
+        record = {
+            "schema": SCHEMA,
+            "identity": asdict(identity),
+            "kind": observation.kind,
+            "status": status,
+            "boundary": observation.boundary,
+            "telemetry": {
+                "required": observation.kind == "pair" and context.device.startswith("cuda"),
+                "available": "required telemetry unavailable" not in telemetry_reasons,
+                "samples": {
+                    "pre": [asdict(sample) for sample in pre],
+                    "post": [asdict(sample) for sample in post],
+                },
+                "rejection_reasons": telemetry_reasons,
+            },
+            "members": members,
+            "paths": {
+                "harness": str(context.harness),
+                "worktrees": {revision: str(path.resolve()) for revision, path in context.worktrees.items()},
+                "cache": cache_paths,
+            },
+            "command": list(context.command),
+            "device": context.device,
+            "cache": {"policy": "exact-revision", "environment": "WARP_CACHE_PATH"},
+            "process": {"rejection_reasons": rejection_reasons},
+            "metadata": {
+                "initial": context.initial_metadata,
+                "matrix": observation.matrix,
+                "row_key": observation.row_key,
+                "comparison": observation.comparison,
+                "mode_pair": observation.mode_pair,
+                "pair_id": observation.pair_id,
+                "order": observation.order,
+                "phase": observation.phase,
+            },
+            "pair_id": observation.pair_id,
+            "pair_order": observation.order,
+        }
+        write_attempt_atomically(attempt, record)
+        return attempt
+
+    def run_until_selected(self, observation: _Observation, context: _CoordinateContext) -> Path:
+        """Retry rejected evidence with new attempt IDs and select one complete result."""
+        for _ in range(self._MAX_ATTEMPTS):
+            attempt = self.run_observation(observation, context)
+            status = json.loads((attempt / "attempt.json").read_text(encoding="utf-8"))["status"]
+            if status in {"accepted", "unsupported"}:
+                self.select_attempt(attempt, context)
+                return attempt
+        raise RuntimeError(
+            f"observation remained rejected after {self._MAX_ATTEMPTS} attempts: {observation.observation_key}"
+        )
+
+    def select_attempt(self, attempt: Path, context: _CoordinateContext) -> None:
+        """Atomically update selection and append one immutable history snapshot."""
+        record = json.loads((attempt / "attempt.json").read_text(encoding="utf-8"))
+        if record.get("status") not in {"accepted", "unsupported"}:
+            raise ValueError("cannot select rejected attempt")
+        identity = record.get("identity", {})
+        if identity.get("candidate_sha") != context.candidate_sha:
+            raise ValueError("selection candidate SHA mismatch")
+        if identity.get("harness_sha256") != context.harness_sha256:
+            raise ValueError("selection harness SHA mismatch")
+        manifest_path = self.run_root / "accepted-attempts.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("candidate_sha") != context.candidate_sha:
+                raise ValueError("existing selection candidate SHA mismatch")
+            if manifest.get("harness_sha256") != context.harness_sha256:
+                raise ValueError("existing selection harness SHA mismatch")
+        else:
+            manifest = {
+                "schema": "actuator_collection_selection/v1",
+                "candidate_sha": context.candidate_sha,
+                "revision_shas": context.revision_shas,
+                "harness_sha256": context.harness_sha256,
+                "attempts": [],
+            }
+        selected_keys = {
+            json.loads((self.run_root / selected / "attempt.json").read_text(encoding="utf-8"))["identity"][
+                "observation_key"
+            ]
+            for selected in manifest["attempts"]
+        }
+        observation_key = identity["observation_key"]
+        if observation_key in selected_keys:
+            raise ValueError(f"observation already selected: {observation_key}")
+        manifest["attempts"].append(str(attempt.relative_to(self.run_root)))
+        history = self.run_root / "selection-history"
+        history.mkdir(parents=True, exist_ok=True)
+        timestamp = time.time_ns()
+        while True:
+            snapshot = history / f"accepted-attempts-{timestamp}.json"
+            try:
+                with snapshot.open("x", encoding="utf-8") as handle:
+                    json.dump(manifest, handle, indent=2, sort_keys=True)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                _fsync_directory(history)
+                break
+            except FileExistsError:
+                timestamp += 1
+        _write_json_replace(manifest_path, manifest)
+
+
+def _write_member_atomically(output_path: Path, payload: dict[str, Any]) -> Path:
+    """Publish one immutable child member result without replace semantics."""
+    output_path.mkdir(parents=True, exist_ok=True)
+    target = output_path / "member.json"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_path, delete=False) as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        temp = Path(handle.name)
+    try:
+        os.link(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
+    _fsync_directory(output_path)
+    return target
+
+
+def _decode_child_row(args: argparse.Namespace) -> BuildRow | RuntimeRow:
+    """Decode and validate one coordinator-provided resolved row."""
+    try:
+        values = json.loads(args.child_row)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"invalid child row JSON: {error}") from error
+    if not isinstance(values, dict):
+        raise ValueError("child row must be a JSON object")
+    if args.mode == "build":
+        if "actuator_types" in values:
+            values["actuator_types"] = tuple(values["actuator_types"])
+        return BuildRow(**values)
+    if args.mode == "runtime":
+        return RuntimeRow(**values)
+    raise ValueError(f"invalid child matrix: {args.mode}")
+
+
+def _runtime_build_row(row: RuntimeRow) -> BuildRow:
+    return BuildRow("runtime", row.num_worlds, 1, 1, row.groups, (row.actuator_type,))
+
+
+def _run_final_child(args: argparse.Namespace) -> int:
+    """Run one isolated member and persist exact evidence even on failure."""
+    expected_identity = {
+        "batch_id": args.batch_id,
+        "observation_key": args.observation_key,
+        "attempt_id": args.attempt_id,
+        "candidate_sha": args.candidate_sha,
+        "harness_sha256": args.harness_sha256,
+    }
+    adapter: _Adapter | None = None
+    status = "rejected"
+    reason: str | None = None
+    row_payload: dict[str, Any]
+    revision_capability = RevisionCapability(True)
+    member: dict[str, Any]
+    row: BuildRow | RuntimeRow | None = None
+    started = time.perf_counter_ns()
+    try:
+        row = _decode_child_row(args)
+        row_payload = _row_payload(row)
+        selected = select_adapter(args.revision, args.device)
+        if isinstance(selected, RevisionCapability):
+            revision_capability = selected
+            status = "unsupported"
+            reason = selected.reason
+        else:
+            adapter = selected
+            build_row = row if isinstance(row, BuildRow) else _runtime_build_row(row)
+            workload = make_workload(build_row, args.device)
+            try:
+                adapter.build_workload(workload)
+            except Exception as error:
+                raise RuntimeError(f"build_workload: {type(error).__name__}: {error}") from error
+            try:
+                adapter.first_application(workload)
+            except Exception as error:
+                raise RuntimeError(f"first_application: {type(error).__name__}: {error}") from error
+            if isinstance(row, RuntimeRow):
+                result = measure_runtime(adapter, row, args.warmup_iterations, args.num_iterations)
+                status = result["status"]
+                reason = result.get("reason")
+                timing = result.get("timing")
+                effective_execution = result.get("effective_execution")
+            else:
+                status = "accepted"
+                timing = {
+                    "samples_ms": [(time.perf_counter_ns() - started) / 1_000_000],
+                    "first_application_count": getattr(adapter, "applications", 1),
+                }
+                effective_execution = args.phase
+            member = {
+                "revision": args.revision,
+                "requested_execution": row.requested_execution if isinstance(row, RuntimeRow) else args.phase,
+                "effective_execution": effective_execution,
+                "revision_sha": args.revision_sha,
+                "adapter": type(adapter).__name__,
+                "resolved_row": row_payload,
+                "source_emulation": args.revision != "global" and isinstance(row, BuildRow) and row.case == "B3",
+                "capability": {"supported": True, "reason": None},
+                "timing": timing,
+                "counters": {},
+                "structural": adapter.introspect(),
+            }
+    except Exception as error:
+        status = "rejected"
+        reason = str(error)
+    finally:
+        if adapter is not None:
+            try:
+                adapter.close()
+            except Exception as error:
+                if reason is None:
+                    reason = f"close: {type(error).__name__}: {error}"
+                    status = "rejected"
+    if row is None:
+        try:
+            raw = json.loads(args.child_row)
+            row_payload = raw if isinstance(raw, dict) else {"raw": raw}
+        except Exception:
+            row_payload = {"raw": args.child_row}
+    if status == "unsupported":
+        requested = row.requested_execution if isinstance(row, RuntimeRow) else args.phase
+        member = {
+            "revision": args.revision,
+            "requested_execution": requested,
+            "effective_execution": None,
+            "revision_sha": args.revision_sha,
+            "adapter": None,
+            "resolved_row": row_payload,
+            "source_emulation": False,
+            "capability": {"supported": False, "reason": revision_capability.reason},
+            "timing": None,
+            "counters": {},
+            "structural": None,
+        }
+    elif status == "rejected" and "member" not in locals():
+        requested = row.requested_execution if isinstance(row, RuntimeRow) else args.phase
+        member = {
+            "revision": args.revision,
+            "requested_execution": requested,
+            "effective_execution": requested,
+            "revision_sha": args.revision_sha,
+            "adapter": type(adapter).__name__ if adapter is not None else None,
+            "resolved_row": row_payload,
+            "source_emulation": False,
+            "capability": {"supported": True, "reason": None},
+            "timing": None,
+            "counters": {},
+            "structural": None,
+        }
+    payload = {
+        "schema": "actuator_collection_member/v1",
+        "identity": expected_identity,
+        "revision": args.revision,
+        "revision_sha": args.revision_sha,
+        "matrix": args.mode,
+        "phase": args.phase,
+        "child_row": row_payload,
+        "status": status,
+        "reason": reason,
+        "member": member,
+        "metadata": _collect_initial_metadata(),
+    }
+    _write_member_atomically(args.output_path, payload)
+    return 1 if status == "rejected" else 0
 
 
 def _smoke_record(
@@ -1981,7 +3036,10 @@ def _run_runtime_child(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Run a local smoke child or validate coordinate arguments."""
     args = parse_args(argv)
+    if args.final_run:
+        return _run_final_child(args)
     if args.mode == "coordinate":
+        Coordinator(args.run_root).coordinate(args)
         return 0
     if args.mode == "runtime":
         return _run_runtime_child(args)
