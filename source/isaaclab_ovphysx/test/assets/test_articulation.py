@@ -567,6 +567,68 @@ def generate_articulation(
     return articulation, translations
 
 
+@pytest.mark.parametrize("device", ["cpu"])
+@pytest.mark.parametrize("gravity_enabled", [False])
+def test_actuator_finalization_is_transactional_after_solver_writes(sim, device, gravity_enabled, monkeypatch):
+    """A post-completion failure must restore solver bindings and articulation readiness."""
+    del gravity_enabled
+    cfg = generate_articulation_cfg(
+        articulation_type="single_joint_implicit",
+        effort_limit_sim=31.0,
+        velocity_limit_sim=3.5,
+    )
+    drive = cfg.actuators["joint"]
+    drive.stiffness = 1234.0
+    drive.damping = 67.0
+    drive.armature = 0.375
+    drive.friction = 0.75
+    drive.dynamic_friction = 0.5
+    drive.viscous_friction = 0.25
+
+    solver_bindings = (
+        TT.DOF_MAX_FORCE,
+        TT.DOF_MAX_VELOCITY,
+        TT.DOF_ARMATURE,
+        TT.DOF_FRICTION_PROPERTIES,
+        TT.DOF_STIFFNESS,
+        TT.DOF_DAMPING,
+    )
+    before_write: dict[int, torch.Tensor] = {}
+    after_write: dict[int, torch.Tensor] = {}
+    write_staged = OvPhysxActuatorControl.write_resolved_joint_properties_staged
+    complete = OvPhysxActuatorControl.complete_articulation_initialization
+
+    def record_staged_write(control, properties):
+        for tensor_type in solver_bindings:
+            before_write[tensor_type] = _read_binding_to_torch(control._articulation, tensor_type, "cpu").clone()
+        write_staged(control, properties)
+        for tensor_type in solver_bindings:
+            after_write[tensor_type] = _read_binding_to_torch(control._articulation, tensor_type, "cpu").clone()
+
+    def fail_after_completion(control):
+        complete(control)
+        raise RuntimeError("injected post-write completion failure")
+
+    monkeypatch.setattr(OvPhysxActuatorControl, "write_resolved_joint_properties_staged", record_staged_write)
+    monkeypatch.setattr(OvPhysxActuatorControl, "complete_articulation_initialization", fail_after_completion)
+
+    articulation, _ = generate_articulation(cfg, num_articulations=1, device=device)
+    with pytest.raises(RuntimeError, match="injected post-write completion failure"):
+        sim.reset()
+
+    assert set(before_write) == set(after_write) == set(solver_bindings)
+    for tensor_type in solver_bindings:
+        assert not torch.equal(after_write[tensor_type], before_write[tensor_type])
+        restored = _read_binding_to_torch(articulation, tensor_type, "cpu")
+        torch.testing.assert_close(restored, before_write[tensor_type])
+    assert not articulation.is_initialized
+    assert not articulation.data.is_primed
+    assert articulation.data._actuator_view is None
+    assert articulation._initialization_deferred
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        _ = articulation.actuators.command.position
+
+
 @pytest.fixture
 def sim(request):
     """Create simulation context with the specified device."""

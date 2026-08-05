@@ -29,11 +29,11 @@ class OvPhysxActuatorControl(ArticulationActuatorControl):
         super().__init__(articulation)
         self._stiffness_dirty = False
         self._damping_dirty = False
+        self._resolved_joint_property_snapshot: dict[str, wp.array] | None = None
 
     def write_resolved_joint_properties_staged(self, properties: _ResolvedSolverProperties) -> None:
         """Apply finalized solver properties before the facade is published."""
         resolved = properties.properties
-        articulation = self._articulation
 
         def _target(name: str) -> wp.array:
             target = resolved[name].canonical_target
@@ -41,16 +41,68 @@ class OvPhysxActuatorControl(ArticulationActuatorControl):
                 raise RuntimeError(f"OVPhysX requires a device target for resolved {name!r} properties.")
             return target.warp
 
-        articulation.write_joint_effort_limit_to_sim_index(limits=_target("effort_limit_sim"))
-        articulation.write_joint_velocity_limit_to_sim_index(limits=_target("velocity_limit_sim"))
-        articulation.write_joint_armature_to_sim_index(armature=_target("armature"))
-        articulation.write_joint_friction_coefficient_to_sim_index(
-            joint_friction_coeff=_target("friction"),
-            joint_dynamic_friction_coeff=_target("dynamic_friction"),
-            joint_viscous_friction_coeff=_target("viscous_friction"),
+        if self._resolved_joint_property_snapshot is not None:
+            raise RuntimeError("OVPhysX already has an uncommitted solver-property snapshot.")
+        data = self._articulation.data
+        self._resolved_joint_property_snapshot = {
+            "effort_limit_sim": wp.clone(data.joint_effort_limits.warp),
+            "velocity_limit_sim": wp.clone(data.joint_vel_limits.warp),
+            "armature": wp.clone(data.joint_armature.warp),
+            "friction": wp.clone(data.joint_friction_coeff.warp),
+            "dynamic_friction": wp.clone(data.joint_dynamic_friction_coeff.warp),
+            "viscous_friction": wp.clone(data.joint_viscous_friction_coeff.warp),
+            "stiffness": wp.clone(data.joint_stiffness.warp),
+            "damping": wp.clone(data.joint_damping.warp),
+        }
+        self._write_resolved_joint_property_rows(
+            effort_limit_sim=_target("effort_limit_sim"),
+            velocity_limit_sim=_target("velocity_limit_sim"),
+            armature=_target("armature"),
+            friction=_target("friction"),
+            dynamic_friction=_target("dynamic_friction"),
+            viscous_friction=_target("viscous_friction"),
+            stiffness=_target("stiffness"),
+            damping=_target("damping"),
         )
-        articulation.write_joint_stiffness_to_sim_index(stiffness=_target("stiffness"))
-        articulation.write_joint_damping_to_sim_index(damping=_target("damping"))
+
+    def restore_resolved_joint_properties(self) -> None:
+        """Restore the exact solver-property rows captured before candidate writes."""
+        snapshot = self._resolved_joint_property_snapshot
+        if snapshot is None:
+            return
+        try:
+            self._write_resolved_joint_property_rows(**snapshot)
+        finally:
+            self._resolved_joint_property_snapshot = None
+
+    def commit_resolved_joint_properties(self) -> None:
+        """Release the rollback snapshot after successful publication."""
+        self._resolved_joint_property_snapshot = None
+
+    def _write_resolved_joint_property_rows(
+        self,
+        *,
+        effort_limit_sim: wp.array,
+        velocity_limit_sim: wp.array,
+        armature: wp.array,
+        friction: wp.array,
+        dynamic_friction: wp.array,
+        viscous_friction: wp.array,
+        stiffness: wp.array,
+        damping: wp.array,
+    ) -> None:
+        """Write one complete articulation rowset to OVPhysX."""
+        articulation = self._articulation
+        articulation.write_joint_effort_limit_to_sim_index(limits=effort_limit_sim)
+        articulation.write_joint_velocity_limit_to_sim_index(limits=velocity_limit_sim)
+        articulation.write_joint_armature_to_sim_index(armature=armature)
+        articulation.write_joint_friction_coefficient_to_sim_index(
+            joint_friction_coeff=friction,
+            joint_dynamic_friction_coeff=dynamic_friction,
+            joint_viscous_friction_coeff=viscous_friction,
+        )
+        articulation.write_joint_stiffness_to_sim_index(stiffness=stiffness)
+        articulation.write_joint_damping_to_sim_index(damping=damping)
 
     def preflight_actuator_parameter_write(self, name: str, write: _ActuatorParameterWrite) -> None:
         """Reject implicit-drive mutations that would issue CPU binding writes in capture."""
