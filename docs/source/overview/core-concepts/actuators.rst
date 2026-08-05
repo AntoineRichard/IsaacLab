@@ -685,20 +685,18 @@ models **inside the Newton solver**:
     sim_cfg = SimulationCfg(use_newton_actuators=True)
 
 **What changes.** With the flag on, each explicit actuator config is translated into a
-``NewtonActuator`` USD prim and stepped by the physics engine rather than by
-:meth:`ActuatorCollection.compute`. On the Newton backend the actuators run inside the
-CUDA-graph-captured region. Implicit actuators are unaffected: their gains are written to the
-solver and PD runs there as before, so implicit joints keep working exactly the same. The PhysX
-backend can also consume these Newton-authored actuators through its adapter, so the authoring is
-shared across backends. On CUDA, PhysX attempts to capture graphable Newton actuator staging, model
-execution, and telemetry publication into alternating graphs. The two graphs preserve the
-adapter's state-buffer ping-pong without rebuilding launches each step. Unsupported models and
-capture failures fall back to eager execution. Stateful Newton actuators cannot be nested inside a
-caller-owned CUDA graph; let the PhysX adapter manage their alternating graphs instead.
+``NewtonActuator`` USD prim and evaluated by the physics engine. Without native handling, Isaac
+Lab evaluates explicit actuator models during the articulation-owned actuator stage reached through
+:meth:`~isaaclab.assets.Articulation.write_data_to_sim`. Implicit actuators are unaffected: their
+gains are written to the solver and PD runs there as before, so implicit joints keep working exactly
+the same. The PhysX backend can also consume these Newton-authored actuators through its adapter, so
+the authoring is shared across backends. Unsupported native models or unavailable optimized backend
+paths fall back to eager backend execution without changing the public command and telemetry
+interfaces.
 
-Newton owns a separate native execution aggregation path. When native actuator handling is active,
-Isaac Lab keeps the named logical groups for configuration and access but does not aggregate or
-execute them through its host-side batching path.
+Native handling preserves the named logical groups used for configuration and access. Backend
+grouping and scheduling remain implementation details; user code should depend only on the scoped
+actuator facade and its observable command and telemetry behavior.
 
 **Supported models.** The authoring maps each supported config to a set of USD schemas:
 

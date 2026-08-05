@@ -15,7 +15,10 @@ Changed
 
 * Changed actuator ownership to simulation-scoped canonical storage. Compatible
   exact actuator classes are aggregated automatically while each articulation
-  continues to expose its logical actuator groups.
+  continues to expose its logical actuator groups. Obtain the scoped view from
+  :attr:`~isaaclab.assets.Articulation.actuators`, use its command and exact-type
+  parameter views, and retain deprecated articulation forwarders only during
+  their deprecation period.
 
 Deprecated
 ^^^^^^^^^^

@@ -72,6 +72,16 @@ class ActuatorCollection(_ActuatorCollection):
     class TypeView:
         """Compact exact-class actuator view for one articulation generation."""
 
+        def __init__(
+            self,
+            facade: ActuatorCollection.ArticulationView,
+            actuator_type: type[ActuatorBase],
+            binding: Any,
+            store: Any,
+            groups: Mapping[str, ActuatorBase],
+            selector_state: Any,
+        ) -> None: ...
+
         @property
         def actuator_type(self) -> type[ActuatorBase]: ...
 
@@ -121,8 +131,19 @@ class ActuatorCollection(_ActuatorCollection):
     class ArticulationView(dict[str, ActuatorBase]):
         """Guarded articulation-scoped actuator facade."""
 
+        def __init__(self, manager: ActuatorCollection, key: object) -> None: ...
+
         class Command:
             """Raw commands received by the actuator models."""
+
+            def __init__(
+                self,
+                view: ActuatorCollection.ArticulationView,
+                install_token: object,
+                position: ProxyArray,
+                velocity: ProxyArray,
+                effort: ProxyArray,
+            ) -> None: ...
 
             @property
             def position(self) -> ProxyArray: ...
@@ -210,6 +231,15 @@ class ActuatorCollection(_ActuatorCollection):
 
         class JointCommand:
             """Processed commands produced for the simulated joints."""
+
+            def __init__(
+                self,
+                view: ActuatorCollection.ArticulationView,
+                install_token: object,
+                position: ProxyArray,
+                velocity: ProxyArray,
+                effort: ProxyArray,
+            ) -> None: ...
 
             @property
             def position(self) -> ProxyArray: ...
