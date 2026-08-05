@@ -213,7 +213,16 @@ class Articulation(BaseArticulation):
     Operations.
     """
 
-    def reset(self, env_ids: Sequence[int] | None = None, env_mask: wp.array | None = None) -> None:
+    def reset(
+        self,
+        env_ids: Sequence[int]
+        | torch.Tensor
+        | wp.array(dtype=wp.int32)
+        | wp.array(dtype=wp.int64)
+        | slice
+        | None = None,
+        env_mask: wp.array | None = None,
+    ) -> None:
         """Reset the articulation.
 
         .. caution::
@@ -224,7 +233,7 @@ class Articulation(BaseArticulation):
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
         """
         # use ellipses object to skip initial indices.
-        if (env_ids is None) or (env_ids == slice(None)):
+        if env_ids is None or (isinstance(env_ids, slice) and env_ids == slice(None)):
             env_ids = slice(None)
         # reset actuators, including backend-native actuator state.
         self.actuators.reset(env_ids)

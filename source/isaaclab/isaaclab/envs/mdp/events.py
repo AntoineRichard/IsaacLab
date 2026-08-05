@@ -1296,16 +1296,6 @@ class randomize_actuator_gains(ManagerTermBase):
                     self.default_joint_stiffness[:, joint_ids] = actuator.stiffness
                 if "damping" in actuator.parameter_names:
                     self.default_joint_damping[:, joint_ids] = actuator.damping
-        # Same for explicit Newton actuators on either backend — their kp/kd
-        # live on the per-actuator controller arrays (not on a Lab Actuator
-        # object), so the asset exposes a per-articulation snapshot taken
-        # at articulation init time.
-        newton_default_stiffness = getattr(self.asset, "newton_default_stiffness", None)
-        if newton_default_stiffness is not None:
-            joint_ids = self.asset.newton_managed_local_joints
-            self.default_joint_stiffness[:, joint_ids] = newton_default_stiffness[:, joint_ids]
-            self.default_joint_damping[:, joint_ids] = self.asset.newton_default_damping[:, joint_ids]
-
         # check for valid operation
         if cfg.params["operation"] == "scale":
             if "stiffness_distribution_params" in cfg.params:

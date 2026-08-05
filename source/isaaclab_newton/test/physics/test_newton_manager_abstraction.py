@@ -25,7 +25,11 @@ Covers:
 
 from __future__ import annotations
 
-from contextlib import ExitStack
+import gc
+import inspect
+import warnings
+import weakref
+from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 
 import numpy as np
@@ -144,6 +148,696 @@ def test_unregister_post_actuator_callback_removes_exact_callback_idempotently(m
     assert callbacks[0] is equal_but_distinct
 
 
+def test_unregister_pre_actuator_callback_removes_exact_callback_idempotently(monkeypatch) -> None:
+    """Removing a staged-gather callback preserves equal registrations."""
+    callbacks: list[object] = []
+    monkeypatch.setattr(NewtonManager, "_pre_actuator_callbacks", callbacks, raising=False)
+
+    class _EqualCallback:
+        def __call__(self) -> None:
+            pass
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, _EqualCallback)
+
+    first = _EqualCallback()
+    equal_but_distinct = _EqualCallback()
+    NewtonManager.register_pre_actuator_callback(first)
+    NewtonManager.register_pre_actuator_callback(equal_but_distinct)
+
+    NewtonManager.unregister_pre_actuator_callback(first)
+    NewtonManager.unregister_pre_actuator_callback(first)
+
+    assert len(callbacks) == 1
+    assert callbacks[0] is equal_but_distinct
+
+
+def test_simulate_full_runs_pre_actuator_callbacks_before_every_actuator_step(monkeypatch) -> None:
+    """A staged gather occurs before each decimated native actuator computation."""
+    events: list[str] = []
+
+    class _Adapter:
+        gathered_ranges: list[object] = []
+
+        def gather_staged_ranges(self, ranges: object) -> None:
+            self.gathered_ranges.append(ranges)
+
+        def step(self, *_args) -> None:
+            assert self.gathered_ranges[-1] == "canonical"
+            events.append("actuator")
+
+    adapter = _Adapter()
+    monkeypatch.setattr(NewtonManager, "_solver_dt", 0.01, raising=False)
+    monkeypatch.setattr(NewtonManager, "_num_substeps", 1, raising=False)
+    monkeypatch.setattr(NewtonManager, "_decimation", 2, raising=False)
+    monkeypatch.setattr(NewtonManager, "_needs_collision_pipeline", False, raising=False)
+    monkeypatch.setattr(NewtonManager, "_adapter", adapter, raising=False)
+    monkeypatch.setattr(NewtonManager, "_state_0", object(), raising=False)
+    monkeypatch.setattr(NewtonManager, "_control", object(), raising=False)
+    monkeypatch.setattr(
+        NewtonManager,
+        "_pre_actuator_callbacks",
+        [lambda: (adapter.gather_staged_ranges("canonical"), events.append("pre"))],
+        raising=False,
+    )
+    monkeypatch.setattr(NewtonManager, "_post_actuator_callbacks", [lambda: events.append("post")], raising=False)
+    monkeypatch.setattr(NewtonManager, "_post_step_callbacks", [lambda: events.append("post_step")], raising=False)
+    monkeypatch.setattr(
+        NewtonManager, "_run_solver_substeps", classmethod(lambda cls, contacts: events.append("solver"))
+    )
+    monkeypatch.setattr(NewtonManager, "_update_sensors", classmethod(lambda cls, contacts: events.append("sensors")))
+
+    NewtonManager._simulate_full()
+
+    assert events == ["pre", "actuator", "post", "solver", "pre", "actuator", "post", "solver", "post_step", "sensors"]
+    assert adapter.gathered_ranges == ["canonical", "canonical"]
+
+
+def test_eager_step_runs_pre_actuator_callbacks_before_native_computation(monkeypatch) -> None:
+    """The non-graphable fallback gathers staged inputs before its single actuator step."""
+    from isaaclab.physics import PhysicsManager
+
+    events: list[str] = []
+
+    class _Adapter:
+        def step(self, *_args) -> None:
+            events.append("actuator")
+
+    monkeypatch.setattr(PhysicsManager, "_sim", SimpleNamespace(is_playing=lambda: True), raising=False)
+    monkeypatch.setattr(PhysicsManager, "_cfg", SimpleNamespace(use_cuda_graph=False), raising=False)
+    monkeypatch.setattr(PhysicsManager, "_device", "cpu", raising=False)
+    monkeypatch.setattr(PhysicsManager, "_sim_time", 0.0, raising=False)
+    monkeypatch.setattr(NewtonManager, "_reset_solver_internals_delegate", lambda _mask: None, raising=False)
+    monkeypatch.setattr(NewtonManager, "_model_changes", set(), raising=False)
+    monkeypatch.setattr(NewtonManager, "_graph_capture_pending", False, raising=False)
+    monkeypatch.setattr(NewtonManager, "_solver_dt", 0.01, raising=False)
+    monkeypatch.setattr(NewtonManager, "_num_substeps", 1, raising=False)
+    monkeypatch.setattr(NewtonManager, "_adapter", _Adapter(), raising=False)
+    monkeypatch.setattr(NewtonManager, "_state_0", object(), raising=False)
+    monkeypatch.setattr(NewtonManager, "_control", object(), raising=False)
+    monkeypatch.setattr(NewtonManager, "_pre_actuator_callbacks", [lambda: events.append("pre")], raising=False)
+    monkeypatch.setattr(NewtonManager, "_post_actuator_callbacks", [lambda: events.append("post")], raising=False)
+    monkeypatch.setattr(NewtonManager, "_is_all_graphable", classmethod(lambda cls: False))
+    monkeypatch.setattr(NewtonManager, "forward", classmethod(lambda cls: None))
+    monkeypatch.setattr(NewtonManager, "_simulate_physics_only", classmethod(lambda cls: events.append("physics")))
+    monkeypatch.setattr(NewtonManager, "_log_solver_debug", classmethod(lambda cls: None))
+
+    NewtonManager.step()
+
+    assert events == ["pre", "actuator", "post", "physics"]
+
+
+def test_env_zero_structural_mapping_preserves_unsorted_authored_joint_order() -> None:
+    """Builder structural matching retains every unsorted env-0 DOF."""
+    from isaaclab_newton.physics.newton_manager import _build_env_zero_actuator_metadata
+
+    first, second = ("first",), ("second",)
+    entries = (
+        (first, SimpleNamespace(indices=[2, 0, 5, 3])),
+        (second, SimpleNamespace(indices=[1, 4])),
+    )
+
+    signatures, local_indices = _build_env_zero_actuator_metadata(entries, dofs_per_env=3)
+
+    assert signatures == {2: (first,), 0: (first,), 1: (second,)}
+    assert local_indices == {first: (2, 0), second: (1,)}
+
+
+def test_build_newton_actuator_defaults_warns_once_and_preserves_empty_result(monkeypatch) -> None:
+    """The deprecated compatibility helper retains its historical empty result."""
+    import isaaclab_newton.actuators.adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "_DEFAULTS_DEPRECATION_EMITTED", False)
+    with pytest.warns(DeprecationWarning, match="ActuatorCollection"):
+        stiffness, damping, joint_indices = adapter_module.build_newton_actuator_defaults(
+            [], num_envs=2, num_joints=3, dof_offset=0, env_stride=3, device="cpu"
+        )
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        repeated = adapter_module.build_newton_actuator_defaults(
+            [], num_envs=2, num_joints=3, dof_offset=0, env_stride=3, device="cpu"
+        )
+
+    assert not recorded
+    assert stiffness.shape == damping.shape == (2, 3)
+    assert torch.count_nonzero(stiffness) == torch.count_nonzero(damping) == 0
+    assert torch.equal(joint_indices, torch.empty(0, dtype=torch.int32))
+    assert torch.equal(repeated[2], joint_indices)
+
+
+def _legacy_newton_actuator_defaults_reference(
+    actuators: list[object],
+    num_envs: int,
+    num_joints: int,
+    dof_offset: int,
+    env_stride: int,
+    joint_user_to_backend_indices: tuple[int, ...] | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | slice]:
+    """Literal pre-collection implementation used to pin compatibility behavior."""
+    articulation_actuators = [
+        actuator for actuator in actuators if dof_offset <= int(actuator.indices.numpy()[0]) < dof_offset + num_joints
+    ]
+    managed_local: set[int] = set()
+    for actuator in articulation_actuators:
+        per_actuator = actuator.indices.shape[0] // num_envs
+        for global_dof in actuator.indices.numpy()[:per_actuator]:
+            local_dof = int(global_dof) - dof_offset
+            if 0 <= local_dof < num_joints:
+                managed_local.add(local_dof)
+
+    stiffness = torch.zeros((num_envs, num_joints), dtype=torch.float32)
+    damping = torch.zeros_like(stiffness)
+    for actuator in articulation_actuators:
+        for value_index, global_dof in enumerate(actuator.indices.numpy()):
+            relative_dof = int(global_dof) - dof_offset
+            env_index = relative_dof // env_stride
+            local_dof = relative_dof - env_index * env_stride
+            if 0 <= env_index < num_envs and 0 <= local_dof < num_joints:
+                if hasattr(actuator.controller, "kp"):
+                    stiffness[env_index, local_dof] = float(actuator.controller.kp.numpy()[value_index])
+                if hasattr(actuator.controller, "kd"):
+                    damping[env_index, local_dof] = float(actuator.controller.kd.numpy()[value_index])
+
+    if len(managed_local) == num_joints:
+        joint_indices: torch.Tensor | slice = slice(None)
+    else:
+        joint_indices = torch.tensor(sorted(managed_local), dtype=torch.int32)
+    if joint_user_to_backend_indices is not None:
+        stiffness = stiffness[:, list(joint_user_to_backend_indices)]
+        damping = damping[:, list(joint_user_to_backend_indices)]
+        if not isinstance(joint_indices, slice):
+            backend_to_user = [0] * num_joints
+            for user_index, backend_index in enumerate(joint_user_to_backend_indices):
+                backend_to_user[backend_index] = user_index
+            joint_indices = torch.tensor(sorted(backend_to_user[index] for index in managed_local), dtype=torch.int32)
+    return stiffness, damping, joint_indices
+
+
+def test_build_newton_actuator_defaults_matches_legacy_nonempty_reversed_layout(monkeypatch) -> None:
+    """The deprecated helper preserves values, types, ordering, offsets, and permutations."""
+    import isaaclab_newton.actuators.adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "_DEFAULTS_DEPRECATION_EMITTED", True)
+    offset, stride, num_envs, num_joints = 2, 7, 2, 4
+    first = SimpleNamespace(
+        controller=SimpleNamespace(
+            kp=wp.array((120.0, 100.0, 121.0, 101.0), dtype=wp.float32, device="cpu"),
+            kd=wp.array((12.0, 10.0, 12.1, 10.1), dtype=wp.float32, device="cpu"),
+        ),
+        indices=wp.array((4, 2, 11, 9), dtype=wp.uint32, device="cpu"),
+    )
+    second = SimpleNamespace(
+        controller=SimpleNamespace(
+            kp=wp.array((130.0, 131.0), dtype=wp.float32, device="cpu"),
+            kd=wp.array((13.0, 13.1), dtype=wp.float32, device="cpu"),
+        ),
+        indices=wp.array((5, 12), dtype=wp.uint32, device="cpu"),
+    )
+    unrelated = SimpleNamespace(
+        controller=SimpleNamespace(
+            kp=wp.array((999.0, 999.0), dtype=wp.float32, device="cpu"),
+            kd=wp.array((999.0, 999.0), dtype=wp.float32, device="cpu"),
+        ),
+        indices=wp.array((0, 7), dtype=wp.uint32, device="cpu"),
+    )
+    # Deliberately reverse the authored groups and request reverse public order.
+    actuators = [unrelated, second, first]
+    user_to_backend = (3, 2, 1, 0)
+    expected = _legacy_newton_actuator_defaults_reference(
+        actuators, num_envs, num_joints, offset, stride, user_to_backend
+    )
+    actual = adapter_module.build_newton_actuator_defaults(
+        actuators, num_envs, num_joints, offset, stride, "cpu", user_to_backend
+    )
+
+    for actual_value, expected_value in zip(actual[:2], expected[:2], strict=True):
+        assert type(actual_value) is torch.Tensor
+        assert actual_value.dtype is torch.float32
+        assert actual_value.device.type == "cpu"
+        assert actual_value.shape == (num_envs, num_joints)
+        torch.testing.assert_close(actual_value, expected_value)
+    assert type(actual[2]) is torch.Tensor
+    assert actual[2].dtype is torch.int32
+    assert actual[2].shape == expected[2].shape
+    torch.testing.assert_close(actual[2], expected[2])
+
+
+def test_build_newton_actuator_defaults_preserves_slice_for_full_coverage(monkeypatch) -> None:
+    """The legacy all-managed sentinel remains ``slice(None)`` under a permutation."""
+    import isaaclab_newton.actuators.adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "_DEFAULTS_DEPRECATION_EMITTED", True)
+    actuator = SimpleNamespace(
+        controller=SimpleNamespace(
+            kp=wp.array((10.0, 20.0, 30.0, 40.0), dtype=wp.float32, device="cpu"),
+            kd=wp.array((1.0, 2.0, 3.0, 4.0), dtype=wp.float32, device="cpu"),
+        ),
+        indices=wp.array((0, 1, 2, 3), dtype=wp.uint32, device="cpu"),
+    )
+
+    expected = _legacy_newton_actuator_defaults_reference([actuator], 1, 4, 0, 4, (3, 2, 1, 0))
+    actual = adapter_module.build_newton_actuator_defaults(
+        [actuator], 1, 4, 0, 4, "cpu", joint_user_to_backend_indices=(3, 2, 1, 0)
+    )
+
+    torch.testing.assert_close(actual[0], expected[0])
+    torch.testing.assert_close(actual[1], expected[1])
+    assert actual[2] == expected[2] == slice(None)
+
+
+def test_build_newton_actuator_defaults_remains_public_with_legacy_signature(monkeypatch) -> None:
+    """Package import and positional argument order remain available during deprecation."""
+    import isaaclab_newton.actuators as public_actuators
+    import isaaclab_newton.actuators.adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "_DEFAULTS_DEPRECATION_EMITTED", True)
+    assert public_actuators.build_newton_actuator_defaults is adapter_module.build_newton_actuator_defaults
+    assert "build_newton_actuator_defaults" in public_actuators.__all__
+    signature = inspect.signature(public_actuators.build_newton_actuator_defaults)
+    assert list(signature.parameters) == [
+        "actuators",
+        "num_envs",
+        "num_joints",
+        "dof_offset",
+        "env_stride",
+        "device",
+        "joint_user_to_backend_indices",
+    ]
+    assert signature.parameters["joint_user_to_backend_indices"].default is None
+
+
+def test_build_newton_actuator_defaults_warns_once_at_the_direct_caller(monkeypatch) -> None:
+    """The deprecation points at its caller and is emitted only once per process."""
+    import isaaclab_newton.actuators.adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "_DEFAULTS_DEPRECATION_EMITTED", False)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        warning_line = inspect.currentframe().f_lineno + 1
+        adapter_module.build_newton_actuator_defaults([], 1, 0, 0, 0, "cpu")
+        adapter_module.build_newton_actuator_defaults([], 1, 0, 0, 0, "cpu")
+
+    assert len(recorded) == 1
+    assert recorded[0].category is DeprecationWarning
+    assert recorded[0].filename == __file__
+    assert recorded[0].lineno == warning_line
+
+
+def _make_hosted_actuator_stage(monkeypatch, parsed_actuators: list[object]):
+    """Create a real in-memory USD traversal with controlled parsed actuator results."""
+    import newton.actuators as newton_actuators
+
+    from pxr import Usd
+
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/Robot")
+    parsed_by_path = {}
+    for index, parsed in enumerate(parsed_actuators):
+        prim = stage.DefinePrim(f"/Robot/Actuator_{index}")
+        parsed_by_path[str(prim.GetPath())] = parsed
+    monkeypatch.setattr(
+        newton_actuators,
+        "parse_actuator_prim",
+        lambda prim: parsed_by_path.get(str(prim.GetPath())),
+    )
+    return stage
+
+
+def test_usd_structural_occurrences_preserve_same_joint_interleaving(monkeypatch) -> None:
+    """USD parsing retains ``[A, B, A]`` before Newton groups compatible entries."""
+    import isaaclab_newton.actuators.adapter as adapter_module
+    from newton.actuators import ControllerPD, Delay
+
+    stage = _make_hosted_actuator_stage(
+        monkeypatch,
+        [
+            SimpleNamespace(
+                target_path="/Robot/joint",
+                controller_class=ControllerPD,
+                controller_kwargs={"kp": 2.0, "kd": 0.0},
+                component_specs=[],
+            ),
+            SimpleNamespace(
+                target_path="/Robot/joint",
+                controller_class=ControllerPD,
+                controller_kwargs={"kp": 11.0, "kd": 0.0},
+                component_specs=[(Delay, {"delay_steps": 1})],
+            ),
+            SimpleNamespace(
+                target_path="/Robot/joint",
+                controller_class=ControllerPD,
+                controller_kwargs={"kp": 7.0, "kd": 0.0},
+                component_specs=[],
+            ),
+        ],
+    )
+
+    occurrences = adapter_module._structural_occurrences_from_usd(stage, ["joint"], "/Robot")
+
+    assert len(occurrences[0]) == 3
+    assert occurrences[0][0] == occurrences[0][2]
+    assert occurrences[0][0] != occurrences[0][1]
+    assert occurrences[0][1][1] is True
+
+
+def test_usd_structural_occurrences_allow_articulation_without_actuators() -> None:
+    """An uncovered articulation provides an explicit all-empty occurrence ledger."""
+    import isaaclab_newton.actuators.adapter as adapter_module
+
+    from pxr import Usd
+
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/Robot")
+
+    occurrences = adapter_module._structural_occurrences_from_usd(stage, ["joint_0", "joint_1"], "/Robot")
+
+    assert occurrences == {0: (), 1: ()}
+
+
+def test_hosted_direct_materialization_skips_mapped_parameter_expansion(monkeypatch) -> None:
+    """A whole native exact type reads mapped parameters from canonical storage at construction."""
+    import isaaclab_newton.actuators.adapter as adapter_module
+    from newton.actuators import ClampingMaxEffort, ControllerPD
+
+    from isaaclab.actuators import IdealPDActuator
+    from isaaclab.utils.warp import ProxyArray
+
+    parsed = [
+        SimpleNamespace(
+            target_path=f"/Robot/joint_{index}",
+            controller_class=ControllerPD,
+            controller_kwargs={"kp": 100.0 + index, "kd": 10.0 + index},
+            component_specs=[(ClampingMaxEffort, {"max_effort": 50.0 + index})],
+        )
+        for index in range(2)
+    ]
+    stage = _make_hosted_actuator_stage(monkeypatch, parsed)
+    canonical = {
+        name: ProxyArray(wp.array(values, dtype=wp.float32, device="cpu"))
+        for name, values in {
+            "stiffness": [[11.0, 12.0], [21.0, 22.0]],
+            "damping": [[1.1, 1.2], [2.1, 2.2]],
+            "effort_limit": [[31.0, 32.0], [41.0, 42.0]],
+            "computed_effort": [[0.0, 0.0], [0.0, 0.0]],
+            "applied_effort": [[0.0, 0.0], [0.0, 0.0]],
+        }.items()
+    }
+    group = SimpleNamespace(
+        joint_indices=(0, 1),
+        joint_names=("joint_0", "joint_1"),
+        _parameter_binding=SimpleNamespace(arrays=canonical),
+    )
+    binding = SimpleNamespace(
+        groups={"native": group},
+        native_group_names=frozenset({"native"}),
+        layout=SimpleNamespace(
+            num_joints=2,
+            type_layouts={IdealPDActuator: SimpleNamespace(num_worlds=2, num_dofs=2, compact_joint_indices=(0, 1))},
+            group_layouts=(
+                SimpleNamespace(
+                    name="native",
+                    actuator_type=IdealPDActuator,
+                    joint_indices=(0, 1),
+                    joint_names=("joint_0", "joint_1"),
+                    type_slice=slice(0, 2),
+                ),
+            ),
+        ),
+    )
+    expanded_sources = []
+    original_launch = wp.launch
+
+    def record_expansions(kernel, *args, **kwargs):
+        if kernel is adapter_module._expand_env_major_values:
+            expanded_sources.append(kwargs["inputs"][0].numpy().tolist())
+        return original_launch(kernel, *args, **kwargs)
+
+    monkeypatch.setattr(wp, "launch", record_expansions)
+
+    adapter_module.NewtonActuatorAdapter._from_usd_binding(
+        binding,
+        stage=stage,
+        joint_names=["joint_0", "joint_1"],
+        num_envs=2,
+        num_joints=2,
+        device="cpu",
+        articulation_prim_path="/Robot",
+    )
+
+    assert expanded_sources == [[0.0, 0.0]]
+
+
+def test_hosted_direct_materialization_injects_canonical_pointers(monkeypatch) -> None:
+    """A whole native exact type installs canonical parameters and clamped outputs before binding."""
+    from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
+    from newton.actuators import ClampingDCMotor, ControllerPD
+
+    from isaaclab.actuators import DCMotor
+    from isaaclab.utils.warp import ProxyArray
+
+    parsed = [
+        SimpleNamespace(
+            target_path=f"/Robot/joint_{index}",
+            controller_class=ControllerPD,
+            controller_kwargs={"kp": 100.0 + index, "kd": 10.0 + index},
+            component_specs=[
+                (
+                    ClampingDCMotor,
+                    {
+                        "max_motor_effort": 50.0 + index,
+                        "velocity_limit": 20.0 + index,
+                        "saturation_effort": 80.0 + index,
+                    },
+                )
+            ],
+        )
+        for index in range(2)
+    ]
+    stage = _make_hosted_actuator_stage(monkeypatch, parsed)
+    canonical = {
+        name: ProxyArray(wp.array(values, dtype=wp.float32, device="cpu"))
+        for name, values in {
+            "stiffness": [[11.0, 12.0], [21.0, 22.0]],
+            "damping": [[1.1, 1.2], [2.1, 2.2]],
+            "effort_limit": [[31.0, 32.0], [41.0, 42.0]],
+            "velocity_limit": [[51.0, 52.0], [61.0, 62.0]],
+            "saturation_effort": [[71.0, 72.0], [81.0, 82.0]],
+            "computed_effort": [[0.0, 0.0], [0.0, 0.0]],
+            "applied_effort": [[0.0, 0.0], [0.0, 0.0]],
+        }.items()
+    }
+    group = SimpleNamespace(
+        joint_indices=(0, 1),
+        joint_names=("joint_0", "joint_1"),
+        _parameter_binding=SimpleNamespace(arrays=canonical),
+    )
+    binding = SimpleNamespace(
+        groups={"native": group},
+        native_group_names=frozenset({"native"}),
+        layout=SimpleNamespace(
+            num_joints=2,
+            type_layouts={DCMotor: SimpleNamespace(num_worlds=2, num_dofs=2, compact_joint_indices=(0, 1))},
+            group_layouts=(
+                SimpleNamespace(
+                    name="native",
+                    actuator_type=DCMotor,
+                    joint_indices=(0, 1),
+                    joint_names=("joint_0", "joint_1"),
+                    type_slice=slice(0, 2),
+                ),
+            ),
+        ),
+    )
+
+    adapter = NewtonActuatorAdapter._from_usd_binding(
+        binding,
+        stage=stage,
+        joint_names=["joint_0", "joint_1"],
+        num_envs=2,
+        num_joints=2,
+        device="cpu",
+        articulation_prim_path="/Robot",
+    )
+
+    actuator = adapter.actuators[0]
+    assert actuator.controller.kp.ptr == canonical["stiffness"].warp.ptr
+    assert actuator.controller.kd.ptr == canonical["damping"].warp.ptr
+    assert actuator.clamping[0].max_motor_effort.ptr == canonical["effort_limit"].warp.ptr
+    assert actuator.clamping[0].velocity_limit.ptr == canonical["velocity_limit"].warp.ptr
+    assert actuator.clamping[0].saturation_effort.ptr == canonical["saturation_effort"].warp.ptr
+    assert actuator._computed_forces.ptr == canonical["computed_effort"].warp.ptr
+    assert actuator._applied_forces.ptr == canonical["applied_effort"].warp.ptr
+
+
+def test_hosted_same_signature_across_two_lab_types_uses_staging(monkeypatch) -> None:
+    """One Newton signature shared by two Lab exact types cannot alias either canonical type."""
+    from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
+    from newton.actuators import ClampingMaxEffort, ControllerPD
+
+    from isaaclab.utils.warp import ProxyArray
+
+    class _FirstType:
+        pass
+
+    class _SecondType:
+        pass
+
+    parsed = [
+        SimpleNamespace(
+            target_path=f"/Robot/joint_{index}",
+            controller_class=ControllerPD,
+            controller_kwargs={"kp": 100.0 + index, "kd": 10.0 + index},
+            component_specs=[(ClampingMaxEffort, {"max_effort": 50.0 + index})],
+        )
+        for index in range(2)
+    ]
+    stage = _make_hosted_actuator_stage(monkeypatch, parsed)
+
+    def make_canonical(seed: float) -> dict[str, ProxyArray]:
+        return {
+            name: ProxyArray(wp.array([[seed], [seed + 1.0]], dtype=wp.float32, device="cpu"))
+            for name in ("stiffness", "damping", "effort_limit", "computed_effort", "applied_effort")
+        }
+
+    first_arrays = make_canonical(10.0)
+    second_arrays = make_canonical(20.0)
+    first_group = SimpleNamespace(
+        joint_indices=(0,),
+        joint_names=("joint_0",),
+        _parameter_binding=SimpleNamespace(arrays=first_arrays),
+    )
+    second_group = SimpleNamespace(
+        joint_indices=(1,),
+        joint_names=("joint_1",),
+        _parameter_binding=SimpleNamespace(arrays=second_arrays),
+    )
+    group_layouts = (
+        SimpleNamespace(
+            name="first",
+            actuator_type=_FirstType,
+            joint_indices=(0,),
+            joint_names=("joint_0",),
+            type_slice=slice(0, 1),
+        ),
+        SimpleNamespace(
+            name="second",
+            actuator_type=_SecondType,
+            joint_indices=(1,),
+            joint_names=("joint_1",),
+            type_slice=slice(0, 1),
+        ),
+    )
+    binding = SimpleNamespace(
+        groups={"first": first_group, "second": second_group},
+        native_group_names=frozenset({"first", "second"}),
+        computed_effort=ProxyArray(wp.zeros((2, 2), dtype=wp.float32, device="cpu")),
+        layout=SimpleNamespace(
+            num_joints=2,
+            type_layouts={
+                _FirstType: SimpleNamespace(num_worlds=2, num_dofs=1, compact_joint_indices=(0,)),
+                _SecondType: SimpleNamespace(num_worlds=2, num_dofs=1, compact_joint_indices=(1,)),
+            },
+            group_layouts=group_layouts,
+        ),
+    )
+
+    adapter = NewtonActuatorAdapter._from_usd_binding(
+        binding,
+        stage=stage,
+        joint_names=["joint_0", "joint_1"],
+        num_envs=2,
+        num_joints=2,
+        device="cpu",
+        articulation_prim_path="/Robot",
+    )
+    native_binding = adapter.bind_articulation(binding, dof_offset=0)
+
+    actuator = adapter.actuators[0]
+    assert len(native_binding.ranges) == 2
+    assert all(not range_binding.direct for range_binding in native_binding.ranges)
+    assert actuator.controller.kp.ptr not in {first_arrays["stiffness"].warp.ptr, second_arrays["stiffness"].warp.ptr}
+    assert actuator._computed_forces.ptr not in {
+        first_arrays["computed_effort"].warp.ptr,
+        second_arrays["computed_effort"].warp.ptr,
+    }
+
+
+def test_hosted_materialization_resolves_each_joint_recipe_once(monkeypatch) -> None:
+    """Parsing caches one controller, component, and signature resolution per authored joint."""
+    import isaaclab_newton.actuators.adapter as adapter_module
+    from newton.actuators import ClampingMaxEffort, ControllerPD
+
+    from isaaclab.actuators import IdealPDActuator
+    from isaaclab.utils.warp import ProxyArray
+
+    parsed = [
+        SimpleNamespace(
+            target_path=f"/Robot/joint_{index}",
+            controller_class=ControllerPD,
+            controller_kwargs={"kp": 100.0 + index, "kd": 10.0 + index},
+            component_specs=[(ClampingMaxEffort, {"max_effort": 50.0 + index})],
+        )
+        for index in range(2)
+    ]
+    stage = _make_hosted_actuator_stage(monkeypatch, parsed)
+    canonical = {
+        name: ProxyArray(wp.zeros((1, 2), dtype=wp.float32, device="cpu"))
+        for name in ("stiffness", "damping", "effort_limit", "computed_effort", "applied_effort")
+    }
+    group = SimpleNamespace(_parameter_binding=SimpleNamespace(arrays=canonical))
+    binding = SimpleNamespace(
+        groups={"native": group},
+        native_group_names=frozenset({"native"}),
+        layout=SimpleNamespace(
+            num_joints=2,
+            type_layouts={IdealPDActuator: SimpleNamespace(num_worlds=1, num_dofs=2, compact_joint_indices=(0, 1))},
+            group_layouts=(
+                SimpleNamespace(
+                    name="native",
+                    actuator_type=IdealPDActuator,
+                    joint_indices=(0, 1),
+                    joint_names=("joint_0", "joint_1"),
+                    type_slice=slice(0, 2),
+                ),
+            ),
+        ),
+    )
+    counts = {"controller": 0, "clamping": 0, "signature": 0}
+    original_controller_resolve = ControllerPD.resolve_arguments
+    original_clamping_resolve = ClampingMaxEffort.resolve_arguments
+    original_signature = adapter_module._actuator_signature
+
+    def resolve_controller(cls, arguments):
+        del cls
+        counts["controller"] += 1
+        return original_controller_resolve(arguments)
+
+    def resolve_clamping(cls, arguments):
+        del cls
+        counts["clamping"] += 1
+        return original_clamping_resolve(arguments)
+
+    def build_signature(*args, **kwargs):
+        counts["signature"] += 1
+        return original_signature(*args, **kwargs)
+
+    monkeypatch.setattr(ControllerPD, "resolve_arguments", classmethod(resolve_controller))
+    monkeypatch.setattr(ClampingMaxEffort, "resolve_arguments", classmethod(resolve_clamping))
+    monkeypatch.setattr(adapter_module, "_actuator_signature", build_signature)
+
+    adapter_module.NewtonActuatorAdapter._from_usd_binding(
+        binding,
+        stage=stage,
+        joint_names=["joint_0", "joint_1"],
+        num_envs=1,
+        num_joints=2,
+        device="cpu",
+        articulation_prim_path="/Robot",
+    )
+
+    assert counts == {"controller": 2, "clamping": 2, "signature": 2}
+
+
 def test_native_adapter_direct_range_aliases_private_canonical_type_storage() -> None:
     """Compatible native ranges keep controller and output pointers canonical."""
     from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
@@ -175,13 +869,26 @@ def test_native_adapter_direct_range_aliases_private_canonical_type_storage() ->
         layout=SimpleNamespace(
             num_joints=2,
             type_layouts={_NativeType: SimpleNamespace(num_worlds=2, num_dofs=2, compact_joint_indices=(0, 1))},
-            group_layouts=(SimpleNamespace(name="native", actuator_type=_NativeType),),
+            group_layouts=(
+                SimpleNamespace(
+                    name="native",
+                    actuator_type=_NativeType,
+                    joint_indices=(0, 1),
+                    joint_names=("joint_0", "joint_1"),
+                    type_slice=slice(0, 2),
+                ),
+            ),
         ),
     )
     adapter = object.__new__(NewtonActuatorAdapter)
     adapter.actuators = [actuator]
     adapter._device = "cpu"
     adapter.num_joints = 2
+    signature = ("native",)
+    adapter._actuators_by_signature = {signature: actuator}
+    adapter._joint_signatures = {"joint_0": signature, "joint_1": signature}
+    adapter._dof_signatures = {}
+    adapter._actuator_dof_indices = {signature: (0, 1)}
 
     native_binding = adapter.bind_articulation(binding, dof_offset=0)
 
@@ -191,6 +898,88 @@ def test_native_adapter_direct_range_aliases_private_canonical_type_storage() ->
     assert controller.kd.ptr == canonical["damping"].warp.ptr
     assert actuator._computed_forces.ptr == canonical["computed_effort"].warp.ptr
     assert actuator._applied_forces.ptr == canonical["applied_effort"].warp.ptr
+
+
+@pytest.mark.parametrize("clamped", [False, True], ids=["unclamped", "dc_motor"])
+def test_real_newton_actuator_two_step_output_transport(clamped: bool) -> None:
+    """Real Newton controllers publish fresh computed and applied force every step."""
+    import newton
+    from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
+    from newton.actuators import ClampingDCMotor, ControllerPD
+
+    from isaaclab.utils.warp import ProxyArray
+
+    class _NativeType:
+        pass
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0)
+    joint = builder.add_joint_revolute(parent=-1, child=body)
+    builder.add_articulation([joint])
+    clamping = (
+        [(ClampingDCMotor, {"saturation_effort": 1.0, "velocity_limit": 2.0, "max_motor_effort": 0.75})]
+        if clamped
+        else None
+    )
+    builder.add_actuator(ControllerPD, index=0, kp=2.0, kd=0.5, clamping=clamping)
+    model = builder.finalize(device="cpu")
+    state, control = model.state(), model.control()
+    (structural_key,) = builder.actuator_entries
+    adapter = NewtonActuatorAdapter(
+        model.actuators,
+        num_envs=1,
+        num_joints=1,
+        dof_offset=0,
+        device="cpu",
+        actuator_keys=(structural_key,),
+        actuator_dof_indices={structural_key: (0,)},
+    )
+    adapter._joint_signatures = {"joint": structural_key}
+    arrays = {
+        name: ProxyArray(wp.zeros((1, 1), dtype=wp.float32, device="cpu"))
+        for name in ("stiffness", "damping", "computed_effort", "applied_effort")
+    }
+    arrays["stiffness"].warp.fill_(2.0)
+    binding = SimpleNamespace(
+        groups={"native": SimpleNamespace(_parameter_binding=SimpleNamespace(arrays=arrays))},
+        native_group_names=frozenset({"native"}),
+        computed_effort=arrays["computed_effort"],
+        layout=SimpleNamespace(
+            num_joints=1,
+            type_layouts={_NativeType: SimpleNamespace(num_worlds=1, num_dofs=1, compact_joint_indices=(0,))},
+            group_layouts=(
+                SimpleNamespace(
+                    name="native",
+                    actuator_type=_NativeType,
+                    joint_indices=(0,),
+                    joint_names=("joint",),
+                    type_slice=slice(0, 1),
+                ),
+            ),
+        ),
+    )
+    native_binding = adapter.bind_articulation(binding, dof_offset=0)
+    joint_computed = wp.zeros((1, 1), dtype=wp.float32, device="cpu")
+    joint_applied = wp.zeros((1, 1), dtype=wp.float32, device="cpu")
+
+    # The adapter owns output zeroing; feedforward stays on Newton's distinct
+    # joint_act command field. Poison canonical outputs before the second step
+    # so a stale output alias cannot accidentally pass this regression.
+    for target, expected_computed in ((1.0, 2.25), (0.5, 1.25)):
+        arrays["computed_effort"].warp.fill_(999.0)
+        arrays["applied_effort"].warp.fill_(999.0)
+        control.joint_target_q.fill_(target)
+        control.joint_target_qd.zero_()
+        control.joint_act.fill_(0.25)
+        adapter.step(state, control, dt=0.01)
+        adapter.publish_outputs(native_binding.ranges, joint_computed, joint_applied)
+
+        expected_applied = min(expected_computed, 0.75) if clamped else expected_computed
+        assert control.joint_f.numpy()[0] == pytest.approx(expected_applied)
+        assert arrays["computed_effort"].warp.numpy()[0, 0] == pytest.approx(expected_computed)
+        assert arrays["applied_effort"].warp.numpy()[0, 0] == pytest.approx(expected_applied)
+        assert joint_computed.numpy()[0, 0] == pytest.approx(expected_computed)
+        assert joint_applied.numpy()[0, 0] == pytest.approx(expected_applied)
 
 
 def test_global_native_actuator_staging_survives_two_articulation_registrations() -> None:
@@ -227,7 +1016,15 @@ def test_global_native_actuator_staging_survives_two_articulation_registrations(
             layout=SimpleNamespace(
                 num_joints=1,
                 type_layouts={_NativeType: SimpleNamespace(num_worlds=2, num_dofs=1, compact_joint_indices=(0,))},
-                group_layouts=(SimpleNamespace(name="native", actuator_type=_NativeType),),
+                group_layouts=(
+                    SimpleNamespace(
+                        name="native",
+                        actuator_type=_NativeType,
+                        joint_indices=(0,),
+                        joint_names=("joint_0",),
+                        type_slice=slice(0, 1),
+                    ),
+                ),
             ),
         )
 
@@ -237,6 +1034,11 @@ def test_global_native_actuator_staging_survives_two_articulation_registrations(
     adapter.num_joints = 2
     adapter._num_envs = 2
     adapter._global_native_bindings = {}
+    signature = ("native",)
+    adapter._actuators_by_signature = {signature: actuator}
+    adapter._joint_signatures = {"joint_0": signature}
+    adapter._dof_signatures = {}
+    adapter._actuator_dof_indices = {signature: (0, 1)}
 
     first = adapter.bind_articulation(binding("first"), dof_offset=0)
     first_kp = controller.kp
@@ -249,6 +1051,195 @@ def test_global_native_actuator_staging_survives_two_articulation_registrations(
     assert controller.kp is first_kp
     adapter.unregister_articulation_ranges(second.ranges)
     assert controller.kp is original_kp
+
+
+def test_native_adapter_segments_a_b_a_exact_type_by_structural_key() -> None:
+    """One exact type binds [A, B, A] through two persistent global controllers."""
+    from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
+
+    from isaaclab.utils.warp import ProxyArray
+
+    class _NativeType:
+        pass
+
+    def make_actuator(indices: list[int]) -> SimpleNamespace:
+        size = len(indices)
+        return SimpleNamespace(
+            indices=wp.array(indices, dtype=wp.uint32, device="cpu"),
+            controller=SimpleNamespace(kp=wp.zeros(size, dtype=wp.float32), kd=wp.zeros(size, dtype=wp.float32)),
+            clamping=(),
+            _computed_forces=wp.zeros(size, dtype=wp.float32),
+            _applied_forces=wp.zeros(size, dtype=wp.float32),
+        )
+
+    actuator_a = make_actuator([0, 2, 3, 5])
+    actuator_b = make_actuator([1, 4])
+    canonical = {
+        name: ProxyArray(wp.zeros((2, 3), dtype=wp.float32, device="cpu"))
+        for name in ("stiffness", "damping", "computed_effort", "applied_effort")
+    }
+    groups = (
+        SimpleNamespace(
+            name="a0", actuator_type=_NativeType, joint_indices=(0,), joint_names=("j0",), type_slice=slice(0, 1)
+        ),
+        SimpleNamespace(
+            name="b", actuator_type=_NativeType, joint_indices=(1,), joint_names=("j1",), type_slice=slice(1, 2)
+        ),
+        SimpleNamespace(
+            name="a1", actuator_type=_NativeType, joint_indices=(2,), joint_names=("j2",), type_slice=slice(2, 3)
+        ),
+    )
+    binding = SimpleNamespace(
+        groups={
+            name: SimpleNamespace(_parameter_binding=SimpleNamespace(arrays=canonical)) for name in ("a0", "b", "a1")
+        },
+        native_group_names=frozenset(("a0", "b", "a1")),
+        computed_effort=canonical["computed_effort"],
+        layout=SimpleNamespace(
+            num_joints=3,
+            type_layouts={_NativeType: SimpleNamespace(num_worlds=2, num_dofs=3, compact_joint_indices=(0, 1, 2))},
+            group_layouts=groups,
+        ),
+    )
+    adapter = object.__new__(NewtonActuatorAdapter)
+    adapter.actuators = [actuator_a, actuator_b]
+    adapter._device = "cpu"
+    adapter.num_joints = 3
+    adapter._num_envs = 2
+    adapter._global_native_bindings = {}
+    signature_a, signature_b = ("A",), ("B",)
+    adapter._actuators_by_signature = {signature_a: actuator_a, signature_b: actuator_b}
+    adapter._joint_signatures = {"j0": signature_a, "j1": signature_b, "j2": signature_a}
+    adapter._dof_signatures = {}
+    adapter._actuator_dof_indices = {signature_a: (0, 2), signature_b: (1,)}
+
+    native_binding = adapter.bind_articulation(binding, dof_offset=0)
+
+    assert [range_binding.actuator for range_binding in native_binding.ranges] == [actuator_a, actuator_b]
+    assert all(not range_binding.direct for range_binding in native_binding.ranges)
+    assert native_binding.ranges[0].canonical_slots.numpy().tolist() == [0, 2]
+    assert native_binding.ranges[1].canonical_slots.numpy().tolist() == [1]
+
+
+def test_staged_registration_keeps_native_pointers() -> None:
+    """Staging uses Newton's persistent arrays without rebinding or cloning."""
+    from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
+
+    controller = SimpleNamespace(
+        kp=wp.zeros(2, dtype=wp.float32, device="cpu"),
+        kd=wp.zeros(2, dtype=wp.float32, device="cpu"),
+    )
+    actuator = SimpleNamespace(
+        indices=wp.array([0, 1], dtype=wp.uint32, device="cpu"),
+        controller=controller,
+        clamping=(),
+        _computed_forces=wp.zeros(2, dtype=wp.float32, device="cpu"),
+        _applied_forces=None,
+    )
+    original_kp = controller.kp
+    original_kd = controller.kd
+    original_computed = actuator._computed_forces
+    adapter = object.__new__(NewtonActuatorAdapter)
+    adapter._device = "cpu"
+    adapter.num_joints = 2
+    adapter._num_envs = 1
+    adapter._global_native_bindings = {}
+
+    registration = adapter._register_staged_actuator(actuator, object())
+
+    assert controller.kp is original_kp
+    assert controller.kd is original_kd
+    assert actuator._computed_forces is original_computed
+    assert actuator._applied_forces is None
+    assert registration.parameters[0][2] is original_kp
+    assert registration.computed_effort is original_computed
+
+
+def test_range_binding_failure_restores_prior_hosted_direct_alias(monkeypatch) -> None:
+    """A later direct install failure restores an earlier hosted direct binding."""
+    from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
+
+    from isaaclab.utils.warp import ProxyArray
+
+    class _FirstType:
+        pass
+
+    class _SecondType:
+        pass
+
+    def make_actuator(index: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            indices=wp.array([index], dtype=wp.uint32, device="cpu"),
+            controller=SimpleNamespace(
+                kp=wp.zeros(1, dtype=wp.float32, device="cpu"),
+                kd=wp.zeros(1, dtype=wp.float32, device="cpu"),
+            ),
+            clamping=(),
+            _computed_forces=wp.zeros(1, dtype=wp.float32, device="cpu"),
+            _applied_forces=wp.zeros(1, dtype=wp.float32, device="cpu"),
+        )
+
+    first, second = make_actuator(0), make_actuator(1)
+    original_kp = first.controller.kp
+    arrays = {
+        name: ProxyArray(wp.zeros((1, 1), dtype=wp.float32, device="cpu"))
+        for name in ("stiffness", "damping", "computed_effort", "applied_effort")
+    }
+    groups = (
+        SimpleNamespace(
+            name="first", actuator_type=_FirstType, joint_indices=(0,), joint_names=("j0",), type_slice=slice(0, 1)
+        ),
+        SimpleNamespace(
+            name="second", actuator_type=_SecondType, joint_indices=(1,), joint_names=("j1",), type_slice=slice(0, 1)
+        ),
+    )
+    binding = SimpleNamespace(
+        groups={
+            name: SimpleNamespace(_parameter_binding=SimpleNamespace(arrays=arrays)) for name in ("first", "second")
+        },
+        native_group_names=frozenset(("first", "second")),
+        computed_effort=arrays["computed_effort"],
+        layout=SimpleNamespace(
+            num_joints=2,
+            type_layouts={
+                _FirstType: SimpleNamespace(num_worlds=1, num_dofs=1, compact_joint_indices=(0,)),
+                _SecondType: SimpleNamespace(num_worlds=1, num_dofs=1, compact_joint_indices=(1,)),
+            },
+            group_layouts=groups,
+        ),
+    )
+    adapter = object.__new__(NewtonActuatorAdapter)
+    adapter.actuators = [first, second]
+    adapter._device = "cpu"
+    adapter.num_joints = 2
+    adapter._num_envs = 1
+    adapter._global_native_bindings = {}
+    first_signature, second_signature = ("first",), ("second",)
+    adapter._actuators_by_signature = {first_signature: first, second_signature: second}
+    adapter._joint_signatures = {"j0": first_signature, "j1": second_signature}
+    adapter._dof_signatures = {}
+    adapter._actuator_dof_indices = {first_signature: (0,), second_signature: (1,)}
+    adapter._direct_pointer_bindings = {}
+    adapter._owns_actuators = True
+
+    original_install = adapter._install_direct_pointer_binding
+    calls = 0
+
+    def fail_on_second_install(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("second direct install failed")
+        return original_install(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_install_direct_pointer_binding", fail_on_second_install)
+
+    with pytest.raises(RuntimeError, match="second direct install failed"):
+        adapter.bind_articulation(binding, dof_offset=0)
+
+    assert first.controller.kp is original_kp
+    assert second.controller.kp is not arrays["stiffness"].warp
+    assert adapter._direct_pointer_bindings == {}
 
 
 def test_control_invalidation_deregisters_telemetry_before_releasing_candidate(monkeypatch) -> None:
@@ -627,8 +1618,113 @@ def test_runtime_implicit_gain_routes_patch_actual_newton_solver_bindings(monkey
         assert len(changes) == 2
 
 
+def test_native_rebuild_gathers_new_canonical_ranges_only_at_first_step(monkeypatch) -> None:
+    """Rebuilding against one model defers each generation's canonical gather to its step."""
+    import isaaclab_newton.assets.articulation.actuator_control as control_module
+    from newton import Model as NewtonModel
+
+    first_ranges = (SimpleNamespace(direct=False),)
+    second_ranges = (SimpleNamespace(direct=False),)
+    direct_ranges = (SimpleNamespace(direct=True),)
+    candidate_bindings = iter(
+        (
+            SimpleNamespace(
+                implicit_dof_mask=wp.zeros(3, dtype=wp.int32, device="cpu"),
+                implicit_dof_mask_owner=torch.zeros(3, dtype=torch.int32),
+                ranges=first_ranges,
+            ),
+            SimpleNamespace(
+                implicit_dof_mask=wp.zeros(3, dtype=wp.int32, device="cpu"),
+                implicit_dof_mask_owner=torch.zeros(3, dtype=torch.int32),
+                ranges=second_ranges,
+            ),
+            SimpleNamespace(
+                implicit_dof_mask=wp.zeros(3, dtype=wp.int32, device="cpu"),
+                implicit_dof_mask_owner=torch.zeros(3, dtype=torch.int32),
+                ranges=direct_ranges,
+            ),
+        )
+    )
+    gathered_ranges: list[tuple[object, ...]] = []
+    released_ranges: list[tuple[object, ...]] = []
+    adapter = SimpleNamespace(
+        bind_articulation=lambda *_args, **_kwargs: next(candidate_bindings),
+        gather_staged_ranges=lambda ranges: gathered_ranges.append(ranges),
+        unregister_articulation_ranges=lambda ranges: released_ranges.append(ranges),
+    )
+    identity_map = wp.array([0, 1, 2], dtype=wp.int32, device="cpu")
+    data = SimpleNamespace(
+        joint_ordering=None,
+        has_joint_ordering=False,
+        _sim_bind_joint_effort=wp.zeros((2, 3), dtype=wp.float32, device="cpu"),
+        _sim_bind_joint_computed_effort=None,
+    )
+    articulation = SimpleNamespace(
+        num_instances=2,
+        num_joints=3,
+        num_fixed_tendons=0,
+        device="cpu",
+        data=data,
+        _data=data,
+        _root_view=SimpleNamespace(
+            frequency_layouts={
+                NewtonModel.AttributeFrequency.JOINT_DOF: SimpleNamespace(offset=0, slice=None, indices=None)
+            }
+        ),
+        newton_actuator_adapter=None,
+        _newton_native_ranges=None,
+        _native_dof_masks=None,
+        _native_dof_mask_owners=None,
+        _native_dof_mask=None,
+        _native_dof_mask_owner=None,
+        _implicit_dof_mask=None,
+        _implicit_dof_mask_owner=None,
+        _joint_user_to_backend_map=lambda: identity_map,
+    )
+    binding = SimpleNamespace(
+        groups={},
+        layout=SimpleNamespace(group_layouts=()),
+        command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
+        joint_command=SimpleNamespace(effort=SimpleNamespace(warp=object())),
+        computed_effort=SimpleNamespace(warp=object()),
+        applied_effort=SimpleNamespace(warp=object()),
+    )
+    pre_callbacks = []
+    post_callbacks = []
+    monkeypatch.setattr(control_module.SimulationManager, "_adapter", adapter)
+    monkeypatch.setattr(control_module.SimulationManager, "_pre_actuator_callbacks", pre_callbacks, raising=False)
+    monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", post_callbacks)
+
+    control = control_module.NewtonActuatorControl(articulation)
+    control._prepare_native_actuator_binding(binding)
+
+    assert gathered_ranges == []
+    assert len(pre_callbacks) == 1
+    pre_callbacks[0]()
+    assert gathered_ranges == [first_ranges]
+
+    control._unregister_pre_actuator_callback()
+    control._unregister_post_actuator_callback()
+    control._unregister_native_ranges()
+    control._prepare_native_actuator_binding(binding)
+
+    assert gathered_ranges == [first_ranges]
+    assert released_ranges == [first_ranges]
+    assert len(pre_callbacks) == 1
+    pre_callbacks[0]()
+    assert gathered_ranges == [first_ranges, second_ranges]
+
+    control._unregister_pre_actuator_callback()
+    control._unregister_post_actuator_callback()
+    control._unregister_native_ranges()
+    control._prepare_native_actuator_binding(binding)
+
+    assert gathered_ranges == [first_ranges, second_ranges]
+    assert pre_callbacks == []
+
+
 def test_failed_native_prepare_restores_all_candidate_specific_state(monkeypatch) -> None:
-    """A prepare failure restores every adapter field and removes its exact callback."""
+    """A prepare failure restores fields without gathering into borrowed model arrays."""
     import isaaclab_newton.assets.articulation.actuator_control as control_module
     from newton import Model as NewtonModel
 
@@ -642,8 +1738,11 @@ def test_failed_native_prepare_restores_all_candidate_specific_state(monkeypatch
         )
     }
     original_computed_effort = wp.zeros((2, 3), dtype=wp.float32, device="cpu")
+    identity_map = wp.array([0, 1, 2], dtype=wp.int32, device="cpu")
     data = SimpleNamespace(
         joint_ordering=None,
+        has_joint_ordering=False,
+        _sim_bind_joint_effort=wp.zeros((2, 3), dtype=wp.float32, device="cpu"),
         _sim_bind_joint_computed_effort=original_computed_effort,
         _rollback_actuator_initialization=lambda: None,
     )
@@ -656,20 +1755,45 @@ def test_failed_native_prepare_restores_all_candidate_specific_state(monkeypatch
         _data=data,
         _root_view=SimpleNamespace(
             frequency_layouts={
-                NewtonModel.AttributeFrequency.JOINT_DOF: SimpleNamespace(slice=SimpleNamespace(start=1), indices=None)
+                NewtonModel.AttributeFrequency.JOINT_DOF: SimpleNamespace(
+                    offset=7, slice=SimpleNamespace(start=1), indices=None
+                )
             }
         ),
         _rollback_deferred_initialization=lambda: None,
+        _joint_user_to_backend_map=lambda: identity_map,
         **original,
     )
     candidate_binding = SimpleNamespace(
         implicit_dof_mask=wp.zeros(3, dtype=wp.int32, device="cpu"),
         implicit_dof_mask_owner=torch.zeros(3, dtype=torch.int32),
-        computed_effort_view=wp.zeros((2, 3), dtype=wp.float32, device="cpu"),
-        ranges=(),
+        ranges=(SimpleNamespace(direct=False),),
     )
-    adapter = SimpleNamespace(bind_articulation=lambda *_args, **_kwargs: candidate_binding)
+    bound_offsets = []
+
+    def bind_articulation(*_args, **kwargs):
+        bound_offsets.append(kwargs["dof_offset"])
+        return candidate_binding
+
+    borrowed_model_parameters: list[str] = []
+    adapter = SimpleNamespace(
+        bind_articulation=bind_articulation,
+        gather_staged_ranges=lambda _ranges: borrowed_model_parameters.append("gathered"),
+        unregister_articulation_ranges=lambda _ranges: None,
+    )
     monkeypatch.setattr(control_module.SimulationManager, "_adapter", adapter)
+    pre_callbacks = []
+    monkeypatch.setattr(control_module.SimulationManager, "_pre_actuator_callbacks", pre_callbacks, raising=False)
+
+    def register_pre_callback(cls, callback) -> None:
+        pre_callbacks.append(callback)
+
+    monkeypatch.setattr(
+        control_module.SimulationManager,
+        "register_pre_actuator_callback",
+        classmethod(register_pre_callback),
+        raising=False,
+    )
     callbacks = []
     monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", callbacks)
 
@@ -686,7 +1810,9 @@ def test_failed_native_prepare_restores_all_candidate_specific_state(monkeypatch
     control._native_active = True
     binding = SimpleNamespace(
         groups={},
+        layout=SimpleNamespace(group_layouts=()),
         command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
+        joint_command=SimpleNamespace(effort=SimpleNamespace(warp=object())),
         computed_effort=SimpleNamespace(warp=object()),
         applied_effort=SimpleNamespace(warp=object()),
     )
@@ -699,7 +1825,64 @@ def test_failed_native_prepare_restores_all_candidate_specific_state(monkeypatch
     assert data._sim_bind_joint_computed_effort is original_computed_effort
     assert control._native_dof_offset is None
     assert control._post_actuator_callback is None
+    assert borrowed_model_parameters == []
+    assert pre_callbacks == []
     assert callbacks == []
+    assert bound_offsets == [8]
+
+
+def test_native_prepare_rejects_indexed_frequency_layout_before_mutation(monkeypatch) -> None:
+    """Indexed native placement fails contextually before candidate state changes."""
+    import isaaclab_newton.assets.articulation.actuator_control as control_module
+    from newton import Model as NewtonModel
+
+    sentinels = {
+        "_native_dof_masks": object(),
+        "_native_dof_mask_owners": object(),
+        "_native_dof_mask": object(),
+        "_native_dof_mask_owner": object(),
+        "newton_actuator_adapter": object(),
+        "_newton_native_ranges": object(),
+    }
+    data = SimpleNamespace(joint_ordering=None, _sim_bind_joint_computed_effort=object())
+    articulation = SimpleNamespace(
+        num_instances=2,
+        num_joints=3,
+        num_fixed_tendons=0,
+        device="cpu",
+        data=data,
+        _data=data,
+        _root_view=SimpleNamespace(
+            frequency_layouts={
+                NewtonModel.AttributeFrequency.JOINT_DOF: SimpleNamespace(
+                    offset=4,
+                    slice=None,
+                    indices=wp.array([2, 1, 0], dtype=wp.int32, device="cpu"),
+                )
+            }
+        ),
+        **sentinels,
+    )
+    calls = []
+    monkeypatch.setattr(
+        control_module.SimulationManager,
+        "_adapter",
+        SimpleNamespace(bind_articulation=lambda *_args, **_kwargs: calls.append("bind")),
+    )
+    binding = SimpleNamespace(
+        groups={},
+        native_group_names=frozenset(),
+        command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
+        computed_effort=SimpleNamespace(warp=object()),
+        applied_effort=SimpleNamespace(warp=object()),
+    )
+
+    with pytest.raises(RuntimeError, match="Indexed Newton JOINT_DOF layouts are not supported"):
+        control_module.NewtonActuatorControl(articulation)._prepare_native_actuator_binding(binding)
+
+    assert calls == []
+    for name, value in sentinels.items():
+        assert getattr(articulation, name) is value
 
 
 def test_failed_finalize_invalidation_clears_fallback_state_before_binding_release(monkeypatch) -> None:
@@ -710,7 +1893,8 @@ def test_failed_finalize_invalidation_clears_fallback_state_before_binding_relea
     monkeypatch.setattr(control_module.SimulationManager, "_adapter", None)
     monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", callbacks)
 
-    def build_mask(groups, num_joints, device):
+    def build_mask(groups, num_joints, device, *, group_layouts=None):
+        del group_layouts
         return wp.zeros(num_joints, dtype=wp.int32, device=device), torch.zeros(num_joints, dtype=torch.int32)
 
     monkeypatch.setattr("isaaclab_newton.actuators.build_implicit_dof_mask", build_mask)
@@ -739,12 +1923,14 @@ def test_failed_finalize_invalidation_clears_fallback_state_before_binding_relea
     control._native_active = True
     binding = SimpleNamespace(
         groups={},
+        layout=SimpleNamespace(group_layouts=()),
         command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
         computed_effort=SimpleNamespace(warp=object()),
         applied_effort=SimpleNamespace(warp=object()),
     )
     control.prepare_actuator_binding(binding)
-    assert len(callbacks) == 1
+    assert callbacks == []
+    assert control._post_actuator_callback is None
 
     with pytest.raises(RuntimeError, match="facade bind failed"):
         control.bind_actuator_view(object())
@@ -757,15 +1943,16 @@ def test_failed_finalize_invalidation_clears_fallback_state_before_binding_relea
     assert control._actuator_binding is None
 
 
-def test_stop_ready_rebuild_uses_fresh_fallback_state_and_callback(monkeypatch) -> None:
-    """STOP clears fallback allocations so READY installs fresh pointers and one callback."""
+def test_stop_ready_rebuild_uses_fresh_fallback_state_without_callback(monkeypatch) -> None:
+    """STOP clears fallback allocations so READY installs fresh pointers without a no-op callback."""
     import isaaclab_newton.assets.articulation.actuator_control as control_module
 
     callbacks = []
     monkeypatch.setattr(control_module.SimulationManager, "_adapter", None)
     monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", callbacks)
 
-    def build_mask(groups, num_joints, device):
+    def build_mask(groups, num_joints, device, *, group_layouts=None):
+        del group_layouts
         return wp.zeros(num_joints, dtype=wp.int32, device=device), torch.zeros(num_joints, dtype=torch.int32)
 
     monkeypatch.setattr("isaaclab_newton.actuators.build_implicit_dof_mask", build_mask)
@@ -792,6 +1979,7 @@ def test_stop_ready_rebuild_uses_fresh_fallback_state_and_callback(monkeypatch) 
     control = control_module.NewtonActuatorControl(articulation)
     binding = SimpleNamespace(
         groups={},
+        layout=SimpleNamespace(group_layouts=()),
         command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
         computed_effort=SimpleNamespace(warp=object()),
         applied_effort=SimpleNamespace(warp=object()),
@@ -816,8 +2004,212 @@ def test_stop_ready_rebuild_uses_fresh_fallback_state_and_callback(monkeypatch) 
     assert articulation._implicit_dof_mask is not first_mask
     assert data._sim_bind_joint_computed_effort is not None
     assert data._sim_bind_joint_computed_effort is not first_computed_effort
-    assert control._post_actuator_callback is not first_callback
-    assert callbacks == [control._post_actuator_callback]
+    assert first_callback is None
+    assert control._post_actuator_callback is None
+    assert callbacks == []
+
+
+def test_failed_graph_revoke_pins_native_callback_owners_until_retry(monkeypatch) -> None:
+    """Native callbacks retain captured raw owners after their facade fields are cleared."""
+    import isaaclab_newton.actuators._graph as graph_module
+    import isaaclab_newton.actuators.kernels as actuator_kernels
+    import isaaclab_newton.assets.articulation.actuator_control as control_module
+    from isaaclab_newton.actuators._graph import _CapturedGraphLease
+    from newton import Model as NewtonModel
+
+    class Owner:
+        def __init__(self, **attributes) -> None:
+            self.__dict__.update(attributes)
+
+    class Adapter(Owner):
+        def bind_articulation(self, *_args, **_kwargs):
+            candidate = self.candidate
+            self.candidate = None
+            return candidate
+
+        def gather_staged_ranges(self, _ranges) -> None:
+            pass
+
+        def publish_outputs(self, *_args) -> None:
+            pass
+
+        def unregister_articulation_ranges(self, _ranges) -> None:
+            pass
+
+    command_effort_raw = wp.zeros((1, 2), dtype=wp.float32, device="cpu")
+    computed_effort_raw = wp.zeros((1, 2), dtype=wp.float32, device="cpu")
+    applied_effort_raw = wp.zeros((1, 2), dtype=wp.float32, device="cpu")
+    command_effort_proxy = Owner(warp=command_effort_raw)
+    computed_effort_proxy = Owner(warp=computed_effort_raw)
+    applied_effort_proxy = Owner(warp=applied_effort_raw)
+    binding = Owner(
+        groups={},
+        native_group_names=frozenset(),
+        layout=SimpleNamespace(group_layouts=()),
+        command=SimpleNamespace(position=SimpleNamespace(warp=object()), velocity=SimpleNamespace(warp=object())),
+        joint_command=SimpleNamespace(effort=command_effort_proxy),
+        computed_effort=computed_effort_proxy,
+        applied_effort=applied_effort_proxy,
+    )
+
+    range_route_owner = wp.zeros(2, dtype=wp.int32, device="cpu")
+    range_binding = Owner(direct=False, route_owner=range_route_owner)
+    native_binding = Owner(
+        ranges=(range_binding,),
+        implicit_dof_mask=wp.zeros(2, dtype=wp.int32, device="cpu"),
+        implicit_dof_mask_owner=torch.zeros(2, dtype=torch.int32),
+    )
+    adapter = Adapter(candidate=native_binding)
+
+    touched_mask_owner = torch.ones(2, dtype=torch.int32)
+    touched_mask = wp.from_torch(touched_mask_owner, dtype=wp.int32)
+
+    class MaskBuilder:
+        def __init__(self, mask, owner) -> None:
+            self.mask = mask
+            self.owner = owner
+
+        def __call__(self, *_args, **_kwargs):
+            mask = self.mask
+            owner = self.owner
+            self.mask = None
+            self.owner = None
+            fields = ("position", "velocity", "effort", "computed_effort", "applied_effort", "touched")
+            return ({field: mask for field in fields}, {field: owner for field in fields})
+
+    mask_builder = MaskBuilder(touched_mask, touched_mask_owner)
+    monkeypatch.setattr(actuator_kernels, "_build_native_dof_masks", mask_builder)
+
+    user_to_backend = wp.array([1, 0], dtype=wp.int32, device="cpu")
+    backend_to_user = wp.array([1, 0], dtype=wp.int32, device="cpu")
+    joint_ordering = Owner(
+        user_to_backend_indices=(1, 0),
+        backend_to_user_indices=(1, 0),
+        user_to_backend=user_to_backend,
+        backend_to_user=backend_to_user,
+    )
+    backend_effort = wp.zeros((1, 2), dtype=wp.float32, device="cpu")
+    data = Owner(
+        joint_ordering=joint_ordering,
+        has_joint_ordering=True,
+        _sim_bind_joint_effort=backend_effort,
+        _sim_bind_joint_computed_effort=None,
+        _rollback_actuator_initialization=lambda: None,
+    )
+    articulation = Owner(
+        num_instances=1,
+        num_joints=2,
+        num_fixed_tendons=0,
+        device="cpu",
+        data=data,
+        _data=data,
+        _root_view=SimpleNamespace(
+            frequency_layouts={
+                NewtonModel.AttributeFrequency.JOINT_DOF: SimpleNamespace(offset=0, slice=None, indices=None)
+            }
+        ),
+        newton_actuator_adapter=None,
+        _newton_native_ranges=None,
+        _native_dof_masks=None,
+        _native_dof_mask_owners=None,
+        _native_dof_mask=None,
+        _native_dof_mask_owner=None,
+        _implicit_dof_mask=None,
+        _implicit_dof_mask_owner=None,
+        _rollback_deferred_initialization=lambda: None,
+    )
+    articulation._joint_user_to_backend_map = lambda: data.joint_ordering.user_to_backend
+
+    monkeypatch.setattr(control_module.SimulationManager, "_graph", None)
+    monkeypatch.setattr(control_module.SimulationManager, "_graph_capture_pending", False)
+    monkeypatch.setattr(control_module.SimulationManager, "_adapter", adapter)
+    monkeypatch.setattr(control_module.SimulationManager, "_pre_actuator_callbacks", [])
+    monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", [])
+    monkeypatch.setattr(control_module.SimulationManager, "_post_step_callbacks", [])
+
+    control = control_module.NewtonActuatorControl(articulation)
+    control._native_active = True
+    control.prepare_actuator_binding(binding)
+    backend_computed_effort = data._sim_bind_joint_computed_effort
+
+    tracked_owners = (
+        adapter,
+        range_binding,
+        range_route_owner,
+        touched_mask_owner,
+        touched_mask,
+        joint_ordering,
+        user_to_backend,
+        command_effort_proxy,
+        command_effort_raw,
+        computed_effort_proxy,
+        computed_effort_raw,
+        applied_effort_proxy,
+        applied_effort_raw,
+        backend_effort,
+        backend_computed_effort,
+    )
+    owner_refs = tuple(weakref.ref(owner) for owner in tracked_owners)
+
+    graph = SimpleNamespace(
+        device=SimpleNamespace(context=object(), context_guard=nullcontext()),
+        graph=object(),
+        graph_exec=object(),
+    )
+    synchronization_attempts = 0
+
+    def synchronize(_device) -> None:
+        nonlocal synchronization_attempts
+        synchronization_attempts += 1
+        if synchronization_attempts == 1:
+            raise RuntimeError("injected native callback graph synchronization failure")
+
+    monkeypatch.setattr(graph_module.wp, "synchronize_device", synchronize)
+    monkeypatch.setattr(
+        graph_module,
+        "runtime",
+        SimpleNamespace(
+            core=SimpleNamespace(
+                wp_cuda_graph_destroy=lambda *_args: True,
+                wp_cuda_graph_exec_destroy=lambda *_args: True,
+            )
+        ),
+    )
+    lease = _CapturedGraphLease(
+        graph,
+        generation=control_module.SimulationManager._make_actuator_graph_generation(),
+        label="native callback owner lifetime graph",
+    )
+    control_module.SimulationManager._graph = lease
+
+    with pytest.raises(RuntimeError, match="injected native callback graph synchronization failure"):
+        control.invalidate_actuator_graphs()
+
+    control.invalidate_actuator_view()
+    binding.command = None
+    binding.joint_command = None
+    binding.computed_effort = None
+    binding.applied_effort = None
+    data.joint_ordering = None
+    data.has_joint_ordering = False
+    data._sim_bind_joint_effort = None
+    control_module.SimulationManager._adapter = None
+    del tracked_owners
+    del adapter, range_binding, range_route_owner, native_binding
+    del touched_mask_owner, touched_mask, joint_ordering, user_to_backend, backend_to_user
+    del command_effort_proxy, command_effort_raw, computed_effort_proxy, computed_effort_raw
+    del applied_effort_proxy, applied_effort_raw, backend_effort, backend_computed_effort, binding
+
+    gc.collect()
+    assert control_module.SimulationManager._graph is lease
+    assert lease.is_live is False
+    assert all(owner_ref() is not None for owner_ref in owner_refs)
+
+    control.invalidate_actuator_graphs()
+
+    gc.collect()
+    assert control_module.SimulationManager._graph is None
+    assert all(owner_ref() is None for owner_ref in owner_refs)
 
 
 def test_articulation_callback_teardown_does_not_partially_invalidate_collection_control(monkeypatch) -> None:
@@ -1246,6 +2638,97 @@ def test_mpm_cuda_graph_capture_supports_only_fixed_grid(monkeypatch, grid_type,
     assert NewtonMPMManager._supports_cuda_graph_capture() is expected
 
 
+@pytest.mark.parametrize(
+    "stateful, decimation, expected",
+    [
+        (False, 1, True),
+        (True, 1, False),
+        (True, 2, True),
+        (True, 3, False),
+    ],
+)
+def test_native_actuator_graph_capture_requires_stable_state_parity(
+    monkeypatch, stateful: bool, decimation: int, expected: bool
+) -> None:
+    """One replayable graph cannot advance a stateful actuator by an odd buffer parity."""
+    monkeypatch.setattr(NewtonManager, "_adapter", SimpleNamespace(is_stateful=stateful), raising=False)
+    monkeypatch.setattr(NewtonManager, "_decimation", decimation, raising=False)
+
+    assert NewtonManager._supports_cuda_graph_capture() is expected
+
+
+def test_stateful_relaxed_full_capture_skips_warmup_before_first_eager_step(monkeypatch, caplog) -> None:
+    """Declining a stateful full capture leaves its first eager state advance untouched."""
+    import isaaclab_newton.physics.newton_manager as manager_module
+
+    events: list[str] = []
+
+    class RejectingCudart:
+        def cudaStreamCreateWithFlags(self, *_args) -> int:
+            events.append("create_stream")
+            return 1
+
+    monkeypatch.setattr(manager_module, "_cudart", RejectingCudart())
+    monkeypatch.setattr(NewtonManager, "_adapter", SimpleNamespace(is_stateful=True), raising=False)
+    monkeypatch.setattr(NewtonManager, "_is_all_graphable", classmethod(lambda cls: True))
+    monkeypatch.setattr(NewtonManager, "_simulate_full", classmethod(lambda cls: events.append("full_step")))
+    monkeypatch.setattr(wp, "ScopedDevice", lambda _device: nullcontext())
+    monkeypatch.setattr(wp, "get_stream", lambda _device: object())
+    monkeypatch.setattr(wp, "synchronize_stream", lambda _stream: events.append("synchronize"))
+
+    with caplog.at_level("WARNING", logger=manager_module.__name__):
+        graph = NewtonManager._capture_relaxed_graph("cuda:0")
+
+    assert graph is None
+    assert events == []
+    assert sum("stateful" in record.getMessage() for record in caplog.records) == 1
+
+    NewtonManager._simulate_full()
+
+    assert events == ["full_step"]
+
+
+@pytest.mark.parametrize(
+    ("stateful", "all_graphable", "use_capture_target", "expected_warmup"),
+    [
+        pytest.param(False, True, False, "full", id="stateless_full"),
+        pytest.param(True, False, False, "physics", id="stateful_physics_only"),
+        pytest.param(True, True, True, "sensor", id="stateful_sensor_target"),
+    ],
+)
+def test_relaxed_capture_preserves_safe_warmup_paths(
+    monkeypatch,
+    stateful: bool,
+    all_graphable: bool,
+    use_capture_target: bool,
+    expected_warmup: str,
+) -> None:
+    """Stateless full, mixed physics-only, and sensor captures still warm once."""
+    import isaaclab_newton.physics.newton_manager as manager_module
+
+    events: list[str] = []
+
+    class RejectingCudart:
+        def cudaStreamCreateWithFlags(self, *_args) -> int:
+            events.append("create_stream")
+            return 1
+
+    monkeypatch.setattr(manager_module, "_cudart", RejectingCudart())
+    monkeypatch.setattr(NewtonManager, "_adapter", SimpleNamespace(is_stateful=stateful), raising=False)
+    monkeypatch.setattr(NewtonManager, "_is_all_graphable", classmethod(lambda cls: all_graphable))
+    monkeypatch.setattr(NewtonManager, "_simulate_full", classmethod(lambda cls: events.append("full")))
+    monkeypatch.setattr(NewtonManager, "_simulate_physics_only", classmethod(lambda cls: events.append("physics")))
+    monkeypatch.setattr(wp, "ScopedDevice", lambda _device: nullcontext())
+    monkeypatch.setattr(wp, "get_stream", lambda _device: object())
+    monkeypatch.setattr(wp, "synchronize_stream", lambda _stream: events.append("synchronize"))
+    capture_target = (lambda: events.append("sensor")) if use_capture_target else None
+
+    graph = NewtonManager._capture_relaxed_graph("cuda:0", capture_target=capture_target)
+
+    assert graph is None
+    assert events == [expected_warmup, "synchronize", "create_stream"]
+
+
 def test_mpm_unsupported_cuda_graph_capture_uses_eager_execution(monkeypatch):
     """Sparse/dense MPM should not enter a CUDA graph capture window."""
     from isaaclab.physics import PhysicsManager
@@ -1258,13 +2741,154 @@ def test_mpm_unsupported_cuda_graph_capture_uses_eager_execution(monkeypatch):
     )
     monkeypatch.setattr(PhysicsManager, "_device", "cuda:0", raising=False)
     monkeypatch.setattr(NewtonManager, "_solver", SimpleNamespace(grid_type="sparse"), raising=False)
-    monkeypatch.setattr(NewtonManager, "_graph", object(), raising=False)
+    revocations = []
+    lease = SimpleNamespace(revoke=lambda: revocations.append("revoke"), is_live=True)
+    monkeypatch.setattr(NewtonManager, "_graph", lease, raising=False)
     monkeypatch.setattr(NewtonManager, "_graph_capture_pending", True, raising=False)
 
     NewtonMPMManager._capture_or_defer_graph()
 
     assert NewtonManager._graph is None
     assert NewtonManager._graph_capture_pending is False
+    assert revocations == ["revoke"]
+
+
+def test_manager_stop_revokes_retained_graph_lease(monkeypatch) -> None:
+    """A retained manager lease rejects replay after the STOP invalidation seam."""
+
+    class RetainedLease:
+        def __init__(self) -> None:
+            self.is_live = True
+            self.revoke_count = 0
+
+        def launch(self) -> None:
+            if not self.is_live:
+                raise RuntimeError("manager actuator graph was revoked")
+
+        def revoke(self) -> None:
+            if not self.is_live:
+                return
+            self.is_live = False
+            self.revoke_count += 1
+
+    lease = RetainedLease()
+    monkeypatch.setattr(NewtonManager, "_graph", lease, raising=False)
+    monkeypatch.setattr(NewtonManager, "_graph_capture_pending", True, raising=False)
+
+    NewtonManager.invalidate_actuator_graphs()
+    NewtonManager.invalidate_actuator_graphs()
+
+    assert NewtonManager._graph is None
+    assert NewtonManager._graph_capture_pending is False
+    assert lease.revoke_count == 1
+    with pytest.raises(RuntimeError, match="manager actuator graph was revoked"):
+        lease.launch()
+
+
+def test_manager_clear_retains_captured_owners_until_failed_graph_cleanup_retries(monkeypatch) -> None:
+    """A failed graph cleanup pins every captured manager owner until a later successful retry."""
+    import isaaclab_newton.actuators._graph as graph_module
+    from isaaclab_newton.actuators._graph import _CapturedGraphLease
+
+    class Owner:
+        pass
+
+    owners = {
+        "_model": Owner(),
+        "_adapter": Owner(),
+        "_solver": Owner(),
+        "_state_0": Owner(),
+        "_state_1": Owner(),
+        "_control": Owner(),
+        "_contacts": Owner(),
+        "_collision_pipeline": Owner(),
+        "_world_reset_mask": Owner(),
+        "_fk_reset_mask": Owner(),
+        "_pre_actuator_callbacks": [Owner()],
+        "_post_actuator_callbacks": [Owner()],
+        "_post_step_callbacks": [Owner()],
+        "_newton_contact_sensors": {"sensor": Owner()},
+        "_newton_frame_transform_sensors": [Owner()],
+        "_newton_imu_sensors": [Owner()],
+    }
+    owner_refs = [
+        weakref.ref(owner)
+        for value in owners.values()
+        for owner in (value if isinstance(value, list) else value.values() if isinstance(value, dict) else (value,))
+    ]
+    for name, owner in owners.items():
+        monkeypatch.setattr(NewtonManager, name, owner, raising=False)
+    del owner
+
+    graph = SimpleNamespace(
+        device=SimpleNamespace(context=object(), context_guard=nullcontext()),
+        graph=object(),
+        graph_exec=object(),
+    )
+    attempts = 0
+
+    def synchronize(_device) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("injected graph synchronization failure")
+
+    monkeypatch.setattr(graph_module.wp, "synchronize_device", synchronize)
+    monkeypatch.setattr(
+        graph_module,
+        "runtime",
+        SimpleNamespace(
+            core=SimpleNamespace(
+                wp_cuda_graph_destroy=lambda *_args: True,
+                wp_cuda_graph_exec_destroy=lambda *_args: True,
+            )
+        ),
+    )
+    lease = _CapturedGraphLease(
+        graph,
+        generation=NewtonManager._make_actuator_graph_generation(),
+        label="manager owner lifetime graph",
+    )
+    monkeypatch.setattr(NewtonManager, "_graph", lease, raising=False)
+    pre_callback = owners["_pre_actuator_callbacks"][0]
+    NewtonManager.unregister_pre_actuator_callback(pre_callback)
+    assert NewtonManager._pre_actuator_callbacks == []
+    del pre_callback
+    del owners
+
+    with pytest.raises(RuntimeError, match="injected graph synchronization failure"):
+        NewtonManager.clear()
+
+    gc.collect()
+    assert NewtonManager._graph is lease
+    assert lease.is_live is False
+    assert all(owner_ref() is not None for owner_ref in owner_refs)
+    with pytest.raises(RuntimeError, match="manager owner lifetime graph.*revoked"):
+        lease.launch()
+
+    NewtonManager.clear()
+
+    gc.collect()
+    assert NewtonManager._graph is None
+    assert all(owner_ref() is None for owner_ref in owner_refs)
+
+
+def test_graph_capture_without_active_configuration_revokes_old_lease(monkeypatch) -> None:
+    """Losing the active configuration still revokes a previously captured graph."""
+    from isaaclab.physics import PhysicsManager
+
+    revocations = []
+    lease = SimpleNamespace(revoke=lambda: revocations.append("revoke"), is_live=True)
+    monkeypatch.setattr(NewtonManager, "_graph", lease, raising=False)
+    monkeypatch.setattr(NewtonManager, "_graph_capture_pending", True, raising=False)
+    monkeypatch.setattr(PhysicsManager, "_cfg", None, raising=False)
+    monkeypatch.setattr(PhysicsManager, "_device", None, raising=False)
+
+    NewtonManager._capture_or_defer_graph()
+
+    assert NewtonManager._graph is None
+    assert NewtonManager._graph_capture_pending is False
+    assert revocations == ["revoke"]
 
 
 def test_cuda_graph_capture_uses_simulation_device(monkeypatch):
@@ -1273,6 +2897,8 @@ def test_cuda_graph_capture_uses_simulation_device(monkeypatch):
 
     captured_devices = []
     captured_graph = object()
+    wrapped = []
+    lease = SimpleNamespace(is_live=True, launch=lambda: None, revoke=lambda: None)
 
     class FakeScopedCapture:
         def __init__(self, device=None):
@@ -1292,11 +2918,17 @@ def test_cuda_graph_capture_uses_simulation_device(monkeypatch):
     monkeypatch.setattr(NewtonManager, "_is_all_graphable", classmethod(lambda cls: False))
     monkeypatch.setattr(NewtonManager, "_simulate_physics_only", classmethod(lambda cls: None))
     monkeypatch.setattr(wp, "ScopedCapture", FakeScopedCapture)
+    monkeypatch.setattr(
+        "isaaclab_newton.physics.newton_manager._CapturedGraphLease",
+        lambda graph, **kwargs: wrapped.append((graph, kwargs)) or lease,
+    )
 
     NewtonManager._capture_or_defer_graph()
 
     assert captured_devices == ["cuda:1"]
-    assert NewtonManager._graph is captured_graph
+    assert wrapped[0][0] is captured_graph
+    assert wrapped[0][1]["label"] == "Newton manager actuator graph"
+    assert NewtonManager._graph is lease
 
 
 # ---------------------------------------------------------------------------

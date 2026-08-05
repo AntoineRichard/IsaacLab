@@ -28,8 +28,11 @@ simulation_app = AppLauncher(headless=True, device=resolve_test_sim_device()).ap
 """Rest everything follows."""
 
 import dis
+import gc
 import sys
 import warnings
+import weakref
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2460,6 +2463,426 @@ def test_global_actuator_collection_clears_native_state_after_prepare_failure(de
         assert articulation.data._sim_bind_joint_computed_effort is None
         assert not articulation._has_newton_actuators
         assert not articulation.actuators.is_ready
+
+
+def test_hosted_newton_stop_revokes_retained_ping_pong_leases() -> None:
+    """STOP makes retained hosted-Newton graph leases non-replayable exactly once."""
+
+    class RetainedLease:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.is_live = True
+            self.revoke_count = 0
+
+        def launch(self) -> None:
+            if not self.is_live:
+                raise RuntimeError(f"{self.label} was revoked")
+
+        def revoke(self) -> None:
+            if not self.is_live:
+                return
+            self.is_live = False
+            self.revoke_count += 1
+
+    first = RetainedLease("first hosted actuator graph")
+    second = RetainedLease("second hosted actuator graph")
+    control = object.__new__(PhysxActuatorControl)
+    control._native_actuator_graphs = (first, second)
+    control._native_actuator_graph_index = 1
+    control._native_actuator_graph_dt = 0.01
+
+    control.invalidate_actuator_graphs()
+    control.invalidate_actuator_graphs()
+
+    assert control._native_actuator_graphs is None
+    assert control._native_actuator_graph_index == 0
+    assert control._native_actuator_graph_dt is None
+    assert first.revoke_count == second.revoke_count == 1
+    with pytest.raises(RuntimeError, match="first hosted actuator graph was revoked"):
+        first.launch()
+    with pytest.raises(RuntimeError, match="second hosted actuator graph was revoked"):
+        second.launch()
+
+
+def test_hosted_newton_clear_retains_captured_owners_until_failed_graph_cleanup_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed hosted cleanup pins capture owners after ordinary articulation fields are released."""
+    import isaaclab_newton.actuators._graph as graph_module
+    from isaaclab_newton.actuators._graph import _CapturedGraphLease
+
+    class Owner:
+        pass
+
+    class Adapter(Owner):
+        def unregister_articulation_ranges(self, _ranges) -> None:
+            pass
+
+    collection = SimpleNamespace(
+        generation=Owner(),
+        joint_command=SimpleNamespace(effort=SimpleNamespace(warp=Owner())),
+        computed_effort=SimpleNamespace(warp=Owner()),
+        applied_effort=SimpleNamespace(warp=Owner()),
+    )
+    adapter = Adapter()
+    adapter._states_a = Owner()
+    adapter._states_b = Owner()
+    wrapper = Owner()
+    ranges = [Owner()]
+    owner_refs = [
+        weakref.ref(collection.generation),
+        weakref.ref(collection.joint_command.effort.warp),
+        weakref.ref(collection.computed_effort.warp),
+        weakref.ref(collection.applied_effort.warp),
+        weakref.ref(adapter),
+        weakref.ref(adapter._states_a),
+        weakref.ref(adapter._states_b),
+        weakref.ref(wrapper),
+        weakref.ref(ranges[0]),
+    ]
+    graph = SimpleNamespace(
+        device=SimpleNamespace(context=object(), context_guard=nullcontext()),
+        graph=object(),
+        graph_exec=object(),
+    )
+    attempts = 0
+
+    def synchronize(_device) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("injected hosted graph synchronization failure")
+
+    monkeypatch.setattr(graph_module.wp, "synchronize_device", synchronize)
+    monkeypatch.setattr(
+        graph_module,
+        "runtime",
+        SimpleNamespace(
+            core=SimpleNamespace(
+                wp_cuda_graph_destroy=lambda *_args: True,
+                wp_cuda_graph_exec_destroy=lambda *_args: True,
+            )
+        ),
+    )
+    control = object.__new__(PhysxActuatorControl)
+    control._native_active = True
+    control._physx_actuator_wrapper = wrapper
+    control._native_actuator_graphs = (
+        _CapturedGraphLease(
+            graph,
+            generation=control._make_native_actuator_graph_generation(collection, adapter, wrapper, ranges),
+            label="hosted owner lifetime graph",
+        ),
+    )
+    control._native_actuator_graph_index = 0
+    control._native_actuator_graph_dt = 0.01
+    articulation = SimpleNamespace(
+        newton_actuator_adapter=adapter,
+        _newton_native_ranges=ranges,
+        _physx_actuator_wrapper=wrapper,
+        _implicit_dof_mask=None,
+        _implicit_dof_mask_owner=None,
+        _native_dof_mask=None,
+        _native_dof_mask_owner=None,
+        _native_dof_masks=None,
+        _native_dof_mask_owners=None,
+        _has_newton_actuators=True,
+        _data=SimpleNamespace(_sim_bind_joint_computed_effort=Owner()),
+    )
+    control._articulation = articulation
+    lease = control._native_actuator_graphs[0]
+    del collection, adapter, wrapper, ranges
+
+    with pytest.raises(RuntimeError, match="injected hosted graph synchronization failure"):
+        control._clear_native_actuator_state()
+
+    gc.collect()
+    assert control._native_actuator_graphs == (lease,)
+    assert lease.is_live is False
+    assert control._physx_actuator_wrapper is None
+    assert articulation.newton_actuator_adapter is None
+    assert articulation._newton_native_ranges is None
+    assert all(owner_ref() is not None for owner_ref in owner_refs)
+    with pytest.raises(RuntimeError, match="hosted owner lifetime graph.*revoked"):
+        lease.launch()
+
+    control.invalidate_actuator_graphs()
+
+    gc.collect()
+    assert control._native_actuator_graphs is None
+    assert all(owner_ref() is None for owner_ref in owner_refs)
+
+
+def test_hosted_newton_partial_recapture_revokes_old_and_completed_leases(monkeypatch) -> None:
+    """A failed second capture revokes old leases and the newly completed first lease."""
+    import isaaclab_physx.assets.articulation.actuator_control as control_module
+
+    events: list[str] = []
+
+    class FakeLease:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.is_live = True
+
+        def revoke(self) -> None:
+            if self.is_live:
+                events.append(f"revoke:{self.label}")
+                self.is_live = False
+
+    class PartialCapture:
+        count = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self.graph = None
+
+        def __enter__(self):
+            type(self).count += 1
+            events.append(f"capture:{self.count}")
+            if self.count == 2:
+                raise RuntimeError("second capture failed")
+            self.graph = object()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> bool:
+            del exc_type, exc_value, traceback
+            return False
+
+    def make_lease(graph, *, generation, label):
+        assert graph is not None
+        assert generation[0] == 7
+        events.append(f"wrap:{label}")
+        return FakeLease(label)
+
+    old_first = FakeLease("old graph 0")
+    old_second = FakeLease("old graph 1")
+    state_a, state_b = object(), object()
+    adapter = SimpleNamespace(_states_a=state_a, _states_b=state_b)
+    control = object.__new__(PhysxActuatorControl)
+    control._articulation = SimpleNamespace(device="cuda:0", newton_actuator_adapter=adapter)
+    control._native_actuator_graphs = (old_first, old_second)
+    control._native_actuator_graph_index = 1
+    control._native_actuator_graph_dt = 0.01
+    control._run_native_actuator_kernels = lambda _collection, _dt: events.append("run")
+    monkeypatch.setattr(wp, "ScopedCapture", PartialCapture)
+    monkeypatch.setattr(control_module, "_make_captured_graph_lease", make_lease, raising=False)
+
+    field = SimpleNamespace(warp=object())
+    collection = SimpleNamespace(
+        generation=7,
+        joint_command=SimpleNamespace(effort=field),
+        computed_effort=field,
+        applied_effort=field,
+    )
+    control._capture_native_actuator_graphs(collection, 0.02)
+
+    assert events == [
+        "revoke:old graph 0",
+        "revoke:old graph 1",
+        "capture:1",
+        "run",
+        "wrap:PhysX Newton actuator graph 0",
+        "capture:2",
+        "revoke:PhysX Newton actuator graph 0",
+    ]
+    assert control._native_actuator_graphs == ()
+    assert control._native_actuator_graph_index == 0
+    assert control._native_actuator_graph_dt is None
+    assert adapter._states_a is state_a
+    assert adapter._states_b is state_b
+
+
+def test_hosted_newton_eager_compute_uses_hook_timestep_not_manager_dt(monkeypatch) -> None:
+    """Pass the collection compute-hook timestep unchanged to the adapter's eager step seam."""
+    from isaaclab_physx.physics import PhysxManager
+
+    hook_dt = 0.013
+    received_dts: list[float] = []
+
+    class FakeCudaDevice:
+        is_cuda = False
+        is_capturing = False
+
+    class FakeAdapter:
+        is_all_graphable = False
+
+        def gather_staged_ranges(self, ranges) -> None:
+            assert ranges == ()
+
+        def step(self, sim_state, sim_control, dt: float) -> None:
+            assert sim_state is sim_control
+            received_dts.append(dt)
+
+        def publish_outputs(self, ranges, computed_effort, applied_effort, command_effort) -> None:
+            assert ranges == ()
+            assert computed_effort is not None
+            assert applied_effort is not None
+            assert command_effort is not None
+
+    def fail_if_manager_dt_is_read() -> float:
+        raise AssertionError("the eager compute hook must not replace its timestep with PhysxManager.get_physics_dt()")
+
+    field = SimpleNamespace(warp=object())
+    adapter = FakeAdapter()
+    control = object.__new__(PhysxActuatorControl)
+    control._native_active = True
+    control._articulation = SimpleNamespace(
+        device="cpu",
+        num_instances=1,
+        num_joints=1,
+        newton_actuator_adapter=adapter,
+        data=SimpleNamespace(has_joint_ordering=False),
+        _native_dof_masks={"position": object(), "velocity": object(), "effort": object()},
+        _newton_native_ranges=(),
+    )
+    control._physx_actuator_wrapper = object()
+    collection = SimpleNamespace(
+        command=SimpleNamespace(position=field, velocity=field, effort=field),
+        joint_command=SimpleNamespace(position=field, velocity=field, effort=field),
+        computed_effort=field,
+        applied_effort=field,
+    )
+
+    monkeypatch.setattr(PhysxManager, "get_physics_dt", fail_if_manager_dt_is_read)
+    monkeypatch.setattr(wp, "get_device", lambda _device: FakeCudaDevice())
+    monkeypatch.setattr(wp, "launch", lambda *args, **kwargs: None)
+
+    control.compute_native_actuators(collection, hook_dt)
+
+    assert received_dts == [hook_dt]
+
+
+def test_hosted_newton_compute_recaptures_ping_pong_graphs_when_dt_changes(monkeypatch) -> None:
+    """Reuse both cached hosted graphs at one timestep and replace them at another.
+
+    A captured actuator graph embeds ``dt`` in its controller step. Replaying
+    it after a timestep change therefore computes the wrong controller update.
+    This exercises the public compute path rather than the capture helper so
+    the cache predicate, both revocations, and the first replacement launch
+    remain one contract.
+    """
+    import isaaclab_physx.assets.articulation.actuator_control as control_module
+
+    events: list[str] = []
+
+    class FakeLease:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.is_live = True
+
+        def launch(self) -> None:
+            if not self.is_live:
+                raise RuntimeError(f"{self.label} was revoked")
+            events.append(f"launch:{self.label}")
+
+        def revoke(self) -> None:
+            if self.is_live:
+                events.append(f"revoke:{self.label}")
+                self.is_live = False
+
+    class FakeCapture:
+        count = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self.graph = object()
+
+        def __enter__(self):
+            events.append(f"capture:{type(self).count}")
+            type(self).count += 1
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> bool:
+            del exc_type, exc_value, traceback
+            return False
+
+    class FakeCudaDevice:
+        is_cuda = True
+        is_capturing = False
+
+    def make_lease(graph, *, generation, label):
+        assert graph is not None
+        assert generation[0] == "generation"
+        events.append(f"wrap:{label}")
+        return FakeLease(label)
+
+    state_a, state_b = object(), object()
+    adapter = SimpleNamespace(
+        is_stateful=False,
+        is_all_graphable=True,
+        _states_a=state_a,
+        _states_b=state_b,
+        _swap_state_buffers=lambda: events.append("swap"),
+    )
+    field = SimpleNamespace(warp=object())
+    collection = SimpleNamespace(
+        generation="generation",
+        command=SimpleNamespace(position=field, velocity=field, effort=field),
+        joint_command=SimpleNamespace(position=field, velocity=field, effort=field),
+        computed_effort=field,
+        applied_effort=field,
+    )
+    control = object.__new__(PhysxActuatorControl)
+    control._native_active = True
+    control._articulation = SimpleNamespace(
+        device="cuda:0",
+        num_instances=1,
+        num_joints=1,
+        newton_actuator_adapter=adapter,
+        data=SimpleNamespace(has_joint_ordering=False),
+        _native_dof_masks={"position": object(), "velocity": object(), "effort": object()},
+        _newton_native_ranges=(),
+    )
+    control._native_actuator_graphs = None
+    control._native_actuator_graph_index = 0
+    control._native_actuator_graph_dt = None
+    control._physx_actuator_wrapper = object()
+    control._run_native_actuator_kernels = lambda _collection, dt: events.append(f"run:{dt}")
+
+    monkeypatch.setattr(wp, "launch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wp, "get_device", lambda _device: FakeCudaDevice())
+    monkeypatch.setattr(wp, "ScopedCapture", FakeCapture)
+    monkeypatch.setattr(control_module, "_make_captured_graph_lease", make_lease)
+
+    control.compute_native_actuators(collection, 1.0 / 120.0)
+    old_graphs = control._native_actuator_graphs
+    assert old_graphs is not None
+    control.compute_native_actuators(collection, 1.0 / 120.0)
+    assert control._native_actuator_graphs is old_graphs
+
+    control.compute_native_actuators(collection, 1.0 / 60.0)
+    new_graphs = control._native_actuator_graphs
+    assert new_graphs is not None
+    assert new_graphs is not old_graphs
+    assert control._native_actuator_graph_dt == 1.0 / 60.0
+    assert events == [
+        "capture:0",
+        "run:0.008333333333333333",
+        "wrap:PhysX Newton actuator graph 0",
+        "capture:1",
+        "run:0.008333333333333333",
+        "wrap:PhysX Newton actuator graph 1",
+        "launch:PhysX Newton actuator graph 0",
+        "swap",
+        "launch:PhysX Newton actuator graph 1",
+        "swap",
+        "revoke:PhysX Newton actuator graph 0",
+        "revoke:PhysX Newton actuator graph 1",
+        "capture:2",
+        "run:0.016666666666666666",
+        "wrap:PhysX Newton actuator graph 0",
+        "capture:3",
+        "run:0.016666666666666666",
+        "wrap:PhysX Newton actuator graph 1",
+        "launch:PhysX Newton actuator graph 0",
+        "swap",
+    ]
+    for old_graph in old_graphs:
+        assert old_graph.is_live is False
+        with pytest.raises(RuntimeError, match="was revoked"):
+            old_graph.launch()
+    assert adapter._states_a is state_a
+    assert adapter._states_b is state_b
 
 
 @pytest.mark.parametrize("device", test_devices())

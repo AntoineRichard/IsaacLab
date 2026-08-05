@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+import torch
 import warp as wp
 
 from isaaclab.utils.types import ArticulationActions
@@ -695,16 +696,23 @@ class _ArticulationExecutionPlan:
             device=control.device,
         )
 
-    def reset(self, env_ids: Sequence[int] | slice) -> None:
+    def reset(
+        self,
+        env_ids: Sequence[int] | torch.Tensor | wp.array(dtype=wp.int32) | wp.array(dtype=wp.int64) | slice,
+    ) -> None:
         """Reset ordinary group state and the backend-native actuator state."""
         if not self._valid:
             raise RuntimeError("stale actuator execution plan")
         if self._validate_execution is not None:
             self._validate_execution()
+        # Lab stateful actuator models own Torch buffers, while native controls
+        # also accept Warp index arrays. Keep a zero-copy Torch view for the
+        # Lab side and forward the original Warp handle to the native hook.
+        lab_env_ids = wp.to_torch(env_ids) if isinstance(env_ids, wp.array) else env_ids
         for execution_range in self.stateless_ranges:
-            execution_range.executor.reset(env_ids)
+            execution_range.executor.reset(lab_env_ids)
         for segment in self.eager_segments:
-            segment.actuator.reset(env_ids)
+            segment.actuator.reset(lab_env_ids)
         control = self._control
         if control is None:
             raise RuntimeError("stale actuator execution plan")

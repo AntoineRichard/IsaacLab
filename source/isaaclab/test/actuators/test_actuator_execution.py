@@ -57,6 +57,7 @@ class _Control:
         self._joint_vel = ProxyArray(wp.zeros((num_worlds, len(self._joint_names)), dtype=wp.float32, device=device))
         self.submissions = 0
         self.native_resets = 0
+        self.native_reset_ids = []
         self.native_compute_calls = 0
 
     @property
@@ -151,8 +152,8 @@ class _Control:
         self.submissions += 1
 
     def reset_native_actuators(self, env_ids) -> None:
-        del env_ids
         self.native_resets += 1
+        self.native_reset_ids.append(env_ids)
 
 
 class _NativeControl(_Control):
@@ -317,6 +318,18 @@ def test_native_articulation_bypass_owns_no_lab_execution_schedule(device: str) 
     assert plan.static_scatter_epochs == ()
     view.compute(dt=0.005)
     assert control.native_compute_calls == 1
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_reset_uses_torch_view_for_lab_actuators_and_preserves_native_warp_ids(device: str) -> None:
+    """Warp reset IDs reset Lab state while reaching the native hook unchanged."""
+    _, view, control = _make_plan({"delayed": _delayed_cfg(["hip"])}, device=device)
+    env_ids = wp.array([1], dtype=wp.int32, device=device)
+
+    view.reset(env_ids)
+
+    assert control.native_resets == 1
+    assert control.native_reset_ids == [env_ids]
 
 
 @pytest.mark.parametrize("device", _available_devices())

@@ -1602,19 +1602,15 @@ def test_newton_clear_callbacks_deregisters_post_step_hook(
 @pytest.mark.parametrize("articulation_type", ["anymal"])
 @pytest.mark.parametrize("use_newton_actuators", [False, True])
 @pytest.mark.parametrize("ordering_mode", ["none", "reversed"])
-def test_write_data_to_sim_gathers_joint_targets_only_when_ordering_active(
+def test_write_data_to_sim_uses_native_fused_gather_and_lab_identity_copy(
     sim, num_articulations, device, gravity_enabled, articulation_type, use_newton_actuators, ordering_mode, monkeypatch
 ):
-    """Launch the fused target gather only under active ordering; copy straight through otherwise.
+    """Native target submission always uses its fused gather; Lab submission keeps its identity fast path.
 
-    Regression for the identity fast path: an earlier rework launched
-    :func:`ordering_kernels.reorder_joint_targets_user_to_backend` unconditionally
-    in :meth:`write_data_to_sim`, so a scene with no ordering configured paid for a
-    per-step gather that the pre-ordering code never issued. This test records the
-    kernels launched during ``write_data_to_sim`` and asserts the target gather runs
-    only when ordering is active. With the unconditional launch reinstated, the
-    ``ordering_mode == "none"`` cases fail (the gather is recorded). Both the
-    Newton-actuator and Lab-actuator branches are covered.
+    Native Newton submission fills four distinct backend targets, including both
+    ``joint_act`` and ``joint_f``. It therefore uses one fused gather even for
+    identity ordering, where its map is the articulation-owned identity buffer.
+    The standard Lab path has fewer targets and retains its no-ordering copy path.
     """
     articulation_cfg = generate_articulation_cfg(articulation_type=articulation_type).replace(
         actuators={"legs": ImplicitActuatorCfg(joint_names_expr=[".*"], stiffness=40.0, damping=5.0)},
@@ -1648,7 +1644,7 @@ def test_write_data_to_sim_gathers_joint_targets_only_when_ordering_active(
     monkeypatch.undo()
 
     target_gather = ordering_kernels.reorder_joint_targets_user_to_backend
-    if has_ordering:
+    if on_newton_path or has_ordering:
         assert target_gather in launched_kernels
     else:
         # Identity ordering copies straight into the sim binds -- no target gather,

@@ -46,6 +46,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         super().__init__(articulation)
         self._native_active = False
         self._native_dof_offset: int | None = None
+        self._pre_actuator_callback = None
         self._post_actuator_callback = None
         self._solver_property_snapshots: list[tuple[wp.array, wp.array]] | None = None
         self._candidate_state_snapshot: tuple[tuple[object, str, object], ...] | None = None
@@ -158,6 +159,9 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         Args:
             binding: Unpublished articulation binding owned by the candidate generation.
         """
+        had_graph = SimulationManager._graph is not None or SimulationManager._graph_capture_pending
+        SimulationManager.invalidate_actuator_graphs(recapture=had_graph)
+        self._unregister_pre_actuator_callback()
         self._unregister_post_actuator_callback()
         super().prepare_actuator_binding(binding)
         if not self._native_active:
@@ -167,7 +171,13 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         try:
             self._prepare_native_actuator_binding(binding)
         except Exception as error:
-            for cleanup in (self._unregister_post_actuator_callback, self._restore_candidate_state):
+            self.invalidate_actuator_graphs()
+            for cleanup in (
+                self._unregister_pre_actuator_callback,
+                self._unregister_post_actuator_callback,
+                self._unregister_native_ranges,
+                self._restore_candidate_state,
+            ):
                 try:
                     cleanup()
                 except Exception as cleanup_error:
@@ -179,8 +189,9 @@ class NewtonActuatorControl(ArticulationActuatorControl):
 
         from newton import Model as NewtonModel  # noqa: PLC0415
 
-        from isaaclab_newton.actuators import build_implicit_dof_mask, build_native_dof_mask  # noqa: PLC0415
+        from isaaclab_newton.actuators import build_implicit_dof_mask  # noqa: PLC0415
         from isaaclab_newton.actuators import kernels as actuator_kernels  # noqa: PLC0415
+        from isaaclab_newton.actuators.kernels import _build_native_dof_masks  # noqa: PLC0415
 
         articulation = self._articulation
         if (
@@ -190,18 +201,40 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             or binding.applied_effort is None
         ):
             raise RuntimeError("Newton actuator preparation requires a complete private articulation binding.")
-        articulation._native_dof_mask, articulation._native_dof_mask_owner = build_native_dof_mask(
-            dict(binding.groups), getattr(binding, "native_group_names", frozenset()), self.num_joints, self.device
-        )
         adapter = SimulationManager._adapter
+        arti_start = 0
         if adapter is not None:
             dof_layout = articulation._root_view.frequency_layouts[NewtonModel.AttributeFrequency.JOINT_DOF]
+            layout_offset = int(getattr(dof_layout, "offset", 0))
             if dof_layout.slice is not None:
-                arti_start = dof_layout.slice.start
+                arti_start = layout_offset + dof_layout.slice.start
             elif dof_layout.indices is not None:
-                arti_start = int(dof_layout.indices.numpy()[0])
+                raise RuntimeError(
+                    "Indexed Newton JOINT_DOF layouts are not supported by native actuator placement; "
+                    "a compact device-map binding is required."
+                )
             else:
-                arti_start = 0
+                arti_start = layout_offset
+        articulation._native_dof_masks, articulation._native_dof_mask_owners = _build_native_dof_masks(
+            dict(binding.groups),
+            getattr(binding, "native_group_names", frozenset()),
+            self.num_joints,
+            self.device,
+            group_layouts=binding.layout.group_layouts,
+        )
+        articulation._native_dof_mask = articulation._native_dof_masks["effort"]
+        articulation._native_dof_mask_owner = articulation._native_dof_mask_owners["effort"]
+        if adapter is not None:
+            structural_occurrences = None
+            source_prim_path = getattr(articulation, "_source_asset_prim_path", None)
+            if source_prim_path is not None:
+                from isaaclab.sim.utils.stage import get_current_stage  # noqa: PLC0415
+
+                from isaaclab_newton.actuators.adapter import _structural_occurrences_from_usd  # noqa: PLC0415
+
+                structural_occurrences = _structural_occurrences_from_usd(
+                    get_current_stage(), articulation.backend_joint_names, source_prim_path
+                )
             joint_ordering = articulation.data.joint_ordering
             native_binding = adapter.bind_articulation(
                 binding,
@@ -209,54 +242,138 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 joint_user_to_backend_indices=(
                     joint_ordering.user_to_backend_indices if joint_ordering is not None else None
                 ),
+                structural_occurrences=structural_occurrences,
             )
             articulation.newton_actuator_adapter = adapter
-            articulation._newton_native_ranges = native_binding.ranges
+            native_ranges = tuple(native_binding.ranges)
+            articulation._newton_native_ranges = native_ranges
             articulation._implicit_dof_mask = native_binding.implicit_dof_mask
             articulation._implicit_dof_mask_owner = native_binding.implicit_dof_mask_owner
-            articulation._data._sim_bind_joint_computed_effort = native_binding.computed_effort_view
+            articulation._data._sim_bind_joint_computed_effort = wp.zeros(
+                (self.num_instances, self.num_joints), dtype=wp.float32, device=self.device
+            )
             self._native_dof_offset = arti_start
+            staged_ranges = tuple(range_binding for range_binding in native_ranges if not range_binding.direct)
         else:
             articulation._implicit_dof_mask, articulation._implicit_dof_mask_owner = build_implicit_dof_mask(
-                dict(binding.groups), self.num_joints, self.device
+                dict(binding.groups),
+                self.num_joints,
+                self.device,
+                group_layouts=binding.layout.group_layouts,
             )
             articulation._data._sim_bind_joint_computed_effort = wp.zeros(
                 (self.num_instances, self.num_joints), dtype=wp.float32, device=self.device
             )
 
-        def _post_actuator() -> None:
-            wp.launch(
-                actuator_kernels.sync_torque_telemetry,
-                dim=(self.num_instances, self.num_joints),
-                inputs=[
-                    articulation._data._sim_bind_joint_pos,
-                    articulation._data._sim_bind_joint_vel,
-                    binding.command.position.warp,
-                    binding.command.velocity.warp,
-                    articulation._data.joint_stiffness.warp,
-                    articulation._data.joint_damping.warp,
-                    articulation._data.joint_effort_limits.warp,
-                    articulation._implicit_dof_mask,
-                    articulation._native_dof_mask,
-                    articulation._data._sim_bind_joint_effort,
-                    articulation._data._sim_bind_joint_computed_effort,
-                    articulation._joint_user_to_backend_map(),
-                    articulation.data.has_joint_ordering,
-                ],
-                outputs=[
-                    binding.computed_effort.warp,
-                    binding.applied_effort.warp,
-                ],
-                device=self.device,
+        if adapter is not None:
+            # Resolve every graph-captured pointer before callback publication.
+            # Teardown restores the articulation fields after graph revocation,
+            # including when native-handle cleanup must be retried. Callback
+            # defaults therefore own the exact candidate generation instead of
+            # consulting those mutable fields during capture or replay.
+            num_instances = self.num_instances
+            num_joints = self.num_joints
+            device = self.device
+            touched_mask = articulation._native_dof_masks["touched"]
+            touched_mask_owner = articulation._native_dof_mask_owners["touched"]
+            joint_command_effort_proxy = binding.joint_command.effort
+            computed_effort_proxy = binding.computed_effort
+            applied_effort_proxy = binding.applied_effort
+            joint_command_effort = joint_command_effort_proxy.warp
+            computed_effort = computed_effort_proxy.warp
+            applied_effort = applied_effort_proxy.warp
+            backend_effort = articulation._data._sim_bind_joint_effort
+            backend_computed_effort = articulation._data._sim_bind_joint_computed_effort
+            joint_ordering = articulation.data.joint_ordering
+            user_to_backend = articulation._joint_user_to_backend_map()
+            has_joint_ordering = articulation.data.has_joint_ordering
+            restore_backend_effort = actuator_kernels.restore_backend_effort_from_command
+            graph_owners = (
+                binding,
+                joint_command_effort_proxy,
+                computed_effort_proxy,
+                applied_effort_proxy,
+                joint_command_effort,
+                computed_effort,
+                applied_effort,
+                touched_mask,
+                touched_mask_owner,
+                native_ranges,
+                *native_ranges,
+                joint_ordering,
+                user_to_backend,
+                backend_effort,
+                backend_computed_effort,
+                adapter,
             )
 
-        self._post_actuator_callback = _post_actuator
-        SimulationManager.register_post_actuator_callback(_post_actuator)
+            def _pre_actuator(
+                _adapter=adapter,
+                _staged_ranges=staged_ranges,
+                _graph_owners=graph_owners,
+            ) -> None:
+                _adapter.gather_staged_ranges(_staged_ranges)
+
+            if staged_ranges:
+                self._pre_actuator_callback = _pre_actuator
+                SimulationManager.register_pre_actuator_callback(_pre_actuator)
+
+            def _post_actuator(
+                _adapter=adapter,
+                _native_ranges=native_ranges,
+                _joint_command_effort=joint_command_effort,
+                _computed_effort=computed_effort,
+                _applied_effort=applied_effort,
+                _touched_mask=touched_mask,
+                _user_to_backend=user_to_backend,
+                _has_joint_ordering=has_joint_ordering,
+                _backend_effort=backend_effort,
+                _backend_computed_effort=backend_computed_effort,
+                _num_instances=num_instances,
+                _num_joints=num_joints,
+                _device=device,
+                _restore_backend_effort=restore_backend_effort,
+                _graph_owners=graph_owners,
+            ) -> None:
+                # Newton scatter-add may have accumulated several native
+                # controllers on an overlapping DOF. Restore the processed
+                # Lab command over every native-touched slot first, then let
+                # each range publish exactly its final configuration winner.
+                wp.launch(
+                    _restore_backend_effort,
+                    dim=(_num_instances, _num_joints),
+                    inputs=[
+                        _joint_command_effort,
+                        _touched_mask,
+                        _user_to_backend,
+                        _has_joint_ordering,
+                    ],
+                    outputs=[_backend_effort],
+                    device=_device,
+                )
+                _adapter.publish_outputs(
+                    _native_ranges,
+                    _computed_effort,
+                    _applied_effort,
+                    _joint_command_effort,
+                    _backend_effort,
+                    _backend_computed_effort,
+                    _user_to_backend,
+                    _has_joint_ordering,
+                )
+
+            self._post_actuator_callback = _post_actuator
+            SimulationManager.register_post_actuator_callback(_post_actuator)
+
+    def invalidate_actuator_graphs(self) -> None:
+        """Revoke the manager graph before callbacks or pointers are released."""
+        SimulationManager.invalidate_actuator_graphs()
 
     def invalidate_actuator_view(self) -> None:
         """Restore candidate state before releasing the private binding."""
         failures: list[Exception] = []
         for cleanup in (
+            self._unregister_pre_actuator_callback,
             self._unregister_post_actuator_callback,
             self._unregister_native_ranges,
             self._restore_candidate_state,
@@ -277,7 +394,9 @@ class NewtonActuatorControl(ArticulationActuatorControl):
 
     def _unregister_native_ranges(self) -> None:
         """Drop this articulation's exact global adapter registrations."""
-        articulation = self._articulation
+        articulation = getattr(self, "_articulation", None)
+        if articulation is None:
+            return
         adapter = getattr(articulation, "newton_actuator_adapter", None)
         ranges = getattr(articulation, "_newton_native_ranges", None)
         if adapter is not None and ranges:
@@ -294,6 +413,8 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             (articulation, "_newton_native_ranges"),
             (articulation, "_native_dof_mask"),
             (articulation, "_native_dof_mask_owner"),
+            (articulation, "_native_dof_masks"),
+            (articulation, "_native_dof_mask_owners"),
             (articulation, "_implicit_dof_mask"),
             (articulation, "_implicit_dof_mask_owner"),
             (articulation._data, "_sim_bind_joint_computed_effort"),
@@ -332,6 +453,15 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 SimulationManager.unregister_post_actuator_callback(callback)
             finally:
                 self._post_actuator_callback = None
+
+    def _unregister_pre_actuator_callback(self) -> None:
+        """Remove this control's exact staged-gather callback, if still registered."""
+        callback = getattr(self, "_pre_actuator_callback", None)
+        if callback is not None:
+            try:
+                SimulationManager.unregister_pre_actuator_callback(callback)
+            finally:
+                self._pre_actuator_callback = None
 
     def write_actuator_parameter(self, name: str, write: _ActuatorParameterWrite) -> None:
         """Apply one canonical parameter update to Newton-owned runtime state.
@@ -384,14 +514,77 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         if adapter is None or self._native_dof_offset is None:
             return
 
-        backend_to_user = articulation._joint_backend_to_user_map()
-        has_joint_ordering = articulation.data.has_joint_ordering
         clamping_attributes = {
             "effort_limit": ("max_motor_effort", "max_effort"),
             "velocity_limit": ("velocity_limit",),
             "saturation_effort": ("saturation_effort",),
         }
-        for actuator in adapter.actuators:
+        ranges = getattr(articulation, "_newton_native_ranges", ()) or ()
+        if not ranges:
+            # Compatibility for lightweight controls built by legacy tests
+            # and callers before candidate binding. Production bindings use
+            # the occurrence-aware range descriptors below.
+            backend_to_user = articulation._joint_backend_to_user_map()
+            has_joint_ordering = articulation.data.has_joint_ordering
+            for actuator in adapter.actuators:
+                targets: list[tuple[object, str]] = []
+                controller_attribute = {"stiffness": "kp", "damping": "kd"}.get(name)
+                if controller_attribute is not None and hasattr(actuator.controller, controller_attribute):
+                    targets.append((actuator.controller, controller_attribute))
+                for clamping in actuator.clamping:
+                    for attribute in clamping_attributes.get(name, ()):
+                        if hasattr(clamping, attribute):
+                            targets.append((clamping, attribute))
+                for component, attribute in targets:
+                    target = getattr(component, attribute)
+                    wp.launch(
+                        actuator_kernels.patch_native_actuator_parameter,
+                        dim=actuator.indices.shape[0],
+                        inputs=[
+                            actuator.indices,
+                            canonical.warp,
+                            owner_slots_wp,
+                            backend_to_user,
+                            self._native_dof_offset,
+                            self.num_joints,
+                            adapter.num_joints,
+                            self.num_instances,
+                            has_joint_ordering,
+                        ],
+                        outputs=[target],
+                        device=self.device,
+                    )
+                    if attribute in {"max_motor_effort", "velocity_limit", "saturation_effort"} and all(
+                        hasattr(component, field)
+                        for field in ("saturation_effort", "velocity_limit", "max_motor_effort", "corner_velocity")
+                    ):
+                        wp.launch(
+                            actuator_kernels.recompute_dc_motor_corner_velocity,
+                            dim=component.corner_velocity.shape[0],
+                            inputs=[
+                                component.saturation_effort,
+                                component.velocity_limit,
+                                component.max_motor_effort,
+                            ],
+                            outputs=[component.corner_velocity],
+                            device=self.device,
+                        )
+            return
+        refreshed_dc_components: set[int] = set()
+        for range_binding in ranges:
+            # Direct ranges already alias their canonical parameter arrays.
+            # Staged ranges must patch their exact controller occurrences;
+            # iterating all physical actuator indices would overwrite a
+            # distinct occurrence that shares the same joint DOF.
+            if range_binding.actuator_type is not write.actuator_type:
+                continue
+            if range_binding.direct:
+                if name in {"effort_limit", "velocity_limit", "saturation_effort"}:
+                    adapter._refresh_dc_motor_corner_velocity(range_binding.actuator)
+                continue
+            if range_binding.controller_local_slots is None:
+                continue
+            actuator = range_binding.actuator
             targets: list[tuple[object, str]] = []
             controller_attribute = {"stiffness": "kp", "damping": "kd"}.get(name)
             if controller_attribute is not None and hasattr(actuator.controller, controller_attribute):
@@ -404,29 +597,31 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             for component, attribute in targets:
                 target = getattr(component, attribute)
                 wp.launch(
-                    actuator_kernels.patch_native_actuator_parameter,
-                    dim=actuator.indices.shape[0],
+                    actuator_kernels.patch_native_range_parameter,
+                    dim=(self.num_instances, range_binding.compact_joint_ids.shape[0]),
                     inputs=[
-                        actuator.indices,
                         canonical.warp,
+                        range_binding.compact_joint_ids,
+                        range_binding.canonical_slots,
                         owner_slots_wp,
-                        backend_to_user,
-                        self._native_dof_offset,
-                        self.num_joints,
-                        adapter.num_joints,
-                        self.num_instances,
-                        has_joint_ordering,
+                        range_binding.controller_local_slots,
+                        range_binding.controller_stride,
                     ],
                     outputs=[target],
                     device=self.device,
                 )
-                if attribute in {"max_motor_effort", "velocity_limit", "saturation_effort"} and all(
-                    hasattr(component, field)
-                    for field in ("saturation_effort", "velocity_limit", "max_motor_effort", "corner_velocity")
+                if (
+                    attribute in {"max_motor_effort", "velocity_limit", "saturation_effort"}
+                    and all(
+                        hasattr(component, field)
+                        for field in ("saturation_effort", "velocity_limit", "max_motor_effort", "corner_velocity")
+                    )
+                    and id(component) not in refreshed_dc_components
                 ):
+                    refreshed_dc_components.add(id(component))
                     wp.launch(
                         actuator_kernels.recompute_dc_motor_corner_velocity,
-                        dim=actuator.indices.shape[0],
+                        dim=component.corner_velocity.shape[0],
                         inputs=[component.saturation_effort, component.velocity_limit, component.max_motor_effort],
                         outputs=[component.corner_velocity],
                         device=self.device,
@@ -449,7 +644,9 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 collection.command.position.warp,
                 collection.command.velocity.warp,
                 collection.command.effort.warp,
-                native_mask,
+                self._articulation._native_dof_masks["position"],
+                self._articulation._native_dof_masks["velocity"],
+                self._articulation._native_dof_masks["effort"],
             ],
             outputs=[
                 collection.joint_command.position.warp,
@@ -466,36 +663,30 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             # consumes ``joint_act`` for explicit (Newton-managed) joints; the
             # solver's built-in joint drive does the PD for implicit joints
             # (whose stiffness/damping are non-zero in sim) and adds whatever
-            # is in ``joint_f`` as feedforward. Identity ordering copies the
-            # targets directly, while non-identity ordering gathers all four
-            # targets in one launch.
-            if not articulation.data.has_joint_ordering:
-                articulation.data._sim_bind_joint_position_target.assign(collection.command.position.warp)
-                articulation.data._sim_bind_joint_velocity_target.assign(collection.command.velocity.warp)
-                articulation.data._sim_bind_joint_act.assign(collection.command.effort.warp)
-                articulation.data._sim_bind_joint_effort.assign(collection.command.effort.warp)
-            else:
-                wp.launch(
-                    ordering_kernels.reorder_joint_targets_user_to_backend,
-                    dim=(self.num_instances, self.num_joints),
-                    inputs=[
-                        collection.command.effort.warp,
-                        collection.command.position.warp,
-                        collection.command.velocity.warp,
-                        articulation._joint_backend_to_user_map(),
-                        True,
-                        True,
-                        True,
-                        True,
-                    ],
-                    outputs=[
-                        articulation.data._sim_bind_joint_effort,
-                        articulation.data._sim_bind_joint_position_target,
-                        articulation.data._sim_bind_joint_velocity_target,
-                        articulation.data._sim_bind_joint_act,
-                    ],
-                    device=self.device,
-                )
+            # is in ``joint_f`` as feedforward. One fused launch serves both
+            # identity and permuted orderings; the articulation's map falls
+            # back to ``_ALL_JOINT_INDICES`` when no ordering is configured.
+            wp.launch(
+                ordering_kernels.reorder_joint_targets_user_to_backend,
+                dim=(self.num_instances, self.num_joints),
+                inputs=[
+                    collection.joint_command.effort.warp,
+                    collection.joint_command.position.warp,
+                    collection.joint_command.velocity.warp,
+                    articulation._joint_backend_to_user_map(),
+                    True,
+                    True,
+                    True,
+                    True,
+                ],
+                outputs=[
+                    articulation.data._sim_bind_joint_effort,
+                    articulation.data._sim_bind_joint_position_target,
+                    articulation.data._sim_bind_joint_velocity_target,
+                    articulation.data._sim_bind_joint_act,
+                ],
+                device=self.device,
+            )
             return
 
         # Standard Lab actuator path. Identity ordering copies processed

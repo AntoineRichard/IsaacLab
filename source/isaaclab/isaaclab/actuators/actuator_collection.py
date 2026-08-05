@@ -2987,12 +2987,12 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     error.add_note(f"Failed to prepare {_binding_context(binding)}.")
                     raise
         except Exception as error:
+            self._invalidate_pending(error, failure="finalization failed")
             if candidate is not None:
                 try:
                     candidate.restore_solver_properties()
                 except Exception as restore_error:
                     error.add_note(str(restore_error))
-            self._invalidate_pending(error, failure="finalization failed")
             if candidate is not None:
                 try:
                     candidate.close()
@@ -3022,11 +3022,11 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         except Exception as error:
             self._active_generation = None
             self._finalizing = False
+            self._invalidate_pending(error, failure="finalization failed")
             try:
                 candidate.restore_solver_properties()
             except Exception as restore_error:
                 error.add_note(str(restore_error))
-            self._invalidate_pending(error, failure="finalization failed")
             try:
                 candidate.close()
             except Exception as cleanup_error:
@@ -3070,6 +3070,11 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         """Invalidate every control and facade without masking the triggering error."""
         for registration in self._registrations:
             try:
+                getattr(registration.control, "invalidate_actuator_graphs", lambda: None)()
+            except Exception as invalidation_error:
+                error.add_note(f"Failed to invalidate backend graphs for {registration.key!r}: {invalidation_error}")
+        for registration in self._registrations:
+            try:
                 registration.control.invalidate_actuator_view()
             except Exception as invalidation_error:
                 error.add_note(f"Failed to invalidate backend control for {registration.key!r}: {invalidation_error}")
@@ -3086,6 +3091,12 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._finalizing = False
         failures: list[Exception] = []
         try:
+            for registration in self._registrations:
+                try:
+                    getattr(registration.control, "invalidate_actuator_graphs", lambda: None)()
+                except Exception as error:
+                    error.add_note(f"Failed to invalidate backend graphs for {registration.key!r}.")
+                    failures.append(error)
             for registration in self._registrations:
                 try:
                     registration.control.invalidate_actuator_view()
@@ -3466,7 +3477,15 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
     Operations.
     """
 
-    def reset(self, env_ids: Sequence[int] | slice | None = None) -> None:
+    def reset(
+        self,
+        env_ids: Sequence[int]
+        | torch.Tensor
+        | wp.array(dtype=wp.int32)
+        | wp.array(dtype=wp.int64)
+        | slice
+        | None = None,
+    ) -> None:
         """Reset all actuator group states.
 
         Args:
@@ -3474,8 +3493,9 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         """
         if env_ids is None:
             env_ids = slice(None)
+        lab_env_ids = wp.to_torch(env_ids) if isinstance(env_ids, wp.array) else env_ids
         for actuator in self._groups.values():
-            actuator.reset(env_ids)
+            actuator.reset(lab_env_ids)
         self._control.reset_native_actuators(env_ids)
 
     def compute(self, dt: float = 0.0) -> None:

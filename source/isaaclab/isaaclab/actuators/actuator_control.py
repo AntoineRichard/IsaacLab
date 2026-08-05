@@ -309,6 +309,9 @@ class ActuatorControl(ABC):
     def bind_actuator_view(self, view: ActuatorCollection.ArticulationView) -> None:
         """Bind the now-live public articulation facade after publication."""
 
+    def invalidate_actuator_graphs(self) -> None:
+        """Make every graph owned by this control non-launchable."""
+
     def invalidate_actuator_view(self) -> None:
         """Discard a published or pending articulation facade binding."""
 
@@ -372,7 +375,11 @@ class ActuatorControl(ABC):
         self,
         env_ids: Sequence[int] | torch.Tensor | wp.array(dtype=wp.int32) | wp.array(dtype=wp.int64) | slice,
     ) -> None:
-        """Reset backend-native actuator state for selected environments."""
+        """Reset backend-native actuator state for selected environments.
+
+        Args:
+            env_ids: Signed environment indices or a slice selecting the rows to reset.
+        """
 
     def write_native_actuator_gain(
         self,

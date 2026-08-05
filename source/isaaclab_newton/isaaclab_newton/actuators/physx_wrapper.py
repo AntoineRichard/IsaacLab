@@ -38,9 +38,9 @@ class PhysxActuatorWrapper:
     :meth:`Actuator.step` on the PhysX backend.
 
     Most attributes are bound once at articulation init to zero-copy flat
-    views of Isaac Lab's 2-D buffers. ``joint_f_2d`` is the only persistent
-    allocation, sized via :meth:`create`; ``joint_f`` is its flat alias
-    consumed by the Newton actuator step.
+    views of Isaac Lab's 2-D buffers. Native actuator groups need an owned
+    ``joint_f_2d`` physical-output buffer; an all-implicit articulation
+    binds ``joint_f`` directly to its command and allocates none.
     """
 
     joint_q: wp.array | None = None
@@ -52,9 +52,22 @@ class PhysxActuatorWrapper:
     joint_f_2d: wp.array | None = None
 
     @classmethod
-    def create(cls, num_envs: int, num_joints: int, device: str) -> PhysxActuatorWrapper:
-        """Allocate the persistent ``joint_f`` buffer for the given articulation shape."""
+    def create(
+        cls, num_envs: int, num_joints: int, device: str, *, allocate_joint_f: bool = True
+    ) -> PhysxActuatorWrapper:
+        """Create a wrapper, allocating physical effort only for native groups.
+
+        Args:
+            num_envs: Number of simulation environments.
+            num_joints: Number of articulation joints per environment.
+            device: Warp device string, for example ``"cuda:0"``.
+            allocate_joint_f: Whether to allocate the physical effort buffer.
+
+        Returns:
+            A wrapper ready for its remaining state and command arrays to be bound.
+        """
         w = cls()
-        w.joint_f_2d = wp.zeros((num_envs, num_joints), dtype=wp.float32, device=device)
-        w.joint_f = w.joint_f_2d.reshape(-1)
+        if allocate_joint_f:
+            w.joint_f_2d = wp.zeros((num_envs, num_joints), dtype=wp.float32, device=device)
+            w.joint_f = w.joint_f_2d.reshape(-1)
         return w

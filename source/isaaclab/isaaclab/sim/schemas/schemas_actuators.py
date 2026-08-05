@@ -72,12 +72,14 @@ def define_actuator_properties(
     actuator_cfgs: dict[str, Any],
     stage: Any | None = None,
 ) -> None:
-    """Author ``NewtonActuator`` USD prims under an articulation root.
+    """Author ``NewtonActuator`` USD prims under a spawned articulation asset.
 
-    For every joint covered by an explicit (non-implicit) Lab actuator
-    config, any existing ``NewtonActuator`` prim targeting that joint is
-    replaced by a new one created from the config values. Joints **not**
-    covered by any Lab config keep their USD-authored actuators unchanged.
+    For every joint covered by a Lab actuator config, any existing
+    ``NewtonActuator`` prim targeting that joint is deactivated. Explicit
+    (non-implicit) configs then replace it with a new prim created from their
+    config values; implicit configs intentionally leave no native prim.
+    Joints **not** covered by any Lab config keep their USD-authored
+    actuators unchanged.
 
     The supported config-to-schema mapping is:
 
@@ -104,7 +106,8 @@ def define_actuator_properties(
     reads the stage.
 
     Args:
-        prim_path: Root prim path of the articulation (e.g.
+        prim_path: Root prim path of the spawned asset containing the
+            articulation (e.g.
             ``"/World/Env_0/Robot"``). May contain a regex pattern; the
             first matching prim is used.
         actuator_cfgs: Mapping of group name to
@@ -128,22 +131,22 @@ def define_actuator_properties(
     first_prim = find_first_matching_prim(prim_path)
     if first_prim is None:
         return
-    articulation_prim_path = str(first_prim.GetPath())
+    asset_prim_path = str(first_prim.GetPath())
 
-    _author_actuator_prims(stage, articulation_prim_path, actuator_cfgs)
+    _author_actuator_prims(stage, asset_prim_path, actuator_cfgs)
 
 
 def _author_actuator_prims(
     stage: Any,
-    articulation_prim_path: str,
+    asset_prim_path: str,
     actuator_cfgs: dict[str, Any],
 ) -> None:
     """Inner authoring routine; exposed separately for test fixtures."""
-    art_prim = stage.GetPrimAtPath(articulation_prim_path)
-    if not art_prim.IsValid():
-        raise ValueError(f"Articulation prim not found: {articulation_prim_path}")
+    asset_prim = stage.GetPrimAtPath(asset_prim_path)
+    if not asset_prim.IsValid():
+        raise ValueError(f"Articulation asset prim not found: {asset_prim_path}")
 
-    joint_inventory = _collect_joint_prims(art_prim)
+    joint_inventory = _collect_joint_prims(asset_prim)
     all_joint_names = list(joint_inventory.keys())
 
     covered_joint_paths: set[str] = set()
@@ -154,18 +157,17 @@ def _author_actuator_prims(
         is_implicit = (
             "ImplicitActuator" in cls_type if isinstance(cls_type, str) else issubclass(cls_type, ImplicitActuator)
         )
-        if is_implicit:
-            continue
-
         _ids, joint_names = resolve_matching_names(cfg.joint_names_expr, all_joint_names)
         if not joint_names:
             continue
 
-        cfg_entries.append((group_name, cfg, joint_names))
         for jname in joint_names:
             covered_joint_paths.add(joint_inventory[jname])
+        if is_implicit:
+            continue
+        cfg_entries.append((group_name, cfg, joint_names))
 
-    _remove_actuator_prims_for_joints(art_prim, covered_joint_paths)
+    _remove_actuator_prims_for_joints(asset_prim, covered_joint_paths)
 
     from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_net_cfg import ActuatorNetLSTMCfg, ActuatorNetMLPCfg  # noqa: PLC0415
@@ -255,12 +257,20 @@ def _author_actuator_prims(
                 attrs["delay_steps"] = delay_steps
                 attrs["max_delay"] = delay_steps
 
-            act_prim_path = f"{articulation_prim_path}/{group_name}_{jname}_actuator"
+            act_prim_path = f"{asset_prim_path}/{group_name}_{jname}_actuator"
             act_prim = stage.DefinePrim(act_prim_path, "NewtonActuator")
+            act_prim.SetActive(True)
 
-            existing = act_prim.GetMetadata("apiSchemas") or Sdf.TokenListOp()
-            existing.prependedItems = list(schemas)
-            act_prim.SetMetadata("apiSchemas", existing)
+            # A previous authoring pass may have deactivated and populated this
+            # same prim. Block stale values so changing config types cannot leak
+            # attributes through a weaker layer when schema plugins are absent.
+            for prop in act_prim.GetAuthoredPropertiesInNamespace("newton"):
+                if isinstance(prop, Usd.Attribute):
+                    prop.Block()
+
+            api_schemas = Sdf.TokenListOp()
+            api_schemas.explicitItems = list(schemas)
+            act_prim.SetMetadata("apiSchemas", api_schemas)
 
             rel = act_prim.CreateRelationship("newton:targets")
             rel.SetTargets([Sdf.Path(joint_prim_path)])

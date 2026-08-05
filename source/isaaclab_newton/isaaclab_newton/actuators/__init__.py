@@ -16,8 +16,7 @@ Public API surface:
   — flat-array wrapper that satisfies the Newton actuator
   ``sim_state`` / ``sim_control`` protocol on the PhysX backend.
 * :func:`~isaaclab_newton.actuators.kernels.build_implicit_dof_mask` —
-  builds the per-DOF implicit-actuator mask consumed by the in-graph
-  post-actuator kernel.
+  builds a compatibility per-DOF mask for implicit actuator groups.
 
 USD authoring lives on the schema side as
 :func:`~isaaclab.sim.schemas.define_actuator_properties`; both backends

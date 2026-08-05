@@ -22,6 +22,7 @@ from prettytable import PrettyTable
 
 from pxr import UsdPhysics
 
+from isaaclab.actuators import ActuatorBaseCfg, ImplicitActuator
 from isaaclab.assets.articulation import ordering_kernels
 from isaaclab.assets.articulation.base_articulation import BaseArticulation
 from isaaclab.physics import PhysicsEvent
@@ -352,7 +353,16 @@ class Articulation(BaseArticulation):
     Operations.
     """
 
-    def reset(self, env_ids: Sequence[int] | None = None, env_mask: wp.array | None = None) -> None:
+    def reset(
+        self,
+        env_ids: Sequence[int]
+        | torch.Tensor
+        | wp.array(dtype=wp.int32)
+        | wp.array(dtype=wp.int64)
+        | slice
+        | None = None,
+        env_mask: wp.array | None = None,
+    ) -> None:
         """Reset the articulation.
 
         .. caution::
@@ -363,7 +373,7 @@ class Articulation(BaseArticulation):
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
         """
         # use ellipses object to skip initial indices.
-        if (env_ids is None) or (env_ids == slice(None)):
+        if env_ids is None or (isinstance(env_ids, slice) and env_ids == slice(None)):
             env_ids = slice(None)
         # reset actuators, including backend-native actuator state.
         self.actuators.reset(env_ids)
@@ -1518,9 +1528,8 @@ class Articulation(BaseArticulation):
 
         SimulationManager.add_model_change(ModelFlags.JOINT_DOF_PROPERTIES)
         actuators = self.actuators
-        if value_name in {"stiffness", "damping", "armature"} and actuators._has_solver_compatibility_sidecar(
-            value_name
-        ):
+        has_sidecar = getattr(actuators, "_has_solver_compatibility_sidecar", lambda _: False)
+        if value_name in {"stiffness", "damping", "armature"} and has_sidecar(value_name):
             actuators._refresh_solver_compatibility_sidecars(value_name, wp.to_torch(user_data))
 
     def _write_joint_float_property_to_sim_mask(
@@ -1558,9 +1567,8 @@ class Articulation(BaseArticulation):
 
         SimulationManager.add_model_change(ModelFlags.JOINT_DOF_PROPERTIES)
         actuators = self.actuators
-        if value_name in {"stiffness", "damping", "armature"} and actuators._has_solver_compatibility_sidecar(
-            value_name
-        ):
+        has_sidecar = getattr(actuators, "_has_solver_compatibility_sidecar", lambda _: False)
+        if value_name in {"stiffness", "damping", "armature"} and has_sidecar(value_name):
             actuators._refresh_solver_compatibility_sidecars(value_name, wp.to_torch(user_data))
 
     def write_joint_stiffness_to_sim_index(
@@ -3356,6 +3364,13 @@ class Articulation(BaseArticulation):
         self._physics_sim_view = SimulationManager.get_physics_sim_view()
 
         root_prim_path_expr = _resolve_articulation_root_prim_path_expr(self.cfg)
+        # Native actuator binding must recover the USD-authored controller
+        # occurrence stream from the spawned asset root. The
+        # ArticulationRootAPI can live on a child prim (for example ``base``),
+        # while generated NewtonActuator prims are authored beneath the asset
+        # root as its siblings.
+        source_asset_prim, _ = resolve_matching_prims_from_source(self.cfg.prim_path, expected_num_matches=1)[0]
+        self._source_asset_prim_path = source_asset_prim.GetPath().pathString
         # -- articulation
         self._root_view = ArticulationView(
             SimulationManager.get_model(),
@@ -3665,7 +3680,7 @@ class Articulation(BaseArticulation):
         """
         if isinstance(env_ids, ProxyArray):
             raise TypeError("ProxyArray is output-only; pass .warp or .torch explicitly.")
-        if (env_ids is None) or (env_ids == slice(None)):
+        if env_ids is None or (isinstance(env_ids, slice) and env_ids == slice(None)):
             return self._ALL_INDICES
         if isinstance(env_ids, list):
             return wp.array(env_ids, dtype=wp.int32, device=self.device)

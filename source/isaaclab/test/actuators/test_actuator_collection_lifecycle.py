@@ -937,6 +937,73 @@ def test_failed_invalidator_does_not_prevent_other_controls_or_candidate_close()
         _ = second.command
 
 
+def test_failed_finalize_quiesces_all_graphs_before_views_solver_plans_and_stores(monkeypatch) -> None:
+    """Rollback crosses the all-control graph barrier before every pointer-owning layer."""
+    events: list[str] = []
+
+    class _OrderedRollbackControl(_Control):
+        def __init__(self, key: str, *, prepare_error: Exception | None = None) -> None:
+            super().__init__(num_joints=1, prepare_error=prepare_error)
+            self._key = key
+
+        def invalidate_actuator_graphs(self) -> None:
+            events.append(f"graph:{self._key}")
+
+        def invalidate_actuator_view(self) -> None:
+            events.append(f"view:{self._key}")
+            super().invalidate_actuator_view()
+
+        def restore_resolved_joint_properties(self) -> None:
+            events.append(f"solver:{self._key}")
+
+    plan_invalidate = actuator_collection._ArticulationExecutionPlan.invalidate
+    solver_store_close = actuator_collection._SolverPropertyStore.close
+    joint_store_close = actuator_collection._JointDomainStore.close
+    typed_store_release = actuator_collection._TypedStore._release_initialization_buffers
+
+    def record_plan_invalidate(plan) -> None:
+        events.append("plan:invalidate")
+        plan_invalidate(plan)
+
+    def record_solver_store_close(store) -> None:
+        events.append("store:solver")
+        solver_store_close(store)
+
+    def record_joint_store_close(store) -> None:
+        events.append("store:joint")
+        joint_store_close(store)
+
+    def record_typed_store_release(store) -> None:
+        events.append("store:type")
+        typed_store_release(store)
+
+    monkeypatch.setattr(actuator_collection._ArticulationExecutionPlan, "invalidate", record_plan_invalidate)
+    monkeypatch.setattr(actuator_collection._SolverPropertyStore, "close", record_solver_store_close)
+    monkeypatch.setattr(actuator_collection._JointDomainStore, "close", record_joint_store_close)
+    monkeypatch.setattr(actuator_collection._TypedStore, "_release_initialization_buffers", record_typed_store_release)
+    collection = ActuatorCollection(_Simulation())
+    _register_managed(collection, "first", _OrderedRollbackControl("first"))
+    _register_managed(
+        collection,
+        "second",
+        _OrderedRollbackControl("second", prepare_error=RuntimeError("second prepare")),
+    )
+
+    with pytest.raises(RuntimeError, match="second prepare"):
+        collection.finalize()
+
+    assert events[:6] == [
+        "graph:first",
+        "graph:second",
+        "view:first",
+        "view:second",
+        "solver:second",
+        "solver:first",
+    ]
+    assert events[6:8] == ["plan:invalidate", "plan:invalidate"]
+    assert events[8:] == ["store:solver", "store:joint", "store:type"]
+
+
 def test_partial_solver_write_enrolls_for_best_effort_restore_before_candidate_close() -> None:
     """A failing staged write must still restore itself and every earlier control."""
 
@@ -2293,6 +2360,41 @@ def test_clear_generation_releases_every_resource_after_invalidation_failures(mo
     replacement = _register(collection, "first", _Control())
     collection.finalize()
     assert replacement.is_ready
+
+
+def test_clear_generation_quiesces_all_graphs_before_any_view_or_generation_close(monkeypatch) -> None:
+    """STOP establishes one all-control graph barrier before pointer and store teardown."""
+    events = []
+
+    class _OrderedControl(_Control):
+        def __init__(self, key: str):
+            super().__init__()
+            self._key = key
+
+        def invalidate_actuator_graphs(self) -> None:
+            events.append(f"graph:{self._key}")
+
+        def invalidate_actuator_view(self) -> None:
+            events.append(f"view:{self._key}")
+            super().invalidate_actuator_view()
+
+    collection = ActuatorCollection(_Simulation())
+    _register(collection, "first", _OrderedControl("first"))
+    _register(collection, "second", _OrderedControl("second"))
+    collection.finalize()
+    active = collection._active_generation
+    assert active is not None
+    original_close = active.close
+
+    def record_close() -> None:
+        events.append("generation:close")
+        original_close()
+
+    monkeypatch.setattr(active, "close", record_close)
+
+    collection.clear_generation()
+
+    assert events == ["graph:first", "graph:second", "view:first", "view:second", "generation:close"]
 
 
 def test_view_invalidation_releases_every_resource_after_group_failures(monkeypatch) -> None:

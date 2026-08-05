@@ -119,14 +119,16 @@ def test_randomize_actuator_gains_uses_group_setters_and_skips_neural_sidecars(m
     )
 
 
-def test_randomize_actuator_gains_caches_only_declared_explicit_gains(monkeypatch) -> None:
-    """Default caching does not materialize missing neural gain sidecars."""
+def test_randomize_actuator_gains_caches_only_declared_explicit_gains_without_newton_snapshots(monkeypatch) -> None:
+    """Default caching uses declared actuator gains without Newton snapshot sidecars."""
     monkeypatch.setattr(events, "ImplicitActuator", _FakeImplicitActuator)
     monkeypatch.setattr(events.ManagerTermBase, "__init__", lambda self, cfg, env: None)
     explicit = _FakeActuator(frozenset({"stiffness"}), torch.tensor([1]), 2, 1)
     explicit.stiffness.fill_(30.0)
     neural = _FakeActuator(frozenset({"effort_limit", "velocity_limit"}), torch.tensor([0]), 2, 1)
     asset = _FakeAsset(OrderedDict(explicit=explicit, neural=neural), 2, 2)
+    assert not hasattr(asset, "newton_default_stiffness")
+    assert not hasattr(asset, "newton_default_damping")
     environment = SimpleNamespace(scene={"robot": asset})
     cfg = SimpleNamespace(params={"asset_cfg": SimpleNamespace(name="robot"), "operation": "abs"})
 

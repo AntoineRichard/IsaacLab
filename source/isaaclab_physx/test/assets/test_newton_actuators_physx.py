@@ -30,7 +30,13 @@ from isaaclab_physx.assets import Articulation
 from isaaclab_physx.physics import PhysxCfg
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg, IdealPDActuatorCfg, ImplicitActuatorCfg
+from isaaclab.actuators import (
+    DCMotorCfg,
+    DelayedPDActuatorCfg,
+    IdealPDActuatorCfg,
+    ImplicitActuator,
+    ImplicitActuatorCfg,
+)
 from isaaclab.sim import SimulationCfg, build_simulation_context
 from isaaclab.test.utils.articulation_ordering import assert_articulation_ordering_trace_matches
 
@@ -237,7 +243,9 @@ def _run_simulation(
             if use_newton_actuators:
                 recorded_adapter_computed.append(wp.to_torch(articulation.data._sim_bind_joint_computed_effort).clone())
                 recorded_adapter_applied.append(wp.to_torch(articulation._physx_actuator_wrapper.joint_f_2d).clone())
-        native_actuator_graph_count = len(getattr(articulation._actuator_control, "_native_actuator_graphs", ()) or ())
+        native_actuator_graphs = getattr(articulation._actuator_control, "_native_actuator_graphs", ()) or ()
+        native_actuator_graph_count = len(native_actuator_graphs)
+        retained_native_actuator_graph = native_actuator_graphs[0] if native_actuator_graphs else None
 
     return {
         "joint_names": joint_names,
@@ -254,6 +262,7 @@ def _run_simulation(
         "target_vel": target_vel.clone(),
         "effort_target": None if effort_target is None else effort_target.clone(),
         "native_actuator_graph_count": native_actuator_graph_count,
+        "retained_native_actuator_graph": retained_native_actuator_graph,
     }
 
 
@@ -261,6 +270,11 @@ def test_graphable_newton_actuators_capture_ping_pong_graphs() -> None:
     result = _run_simulation(DELAYED_PD_ACTUATORS, use_newton_actuators=True, num_steps=2)
 
     assert result["native_actuator_graph_count"] == 2
+    retained_lease = result["retained_native_actuator_graph"]
+    assert retained_lease is not None
+    assert retained_lease.is_live is False
+    with pytest.raises(RuntimeError, match="PhysX Newton actuator graph 0.*revoked"):
+        retained_lease.launch()
 
 
 def test_newton_actuator_graph_capture_failure_falls_back_to_eager(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -832,11 +846,12 @@ class TestRandomizeActuatorGainsViaEventsPhysx(unittest.TestCase):
 
             randomized_stiffness = actuator.stiffness[env_ids]
             randomized_damping = actuator.damping[env_ids]
+            implicit = anymal.actuators.by_type[type(actuator)]
             self.assertGreater(torch.unique(randomized_stiffness).numel(), 1)
             self.assertGreater(torch.unique(randomized_damping).numel(), 1)
-            torch.testing.assert_close(randomized_stiffness, anymal.actuators.actuator_stiffness.torch[env_ids])
+            torch.testing.assert_close(randomized_stiffness, implicit.parameters["stiffness"].torch[env_ids])
             torch.testing.assert_close(randomized_stiffness, anymal.data.joint_stiffness.torch[env_ids])
-            torch.testing.assert_close(randomized_damping, anymal.actuators.actuator_damping.torch[env_ids])
+            torch.testing.assert_close(randomized_damping, implicit.parameters["damping"].torch[env_ids])
             torch.testing.assert_close(randomized_damping, anymal.data.joint_damping.torch[env_ids])
             torch.testing.assert_close(actuator.stiffness[1:], stiffness_before[1:])
             torch.testing.assert_close(actuator.damping[1:], damping_before[1:])
@@ -887,18 +902,21 @@ class TestRandomizeActuatorGainsViaEventsPhysx(unittest.TestCase):
 
             expected_stiffness[0, 0] = 50.0
             expected_damping[0, 0] = 5.0
+            implicit = anymal.actuators.by_type[ImplicitActuator]
             collection_gains = torch.stack(
-                (
-                    anymal.actuators.actuator_stiffness.torch[:, :3],
-                    anymal.actuators.actuator_damping.torch[:, :3],
-                )
+                (implicit.parameters["stiffness"].torch, implicit.parameters["damping"].torch)
             )
             solver_gains = torch.stack(
                 (anymal.data.joint_stiffness.torch[:, :3], anymal.data.joint_damping.torch[:, :3])
             )
-            expected_gains = torch.stack((expected_stiffness, expected_damping))
+            expected_gains = torch.stack(
+                (
+                    torch.tensor([[50.0, 10.0, 20.0, 20.0], [10.0, 10.0, 20.0, 20.0]], device=anymal.device),
+                    torch.tensor([[5.0, 1.0, 2.0, 2.0], [1.0, 1.0, 2.0, 2.0]], device=anymal.device),
+                )
+            )
             torch.testing.assert_close(collection_gains, expected_gains)
-            torch.testing.assert_close(solver_gains, expected_gains)
+            torch.testing.assert_close(solver_gains, torch.stack((expected_stiffness, expected_damping)))
 
     def test_single_articulation(self):
         sim_cfg = SimulationCfg(dt=DT, physics=PhysxCfg(), use_newton_actuators=True)
