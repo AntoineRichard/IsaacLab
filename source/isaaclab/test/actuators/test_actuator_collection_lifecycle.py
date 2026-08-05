@@ -1264,6 +1264,23 @@ def test_bridge_classifies_serialized_custom_implicit_actuator_without_mutating_
     assert cfg.class_type == serialized_class_type
 
 
+def test_bridge_records_native_discovery_state_after_registration(monkeypatch) -> None:
+    """The articulation must observe native discovery state produced during registration."""
+
+    class _DiscoveryControl(_BridgeControl):
+        def discover_native_actuators(self, cfgs) -> set[str]:
+            del cfgs
+            self._native_active = True
+            return set()
+
+    _make_bridge_context(monkeypatch)
+    articulation = _BridgeArticulation("native", 1, [])
+
+    articulation.register_actuators(_DiscoveryControl(articulation, []))
+
+    assert articulation._has_newton_actuators
+
+
 def test_bridge_rejects_invalid_cfg_before_registration_and_allows_retry(monkeypatch) -> None:
     """Reject invalid configs without leaking registration state into a corrected retry."""
     context = _make_bridge_context(monkeypatch)
@@ -1272,13 +1289,16 @@ def test_bridge_rejects_invalid_cfg_before_registration_and_allows_retry(monkeyp
     cfg.class_type = len
     control = _BridgeControl(articulation, [])
 
-    with pytest.raises(TypeError, match="ActuatorBase subclass"):
+    with pytest.raises(TypeError, match="ActuatorBase subclass") as caught:
         articulation.register_actuators(control)
 
     collection = context._get_actuator_collection()
     assert collection.registration_keys == ()
     assert not collection._views
     assert cfg.class_type is len
+    assert any(
+        "drive" in note and "class_type" in note for note in getattr(caught.value, "__notes__", ())
+    )
     assert not hasattr(articulation, "_actuator_control")
     assert not hasattr(articulation, "actuators")
 

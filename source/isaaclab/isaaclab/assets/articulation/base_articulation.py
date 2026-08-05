@@ -2629,8 +2629,16 @@ class BaseArticulation(AssetBase):
         sim_context = SimulationContext.instance()
         if sim_context is None:
             raise RuntimeError("Actuator registration requires an active SimulationContext.")
-        has_implicit_actuators = any(control._is_implicit_cfg(cfg) for cfg in self.cfg.actuators.values())
-        has_newton_actuators = control.native_active
+        has_implicit_actuators = False
+        for group_name, cfg in self.cfg.actuators.items():
+            try:
+                has_implicit_actuators = control._is_implicit_cfg(cfg) or has_implicit_actuators
+            except Exception as error:
+                error.add_note(
+                    f"Failed to resolve actuator configuration for group {group_name!r} "
+                    f"with class_type={cfg.class_type!r}."
+                )
+                raise
         actuators = sim_context._get_actuator_collection().register_articulation(
             key=self,
             cfgs=self.cfg.actuators,
@@ -2642,7 +2650,7 @@ class BaseArticulation(AssetBase):
         self._actuator_control = control
         self.actuators = actuators
         self._has_implicit_actuators = has_implicit_actuators
-        self._has_newton_actuators = has_newton_actuators
+        self._has_newton_actuators = control.native_active
         self._defer_initialization()
         return actuators
 
