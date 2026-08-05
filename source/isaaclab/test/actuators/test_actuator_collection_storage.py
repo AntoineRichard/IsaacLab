@@ -512,6 +512,52 @@ def test_managed_group_assignment_copies_without_rebinding() -> None:
     torch.testing.assert_close(canonical[:, 1:3], held, rtol=0.0, atol=0.0)
 
 
+def test_execution_actuator_build_bypasses_public_parameter_writes() -> None:
+    """Private execution shells do not use a copied group's public setter route."""
+
+    class _ExecutionOnlyIdealPD(IdealPDActuator):
+        computed_effort = None
+        applied_effort = None
+
+        @classmethod
+        def _parameter_schema(cls):
+            return IdealPDActuator._parameter_schema()
+
+        @classmethod
+        def _execution_parameter_names(cls) -> tuple[str, ...]:
+            return ("stiffness",)
+
+    class _Facade:
+        def __init__(self) -> None:
+            self.parameter_writes: list[tuple[object, ...]] = []
+
+        def _require_current_generation(self, token: object) -> None:
+            del token
+
+        def _require_execution_ready(self, token: object) -> None:
+            del token
+
+        def _write_group_parameter_index(self, *args: object) -> None:
+            self.parameter_writes.append(args)
+
+    group, _ = _make_bound_group(_ExecutionOnlyIdealPD)
+    binding = group.__dict__["_parameter_binding"]
+    assert binding is not None
+    parameter_proxies = {
+        name: ProxyArray(wp.from_torch(binding.arrays[name].torch[:, binding.type_slice], dtype=wp.float32))
+        for name in _ExecutionOnlyIdealPD._parameter_schema().parameter_names
+    }
+    group._bind_parameter_storage(replace(binding, parameter_proxies=parameter_proxies))
+    facade = _Facade()
+    group._bind_facade_view(facade, object())
+
+    executor = _ExecutionOnlyIdealPD._build_execution_actuator((group, group))
+
+    assert facade.parameter_writes == []
+    assert "_facade_view" not in executor.__dict__
+    assert "_parameter_binding" not in executor.__dict__
+
+
 def test_neural_gains_are_lazy_deprecated_sidecars() -> None:
     """Neural compatibility gains stay group-local and warn only when requested."""
     group = make_bound_neural_group()

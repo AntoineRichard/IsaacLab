@@ -486,10 +486,16 @@ Logical groups and exact actuator types
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Named entries such as ``hips`` and ``knees`` remain separate configuration and
-access groups. Their direct attributes and ``parameters`` mapping are
-group-shaped writable views. When compatible groups share a concrete actuator
-type, a group view can be regularly strided and is not guaranteed contiguous.
-This does not change the group's configuration, class, joint names, or shape.
+access groups. Their direct parameter attributes and ``parameters`` mapping
+are stable, zero-copy, group-shaped views for inspection. Do not mutate a
+returned tensor or :class:`~isaaclab.utils.warp.ProxyArray` directly: raw
+mutation cannot notify a backend about parameter side effects. Use the group
+or type ``set_parameter_index`` and ``set_parameter_mask`` methods for all
+supported writes. Legacy whole-attribute assignments such as
+``group.stiffness = values`` remain supported and take the same setter path.
+When compatible groups share a concrete actuator type, a group view can be
+regularly strided and is not guaranteed contiguous. This does not change the
+group's configuration, class, joint names, or shape.
 
 Exact actuator classes provide compact type-scoped parameter access. Use the
 class itself as the key; type access intentionally has no string aliases and

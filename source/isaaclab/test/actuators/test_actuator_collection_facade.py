@@ -192,6 +192,39 @@ def make_finalized_robot(*, groups=None, device: str = "cpu", debug_validation: 
 
 
 @pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize(("name", "value"), (("stiffness", 9.0), ("damping", 8.0)))
+def test_bound_implicit_group_assignment_routes_through_parameter_writer(device: str, name: str, value: float) -> None:
+    """Legacy group gain assignment reaches the implicit-drive backend route."""
+    robot = make_finalized_robot(groups={"implicit": _implicit_cfg(["hip", "knee"])}, device=device)
+    group = robot.actuators["implicit"]
+    control = robot.actuators._control
+    values = torch.full((2, 2), value, dtype=torch.float32, device=device)
+
+    setattr(group, name, values)
+
+    assert len(control.parameter_writes) == 1
+    written_name, write = control.parameter_writes[0]
+    assert written_name == name
+    assert write.group_binding is group.__dict__["_parameter_binding"]
+    torch.testing.assert_close(getattr(group, name), values)
+
+
+@pytest.mark.parametrize("device", _available_devices())
+def test_bound_group_output_assignment_retains_in_place_storage(device: str) -> None:
+    """Execution output assignment remains a local canonical-storage update."""
+    robot = make_finalized_robot(groups={"implicit": _implicit_cfg(["hip", "knee"])}, device=device)
+    group = robot.actuators["implicit"]
+    control = robot.actuators._control
+    held = group.computed_effort
+
+    group.computed_effort = torch.full_like(held, 6.0)
+
+    assert group.computed_effort.data_ptr() == held.data_ptr()
+    torch.testing.assert_close(held, torch.full_like(held, 6.0))
+    assert control.parameter_writes == []
+
+
+@pytest.mark.parametrize("device", _available_devices())
 def test_compatibility_projections_are_lazy_stable_and_refresh_after_parameter_write(device: str) -> None:
     """Legacy dense projections allocate only on access and retain their pointer."""
     robot = make_finalized_robot(device=device)

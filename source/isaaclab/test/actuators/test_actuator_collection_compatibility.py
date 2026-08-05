@@ -163,14 +163,12 @@ def test_develop_actuator_mapping_lookup_and_iteration_remain_group_scoped() -> 
     ]
 
 
-def test_develop_actuator_group_parameters_remain_writable_in_place() -> None:
+def test_develop_actuator_group_parameters_remain_stable_inspection_views() -> None:
     actuators, _ = make_initialized_actuator_fixture()
     stiffness = actuators["shoulder"].stiffness
 
-    stiffness[0, 1] = 29.0
-
     assert actuators["shoulder"].stiffness.data_ptr() == stiffness.data_ptr()
-    assert actuators["shoulder"].stiffness[0, 1].item() == 29.0
+    assert actuators["shoulder"].stiffness.stride() == stiffness.stride()
 
 
 def test_develop_target_setters_write_command_aliases_and_warn() -> None:

@@ -66,6 +66,9 @@ class _ManagedParameter:
             instance._get_compatibility_sidecar(self.name).copy_(value)
             return
         if self.name in binding.arrays:
+            if self.name in (binding.parameter_proxies or {}) and instance.__dict__.get("_facade_view") is not None:
+                instance.set_parameter_index(self.name, value)
+                return
             binding.arrays[self.name].torch[:, binding.type_slice].copy_(value)
             return
         instance._get_deprecated_gain_sidecar(self.name).copy_(value)
@@ -473,7 +476,13 @@ class ActuatorBase(ABC):
 
     @property
     def parameters(self) -> Mapping[str, ProxyArray]:
-        """Mutable managed parameter arrays exposed through a read-only mapping."""
+        """Stable zero-copy managed parameter arrays for inspection.
+
+        The returned mapping is read-only and its :class:`~isaaclab.utils.warp.ProxyArray`
+        values alias canonical actuator storage. Do not mutate their ``.torch`` or ``.warp``
+        arrays directly: raw mutation cannot notify a backend about parameter side effects.
+        Use :meth:`set_parameter_index` or :meth:`set_parameter_mask` for supported writes.
+        """
         self._require_current_facade()
         binding = self.__dict__.get("_parameter_binding")
         if binding is None or binding.parameter_proxies is None:
@@ -714,10 +723,17 @@ class ActuatorBase(ABC):
     @classmethod
     def _build_execution_actuator(cls, actuators: Sequence[ActuatorBase]) -> ActuatorBase:
         """Build one private executor from resolved logical actuator groups."""
+        parameter_values = {
+            name: torch.cat([getattr(actuator, name) for actuator in actuators], dim=1)
+            for name in cls._execution_parameter_names()
+        }
         executor = copy.copy(actuators[0])
+        executor.__dict__.pop("_facade_view", None)
+        executor.__dict__.pop("_facade_token", None)
+        executor.__dict__.pop("_parameter_binding", None)
         executor._joint_names = [name for actuator in actuators for name in actuator.joint_names]
-        for name in cls._execution_parameter_names():
-            setattr(executor, name, torch.cat([getattr(actuator, name) for actuator in actuators], dim=1))
+        for name, value in parameter_values.items():
+            setattr(executor, name, value)
         executor.computed_effort = torch.zeros(executor._num_envs, len(executor._joint_names), device=executor._device)
         executor.applied_effort = torch.zeros_like(executor.computed_effort)
         return executor

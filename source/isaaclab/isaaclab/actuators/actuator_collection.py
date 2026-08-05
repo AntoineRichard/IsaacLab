@@ -1318,7 +1318,13 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
         @property
         def parameters(self) -> Mapping[str, ProxyArray]:
-            """Contiguous mutable parameter arrays exposed through a read-only mapping."""
+            """Contiguous zero-copy parameter arrays for inspection.
+
+            The mapping itself is read-only, and raw mutation of a returned
+            :class:`~isaaclab.utils.warp.ProxyArray` bypasses backend parameter
+            side effects. Use :meth:`set_parameter_index` or
+            :meth:`set_parameter_mask` for supported writes.
+            """
             self._require_current_generation()
             return self._parameters
 

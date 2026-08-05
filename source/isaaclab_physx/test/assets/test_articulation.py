@@ -3157,10 +3157,10 @@ def test_global_actuator_collection_submits_processed_joint_commands(sim, device
         ("damping", "set_dof_dampings", "get_dof_dampings"),
     ],
 )
-def test_global_implicit_gain_writes_coalesce_at_submission(
+def test_global_implicit_gain_assignments_coalesce_at_submission(
     sim, device, parameter_name, setter_name, getter_name, monkeypatch
 ):
-    """Test that repeated implicit gain writes issue one PhysX call at submit."""
+    """Test that repeated implicit gain assignments issue one PhysX call at submit."""
     articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
     articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
     sim.reset()
@@ -3173,8 +3173,9 @@ def test_global_implicit_gain_writes_coalesce_at_submission(
         return original_setter(values, indices)
 
     monkeypatch.setattr(articulation.root_view, setter_name, record_setter)
-    articulation.actuators["joint"].set_parameter_index(parameter_name, 31.0)
-    articulation.actuators["joint"].set_parameter_index(parameter_name, 37.0)
+    actuator = articulation.actuators["joint"]
+    setattr(actuator, parameter_name, torch.full_like(getattr(actuator, parameter_name), 31.0))
+    setattr(actuator, parameter_name, torch.full_like(getattr(actuator, parameter_name), 37.0))
     articulation.write_data_to_sim()
 
     assert len(calls) == 1
