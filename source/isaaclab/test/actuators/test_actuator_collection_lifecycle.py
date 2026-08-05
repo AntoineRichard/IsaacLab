@@ -21,6 +21,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
+import warp as wp
 
 from isaaclab.actuators import ActuatorCollection, actuator_collection, actuator_storage
 from isaaclab.actuators.actuator_base import ActuatorBase
@@ -34,6 +35,7 @@ from isaaclab.cloner.clone_plan import ClonePlan
 from isaaclab.physics import PhysicsEvent
 from isaaclab.sim.service_locator import ServiceLocator
 from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.utils.warp import ProxyArray
 
 
 class _NeutralDrive(ImplicitActuator):
@@ -72,6 +74,8 @@ class _Control:
         self._num_joints = num_joints
         self._num_instances = num_instances
         self._device = device
+        self._joint_pos = ProxyArray(wp.zeros((num_instances, num_joints), dtype=wp.float32, device=device))
+        self._joint_vel = ProxyArray(wp.zeros((num_instances, num_joints), dtype=wp.float32, device=device))
         self.asset = type("_Asset", (), {"_is_initialized": False, "data": _Data()})()
 
     @property
@@ -85,6 +89,14 @@ class _Control:
     @property
     def device(self) -> str:
         return self._device
+
+    @property
+    def joint_pos(self) -> ProxyArray:
+        return self._joint_pos
+
+    @property
+    def joint_vel(self) -> ProxyArray:
+        return self._joint_vel
 
     def discover_native_actuators(self, cfgs) -> set[str]:
         return set()
@@ -152,6 +164,8 @@ class _BridgeData:
         self._events = events
         self._actuator_view = None
         self._is_primed = False
+        self.joint_pos = ProxyArray(wp.zeros((1, 1), dtype=wp.float32, device="cpu"))
+        self.joint_vel = ProxyArray(wp.zeros((1, 1), dtype=wp.float32, device="cpu"))
 
     @property
     def is_primed(self) -> bool:
@@ -2513,6 +2527,105 @@ def test_context_ready_snapshot_finalizes_order_ten_registration_and_stop_replay
     _FakePhysicsManager.dispatch(PhysicsEvent.PHYSICS_READY)
     assert registered[1].is_ready
     assert registered[1] is not old
+
+
+def test_plan_build_failure_invalidates_already_installed_candidate_plans_and_allows_retry(monkeypatch) -> None:
+    """Candidate plan construction remains transactional before facade publication."""
+    from isaaclab.actuators import actuator_execution
+
+    cfgs = {
+        "wheel": IdealPDActuatorCfg(
+            class_type=IdealPDActuator,
+            joint_names_expr=[".*"],
+            stiffness=None,
+            damping=None,
+        )
+    }
+    collection = ActuatorCollection(_VariantSimulation())
+    first = _register_managed(collection, "first", _SourceResolvingControl(), cfgs)
+    second = _register_managed(collection, "second", _SourceResolvingControl(), cfgs)
+    original_build = actuator_execution._ArticulationExecutionPlan.build
+    built_plans = []
+
+    def _fail_after_build(cls, **kwargs):
+        plan = original_build(**kwargs)
+        built_plans.append(plan)
+        if len(built_plans) == 2:
+            raise RuntimeError("injected execution plan build failure")
+        return plan
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            actuator_execution._ArticulationExecutionPlan,
+            "build",
+            classmethod(_fail_after_build),
+        )
+        with pytest.raises(RuntimeError, match="injected execution plan build failure"):
+            collection.finalize()
+
+    assert len(built_plans) == 2
+    assert not built_plans[0]._valid
+    assert not first.is_ready and not second.is_ready
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        _ = first.command
+
+    collection.finalize()
+    assert first.is_ready and second.is_ready
+
+
+def test_post_plan_validation_failure_invalidates_every_built_candidate_plan(monkeypatch) -> None:
+    """A later transaction failure releases every plan installed in candidate bindings."""
+    cfgs = {
+        "wheel": IdealPDActuatorCfg(
+            class_type=IdealPDActuator,
+            joint_names_expr=[".*"],
+            stiffness=None,
+            damping=None,
+        )
+    }
+    collection = ActuatorCollection(_VariantSimulation())
+    first = _register_managed(collection, "first", _SourceResolvingControl(), cfgs)
+    second = _register_managed(collection, "second", _SourceResolvingControl(), cfgs)
+    captured_plans = []
+
+    def _fail_validation(candidate) -> None:
+        captured_plans.extend(binding.execution_plan for binding in candidate.bindings)
+        raise RuntimeError("injected post-plan validation failure")
+
+    monkeypatch.setattr(actuator_collection._CollectionGeneration, "validate_backend_bindings", _fail_validation)
+
+    with pytest.raises(RuntimeError, match="injected post-plan validation failure"):
+        collection.finalize()
+
+    assert len(captured_plans) == 2
+    assert all(plan is not None and not plan._valid for plan in captured_plans)
+    assert not first.is_ready and not second.is_ready
+
+
+def test_stop_releases_the_published_execution_plan_before_staling_its_view() -> None:
+    """STOP must release plan launches and aliases as well as the public facade."""
+    cfgs = {
+        "wheel": IdealPDActuatorCfg(
+            class_type=IdealPDActuator,
+            joint_names_expr=[".*"],
+            stiffness=None,
+            damping=None,
+        )
+    }
+    collection = ActuatorCollection(_VariantSimulation())
+    view = _register_managed(collection, "first", _SourceResolvingControl(), cfgs)
+    collection.finalize()
+    plan = view._execution_plan
+
+    collection.clear_generation()
+
+    assert not plan._valid
+    assert plan.stateless_ranges == ()
+    assert plan.eager_segments == ()
+    with pytest.raises(RuntimeError, match="stale"):
+        plan.compute()
+    with pytest.raises(RuntimeError, match="stale actuator view"):
+        _ = view.command
 
 
 def test_context_clear_instance_closes_collection_before_a_second_context(monkeypatch) -> None:

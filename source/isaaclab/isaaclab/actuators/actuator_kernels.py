@@ -360,3 +360,111 @@ def gather_actuator_batch(
     batch_command_effort[env_id, batch_joint_id] = command_effort[env_id, joint_id]
     batch_joint_pos[env_id, batch_joint_id] = joint_pos[env_id, joint_id]
     batch_joint_vel[env_id, batch_joint_id] = joint_vel[env_id, joint_id]
+
+
+@wp.kernel(enable_backward=False)
+def compute_implicit_actuator_range(
+    command_pos: wp.array2d(dtype=wp.float32),
+    command_vel: wp.array2d(dtype=wp.float32),
+    command_effort: wp.array2d(dtype=wp.float32),
+    joint_pos: wp.array2d(dtype=wp.float32),
+    joint_vel: wp.array2d(dtype=wp.float32),
+    stiffness: wp.array2d(dtype=wp.float32),
+    damping: wp.array2d(dtype=wp.float32),
+    effort_limit: wp.array2d(dtype=wp.float32),
+    computed_effort: wp.array2d(dtype=wp.float32),
+    applied_effort: wp.array2d(dtype=wp.float32),
+):
+    """Compute telemetry for one gathered implicit execution range."""
+    env_id, joint_id = wp.tid()
+    effort = (
+        stiffness[env_id, joint_id] * (command_pos[env_id, joint_id] - joint_pos[env_id, joint_id])
+        + damping[env_id, joint_id] * (command_vel[env_id, joint_id] - joint_vel[env_id, joint_id])
+        + command_effort[env_id, joint_id]
+    )
+    computed_effort[env_id, joint_id] = effort
+    applied_effort[env_id, joint_id] = wp.clamp(effort, -effort_limit[env_id, joint_id], effort_limit[env_id, joint_id])
+
+
+@wp.kernel(enable_backward=False)
+def scatter_execution_plan(
+    implicit_position: wp.array2d(dtype=wp.float32),
+    implicit_velocity: wp.array2d(dtype=wp.float32),
+    implicit_effort: wp.array2d(dtype=wp.float32),
+    implicit_computed_effort: wp.array2d(dtype=wp.float32),
+    implicit_applied_effort: wp.array2d(dtype=wp.float32),
+    ideal_applied_effort: wp.array2d(dtype=wp.float32),
+    ideal_computed_effort: wp.array2d(dtype=wp.float32),
+    ideal_telemetry_effort: wp.array2d(dtype=wp.float32),
+    dc_applied_effort: wp.array2d(dtype=wp.float32),
+    dc_computed_effort: wp.array2d(dtype=wp.float32),
+    dc_telemetry_effort: wp.array2d(dtype=wp.float32),
+    position_owners: wp.array(dtype=wp.int32),
+    velocity_owners: wp.array(dtype=wp.int32),
+    effort_owners: wp.array(dtype=wp.int32),
+    computed_effort_owners: wp.array(dtype=wp.int32),
+    applied_effort_owners: wp.array(dtype=wp.int32),
+    implicit_count: int,
+    ideal_count: int,
+    target_position: wp.array2d(dtype=wp.float32),
+    target_velocity: wp.array2d(dtype=wp.float32),
+    target_effort: wp.array2d(dtype=wp.float32),
+    target_computed_effort: wp.array2d(dtype=wp.float32),
+    target_applied_effort: wp.array2d(dtype=wp.float32),
+):
+    """Scatter one static execution epoch with field-specific owner slots."""
+    env_id, joint_id = wp.tid()
+
+    position_owner = position_owners[joint_id]
+    if position_owner >= 0:
+        target_position[env_id, joint_id] = implicit_position[env_id, position_owner]
+
+    velocity_owner = velocity_owners[joint_id]
+    if velocity_owner >= 0:
+        target_velocity[env_id, joint_id] = implicit_velocity[env_id, velocity_owner]
+
+    effort_owner = effort_owners[joint_id]
+    if effort_owner >= 0:
+        if effort_owner < implicit_count:
+            target_effort[env_id, joint_id] = implicit_effort[env_id, effort_owner]
+        elif effort_owner < implicit_count + ideal_count:
+            target_effort[env_id, joint_id] = ideal_applied_effort[env_id, effort_owner - implicit_count]
+        else:
+            target_effort[env_id, joint_id] = dc_applied_effort[env_id, effort_owner - implicit_count - ideal_count]
+
+    computed_owner = computed_effort_owners[joint_id]
+    if computed_owner >= 0:
+        if computed_owner < implicit_count:
+            target_computed_effort[env_id, joint_id] = implicit_computed_effort[env_id, computed_owner]
+        elif computed_owner < implicit_count + ideal_count:
+            target_computed_effort[env_id, joint_id] = ideal_computed_effort[env_id, computed_owner - implicit_count]
+        else:
+            target_computed_effort[env_id, joint_id] = dc_computed_effort[
+                env_id, computed_owner - implicit_count - ideal_count
+            ]
+
+    applied_owner = applied_effort_owners[joint_id]
+    if applied_owner >= 0:
+        if applied_owner < implicit_count:
+            target_applied_effort[env_id, joint_id] = implicit_applied_effort[env_id, applied_owner]
+        elif applied_owner < implicit_count + ideal_count:
+            target_applied_effort[env_id, joint_id] = ideal_telemetry_effort[env_id, applied_owner - implicit_count]
+        else:
+            target_applied_effort[env_id, joint_id] = dc_telemetry_effort[
+                env_id, applied_owner - implicit_count - ideal_count
+            ]
+
+
+@wp.kernel(enable_backward=False)
+def scatter_eager_effort_telemetry(
+    source_computed_effort: wp.array2d(dtype=wp.float32),
+    source_applied_effort: wp.array2d(dtype=wp.float32),
+    joint_indices: wp.array(dtype=wp.int32),
+    target_computed_effort: wp.array2d(dtype=wp.float32),
+    target_applied_effort: wp.array2d(dtype=wp.float32),
+):
+    """Scatter an eager group's telemetry after its runtime output scatter."""
+    env_id, source_joint_id = wp.tid()
+    joint_id = joint_indices[source_joint_id]
+    target_computed_effort[env_id, joint_id] = source_computed_effort[env_id, source_joint_id]
+    target_applied_effort[env_id, joint_id] = source_applied_effort[env_id, source_joint_id]

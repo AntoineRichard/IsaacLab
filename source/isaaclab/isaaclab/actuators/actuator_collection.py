@@ -34,6 +34,7 @@ from .actuator_control import (
     _ResolvedSolverProperties,
     _ResolvedSolverProperty,
 )
+from .actuator_execution import _ArticulationExecutionPlan
 from .actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
 from .actuator_storage import (
     _ArticulationLayout,
@@ -145,6 +146,7 @@ class _ArticulationBinding:
     computed_effort: ProxyArray | None = None
     applied_effort: ProxyArray | None = None
     native_group_names: frozenset[str] = frozenset()
+    execution_plan: _ArticulationExecutionPlan | None = None
 
 
 @dataclass(frozen=True)
@@ -447,6 +449,7 @@ class _CollectionGeneration:
         self.selector_states: dict[object, _SelectorState] = {}
         self.backend_parameter_staging: dict[object, _BackendParameterStaging] = {}
         self._solver_properties_written: list[_ArticulationBinding] = []
+        self._execution_plans: list[_ArticulationExecutionPlan] = []
 
     @classmethod
     def build(
@@ -993,25 +996,30 @@ class _CollectionGeneration:
                     }
                 )
                 actuator._release_managed_source_parameters()
-            updated_bindings.append(
-                replace(
-                    binding,
-                    groups=MappingProxyType(groups),
-                    command=_ActuatorCommandBinding(
-                        position=self.joint_store.articulation_proxy("raw_position", binding.layout),
-                        velocity=self.joint_store.articulation_proxy("raw_velocity", binding.layout),
-                        effort=self.joint_store.articulation_proxy("raw_effort", binding.layout),
-                    ),
-                    joint_command=_ActuatorCommandBinding(
-                        position=self.joint_store.articulation_proxy("processed_position", binding.layout),
-                        velocity=self.joint_store.articulation_proxy("processed_velocity", binding.layout),
-                        effort=self.joint_store.articulation_proxy("processed_effort", binding.layout),
-                    ),
-                    computed_effort=self.joint_store.articulation_proxy("computed_effort", binding.layout),
-                    applied_effort=self.joint_store.articulation_proxy("applied_effort", binding.layout),
-                    native_group_names=binding.registration.native_group_names,
-                )
+            candidate_binding = replace(
+                binding,
+                groups=MappingProxyType(groups),
+                command=_ActuatorCommandBinding(
+                    position=self.joint_store.articulation_proxy("raw_position", binding.layout),
+                    velocity=self.joint_store.articulation_proxy("raw_velocity", binding.layout),
+                    effort=self.joint_store.articulation_proxy("raw_effort", binding.layout),
+                ),
+                joint_command=_ActuatorCommandBinding(
+                    position=self.joint_store.articulation_proxy("processed_position", binding.layout),
+                    velocity=self.joint_store.articulation_proxy("processed_velocity", binding.layout),
+                    effort=self.joint_store.articulation_proxy("processed_effort", binding.layout),
+                ),
+                computed_effort=self.joint_store.articulation_proxy("computed_effort", binding.layout),
+                applied_effort=self.joint_store.articulation_proxy("applied_effort", binding.layout),
+                native_group_names=binding.registration.native_group_names,
             )
+            execution_plan = _ArticulationExecutionPlan.build(
+                binding=candidate_binding,
+                control=control,
+                generation=self.generation,
+            )
+            self._execution_plans.append(execution_plan)
+            updated_bindings.append(replace(candidate_binding, execution_plan=execution_plan))
         self.bindings = tuple(updated_bindings)
 
     def publish_effort_telemetry(self) -> None:
@@ -1049,6 +1057,13 @@ class _CollectionGeneration:
         """Release every candidate-owned allocation and private reference."""
         failures: list[Exception] = []
         try:
+            plans = [*self._execution_plans, *(binding.execution_plan for binding in self.bindings)]
+            for plan in plans:
+                if plan is not None:
+                    try:
+                        plan.invalidate()
+                    except Exception as error:
+                        failures.append(error)
             for groups in self.groups.values():
                 for group in groups.values():
                     release = getattr(group, "_release_facade_storage", None)
@@ -1093,6 +1108,7 @@ class _CollectionGeneration:
             self.groups.clear()
             self.managed_group_resolutions.clear()
             self._solver_properties_written.clear()
+            self._execution_plans.clear()
         _raise_cleanup_failures(failures)
 
 
@@ -1660,6 +1676,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._joint_command: ActuatorCollection.ArticulationView.JointCommand | None = None
             self._computed_effort: ProxyArray | None = None
             self._applied_effort: ProxyArray | None = None
+            self._execution_plan: _ArticulationExecutionPlan | None = None
             self._backend_parameter_staging: _BackendParameterStaging | None = None
             self._has_implicit_actuators = False
             self._layout: _ArticulationLayout | None = None
@@ -1878,17 +1895,18 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             """
             self._require_execution_ready()
             resolved_env_ids = slice(None) if env_ids is None else env_ids
-            for actuator in dict.values(self):
-                actuator.reset(resolved_env_ids)
-            control = self._control
-            if control is None:
+            execution_plan = self._execution_plan
+            if execution_plan is None:
                 raise RuntimeError("stale actuator view")
-            control.reset_native_actuators(resolved_env_ids)
+            execution_plan.reset(resolved_env_ids)
 
         def compute(self, dt: float = 0.0) -> None:
             """Reject execution while a topology mutation requires a safe rebuild."""
-            del dt
             self._require_execution_ready()
+            execution_plan = self._execution_plan
+            if execution_plan is None:
+                raise RuntimeError("stale actuator view")
+            execution_plan.compute(dt)
             self._refresh_compatibility_projections()
 
         def submit_commands(self) -> None:
@@ -2024,12 +2042,14 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             joint_command = binding.joint_command
             computed_effort = binding.computed_effort
             applied_effort = binding.applied_effort
+            execution_plan = binding.execution_plan
             if (
                 groups is None
                 or command is None
                 or joint_command is None
                 or computed_effort is None
                 or applied_effort is None
+                or execution_plan is None
             ):
                 raise RuntimeError("Cannot install an incomplete private candidate binding.")
             selector_state = generation.selector_states[binding.registration.key]
@@ -2051,6 +2071,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             )
             self._computed_effort = computed_effort
             self._applied_effort = applied_effort
+            self._execution_plan = execution_plan
             self._backend_parameter_staging = binding.backend_parameter_staging
             self._layout = binding.layout
             self._compatibility_allocations.clear()
@@ -2071,6 +2092,16 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._by_type = ActuatorCollection._GuardedMapping(self, type_views, selector_state.token)
             self._debug_validation = binding.registration.debug_validation
             self._control = binding.registration.control
+            native_compute = getattr(self._control, "compute_native_actuators", None)
+            if native_compute is None:
+
+                def native_compute(_view, _dt) -> bool:
+                    return False
+
+            execution_plan.set_runtime_hooks(
+                validate_execution=self._require_execution_ready,
+                native_compute=lambda dt, native_compute=native_compute: native_compute(self, dt),
+            )
             self._native_group_binding_ids = {
                 id(groups[name].__dict__["_parameter_binding"])
                 for name in binding.registration.native_group_names
@@ -2756,6 +2787,13 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._joint_command = None
             self._computed_effort = None
             self._applied_effort = None
+            execution_plan = self._execution_plan
+            self._execution_plan = None
+            if execution_plan is not None:
+                try:
+                    execution_plan.invalidate()
+                except Exception as error:
+                    failures.append(error)
             self._backend_parameter_staging = None
             self._has_implicit_actuators = False
             self._layout = None
