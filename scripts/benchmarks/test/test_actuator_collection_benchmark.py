@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -170,9 +171,10 @@ class _FakeChildRunner:
                 "resolved_row": child_row,
                 "source_emulation": revision != "global" and child_row.get("case") == "B3",
                 "capability": {"supported": True, "reason": None},
-                "timing": {"samples_ms": [1.0]},
+                "timing": None if phase == "compile_prewarm" else {"samples_ms": [1.0]},
                 "counters": {},
                 "structural": {} if revision == "global" else None,
+                "execution": {"graph_capture_live": requested == "graph"},
             },
         }
         (output / "member.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -186,6 +188,7 @@ def _coordinate_context(benchmark, tmp_path):
     for path in worktrees.values():
         path.mkdir()
         (path / "isaaclab.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        (path / "uv.lock").write_text(f"lock-{path.name}\n", encoding="utf-8")
     return benchmark._CoordinateContext(
         batch_id="runtime-01",
         candidate_sha="a" * 40,
@@ -198,6 +201,13 @@ def _coordinate_context(benchmark, tmp_path):
         num_iterations=1,
         command=("coordinate",),
         initial_metadata={"python": "test-python", "platform": "test-platform", "gpu": [], "versions": {}},
+        worktree_states={
+            revision: benchmark.WorktreeState(sha, False)
+            for revision, sha in {"develop": "d" * 40, "current": "c" * 40, "global": "a" * 40}.items()
+        },
+        lockfile_sha256={"develop": "d" * 64, "current": "c" * 64, "global": "a" * 64},
+        benchmark_config_sha256="b" * 64,
+        benchmark_config={"matrix": "runtime"},
     )
 
 
@@ -409,6 +419,28 @@ def test_coordinate_cli_requires_exact_three_revision_identity(tmp_path, capsys)
     assert "child-only" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "ignored_flags",
+    [
+        ("--case", "B1"),
+        ("--case", "B1", "--num_worlds", "2"),
+        ("--case", "B1", "--num_sources", "2"),
+        ("--case", "B1", "--num_articulations", "2"),
+        ("--case", "B1", "--groups", "2"),
+        ("--case", "B1", "--actuator_types", "implicit"),
+        ("--output_path", "/tmp/ignored-coordinate-output"),
+        ("--case=B1",),
+        ("--output_path=/tmp/ignored-coordinate-output",),
+    ],
+)
+def test_coordinate_cli_rejects_every_ignored_workload_or_output_flag(tmp_path, capsys, ignored_flags):
+    """Coordinate mode cannot silently ignore a user-provided workload selector."""
+    benchmark = _load(_BENCHMARK, f"actuator_benchmark_coordinate_ignored_{len(ignored_flags)}")
+    with pytest.raises(SystemExit):
+        benchmark.parse_args([*_coordinate_argv(tmp_path), *ignored_flags])
+    assert "workload, selector, or output" in capsys.readouterr().err
+
+
 def test_build_schedule_pairs_supported_rows_and_keeps_global_only_singletons():
     """Global-only rows never acquire manufactured historical pair members."""
     benchmark = _load(_BENCHMARK, "actuator_benchmark_build_schedule")
@@ -557,6 +589,84 @@ def test_pair_rejects_member_payload_with_wrong_inner_revision_identity(tmp_path
     assert "member revision identity mismatch" in record["process"]["rejection_reasons"][0]
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        ("eager_graph", "effective execution mismatch"),
+        ("unsupported", "supported capability"),
+        ("missing_timing", "valid timing"),
+        ("unproven_graph", "live graph capture"),
+    ],
+)
+def test_pair_rejects_invalid_supported_or_graph_member_contract(tmp_path, mutation, expected_reason):
+    """A child envelope cannot turn eager, unsupported, or untimed work into an accepted pair."""
+    benchmark = _load(_BENCHMARK, f"actuator_benchmark_member_contract_{mutation}")
+    context = _coordinate_context(benchmark, tmp_path)
+    base_runner = _FakeChildRunner(benchmark)
+
+    def corrupt_runner(command, *, cwd, env):
+        result = base_runner(command, cwd=cwd, env=env)
+        output = Path(command[command.index("--output_path") + 1]) / "member.json"
+        payload = json.loads(output.read_text())
+        if payload["member"]["requested_execution"] != "graph":
+            return result
+        if mutation == "eager_graph":
+            payload["member"]["effective_execution"] = "cached_eager"
+        elif mutation == "unsupported":
+            payload["member"]["capability"] = {"supported": False, "reason": "capture unavailable"}
+            payload["member"]["effective_execution"] = None
+            payload["member"]["timing"] = None
+        elif mutation == "missing_timing":
+            payload["member"]["timing"] = None
+        else:
+            payload["member"]["execution"]["graph_capture_live"] = False
+        output.write_text(json.dumps(payload), encoding="utf-8")
+        return result
+
+    coordinator = benchmark.Coordinator(
+        tmp_path / "run",
+        runner=corrupt_runner,
+        worktree_probe=_clean_probe(benchmark, context),
+        sleep=lambda _: None,
+    )
+    observation = next(
+        item
+        for item in benchmark.runtime_coordinate_schedule(2)
+        if item.kind == "pair" and item.mode_pair == "develop-cached_eager__global-graph" and item.pair_id == "01"
+    )
+    attempt = coordinator.run_observation(observation, context)
+    record = json.loads((attempt / "attempt.json").read_text())
+    assert record["status"] == "rejected"
+    assert expected_reason in " ".join(record["process"]["rejection_reasons"])
+
+
+def test_measured_singleton_rejects_missing_timing(tmp_path):
+    """A measured global-only singleton cannot enter selection without latency evidence."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_singleton_timing_contract")
+    context = _coordinate_context(benchmark, tmp_path)
+    base_runner = _FakeChildRunner(benchmark)
+
+    def untimed_runner(command, *, cwd, env):
+        result = base_runner(command, cwd=cwd, env=env)
+        output = Path(command[command.index("--output_path") + 1]) / "member.json"
+        payload = json.loads(output.read_text())
+        payload["member"]["timing"] = None
+        output.write_text(json.dumps(payload), encoding="utf-8")
+        return result
+
+    coordinator = benchmark.Coordinator(
+        tmp_path / "run",
+        runner=untimed_runner,
+        worktree_probe=_clean_probe(benchmark, context),
+        sleep=lambda _: None,
+    )
+    observation = next(item for item in benchmark.build_coordinate_schedule(2, 2) if item.kind == "singleton")
+    attempt = coordinator.run_observation(observation, context)
+    record = json.loads((attempt / "attempt.json").read_text())
+    assert record["status"] == "rejected"
+    assert "valid timing" in " ".join(record["process"]["rejection_reasons"])
+
+
 def test_pair_revalidates_worktree_sha_after_each_member(tmp_path):
     """A worktree changed during a long batch cannot enter one accepted pair."""
     benchmark = _load(_BENCHMARK, "actuator_benchmark_member_revalidation")
@@ -628,6 +738,7 @@ def test_coordinate_rejects_existing_batch_wrong_sha_and_dirty_worktree(tmp_path
         path = tmp_path / revision
         path.mkdir()
         (path / "isaaclab.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        (path / "uv.lock").write_text(f"lock-{revision}\n", encoding="utf-8")
     states = {
         (tmp_path / "develop").resolve(): benchmark.WorktreeState("d" * 40, False),
         (tmp_path / "current").resolve(): benchmark.WorktreeState("c" * 40, False),
@@ -661,6 +772,7 @@ def test_selection_manifest_is_atomic_with_append_only_history(tmp_path):
         record["identity"]["candidate_sha"] = context.candidate_sha
         record["identity"]["harness_sha256"] = context.harness_sha256
         record["identity"]["observation_key"] = f"row-{index}"
+        record["identity"]["revision_shas"] = context.revision_shas
         (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
         coordinator.select_attempt(attempt, context)
         attempts.append(str(attempt.relative_to(tmp_path / "run")))
@@ -671,7 +783,40 @@ def test_selection_manifest_is_atomic_with_append_only_history(tmp_path):
     assert json.loads((tmp_path / "run" / "accepted-attempts.json").read_text())["attempts"] == attempts
 
 
-def test_fake_runner_coordinates_complete_runtime_batch(tmp_path):
+def test_selection_rejects_attempt_or_manifest_revision_sha_mixture(tmp_path):
+    """Candidate and harness equality cannot hide a different historical revision map."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_selection_revision_map")
+    context = _coordinate_context(benchmark, tmp_path)
+    coordinator = benchmark.Coordinator(tmp_path / "run", sleep=lambda _: None)
+
+    def write_attempt(name, observation_key, revision_shas):
+        attempt = tmp_path / "run" / "observations" / name / "attempt-01"
+        attempt.mkdir(parents=True)
+        record = _record(benchmark)
+        record["identity"].update(
+            candidate_sha=context.candidate_sha,
+            harness_sha256=context.harness_sha256,
+            observation_key=observation_key,
+            revision_shas=revision_shas,
+        )
+        (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
+        return attempt
+
+    wrong_attempt = write_attempt("wrong-attempt", "wrong-attempt", {**context.revision_shas, "develop": "e" * 40})
+    with pytest.raises(ValueError, match="attempt revision SHA"):
+        coordinator.select_attempt(wrong_attempt, context)
+
+    first = write_attempt("first", "first", context.revision_shas)
+    coordinator.select_attempt(first, context)
+    mixed_context = benchmark._CoordinateContext(
+        **{**context.__dict__, "revision_shas": {**context.revision_shas, "current": "e" * 40}}
+    )
+    second = write_attempt("second", "second", mixed_context.revision_shas)
+    with pytest.raises(ValueError, match="manifest revision SHA"):
+        coordinator.select_attempt(second, mixed_context)
+
+
+def test_fake_runner_coordinates_complete_runtime_batch(tmp_path, monkeypatch):
     """The import-safe parent produces a complete selected runtime batch through process seams."""
     benchmark = _load(_BENCHMARK, "actuator_benchmark_coordinate_e2e")
     args = benchmark.parse_args(_coordinate_argv(tmp_path, pair_repetitions=2))
@@ -679,12 +824,26 @@ def test_fake_runner_coordinates_complete_runtime_batch(tmp_path):
         path = tmp_path / revision
         path.mkdir()
         (path / "isaaclab.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        (path / "uv.lock").write_text(f"lock-{revision}\n", encoding="utf-8")
     states = {
         (tmp_path / "develop").resolve(): benchmark.WorktreeState("d" * 40, False),
         (tmp_path / "current").resolve(): benchmark.WorktreeState("c" * 40, False),
         (tmp_path / "global").resolve(): benchmark.WorktreeState("a" * 40, False),
     }
     runner = _FakeChildRunner(benchmark)
+    initial_metadata = {
+        "python": "3.12.13",
+        "platform": "test-platform",
+        "gpu": [{"index": 0, "name": "Test GPU", "driver_version": "999.1"}],
+        "versions": {"torch": "2.test"},
+        "cuda": {
+            "driver_version": "999.1",
+            "runtime_version": "12.9",
+            "torch_version": "2.test",
+            "torch_cuda_version": "12.8",
+        },
+    }
+    monkeypatch.setattr(benchmark, "_collect_initial_metadata", lambda: initial_metadata)
     coordinator = benchmark.Coordinator(
         tmp_path / "run", runner=runner, worktree_probe=states.get, sleep=lambda _: None
     )
@@ -704,6 +863,63 @@ def test_fake_runner_coordinates_complete_runtime_batch(tmp_path):
     batch = json.loads((tmp_path / "run" / "batches" / "runtime-01" / "manifest.json").read_text())
     assert batch["command"] == first["command"]
     assert batch["initial_metadata"] == first["metadata"]["initial"]
+    assert batch["worktree_states"] == {
+        "develop": {"head_sha": "d" * 40, "dirty": False},
+        "current": {"head_sha": "c" * 40, "dirty": False},
+        "global": {"head_sha": "a" * 40, "dirty": False},
+    }
+    expected_locks = {
+        revision: hashlib.sha256(f"lock-{revision}\n".encode()).hexdigest()
+        for revision in ("develop", "current", "global")
+    }
+    assert batch["lockfile_sha256"] == expected_locks
+    assert first["metadata"]["lockfile_sha256"] == expected_locks
+    assert len(batch["benchmark_config_sha256"]) == 64
+    assert first["metadata"]["benchmark_config_sha256"] == batch["benchmark_config_sha256"]
+    assert batch["initial_metadata"]["cuda"]["driver_version"] is not None
+    assert "runtime_version" in batch["initial_metadata"]["cuda"]
+    assert "torch_cuda_version" in batch["initial_metadata"]["cuda"]
+    cache_environment = first["cache"]["environment"]
+    for revision, value in cache_environment.items():
+        assert value == {
+            "name": "WARP_CACHE_PATH",
+            "value": str((tmp_path / "cache" / states[(tmp_path / revision).resolve()].head_sha).resolve()),
+        }
+    paired = next(
+        json.loads((tmp_path / "run" / selected / "attempt.json").read_text())
+        for selected in manifest["attempts"]
+        if json.loads((tmp_path / "run" / selected / "attempt.json").read_text())["kind"] == "pair"
+    )
+    paired_member = paired["members"][0]
+    assert paired_member["process"]["environment"] == {
+        "WARP_CACHE_PATH": paired["cache"]["environment"][paired_member["revision"]]["value"]
+    }
+
+
+def test_parent_rejects_compile_prewarm_member_with_timing(tmp_path):
+    """A cache-prewarm child containing latency samples cannot become accepted batch evidence."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_timed_prewarm_parent")
+    context = _coordinate_context(benchmark, tmp_path)
+    base_runner = _FakeChildRunner(benchmark)
+
+    def timed_runner(command, *, cwd, env):
+        result = base_runner(command, cwd=cwd, env=env)
+        output = Path(command[command.index("--output_path") + 1]) / "member.json"
+        payload = json.loads(output.read_text())
+        payload["member"]["timing"] = {"samples_ms": [1.0]}
+        output.write_text(json.dumps(payload), encoding="utf-8")
+        return result
+
+    coordinator = benchmark.Coordinator(
+        tmp_path / "run", runner=timed_runner, worktree_probe=_clean_probe(benchmark, context), sleep=lambda _: None
+    )
+    batch = tmp_path / "run" / "batches" / "runtime-01"
+    batch.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="prewarm.*timing"):
+        coordinator._prewarm_revisions(context, batch)
+    evidence = json.loads((batch / "prewarm" / "prewarm-develop.json").read_text())
+    assert evidence["status"] == "rejected"
+    assert evidence["member"]["timing"] == {"samples_ms": [1.0]}
 
 
 def test_final_child_closes_adapter_and_persists_supported_failure(tmp_path, monkeypatch):
@@ -745,6 +961,48 @@ def test_final_child_closes_adapter_and_persists_supported_failure(tmp_path, mon
     assert payload["revision_sha"] == "a" * 40
     assert payload["status"] == "rejected"
     assert payload["reason"] == "build_workload: RuntimeError: construction failed"
+
+
+def test_final_child_compile_prewarm_uses_explicit_untimed_contract(tmp_path, monkeypatch):
+    """Compile prewarm calls its dedicated adapter hook and emits no timing observation."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_final_child_prewarm")
+    row = benchmark.expand_build_matrix("B1")[0]
+
+    class Adapter(benchmark._MemoryAdapter):
+        prewarm_calls = 0
+
+        def build_workload(self, _workload):
+            raise AssertionError("measured build path used for compile prewarm")
+
+        def compile_prewarm(self, workload):
+            self.prewarm_calls += 1
+            self.workload = workload
+
+    adapter = Adapter("global", "cpu")
+    monkeypatch.setattr(benchmark, "select_adapter", lambda *_args: adapter)
+    args = SimpleNamespace(
+        mode="build",
+        revision="global",
+        revision_sha="a" * 40,
+        candidate_sha="a" * 40,
+        observation_key="prewarm|global",
+        attempt_id="prewarm",
+        phase="compile_prewarm",
+        child_row=json.dumps(benchmark._row_payload(row)),
+        harness_sha256="f" * 64,
+        batch_id="build-01",
+        device="cpu",
+        warmup_iterations=1,
+        num_iterations=1,
+        output_path=tmp_path / "member",
+    )
+    assert benchmark._run_final_child(args) == 0
+    payload = json.loads((args.output_path / "member.json").read_text())
+    assert adapter.prewarm_calls == 1
+    assert payload["status"] == "accepted"
+    assert payload["member"]["requested_execution"] == "compile_prewarm"
+    assert payload["member"]["effective_execution"] == "compile_prewarm"
+    assert payload["member"]["timing"] is None
 
 
 def test_final_run_cli_writes_real_member_contract_with_exact_identity(tmp_path, monkeypatch):
@@ -830,6 +1088,39 @@ def test_gpu_telemetry_falls_back_to_nvidia_smi_with_device_index(monkeypatch):
     assert sample.utilization_pct == 2.0
     assert sample.throttle_reasons == ""
     assert sample.compute_pids == (123,)
+
+
+def test_initial_metadata_records_structured_cuda_driver_runtime_and_torch_identity(monkeypatch):
+    """Final provenance distinguishes the NVIDIA driver, CUDA runtime, and Torch CUDA build."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_cuda_provenance")
+
+    def run(command, **_kwargs):
+        if command[0] == "nvidia-smi":
+            return SimpleNamespace(returncode=0, stdout="0, Test GPU, 555.42\n", stderr="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "torch_version": "2.test",
+                    "torch_cuda_version": "12.8",
+                    "runtime_version": "12.9",
+                    "driver_version": "13.0",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(benchmark.subprocess, "run", run)
+    metadata = benchmark._collect_initial_metadata()
+    assert metadata["gpu"] == [{"index": 0, "name": "Test GPU", "driver_version": "555.42"}]
+    assert metadata["cuda"] == {
+        "driver_version": "555.42",
+        "runtime_version": "12.9",
+        "warp_driver_version": "13.0",
+        "torch_version": "2.test",
+        "torch_cuda_version": "12.8",
+        "probe_error": None,
+    }
 
 
 def test_harness_copy_hash_is_immutable(tmp_path):

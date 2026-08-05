@@ -29,7 +29,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -166,6 +166,10 @@ class _CoordinateContext:
     num_iterations: int
     command: tuple[str, ...]
     initial_metadata: dict[str, Any]
+    worktree_states: dict[str, WorktreeState] = field(default_factory=dict)
+    lockfile_sha256: dict[str, str] = field(default_factory=dict)
+    benchmark_config_sha256: str = ""
+    benchmark_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -381,6 +385,38 @@ def runtime_coordinate_schedule(pair_repetitions: int) -> tuple[_Observation, ..
     return tuple(observations)
 
 
+def _frozen_benchmark_config(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+    """Return the complete frozen matrix/configuration payload and digest."""
+    payload = {
+        "schema": SCHEMA,
+        "matrix": args.matrix,
+        "build_cases": [asdict(case) for case in build_matrix()],
+        "build_rows": [asdict(row) for row in expand_build_matrix()],
+        "runtime_rows": {revision: [asdict(row) for row in runtime_matrix(revision)] for revision in _REVISIONS},
+        "measurement": {
+            "cold_repetitions": args.cold_repetitions,
+            "pair_repetitions": args.pair_repetitions,
+            "warmup_iterations": args.warmup_iterations,
+            "num_iterations": args.num_iterations,
+            "device": args.device,
+            "benchmark_formatter": args.benchmark_formatter,
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return payload, hashlib.sha256(encoded).hexdigest()
+
+
+def _hash_lockfiles(worktrees: dict[str, Path]) -> dict[str, str]:
+    """Hash each exact revision lockfile or reject incomplete provenance."""
+    hashes: dict[str, str] = {}
+    for revision, worktree in worktrees.items():
+        lockfile = worktree / "uv.lock"
+        if not lockfile.is_file():
+            raise ValueError(f"{revision} worktree is missing uv.lock: {lockfile}")
+        hashes[revision] = hashlib.sha256(lockfile.read_bytes()).hexdigest()
+    return hashes
+
+
 def _require_revision(revision: str) -> None:
     if revision not in _REVISIONS:
         raise ValueError(f"unknown revision: {revision}")
@@ -437,13 +473,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         value = getattr(args, name)
         if value is not None and value <= 0:
             parser.error(f"argument --{name}: must be greater than zero")
-    if (
-        args.mode == "build"
-        and args.case == "all"
-        and any(
-            getattr(args, name) is not None
-            for name in ("num_worlds", "num_sources", "num_articulations", "groups", "actuator_types")
+    if args.mode == "coordinate" and any(
+        token == flag or token.startswith(f"{flag}=")
+        for token in raw_argv
+        for flag in (
+            "--case",
+            "--num_worlds",
+            "--num_sources",
+            "--num_articulations",
+            "--groups",
+            "--actuator_types",
+            "--output_path",
         )
+    ):
+        parser.error("--mode coordinate does not accept workload, selector, or output arguments")
+    if args.case == "all" and any(
+        getattr(args, name) is not None
+        for name in ("num_worlds", "num_sources", "num_articulations", "groups", "actuator_types")
     ):
         parser.error("--case all does not accept scalar workload overrides")
     if args.final_run:
@@ -599,6 +645,7 @@ def make_workload(row: BuildRow, device: str) -> _Workload:
 class _Adapter(Protocol):
     def build_workload(self, workload: _Workload) -> None: ...
     def first_application(self, workload: _Workload) -> None: ...
+    def compile_prewarm(self, workload: _Workload) -> None: ...
     def warmup_execution(self, row: RuntimeRow) -> bool: ...
     def run_execution(self, count: int) -> None: ...
     def close(self) -> None: ...
@@ -621,6 +668,11 @@ class _MemoryAdapter:
         if self.workload is not workload:
             raise RuntimeError("adapter did not receive driver workload")
         self.applications += 1
+
+    def compile_prewarm(self, workload: _Workload) -> None:
+        """Populate revision-local compilation caches outside measured observations."""
+        self.build_workload(workload)
+        self.first_application(workload)
 
     def warmup_execution(self, row: RuntimeRow) -> bool:
         return row.requested_execution != "graph" or self.revision == "global"
@@ -2165,6 +2217,7 @@ def _collect_initial_metadata() -> dict[str, Any]:
             versions[distribution] = importlib_metadata.version(distribution)
         except importlib_metadata.PackageNotFoundError:
             versions[distribution] = None
+    gpu: list[dict[str, Any]] = []
     try:
         gpu_query = subprocess.run(
             [
@@ -2176,19 +2229,53 @@ def _collect_initial_metadata() -> dict[str, Any]:
             text=True,
             check=False,
         )
-        gpu = (
-            [line.strip() for line in gpu_query.stdout.splitlines() if line.strip()]
-            if gpu_query.returncode == 0
-            else []
-        )
+        if gpu_query.returncode == 0:
+            for line in gpu_query.stdout.splitlines():
+                fields = [field.strip() for field in line.split(",", 2)]
+                if len(fields) == 3:
+                    gpu.append({"index": int(fields[0]), "name": fields[1], "driver_version": fields[2]})
     except OSError:
-        gpu = []
+        pass
+    probe_script = (
+        "import json, torch\n"
+        "try:\n"
+        " import warp as wp\n"
+        " fmt=lambda value: None if value is None else '.'.join(str(part) for part in value)\n"
+        " payload={'torch_version':torch.__version__,'torch_cuda_version':torch.version.cuda,"
+        "'runtime_version':fmt(wp.get_cuda_toolkit_version()),"
+        "'driver_version':fmt(wp.get_cuda_driver_version())}\n"
+        "except Exception as error:\n"
+        " payload={'torch_version':torch.__version__,'torch_cuda_version':torch.version.cuda,"
+        "'runtime_version':None,'driver_version':None,'probe_error':f'{type(error).__name__}: {error}'}\n"
+        "print(json.dumps(payload))\n"
+    )
+    probe_error: str | None = None
+    probe: dict[str, Any] = {}
+    try:
+        result = subprocess.run([sys.executable, "-c", probe_script], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            probe_error = f"CUDA identity probe exited {result.returncode}: {result.stderr.strip()}"
+        else:
+            output_lines = [line for line in result.stdout.splitlines() if line.strip()]
+            probe = json.loads(output_lines[-1])
+            probe_error = probe.get("probe_error")
+    except (IndexError, OSError, json.JSONDecodeError) as error:
+        probe_error = f"{type(error).__name__}: {error}"
+    driver_versions = sorted({item["driver_version"] for item in gpu})
     return {
         "timestamp_s": time.time(),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "gpu": gpu,
         "versions": versions,
+        "cuda": {
+            "driver_version": driver_versions[0] if len(driver_versions) == 1 else None,
+            "runtime_version": probe.get("runtime_version"),
+            "warp_driver_version": probe.get("driver_version"),
+            "torch_version": probe.get("torch_version"),
+            "torch_cuda_version": probe.get("torch_cuda_version"),
+            "probe_error": probe_error,
+        },
     }
 
 
@@ -2217,6 +2304,43 @@ def _write_json_replace(path: Path, payload: dict[str, Any]) -> None:
         temp = Path(handle.name)
     os.replace(temp, path)
     _fsync_directory(path.parent)
+
+
+def _member_contract_failure(member: dict[str, Any], observation: _Observation, member_index: int) -> str | None:
+    """Validate the full accepted child-member contract at the parent boundary."""
+    capability = member.get("capability")
+    if not isinstance(capability, dict) or capability.get("supported") is not True:
+        return "pair member does not declare a supported capability"
+    requested = observation.requested_executions[member_index]
+    expected_effective = observation.child_rows[member_index].get("effective_execution", requested)
+    if member.get("effective_execution") != expected_effective:
+        return (
+            "member effective execution mismatch: "
+            f"expected {expected_effective}, got {member.get('effective_execution')}"
+        )
+    timing = member.get("timing")
+    if observation.phase == "compile_prewarm":
+        if timing is not None:
+            return "compile prewarm member must not contain timing"
+    else:
+        samples = timing.get("samples_ms") if isinstance(timing, dict) else None
+        if (
+            not isinstance(samples, list)
+            or not samples
+            or any(
+                isinstance(sample, bool)
+                or not isinstance(sample, (int, float))
+                or not math.isfinite(float(sample))
+                or sample < 0
+                for sample in samples
+            )
+        ):
+            return "measured member does not contain valid timing samples"
+    if requested == "graph":
+        execution = member.get("execution")
+        if not isinstance(execution, dict) or execution.get("graph_capture_live") is not True:
+            return "graph member does not prove a live graph capture"
+    return None
 
 
 def _fsync_directory(path: Path) -> None:
@@ -2286,11 +2410,14 @@ class Coordinator:
                 self.sleep(0.25)
         return samples
 
-    def _validate_worktrees(self, args: argparse.Namespace) -> tuple[dict[str, Path], dict[str, str]]:
+    def _validate_worktrees(
+        self, args: argparse.Namespace
+    ) -> tuple[dict[str, Path], dict[str, str], dict[str, WorktreeState]]:
         worktrees = {
             revision: getattr(args, f"{revision}_worktree").resolve() for revision in ("develop", "current", "global")
         }
         shas = {revision: getattr(args, f"{revision}_sha") for revision in ("develop", "current", "global")}
+        states: dict[str, WorktreeState] = {}
         for revision in ("develop", "current", "global"):
             path = worktrees[revision]
             wrapper = path / "isaaclab.sh"
@@ -2303,7 +2430,21 @@ class Coordinator:
                 raise ValueError(f"{revision} worktree SHA mismatch: expected {shas[revision]}, got {state.head_sha}")
             if state.dirty:
                 raise ValueError(f"{revision} worktree is dirty")
-        return worktrees, shas
+            states[revision] = state
+        return worktrees, shas, states
+
+    @staticmethod
+    def _validate_initial_metadata(metadata: dict[str, Any], device: str) -> None:
+        if not device.startswith("cuda"):
+            return
+        cuda = metadata.get("cuda") or {}
+        missing = [
+            name
+            for name in ("driver_version", "runtime_version", "torch_version", "torch_cuda_version")
+            if not cuda.get(name)
+        ]
+        if missing:
+            raise ValueError("incomplete CUDA provenance: " + ", ".join(missing))
 
     def coordinate(self, args: argparse.Namespace) -> None:
         """Validate and execute one complete immutable coordinate batch."""
@@ -2312,12 +2453,16 @@ class Coordinator:
             raise FileExistsError(f"batch already exists: {batch_dir}")
         if args.candidate_sha != args.global_sha:
             raise ValueError("candidate SHA differs from global SHA")
-        worktrees, revision_shas = self._validate_worktrees(args)
+        worktrees, revision_shas, worktree_states = self._validate_worktrees(args)
+        lockfile_sha256 = _hash_lockfiles(worktrees)
+        benchmark_config, benchmark_config_sha256 = _frozen_benchmark_config(args)
         harness, digest = prepare_harness(self.run_root, Path(__file__).resolve())
         try:
             batch_dir.mkdir(parents=True)
         except FileExistsError:
             raise FileExistsError(f"batch already exists: {batch_dir}") from None
+        initial_metadata = _collect_initial_metadata()
+        self._validate_initial_metadata(initial_metadata, args.device)
         context = _CoordinateContext(
             args.batch_id,
             args.candidate_sha,
@@ -2329,7 +2474,11 @@ class Coordinator:
             args.warmup_iterations,
             args.num_iterations,
             tuple(args.exact_command),
-            _collect_initial_metadata(),
+            initial_metadata,
+            worktree_states,
+            lockfile_sha256,
+            benchmark_config_sha256,
+            benchmark_config,
         )
         batch_manifest = {
             "schema": "actuator_collection_batch/v1",
@@ -2343,10 +2492,18 @@ class Coordinator:
             "pair_repetitions": args.pair_repetitions,
             "command": list(context.command),
             "initial_metadata": context.initial_metadata,
+            "worktree_states": {revision: asdict(state) for revision, state in worktree_states.items()},
+            "lockfile_sha256": lockfile_sha256,
+            "benchmark_config": benchmark_config,
+            "benchmark_config_sha256": benchmark_config_sha256,
             "prewarm": {
                 revision: {
                     "revision_sha": revision_shas[revision],
                     "cache_path": str(self._cache_path(revision_shas[revision])),
+                    "cache_environment": {
+                        "name": "WARP_CACHE_PATH",
+                        "value": str(self._cache_path(revision_shas[revision])),
+                    },
                     "result": f"prewarm/prewarm-{revision}.json",
                 }
                 for revision in ("develop", "current", "global")
@@ -2362,18 +2519,18 @@ class Coordinator:
         for observation in observations:
             self.run_until_selected(observation, context)
 
-    def _worktree_error(self, revision: str, context: _CoordinateContext) -> str | None:
+    def _worktree_snapshot(self, revision: str, context: _CoordinateContext) -> tuple[WorktreeState | None, str | None]:
         try:
             state = self.worktree_probe(context.worktrees[revision].resolve())
         except Exception as error:
-            return f"worktree probe failed: {type(error).__name__}: {error}"
+            return None, f"worktree probe failed: {type(error).__name__}: {error}"
         if state is None:
-            return "worktree probe returned no state"
+            return None, "worktree probe returned no state"
         if state.head_sha != context.revision_shas[revision]:
-            return f"worktree SHA changed: expected {context.revision_shas[revision]}, got {state.head_sha}"
+            return state, f"worktree SHA changed: expected {context.revision_shas[revision]}, got {state.head_sha}"
         if state.dirty:
-            return "worktree became dirty"
-        return None
+            return state, "worktree became dirty"
+        return state, None
 
     def _prewarm_revisions(self, context: _CoordinateContext, batch_dir: Path) -> None:
         """Populate each exact revision cache in its own unmeasured child process."""
@@ -2403,6 +2560,10 @@ class Coordinator:
                 "revision_sha": context.revision_shas[revision],
                 "harness_sha256": context.harness_sha256,
                 "cache_path": str(self._cache_path(context.revision_shas[revision])),
+                "cache_environment": {
+                    "name": "WARP_CACHE_PATH",
+                    "value": str(self._cache_path(context.revision_shas[revision])),
+                },
                 "member": member,
                 "status": "rejected" if failure else "accepted",
                 "reason": failure,
@@ -2465,7 +2626,7 @@ class Coordinator:
         cache_path = self._cache_path(revision_sha)
         environment = os.environ.copy()
         environment["WARP_CACHE_PATH"] = str(cache_path)
-        before_error = self._worktree_error(revision, context)
+        before_state, before_error = self._worktree_snapshot(revision, context)
         if before_error:
             process = {"returncode": -1, "stdout": "", "stderr": before_error}
         else:
@@ -2477,12 +2638,15 @@ class Coordinator:
                     "stdout": "",
                     "stderr": f"runner failed: {type(error).__name__}: {error}",
                 }
-        after_error = self._worktree_error(revision, context)
+        after_state, after_error = self._worktree_snapshot(revision, context)
         process_record = {
             "command": command,
             "returncode": int(process.get("returncode", -1)),
             "stdout": process.get("stdout", ""),
             "stderr": process.get("stderr", ""),
+            "environment": {"WARP_CACHE_PATH": str(cache_path)},
+            "worktree_state_before": asdict(before_state) if before_state else None,
+            "worktree_state_after": asdict(after_state) if after_state else None,
         }
         result_path = member_dir / "member.json"
         failure: str | None = None
@@ -2545,6 +2709,10 @@ class Coordinator:
             failure = "member execution identity mismatch"
         elif member.get("resolved_row") != child_row:
             failure = "member resolved row identity mismatch"
+        else:
+            contract_failure = _member_contract_failure(member, observation, member_index)
+            if contract_failure:
+                failure = contract_failure
         member["process"] = process_record
         if failure:
             member["failure"] = {"phase": observation.phase, "reason": failure}
@@ -2601,6 +2769,9 @@ class Coordinator:
         cache_paths = {
             revision: str(self._cache_path(context.revision_shas[revision])) for revision in observation.revisions
         }
+        cache_environment = {
+            revision: {"name": "WARP_CACHE_PATH", "value": path} for revision, path in cache_paths.items()
+        }
         record = {
             "schema": SCHEMA,
             "identity": asdict(identity),
@@ -2624,10 +2795,13 @@ class Coordinator:
             },
             "command": list(context.command),
             "device": context.device,
-            "cache": {"policy": "exact-revision", "environment": "WARP_CACHE_PATH"},
+            "cache": {"policy": "exact-revision", "environment": cache_environment},
             "process": {"rejection_reasons": rejection_reasons},
             "metadata": {
                 "initial": context.initial_metadata,
+                "worktree_states": {revision: asdict(state) for revision, state in context.worktree_states.items()},
+                "lockfile_sha256": context.lockfile_sha256,
+                "benchmark_config_sha256": context.benchmark_config_sha256,
                 "matrix": observation.matrix,
                 "row_key": observation.row_key,
                 "comparison": observation.comparison,
@@ -2664,6 +2838,8 @@ class Coordinator:
             raise ValueError("selection candidate SHA mismatch")
         if identity.get("harness_sha256") != context.harness_sha256:
             raise ValueError("selection harness SHA mismatch")
+        if identity.get("revision_shas") != context.revision_shas:
+            raise ValueError("attempt revision SHA map mismatch")
         manifest_path = self.run_root / "accepted-attempts.json"
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -2671,12 +2847,24 @@ class Coordinator:
                 raise ValueError("existing selection candidate SHA mismatch")
             if manifest.get("harness_sha256") != context.harness_sha256:
                 raise ValueError("existing selection harness SHA mismatch")
+            if manifest.get("revision_shas") != context.revision_shas:
+                raise ValueError("existing manifest revision SHA map mismatch")
+            expected_states = {revision: asdict(state) for revision, state in context.worktree_states.items()}
+            if manifest.get("worktree_states") != expected_states:
+                raise ValueError("existing manifest worktree state mismatch")
+            if manifest.get("lockfile_sha256") != context.lockfile_sha256:
+                raise ValueError("existing manifest lockfile hash mismatch")
+            if manifest.get("benchmark_config_sha256") != context.benchmark_config_sha256:
+                raise ValueError("existing manifest benchmark configuration hash mismatch")
         else:
             manifest = {
                 "schema": "actuator_collection_selection/v1",
                 "candidate_sha": context.candidate_sha,
                 "revision_shas": context.revision_shas,
                 "harness_sha256": context.harness_sha256,
+                "worktree_states": {revision: asdict(state) for revision, state in context.worktree_states.items()},
+                "lockfile_sha256": context.lockfile_sha256,
+                "benchmark_config_sha256": context.benchmark_config_sha256,
                 "attempts": [],
             }
         selected_keys = {
@@ -2746,6 +2934,20 @@ def _runtime_build_row(row: RuntimeRow) -> BuildRow:
     return BuildRow("runtime", row.num_worlds, 1, 1, row.groups, (row.actuator_type,))
 
 
+def _graph_capture_live(adapter: _Adapter) -> bool:
+    """Return whether the adapter proves a live full or prefix graph."""
+    proof = getattr(adapter, "graph_capture_live", None)
+    if callable(proof):
+        return bool(proof())
+    if isinstance(proof, bool):
+        return proof
+    view = getattr(adapter, "view", None)
+    plan = getattr(view, "_execution_plan", None)
+    return plan is not None and (
+        getattr(plan, "_full_graph", None) is not None or getattr(plan, "_prefix_graph", None) is not None
+    )
+
+
 def _run_final_child(args: argparse.Namespace) -> int:
     """Run one isolated member and persist exact evidence even on failure."""
     expected_identity = {
@@ -2762,7 +2964,6 @@ def _run_final_child(args: argparse.Namespace) -> int:
     revision_capability = RevisionCapability(True)
     member: dict[str, Any]
     row: BuildRow | RuntimeRow | None = None
-    started = time.perf_counter_ns()
     try:
         row = _decode_child_row(args)
         row_payload = _row_payload(row)
@@ -2775,27 +2976,50 @@ def _run_final_child(args: argparse.Namespace) -> int:
             adapter = selected
             build_row = row if isinstance(row, BuildRow) else _runtime_build_row(row)
             workload = make_workload(build_row, args.device)
-            try:
-                adapter.build_workload(workload)
-            except Exception as error:
-                raise RuntimeError(f"build_workload: {type(error).__name__}: {error}") from error
-            try:
-                adapter.first_application(workload)
-            except Exception as error:
-                raise RuntimeError(f"first_application: {type(error).__name__}: {error}") from error
-            if isinstance(row, RuntimeRow):
-                result = measure_runtime(adapter, row, args.warmup_iterations, args.num_iterations)
-                status = result["status"]
-                reason = result.get("reason")
-                timing = result.get("timing")
-                effective_execution = result.get("effective_execution")
-            else:
+            if args.phase == "compile_prewarm":
+                try:
+                    adapter.compile_prewarm(workload)
+                except Exception as error:
+                    raise RuntimeError(f"compile_prewarm: {type(error).__name__}: {error}") from error
                 status = "accepted"
-                timing = {
-                    "samples_ms": [(time.perf_counter_ns() - started) / 1_000_000],
-                    "first_application_count": getattr(adapter, "applications", 1),
-                }
-                effective_execution = args.phase
+                timing = None
+                effective_execution = "compile_prewarm"
+            else:
+                started = time.perf_counter_ns()
+                try:
+                    adapter.build_workload(workload)
+                except Exception as error:
+                    raise RuntimeError(f"build_workload: {type(error).__name__}: {error}") from error
+                try:
+                    adapter.first_application(workload)
+                except Exception as error:
+                    raise RuntimeError(f"first_application: {type(error).__name__}: {error}") from error
+                if isinstance(row, RuntimeRow):
+                    result = measure_runtime(adapter, row, args.warmup_iterations, args.num_iterations)
+                    status = result["status"]
+                    reason = result.get("reason")
+                    timing = result.get("timing")
+                    effective_execution = result.get("effective_execution")
+                else:
+                    status = "accepted"
+                    timing = {
+                        "samples_ms": [(time.perf_counter_ns() - started) / 1_000_000],
+                        "first_application_count": getattr(adapter, "applications", 1),
+                    }
+                    effective_execution = args.phase
+            graph_capture_live = (
+                isinstance(row, RuntimeRow) and row.requested_execution == "graph" and _graph_capture_live(adapter)
+            )
+            if (
+                isinstance(row, RuntimeRow)
+                and row.requested_execution == "graph"
+                and status == "accepted"
+                and not graph_capture_live
+            ):
+                status = "rejected"
+                reason = "graph execution did not prove a live full or prefix capture"
+                timing = None
+                effective_execution = None
             member = {
                 "revision": args.revision,
                 "requested_execution": row.requested_execution if isinstance(row, RuntimeRow) else args.phase,
@@ -2808,6 +3032,7 @@ def _run_final_child(args: argparse.Namespace) -> int:
                 "timing": timing,
                 "counters": {},
                 "structural": adapter.introspect(),
+                "execution": {"graph_capture_live": graph_capture_live},
             }
     except Exception as error:
         status = "rejected"
@@ -2840,6 +3065,7 @@ def _run_final_child(args: argparse.Namespace) -> int:
             "timing": None,
             "counters": {},
             "structural": None,
+            "execution": {"graph_capture_live": False},
         }
     elif status == "rejected" and "member" not in locals():
         requested = row.requested_execution if isinstance(row, RuntimeRow) else args.phase
@@ -2855,6 +3081,7 @@ def _run_final_child(args: argparse.Namespace) -> int:
             "timing": None,
             "counters": {},
             "structural": None,
+            "execution": {"graph_capture_live": False},
         }
     payload = {
         "schema": "actuator_collection_member/v1",
