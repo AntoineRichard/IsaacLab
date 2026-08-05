@@ -36,6 +36,7 @@ from typing import Any, Protocol
 SCHEMA = "actuator_collection_attempt/v1"
 _REVISIONS = ("develop", "current", "global")
 _EXECUTIONS = ("cached_eager", "graph")
+_BATCH_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _OPAQUE_ACTUATOR_TYPE: type | None = None
 
 
@@ -248,6 +249,18 @@ def row_key(row: BuildRow | RuntimeRow) -> str:
         dimensions = f"{row.case}:w{row.num_worlds}:s{row.num_sources}:a{row.num_articulations}:g{row.groups}"
         return f"{dimensions}:{','.join(row.actuator_types)}"
     return f"{row.actuator_type}:g{row.groups}:{row.requested_execution}"
+
+
+def _is_safe_batch_id(batch_id: object) -> bool:
+    """Return whether a batch ID is exactly one safe filesystem component."""
+    return isinstance(batch_id, str) and _BATCH_ID_PATTERN.fullmatch(batch_id) is not None
+
+
+def _validate_batch_id(batch_id: object) -> str:
+    """Return one safe batch ID or reject a path-like identity."""
+    if not _is_safe_batch_id(batch_id):
+        raise ValueError("unsafe batch identity")
+    return batch_id
 
 
 def _row_payload(row: BuildRow | RuntimeRow) -> dict[str, Any]:
@@ -540,6 +553,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             missing.append("batch_id")
         if missing:
             parser.error("--mode coordinate requires " + ", ".join("--" + name for name in missing))
+        if not _is_safe_batch_id(args.batch_id):
+            parser.error("--batch_id must be one safe path component")
         if args.candidate_sha != args.global_sha:
             parser.error("--candidate_sha must equal --global_sha")
         for name in ("develop_sha", "current_sha", "global_sha", "candidate_sha"):
@@ -2402,6 +2417,19 @@ class Coordinator:
         cache.mkdir(parents=True, exist_ok=True)
         return cache
 
+    def _batch_dir(self, batch_id: object) -> Path:
+        """Resolve one uncreated regular batch directory beneath this run root."""
+        safe_batch_id = _validate_batch_id(batch_id)
+        batch_root = self.run_root / "batches"
+        batch_dir = batch_root / safe_batch_id
+        if batch_root.is_symlink() or batch_dir.is_symlink():
+            raise ValueError("symlinked batch path")
+        try:
+            batch_dir.resolve(strict=False).relative_to(batch_root.resolve(strict=False))
+        except (OSError, ValueError) as error:
+            raise ValueError("escaped batch path") from error
+        return batch_dir
+
     def _sample_window(self, device: str) -> list[TelemetrySample]:
         if not device.startswith("cuda"):
             return []
@@ -2454,7 +2482,7 @@ class Coordinator:
 
     def coordinate(self, args: argparse.Namespace) -> None:
         """Validate and execute one complete immutable coordinate batch."""
-        batch_dir = self.run_root / "batches" / args.batch_id
+        batch_dir = self._batch_dir(args.batch_id)
         if batch_dir.exists():
             raise FileExistsError(f"batch already exists: {batch_dir}")
         if args.candidate_sha != args.global_sha:

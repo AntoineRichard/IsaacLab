@@ -18,7 +18,6 @@ import importlib.util
 import json
 import math
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -33,6 +32,9 @@ _ATTEMPT_SCHEMA = "actuator_collection_attempt/v1"
 _SELECTION_SCHEMA = "actuator_collection_selection/v1"
 _SUMMARY_SCHEMA = "actuator_collection_summary/v1"
 _REVISIONS = ("develop", "current", "global")
+_TELEMETRY_MIN_INTERVAL_S = 0.10
+_TELEMETRY_MAX_INTERVAL_S = 1.00
+_TELEMETRY_MIN_SPAN_S = 4.50
 
 
 @dataclass(frozen=True)
@@ -278,7 +280,7 @@ def _validate_batch_manifests(
 
 def _safe_batch_manifest_path(run_root: Path, batch_id: str) -> Path:
     """Resolve one regular coordinator batch manifest beneath the run root."""
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", batch_id) or batch_id in {".", ".."}:
+    if not _driver()._is_safe_batch_id(batch_id):
         raise ValueError("unsafe batch identity")
     batch_root = run_root / "batches"
     batch_dir = batch_root / batch_id
@@ -360,6 +362,8 @@ def _validate_telemetry(record: dict[str, Any]) -> None:
     driver = _driver()
     pre = _deserialize_telemetry_samples(driver, samples.get("pre"), "pre")
     post = _deserialize_telemetry_samples(driver, samples.get("post"), "post")
+    _validate_telemetry_window(pre, "pre")
+    _validate_telemetry_window(post, "post")
     if driver.validate_pair_telemetry(pre, post, record["device"]):
         raise ValueError("GPU telemetry gate rejection")
 
@@ -409,6 +413,22 @@ def _deserialize_telemetry_samples(driver: Any, payload: Any, window: str) -> li
             raise ValueError("invalid accepted GPU telemetry timestamp")
         samples.append(sample)
     return samples
+
+
+def _validate_telemetry_window(samples: list[Any], window: str) -> None:
+    """Require persisted CUDA telemetry to evidence one jitter-tolerant five-second window."""
+    if len(samples) != 20:
+        raise ValueError(f"incomplete accepted GPU telemetry {window} samples")
+    timestamps = [sample.timestamp_s for sample in samples]
+    if any(not math.isfinite(timestamp) for timestamp in timestamps):
+        raise ValueError(f"invalid accepted GPU telemetry {window} timestamp")
+    intervals = [current - previous for previous, current in zip(timestamps, timestamps[1:])]
+    if any(interval <= 0 for interval in intervals):
+        raise ValueError(f"accepted GPU telemetry {window} timestamps must be strictly increasing")
+    if any(interval < _TELEMETRY_MIN_INTERVAL_S or interval > _TELEMETRY_MAX_INTERVAL_S for interval in intervals):
+        raise ValueError(f"accepted GPU telemetry {window} cadence is not approximately 250 ms")
+    if timestamps[-1] - timestamps[0] < _TELEMETRY_MIN_SPAN_S:
+        raise ValueError(f"accepted GPU telemetry {window} lacks a five-second span")
 
 
 def _expected_source_emulation(revision: str, row: dict[str, Any]) -> bool:

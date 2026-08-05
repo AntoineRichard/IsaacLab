@@ -445,6 +445,57 @@ def test_coordinate_cli_rejects_every_ignored_workload_or_output_flag(tmp_path, 
     assert "workload, selector, or output" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("batch_id", (".", "..", "../escaped", "/escaped", "nested/batch", r"nested\\batch"))
+def test_coordinate_cli_rejects_unsafe_batch_id_before_creating_a_run(tmp_path, capsys, batch_id):
+    """An invalid batch component cannot create a coordinator artifact tree."""
+    benchmark = _load(_BENCHMARK, f"actuator_benchmark_unsafe_batch_{batch_id!r}")
+    with pytest.raises(SystemExit):
+        benchmark.parse_args(_coordinate_argv(tmp_path, batch_id=batch_id))
+    assert "--batch_id" in capsys.readouterr().err
+    assert not (tmp_path / "run").exists()
+    assert not (tmp_path / "escaped").exists()
+
+
+def test_coordinate_rejects_unsafe_or_symlinked_batch_paths_before_publishing(tmp_path, monkeypatch):
+    """A direct coordinator call cannot escape batches or mutate selection state."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_batch_path_producer")
+    args = benchmark.parse_args(_coordinate_argv(tmp_path, batch_id="safe-01"))
+    coordinator = benchmark.Coordinator(tmp_path / "run")
+
+    args.batch_id = "../escaped"
+    with pytest.raises(ValueError, match="unsafe batch identity"):
+        coordinator.coordinate(args)
+    assert not (tmp_path / "escaped").exists()
+    assert not (tmp_path / "run" / "accepted-attempts.json").exists()
+    assert not (tmp_path / "run" / "selection-history").exists()
+
+    args.batch_id = "safe-01"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    batch_root = tmp_path / "run" / "batches"
+    batch_root.parent.mkdir()
+    batch_root.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(coordinator, "_prewarm_revisions", lambda *_args: pytest.fail("prewarm started"))
+    with pytest.raises(ValueError, match="symlinked batch"):
+        coordinator.coordinate(args)
+    assert not (outside / "safe-01").exists()
+    assert not (tmp_path / "run" / "accepted-attempts.json").exists()
+    assert not (tmp_path / "run" / "selection-history").exists()
+
+    args = benchmark.parse_args(_coordinate_argv(tmp_path / "second", batch_id="safe-01"))
+    outside = tmp_path / "second-outside"
+    outside.mkdir()
+    batch_dir = tmp_path / "second" / "run" / "batches" / "safe-01"
+    batch_dir.parent.mkdir(parents=True)
+    batch_dir.symlink_to(outside, target_is_directory=True)
+    coordinator = benchmark.Coordinator(tmp_path / "second" / "run")
+    with pytest.raises(ValueError, match="symlinked batch"):
+        coordinator.coordinate(args)
+    assert not (outside / "manifest.json").exists()
+    assert not (tmp_path / "second" / "run" / "accepted-attempts.json").exists()
+    assert not (tmp_path / "second" / "run" / "selection-history").exists()
+
+
 def test_build_schedule_pairs_supported_rows_and_keeps_global_only_singletons():
     """Global-only rows never acquire manufactured historical pair members."""
     benchmark = _load(_BENCHMARK, "actuator_benchmark_build_schedule")
@@ -1971,21 +2022,24 @@ def test_summary_rejects_final_schedule_member_and_graph_contract_mutations():
         summary._validate_matrix_schedule(records, "runtime")
     records = _complete_runtime_schedule_records(benchmark)
     gpu_pair = next(record for record in records if record["kind"] == "pair")
-    sample = {
-        "timestamp_s": 1.0,
-        "temperature_c": 40.0,
-        "utilization_pct": 0.0,
-        "sm_clock_mhz": 1800.0,
-        "memory_clock_mhz": 9000.0,
-        "throttle_reasons": "",
-        "compute_pids": [],
-    }
+    samples = [
+        {
+            "timestamp_s": 1.0 + 0.25 * index,
+            "temperature_c": 40.0,
+            "utilization_pct": 0.0,
+            "sm_clock_mhz": 1800.0,
+            "memory_clock_mhz": 9000.0,
+            "throttle_reasons": "",
+            "compute_pids": [],
+        }
+        for index in range(20)
+    ]
     gpu_pair.update(
         device="cuda:0",
         telemetry={
             "required": True,
             "available": True,
-            "samples": {"pre": [sample] * 20, "post": [sample] * 20},
+            "samples": {"pre": samples, "post": samples},
             "rejection_reasons": [],
         },
     )
@@ -2000,6 +2054,45 @@ def test_summary_rejects_final_schedule_member_and_graph_contract_mutations():
     measured["members"][0]["timing"]["total_ms"] = 1.0
     with pytest.raises(ValueError, match="total/per-application"):
         summary._validate_matrix_schedule(records, "runtime")
+
+
+def test_summary_requires_persisted_gpu_telemetry_cadence_per_window():
+    """Forged GPU samples cannot replace either recorded five-second window."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_summary_cadence_driver")
+    summary = _load(_SUMMARY, "actuator_benchmark_summary_cadence")
+
+    def record_with_timestamps(timestamps):
+        record = next(record for record in _complete_runtime_schedule_records(benchmark) if record["kind"] == "pair")
+        samples = [
+            {
+                "timestamp_s": timestamp,
+                "temperature_c": 40.0,
+                "utilization_pct": 0.0,
+                "sm_clock_mhz": 1800.0,
+                "memory_clock_mhz": 9000.0,
+                "throttle_reasons": "",
+                "compute_pids": [],
+            }
+            for timestamp in timestamps
+        ]
+        record.update(
+            device="cuda:0",
+            telemetry={
+                "required": True,
+                "available": True,
+                "samples": {"pre": samples, "post": samples},
+                "rejection_reasons": [],
+            },
+        )
+        return record
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        summary._validate_telemetry(record_with_timestamps([1.0] * 20))
+    with pytest.raises(ValueError, match="strictly increasing"):
+        summary._validate_telemetry(record_with_timestamps([5.0 - 0.25 * index for index in range(20)]))
+    with pytest.raises(ValueError, match="five-second span"):
+        summary._validate_telemetry(record_with_timestamps([0.2 * index for index in range(20)]))
+    summary._validate_telemetry(record_with_timestamps([10.0 + 0.25 * index for index in range(20)]))
 
 
 def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_path):
