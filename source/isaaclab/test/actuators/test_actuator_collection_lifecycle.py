@@ -1296,9 +1296,7 @@ def test_bridge_rejects_invalid_cfg_before_registration_and_allows_retry(monkeyp
     assert collection.registration_keys == ()
     assert not collection._views
     assert cfg.class_type is len
-    assert any(
-        "drive" in note and "class_type" in note for note in getattr(caught.value, "__notes__", ())
-    )
+    assert any("drive" in note and "class_type" in note for note in getattr(caught.value, "__notes__", ()))
     assert not hasattr(articulation, "_actuator_control")
     assert not hasattr(articulation, "actuators")
 
