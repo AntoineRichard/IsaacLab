@@ -183,6 +183,7 @@ class _BridgeArticulation:
         *,
         actuator_type: type[ActuatorBase] = IdealPDActuator,
         bind_error: Exception | None = None,
+        validation_error: Exception | None = None,
         completion_error: Exception | None = None,
     ) -> None:
         cfg_type = ImplicitActuatorCfg if actuator_type is ImplicitActuator else IdealPDActuatorCfg
@@ -202,6 +203,7 @@ class _BridgeArticulation:
         self._replication_cfg_id = replication_cfg_id
         self._events = events
         self._bind_error = bind_error
+        self._validation_error = validation_error
         self._completion_error = completion_error
         self._data = _BridgeData(key, events)
         self._is_initialized = False
@@ -245,6 +247,11 @@ class _BridgeArticulation:
 
     def _log_articulation_info(self) -> None:
         self._events.append(f"log:{self._key}")
+
+    def _validate_cfg(self) -> None:
+        self._events.append(f"validate:{self._key}")
+        if self._validation_error is not None:
+            raise self._validation_error
 
     def _defer_initialization(self) -> None:
         AssetBase._defer_initialization(self)
@@ -703,8 +710,8 @@ def test_base_data_binding_is_pointer_only_and_reversible() -> None:
     assert data._actuator_view is None
 
 
-def test_shared_articulation_bridge_registers_then_completes_in_global_order(monkeypatch) -> None:
-    """The real manager binds every scoped view before completing either asset."""
+def test_shared_articulation_bridge_validates_after_global_writes_and_binding(monkeypatch) -> None:
+    """The real bridge validates each bound articulation before its readiness side effects."""
     context = _make_bridge_context(monkeypatch)
     events: list[str] = []
     first = _BridgeArticulation("first", 1, events)
@@ -743,10 +750,12 @@ def test_shared_articulation_bridge_registers_then_completes_in_global_order(mon
         "prepare:second",
         "bind:first",
         "bind:second",
+        "validate:first",
         "update:first",
         "log:first",
         "prime:first",
         "complete:first",
+        "validate:second",
         "update:second",
         "log:second",
         "prime:second",
@@ -779,6 +788,59 @@ def test_shared_articulation_bridge_registers_then_completes_in_global_order(mon
         first_view.reset()
     with pytest.raises(RuntimeError, match="stale actuator view"):
         first_view.submit_commands()
+
+
+def test_shared_articulation_bridge_validation_failure_rolls_back_and_can_retry(monkeypatch) -> None:
+    """A deferred validation failure restores every bridge seam and leaves both assets retryable."""
+    context = _make_bridge_context(monkeypatch)
+    events: list[str] = []
+    first = _BridgeArticulation("first", 1, events)
+    validation_error = RuntimeError("second validation")
+    second = _BridgeArticulation("second", 2, events, validation_error=validation_error)
+    first_control = _BridgeControl(first, events)
+    second_control = _BridgeControl(second, events)
+    first_view = first.register_actuators(first_control)
+    second_view = second.register_actuators(second_control)
+    collection = context._get_actuator_collection()
+
+    with pytest.raises(RuntimeError, match="second validation"):
+        collection.finalize()
+
+    assert events == [
+        "solver:first",
+        "solver:second",
+        "prepare:first",
+        "prepare:second",
+        "bind:first",
+        "bind:second",
+        "validate:first",
+        "update:first",
+        "log:first",
+        "prime:first",
+        "complete:first",
+        "validate:second",
+        "invalidate:first",
+        "unprime:first",
+        "invalidate:second",
+        "unprime:second",
+    ]
+    assert collection.generation is None
+    for articulation, control, view in ((first, first_control, first_view), (second, second_control, second_view)):
+        assert not articulation.is_initialized
+        assert not articulation.data.is_primed
+        assert articulation.data._actuator_view is None
+        assert articulation._initialization_deferred
+        assert control._actuator_binding is None
+        assert control._actuator_view is None
+        with pytest.raises(RuntimeError, match="finalization failed"):
+            _ = view.command
+
+    second._validation_error = None
+    collection.finalize()
+
+    assert first.is_initialized and second.is_initialized
+    assert first.data.is_primed and second.data.is_primed
+    assert not first._initialization_deferred and not second._initialization_deferred
 
 
 @pytest.mark.parametrize("failure_phase", ["bind", "completion"])

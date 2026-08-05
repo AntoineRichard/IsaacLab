@@ -419,9 +419,10 @@ class ArticulationActuatorControl(ActuatorControl):
             raise
 
     def complete_articulation_initialization(self) -> None:
-        """Prime articulation data and complete deferred asset initialization."""
+        """Validate, prime, and complete deferred articulation initialization."""
         if self._actuator_binding is None or self._actuator_view is None:
             raise RuntimeError("Actuator facade must be prepared and bound before articulation completion.")
+        self._articulation._validate_cfg()
         self._articulation.update(0.0)
         self._articulation._log_articulation_info()
         self._articulation.data.is_primed = True
