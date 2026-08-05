@@ -456,8 +456,6 @@ class _CollectionGeneration:
         generation: int,
     ) -> _CollectionGeneration:
         clone_plan: ClonePlan | None = sim_context.get_clone_plan()
-        if clone_plan is None:
-            raise RuntimeError("Actuator collection finalization requires a published clone plan.")
         candidate_device = torch.device(registrations[0].control.device)
         if any(torch.device(registration.control.device) != candidate_device for registration in registrations[1:]):
             raise ValueError("All actuator registrations in one simulation must use the same device.")
@@ -472,12 +470,26 @@ class _CollectionGeneration:
                 )()
                 if source_transport not in {"cpu", "device"}:
                     raise ValueError(f"Unsupported solver-property transport {source_transport!r}.")
-                clone_metadata = _clone_source_assignment(clone_plan, registration.replication_cfg_id)
+                clone_metadata = None
+                if clone_plan is not None:
+                    clone_metadata = _clone_source_assignment(clone_plan, registration.replication_cfg_id)
                 source_slot_by_backend_row: torch.Tensor | None = None
                 layout_assignment: torch.Tensor | None = None
                 layout_source_columns: torch.Tensor | None = None
                 layout_num_worlds: int | None = None
-                if clone_metadata is None:
+                if clone_plan is None:
+                    layout_num_worlds = registration.control.num_instances
+                    source_env_ids_cpu = torch.arange(layout_num_worlds, dtype=torch.int64)
+                    prototype_rows = range(layout_num_worlds)
+                    source_slot_by_backend_row = source_env_ids_cpu
+                    layout_assignment = source_env_ids_cpu.to(dtype=torch.int32)
+                    layout_source_columns = source_env_ids_cpu
+                    source_env_ids = (
+                        source_env_ids_cpu
+                        if source_transport == "cpu"
+                        else source_env_ids_cpu.to(device=candidate_device)
+                    )
+                elif clone_metadata is None:
                     prototype_rows = clone_plan.cfg_rows[registration.replication_cfg_id]
                     prototype_row_indices = torch.tensor(
                         prototype_rows,

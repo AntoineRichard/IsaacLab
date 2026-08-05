@@ -149,6 +149,43 @@ def _cpu_source_layout(group_count: int):
     )
 
 
+@pytest.mark.parametrize(
+    "missing_input",
+    (
+        "prototype_rows",
+        "prototype_assignment",
+        "prototype_source_columns",
+        "source_slot_by_backend_row",
+        "num_worlds",
+    ),
+)
+def test_layout_without_clone_plan_requires_explicit_plan_derived_inputs(missing_input: str) -> None:
+    """A no-plan layout must never guess a replication relation from incomplete metadata."""
+    cfg = object()
+    inputs = {
+        "prototype_rows": range(1),
+        "prototype_assignment": torch.tensor([0], dtype=torch.int32),
+        "prototype_source_columns": torch.tensor([0], dtype=torch.int64),
+        "source_slot_by_backend_row": torch.tensor([0], dtype=torch.int64),
+        "num_worlds": 1,
+    }
+    inputs[missing_input] = None
+
+    with pytest.raises(ValueError, match=rf"no clone plan.*{missing_input}"):
+        _build_articulation_layout(
+            replication_cfg_id=id(cfg),
+            clone_plan=None,
+            registrations=(
+                _prototype_registration(
+                    cfg,
+                    1,
+                    (_group_registration("drive", (0,), (1.0,)),),
+                ),
+            ),
+            **inputs,
+        )
+
+
 def _cpu_solver_layout(
     *,
     key: object,

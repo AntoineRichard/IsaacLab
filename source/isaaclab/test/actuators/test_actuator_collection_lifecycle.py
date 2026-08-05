@@ -355,6 +355,13 @@ class _Simulation:
         return self._clone_plan
 
 
+class _NoClonePlanSimulation:
+    """Direct-construction simulation with no published replication layout."""
+
+    def get_clone_plan(self) -> None:
+        return None
+
+
 class _VariantSimulation:
     """Two-source, four-world clone plan for source-resolution coverage."""
 
@@ -1115,6 +1122,38 @@ def test_source_prototype_rows_expand_into_one_exact_runtime_group() -> None:
         torch.tensor([[1.0, 2.0], [11.0, 12.0], [1.0, 2.0], [11.0, 12.0]]),
     )
     torch.testing.assert_close(view["drive"].computed_effort, torch.zeros((4, 2)))
+
+
+def test_no_clone_plan_preserves_distinct_backend_rows_in_typed_and_solver_storage() -> None:
+    """Direct articulation rows must remain distinct when no replication relation is published."""
+    collection = ActuatorCollection(_NoClonePlanSimulation())
+    control = _SourceResolvingControl(num_instances=2)
+    cfg = ImplicitActuatorCfg(
+        class_type=ImplicitActuator,
+        joint_names_expr=[".*"],
+        stiffness=None,
+        damping=None,
+    )
+    view = _register_managed(collection, "first", control, {"drive": cfg})
+
+    collection.finalize()
+
+    expected = torch.tensor([[1.0, 2.0], [11.0, 12.0]])
+    torch.testing.assert_close(control.requested_source_env_ids, torch.tensor([0, 1], dtype=torch.int64))
+    torch.testing.assert_close(view["drive"].stiffness, expected)
+    stiffness = control.solver_properties["stiffness"]
+    torch.testing.assert_close(stiffness.source_rows, expected)
+    torch.testing.assert_close(stiffness.source_assignment, torch.tensor([0, 1], dtype=torch.int32))
+    torch.testing.assert_close(stiffness.canonical_target.torch, expected)
+    generation = collection._active_generation
+    assert generation is not None
+    layout = generation.bindings[0].layout
+    assert isinstance(layout.prototype_rows, range)
+    assert layout.prototype_rows == range(2)
+    torch.testing.assert_close(layout.prototype_assignment, torch.tensor([0, 1], dtype=torch.int32))
+    torch.testing.assert_close(layout.prototype_source_columns, torch.tensor([0, 1], dtype=torch.int64))
+    torch.testing.assert_close(layout.source_slot_by_backend_row, torch.tensor([0, 1], dtype=torch.int64))
+    assert layout.clone_plan_metadata is None
 
 
 def test_successful_finalization_releases_build_only_solver_staging() -> None:

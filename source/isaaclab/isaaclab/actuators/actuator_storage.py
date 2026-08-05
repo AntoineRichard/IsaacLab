@@ -623,7 +623,7 @@ class _ArticulationLayout:
     registration_key: object
     num_worlds: int
     num_joints: int
-    prototype_rows: tuple[int, ...]
+    prototype_rows: Sequence[int]
     prototype_assignment: torch.Tensor
     prototype_source_columns: torch.Tensor
     source_slot_by_backend_row: torch.Tensor | None
@@ -636,10 +636,10 @@ class _ArticulationLayout:
 def _build_articulation_layout(  # noqa: C901
     *,
     replication_cfg_id: int,
-    clone_plan: ClonePlan,
+    clone_plan: ClonePlan | None,
     registrations: Sequence[_PrototypeRegistration],
     type_offsets: MutableMapping[type[ActuatorBase], int] | None = None,
-    prototype_rows: tuple[int, ...] | None = None,
+    prototype_rows: Sequence[int] | None = None,
     prototype_assignment: torch.Tensor | None = None,
     prototype_source_columns: torch.Tensor | None = None,
     source_slot_by_backend_row: torch.Tensor | None = None,
@@ -652,6 +652,19 @@ def _build_articulation_layout(  # noqa: C901
     into one device slab. Python work is bounded by the number of source
     prototypes, logical groups, and articulation joints.
     """
+    if clone_plan is None:
+        explicit_inputs = {
+            "prototype_rows": prototype_rows,
+            "prototype_assignment": prototype_assignment,
+            "prototype_source_columns": prototype_source_columns,
+            "source_slot_by_backend_row": source_slot_by_backend_row,
+            "num_worlds": num_worlds,
+        }
+        missing_inputs = tuple(name for name, value in explicit_inputs.items() if value is None)
+        if missing_inputs:
+            raise ValueError(
+                f"An articulation layout with no clone plan requires explicit values for: {', '.join(missing_inputs)}."
+            )
     if prototype_rows is None:
         prototype_rows = clone_plan.cfg_rows[replication_cfg_id]
     source_resolved = len(registrations) == 1 and registrations[0].source_resolved
