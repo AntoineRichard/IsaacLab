@@ -45,6 +45,15 @@ class _MockActuatorView:
         self.command = command
         self.joint_command = joint_command
 
+    def _has_solver_compatibility_sidecar(self, name: str) -> bool:
+        """Return whether this projection-free facade owns a solver sidecar."""
+        del name
+        return False
+
+    def _refresh_solver_compatibility_sidecars(self, name: str, values) -> None:
+        """Refresh held solver sidecars, of which this facade intentionally has none."""
+        del name, values
+
 
 def _initialize_mock_asset(asset) -> None:
     for name in ("_initialize_handle", "_invalidate_initialize_handle", "_prim_deletion_handle", "_debug_vis_handle"):
