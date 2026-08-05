@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,6 +33,7 @@ from typing import Any, Protocol
 SCHEMA = "actuator_collection_attempt/v1"
 _REVISIONS = ("develop", "current", "global")
 _EXECUTIONS = ("cached_eager", "graph")
+_OPAQUE_ACTUATOR_TYPE: type | None = None
 
 
 @dataclass(frozen=True)
@@ -228,9 +230,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         value = getattr(args, name)
         if value is not None and value <= 0:
             parser.error(f"argument --{name}: must be greater than zero")
-    if args.case == "all" and any(
-        getattr(args, name) is not None
-        for name in ("num_worlds", "num_sources", "num_articulations", "groups", "actuator_types")
+    if (
+        args.mode == "build"
+        and args.case == "all"
+        and any(
+            getattr(args, name) is not None
+            for name in ("num_worlds", "num_sources", "num_articulations", "groups", "actuator_types")
+        )
     ):
         parser.error("--case all does not accept scalar workload overrides")
     if args.final_run:
@@ -551,7 +557,6 @@ class _DriverControl:
 def _group_cfgs(workload: _Workload) -> dict[str, Any]:
     """Build ordered real config objects with non-overlapping joint ownership."""
     from isaaclab.actuators.actuator_net_cfg import ActuatorNetMLPCfg
-    from isaaclab.actuators.actuator_pd import IdealPDActuator
     from isaaclab.actuators.actuator_pd_cfg import (
         DCMotorCfg,
         DelayedPDActuatorCfg,
@@ -605,13 +610,22 @@ def _group_cfgs(workload: _Workload) -> dict[str, Any]:
                 joint_parameter_lookup=[[-1.0, 1.0, 20.0], [0.0, 1.0, 20.0], [1.0, 1.0, 20.0]],
             )
         if actuator_type == "opaque":
-
-            class _OpaqueIdealPD(IdealPDActuator):
-                """Driver-owned exact subclass used to retain the eager fallback boundary."""
-
-            values["class_type"] = _OpaqueIdealPD
+            values["class_type"] = _opaque_actuator_type()
         configs[f"group_{index}"] = cfg_type(**values)
     return configs
+
+
+def _opaque_actuator_type() -> type:
+    """Return the one driver-owned exact subclass used for opaque fallback."""
+    global _OPAQUE_ACTUATOR_TYPE
+    if _OPAQUE_ACTUATOR_TYPE is None:
+        from isaaclab.actuators.actuator_pd import IdealPDActuator
+
+        class _OpaqueIdealPD(IdealPDActuator):
+            """Driver-owned exact subclass used to retain the eager fallback boundary."""
+
+        _OPAQUE_ACTUATOR_TYPE = _OpaqueIdealPD
+    return _OPAQUE_ACTUATOR_TYPE
 
 
 def _tiny_mlp_checkpoint(device: str) -> str:
@@ -624,8 +638,12 @@ def _tiny_mlp_checkpoint(device: str) -> str:
 
     file_descriptor, path = tempfile.mkstemp(prefix="isaaclab-actuator-benchmark-", suffix=".pt")
     os.close(file_descriptor)
-    module = torch.jit.trace(_TinyMLP().eval(), torch.zeros((1, 2), device=device))
-    module.save(path)
+    try:
+        module = torch.jit.trace(_TinyMLP().eval(), torch.zeros((1, 2), device=device))
+        module.save(path)
+    except BaseException:
+        Path(path).unlink(missing_ok=True)
+        raise
     return path
 
 
@@ -650,6 +668,7 @@ class _DevelopAdapter(_MemoryAdapter):
         self._direct_position = torch.full(
             (workload.row.num_worlds, 1), workload.first_command[0], device=workload.device
         )
+        self._reset_env_ids = torch.arange(workload.row.num_worlds, device=workload.device)
         from isaaclab.utils.types import ArticulationActions
 
         self._direct_actions = [
@@ -696,6 +715,8 @@ class _DevelopAdapter(_MemoryAdapter):
                     velocity_limit=torch.full_like(defaults, 30.0),
                 )
             )
+        for group in self.groups:
+            group.reset(self._reset_env_ids)
 
     def _apply(self) -> None:
         workload = self.workload
@@ -731,7 +752,11 @@ class _CurrentPrAdapter(_MemoryAdapter):
         self.control = _DriverControl(
             workload.device, workload.row.num_worlds, workload.joint_names, workload.row.num_sources
         )
+        import torch
+
+        self._reset_env_ids = torch.arange(workload.row.num_worlds, device=workload.device)
         self.collection = ActuatorCollection(_group_cfgs(workload), self.control)
+        self.collection.reset(self._reset_env_ids)
 
     def first_application(self, workload: _Workload) -> None:
         import torch
@@ -785,29 +810,59 @@ class _GlobalCollectionAdapter(_MemoryAdapter):
 
         self.workload = workload
         self._cfgs = _group_cfgs(workload)
+        self._introspector = _GlobalIntrospector()
+        self._projection_launches = 0
+        manager_started = time.perf_counter_ns()
         self.manager = ActuatorCollection(_Simulation())
-        self.controls = []
-        self.views = []
-        for index in range(workload.row.num_articulations):
-            control = _DriverControl(
-                workload.device, workload.row.num_worlds, workload.joint_names, workload.row.num_sources
+        manager_finished = time.perf_counter_ns()
+        self.build_decomposition_ms = {
+            "manager_construction": (manager_finished - manager_started) / 1_000_000,
+        }
+        self._register_generation(workload)
+
+    def _register_generation(self, workload: _Workload) -> None:
+        """Register and publish one generation on the existing manager."""
+        import torch
+
+        control_started = time.perf_counter_ns()
+        self.controls = [
+            _DriverControl(workload.device, workload.row.num_worlds, workload.joint_names, workload.row.num_sources)
+            for _ in range(workload.row.num_articulations)
+        ]
+        control_finished = time.perf_counter_ns()
+        registration_started = time.perf_counter_ns()
+        self.views = [
+            self.manager.register_articulation(
+                key=f"benchmark-{index}",
+                cfgs=self._cfgs,
+                control=control,
+                replication_cfg_id=index + 1,
+                debug_validation=False,
+                debug_value_resolution=False,
             )
-            self.controls.append(control)
-            self.views.append(
-                self.manager.register_articulation(
-                    key=f"benchmark-{index}",
-                    cfgs=self._cfgs,
-                    control=control,
-                    replication_cfg_id=index + 1,
-                    debug_validation=False,
-                    debug_value_resolution=False,
-                )
-            )
+            for index, control in enumerate(self.controls)
+        ]
+        registration_finished = time.perf_counter_ns()
         self.control = self.controls[0]
         self.view = self.views[0]
+        finalization_started = time.perf_counter_ns()
         self.manager.finalize()
+        finalization_finished = time.perf_counter_ns()
         if not self.manager.is_finalized or not self.view.is_ready or self.view._execution_plan is None:
             raise RuntimeError("global collection lifecycle probe failed")
+        reset_started = time.perf_counter_ns()
+        self._reset_env_ids = torch.arange(workload.row.num_worlds, device=workload.device)
+        for view in self.views:
+            view.reset(self._reset_env_ids)
+        reset_finished = time.perf_counter_ns()
+        self.build_decomposition_ms.update(
+            {
+                "control_construction": (control_finished - control_started) / 1_000_000,
+                "registration": (registration_finished - registration_started) / 1_000_000,
+                "finalization": (finalization_finished - finalization_started) / 1_000_000,
+                "state_reset": (reset_finished - reset_started) / 1_000_000,
+            }
+        )
 
     def first_application(self, workload: _Workload) -> None:
         import torch
@@ -815,17 +870,20 @@ class _GlobalCollectionAdapter(_MemoryAdapter):
         value = torch.full(
             (workload.row.num_worlds, workload.row.groups), workload.first_command[0], device=workload.device
         )
-        self.view.command.set_position_index(value=value)
-        self.view.command.set_velocity_index(value=torch.zeros_like(value))
-        self.view.command.set_effort_index(value=torch.zeros_like(value))
-        self.view.compute()
-        self.view.submit_commands()
+        zeros = torch.zeros_like(value)
+        for view in self.views:
+            view.command.set_position_index(value=value)
+            view.command.set_velocity_index(value=zeros)
+            view.command.set_effort_index(value=zeros)
+            view.compute()
+            view.submit_commands()
         self.applications += 1
 
     def run_execution(self, count: int) -> None:
         for _ in range(count):
-            self.view.compute()
-            self.view.submit_commands()
+            for view in self.views:
+                view.compute()
+                view.submit_commands()
         self.applications += count
 
     def warmup_execution(self, row: RuntimeRow) -> bool:
@@ -841,15 +899,43 @@ class _GlobalCollectionAdapter(_MemoryAdapter):
     def introspect(self) -> dict[str, Any] | None:
         """Return allocation ownership from the manager's live generation only."""
         generation = getattr(self.manager, "_active_generation", None)
-        return None if generation is None else _GlobalIntrospector().inspect(generation)
+        return self._introspector.inspect(
+            generation,
+            manager=self.manager,
+            projection_launches=self._projection_launches,
+        )
 
     def close(self) -> None:
         if hasattr(self, "manager"):
-            self.manager.clear_generation()
+            self.manager.close()
         for cfg in getattr(self, "_cfgs", {}).values():
             if (path := getattr(cfg, "network_file", None)) is not None:
                 Path(path).unlink(missing_ok=True)
         super().close()
+
+
+class _CompatibilityLaunchCounter:
+    """Count actual compatibility kernel dispatches through one plan's launch cache."""
+
+    def __init__(self, plan: Any) -> None:
+        self.plan = plan
+        self.count = 0
+        self._original: Any = None
+
+    def __enter__(self) -> _CompatibilityLaunchCounter:
+        launch_cache = self.plan._launch_cache
+        self._original = launch_cache.launch
+
+        def wrapped(key: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(key, tuple) and key and str(key[0]).startswith("compatibility_"):
+                self.count += 1
+            return self._original(key, *args, **kwargs)
+
+        launch_cache.launch = wrapped
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.plan._launch_cache.launch = self._original
 
 
 def run_global_structural_case(workload: _Workload) -> dict[str, Any]:
@@ -864,38 +950,109 @@ def run_global_structural_case(workload: _Workload) -> dict[str, Any]:
         manager = ActuatorCollection(_EmptySimulation())
         manager.finalize()
         manager.clear_generation()
-        return {"cleared": True}
+        clear_report = _GlobalIntrospector().inspect(None)
+        manager.close()
+        manager.close()
+        try:
+            manager.register_articulation(
+                key="late",
+                cfgs={},
+                control=None,
+                replication_cfg_id=1,
+                debug_validation=False,
+                debug_value_resolution=False,
+            )
+        except RuntimeError:
+            registration_rejected = True
+        else:
+            registration_rejected = False
+        return {
+            "cleared": True,
+            "manager_closed": manager._closed,
+            "registration_rejected": registration_rejected,
+            "clear_state_ownership": clear_report["clear_state_ownership"],
+        }
 
     adapter = _GlobalCollectionAdapter("global", workload.device)
     try:
         adapter.build_workload(workload)
         if workload.row.case == "B2":
-            return {"articulation_count": len(adapter.manager.registration_keys)}
+            adapter.first_application(workload)
+            applied_facades = tuple(
+                key
+                for key, control in zip(adapter.manager.registration_keys, adapter.controls, strict=True)
+                if control.submissions == 1
+            )
+            return {
+                "articulation_count": len(adapter.manager.registration_keys),
+                "applied_facades": applied_facades,
+                "submission_counts": tuple(control.submissions for control in adapter.controls),
+            }
         if workload.row.case == "B6":
             states = ["untouched"]
-            adapter.view._get_compatibility_projection("soft_joint_vel_limits")
-            states.append("first")
-            adapter.view._get_compatibility_projection("soft_joint_vel_limits")
-            states.append("repeated")
-            adapter.view._get_compatibility_projection("gear_ratio")
-            states.append("both")
-            adapter.view.compute()
+            bytes_by_state = {"untouched": adapter.introspect()["projection_bytes"]}
             plan = adapter.view._execution_plan
+            if plan is None:
+                raise RuntimeError("B6 requires a live execution plan")
+            with _CompatibilityLaunchCounter(plan) as launches:
+                first = adapter.view._get_compatibility_projection("soft_joint_vel_limits")
+                states.append("first")
+                bytes_by_state["first"] = adapter.introspect()["projection_bytes"]
+                first_pointer = (str(first.warp.device), int(first.warp.ptr))
+                allocation_probe = _begin_repeat_allocation_probe(workload.device)
+                repeated = adapter.view._get_compatibility_projection("soft_joint_vel_limits")
+                allocator = _end_repeat_allocation_probe(allocation_probe)
+                states.append("repeated")
+                bytes_by_state["repeated"] = adapter.introspect()["projection_bytes"]
+                repeated_pointer = (str(repeated.warp.device), int(repeated.warp.ptr))
+                adapter.view._get_compatibility_projection("gear_ratio")
+                states.append("both")
+                bytes_by_state["both"] = adapter.introspect()["projection_bytes"]
+                adapter.view.compute()
+            adapter._projection_launches = launches.count
+            report = adapter.introspect()
+            retained_owner_delta = bytes_by_state["repeated"] - bytes_by_state["first"]
+            allocation_free = (
+                None
+                if allocator["delta_bytes"] is None
+                else retained_owner_delta == 0
+                and first_pointer == repeated_pointer
+                and allocator["delta_bytes"] == 0
+                and allocator["peak_delta_bytes"] == 0
+            )
             return {
                 "projection_states": tuple(states),
-                "projection_launches": len(getattr(plan, "_compatibility_projection_refreshes", {})),
+                "projection_count": len(getattr(plan, "_compatibility_projection_refreshes", {})),
+                "projection_launches": launches.count,
+                "projection_bytes": report["projection_bytes"],
+                "projection_bytes_by_state": bytes_by_state,
+                "repeated_pointer_stable": first_pointer == repeated_pointer,
+                "repeat_retained_owner_delta_bytes": retained_owner_delta,
+                "repeat_allocator_observation": allocator["observation"],
+                "repeat_allocator_delta_bytes": allocator["delta_bytes"],
+                "repeat_allocator_peak_delta_bytes": allocator["peak_delta_bytes"],
+                "repeat_allocation_free": allocation_free,
+                "pointer_replacements": report["pointer_replacements"],
             }
         if workload.row.case == "B8":
             old_view = adapter.view
+            manager = adapter.manager
+            adapter.introspect()
             adapter.manager.clear_generation()
+            clear_report = adapter.introspect()
             try:
                 old_view.compute()
             except RuntimeError:
                 stale = True
             else:
                 stale = False
-            adapter.build_workload(workload)
-            return {"re_registered": stale and adapter.manager.is_finalized}
+            adapter._register_generation(workload)
+            return {
+                "re_registered": stale and adapter.manager.is_finalized,
+                "same_manager": adapter.manager is manager,
+                "old_view_stale": stale,
+                "clear_state_ownership": clear_report["clear_state_ownership"],
+            }
         raise ValueError(f"not a global structural case: {workload.row.case}")
     finally:
         adapter.close()
@@ -933,10 +1090,123 @@ def select_adapter(revision: str, device: str) -> _Adapter | RevisionCapability:
     return RevisionCapability(False, "unrecognized required actuator collection feature set")
 
 
+def _pointer_stability_record(report: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract pointer-stability evidence from one structural report."""
+    if report is None or "pointer_snapshot_count" not in report:
+        return {
+            "observation": "unavailable",
+            "pointer_replacements": None,
+            "pointer_snapshot_count": None,
+        }
+    return {
+        "observation": "global_introspection",
+        "pointer_replacements": report["pointer_replacements"],
+        "pointer_snapshot_count": report["pointer_snapshot_count"],
+    }
+
+
+def _pointer_stability_snapshot(adapter: _Adapter) -> dict[str, Any]:
+    """Take one untimed global ownership snapshot, or report that it is unavailable."""
+    return _pointer_stability_record(adapter.introspect())
+
+
+def _synchronize_boundary(device: str) -> None:
+    """Synchronize a completed CUDA construction boundary."""
+    if device.startswith("cuda"):
+        import torch
+
+        torch.cuda.synchronize(device)
+
+
+def measure_build(
+    revision: str,
+    row: BuildRow,
+    device: str,
+    phase: str,
+    *,
+    adapter_factory: Any = None,
+    workload_factory: Any = make_workload,
+    warmup_constructions: int = 10,
+    measured_constructions: int = 100,
+) -> dict[str, Any]:
+    """Measure fresh resolved-construction-to-first-application boundaries."""
+    if phase not in {"cold", "warm"}:
+        raise ValueError(f"unknown build phase: {phase}")
+    adapter_factory = select_adapter if adapter_factory is None else adapter_factory
+    warmup_count = 0 if phase == "cold" else warmup_constructions
+    measured_count = 1 if phase == "cold" else measured_constructions
+    samples_ms: list[float] = []
+    decomposition_samples: dict[str, list[float]] = {}
+    last_structural: dict[str, Any] | None = None
+    last_pointer_stability = {
+        "observation": "unavailable",
+        "pointer_replacements": None,
+        "pointer_snapshot_count": None,
+    }
+    adapter_name: str | None = None
+
+    def construct_once(*, measured: bool) -> None:
+        nonlocal adapter_name, last_pointer_stability, last_structural
+        workload: _Workload | None = workload_factory(row, device)
+        adapter: _Adapter | None = None
+        try:
+            selected = adapter_factory(revision, device)
+            if isinstance(selected, RevisionCapability):
+                raise RuntimeError(selected.reason)
+            adapter = selected
+            adapter_name = type(adapter).__name__
+            started = time.perf_counter_ns() if measured else None
+            adapter.build_workload(workload)
+            post_finalize = _pointer_stability_snapshot(adapter)
+            adapter.first_application(workload)
+            _synchronize_boundary(device)
+            if measured:
+                assert started is not None
+                samples_ms.append((time.perf_counter_ns() - started) / 1_000_000)
+            last_structural = adapter.introspect()
+            last_pointer_stability = _pointer_stability_record(last_structural)
+            if measured:
+                for name, elapsed_ms in getattr(adapter, "build_decomposition_ms", {}).items():
+                    decomposition_samples.setdefault(name, []).append(float(elapsed_ms))
+            if last_pointer_stability["observation"] == "unavailable":
+                last_pointer_stability = post_finalize
+        finally:
+            try:
+                if adapter is not None:
+                    adapter.close()
+            finally:
+                _cleanup_workload(workload)
+
+    for _ in range(warmup_count):
+        construct_once(measured=False)
+    for _ in range(measured_count):
+        construct_once(measured=True)
+
+    total_ms = sum(samples_ms)
+    return {
+        "status": "accepted",
+        "adapter_name": adapter_name,
+        "timing": {
+            "samples_ms": samples_ms,
+            "total_ms": total_ms,
+            "per_construction_ms": total_ms / measured_count,
+            "construction_count": measured_count,
+            "warmup_construction_count": warmup_count,
+            "first_application_count": measured_count,
+        },
+        "counters": {
+            "global_decomposition_samples_ms": decomposition_samples or None,
+            "pointer_stability": last_pointer_stability,
+        },
+        "structural": last_structural,
+    }
+
+
 def measure_runtime(adapter: _Adapter, row: RuntimeRow, warmups: int, iterations: int) -> dict[str, Any]:
     """Measure one runtime mode without relabelling failed graph capture."""
     import warp as wp
 
+    pointer_stability = _pointer_stability_snapshot(adapter)
     capture = _ScopedInstrumentation(wp)
     if row.requested_execution == "graph":
         with capture:
@@ -947,23 +1217,44 @@ def measure_runtime(adapter: _Adapter, row: RuntimeRow, warmups: int, iterations
                 "requested_execution": "graph",
                 "effective_execution": None,
                 "reason": "graph capture failed",
-                "counters": {"capture": capture.as_record(), "replay": None},
+                "counters": {
+                    "capture": capture.as_record(),
+                    "warmup": None,
+                    "transfer_probe": None,
+                    "replay": None,
+                    "pointer_stability": _pointer_stability_snapshot(adapter),
+                },
             }
+    warmup = _ScopedInstrumentation(wp)
+    with warmup:
+        adapter.run_execution(warmups)
+    pointer_stability = _pointer_stability_snapshot(adapter)
+    transfer_probe = _observe_transfer_replay(adapter, wp)
+    pointer_stability = _pointer_stability_snapshot(adapter)
     allocation_before = _steady_allocation_bytes(getattr(adapter, "device", "cpu"))
     replay = _ScopedInstrumentation(wp)
     with replay:
-        adapter.run_execution(warmups)
         elapsed_ms = _time_runtime_execution(adapter, iterations)
     allocation_after = _steady_allocation_bytes(getattr(adapter, "device", "cpu"))
+    pointer_stability = _pointer_stability_snapshot(adapter)
+    per_application_ms = elapsed_ms / iterations
     return {
         "status": "accepted",
         "requested_execution": row.requested_execution,
         "effective_execution": row.effective_execution,
-        "timing": {"samples_ms": [elapsed_ms]},
+        "timing": {
+            "samples_ms": [per_application_ms],
+            "total_ms": elapsed_ms,
+            "per_application_ms": per_application_ms,
+            "application_count": iterations,
+        },
         "counters": {
             "capture": capture.as_record(),
+            "warmup": warmup.as_record(),
+            "transfer_probe": transfer_probe,
             "replay": replay.as_record(),
             "steady_allocation_delta_bytes": allocation_after - allocation_before,
+            "pointer_stability": pointer_stability,
         },
     }
 
@@ -994,6 +1285,81 @@ def _steady_allocation_bytes(device: str) -> int:
     return torch.cuda.memory_allocated(device)
 
 
+def _begin_repeat_allocation_probe(device: str) -> dict[str, Any]:
+    """Start a CUDA allocator/peak probe, or state why it is unavailable."""
+    if not device.startswith("cuda"):
+        return {"observation": "unavailable_cpu", "allocated_before": None}
+    import torch
+
+    torch.cuda.synchronize(device)
+    torch.cuda.reset_peak_memory_stats(device)
+    return {
+        "observation": "torch_cuda",
+        "allocated_before": torch.cuda.memory_allocated(device),
+        "device": device,
+    }
+
+
+def _end_repeat_allocation_probe(probe: dict[str, Any]) -> dict[str, Any]:
+    """Finish a CUDA allocator/peak probe without fabricating CPU values."""
+    if probe["observation"] != "torch_cuda":
+        return {"observation": probe["observation"], "delta_bytes": None, "peak_delta_bytes": None}
+    import torch
+
+    device = probe["device"]
+    torch.cuda.synchronize(device)
+    allocated_before = probe["allocated_before"]
+    return {
+        "observation": "torch_cuda",
+        "delta_bytes": torch.cuda.memory_allocated(device) - allocated_before,
+        "peak_delta_bytes": torch.cuda.max_memory_allocated(device) - allocated_before,
+    }
+
+
+class _TorchTransferLedger:
+    """Record observed Torch transfers and synchronizing CUDA readbacks."""
+
+    def __init__(self) -> None:
+        self.h2d_bytes = 0
+        self.d2h_sync_count = 0
+
+    def record_transfer(self, dest: Any, src: Any, *, synchronizing: bool) -> None:
+        """Record one cross-device tensor transfer."""
+        dest_is_cuda = self._is_cuda(dest)
+        src_is_cuda = self._is_cuda(src)
+        if dest_is_cuda == src_is_cuda:
+            return
+        if dest_is_cuda:
+            self.h2d_bytes += self._nbytes(src)
+        elif synchronizing:
+            self.d2h_sync_count += 1
+
+    def record_readback(self, value: Any, *, final_timing_sync: bool = False) -> None:
+        """Record one scalar CUDA readback unless it belongs to the timing harness."""
+        if not final_timing_sync and self._is_cuda(value):
+            self.d2h_sync_count += 1
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "observation": "torch_dispatch",
+            "h2d_bytes": self.h2d_bytes,
+            "d2h_sync_count": self.d2h_sync_count,
+        }
+
+    @staticmethod
+    def _is_cuda(value: Any) -> bool:
+        return str(getattr(value, "device", "cpu")).startswith("cuda")
+
+    @staticmethod
+    def _nbytes(value: Any) -> int:
+        nbytes = getattr(value, "nbytes", None)
+        if nbytes is not None:
+            return int(nbytes)
+        shape = getattr(value, "shape", ())
+        element_size = getattr(value, "element_size", None)
+        return int(math.prod(shape)) * (int(element_size()) if callable(element_size) else 0)
+
+
 class _ScopedInstrumentation:
     """Temporarily observe explicit Warp launch/copy sites in a measured scope."""
 
@@ -1002,12 +1368,13 @@ class _ScopedInstrumentation:
         self._originals: dict[str, Any] = {}
         self.launches: dict[str, int] = {}
         self.h2d_bytes = 0
-        self.d2h_readbacks = 0
+        self.d2h_copies = 0
+        self.d2h_sync_count = 0
 
     def __enter__(self) -> _ScopedInstrumentation:
         if self.warp is None:
             return self
-        for name in ("launch", "launch_tiled", "copy"):
+        for name in ("launch", "launch_tiled", "copy", "capture_launch"):
             original = getattr(self.warp, name, None)
             if original is None:
                 continue
@@ -1015,6 +1382,8 @@ class _ScopedInstrumentation:
 
             def wrapped(*args: Any, _original: Any = original, _name: str = name, **kwargs: Any) -> Any:
                 self.launches[_name] = self.launches.get(_name, 0) + 1
+                if _name == "copy":
+                    self._record_copy(args, kwargs)
                 return _original(*args, **kwargs)
 
             setattr(self.warp, name, wrapped)
@@ -1026,15 +1395,87 @@ class _ScopedInstrumentation:
 
     def record_readback(self, final_timing_sync: bool = False) -> None:
         if not final_timing_sync:
-            self.d2h_readbacks += 1
+            self.d2h_sync_count += 1
 
-    def as_record(self) -> dict[str, Any]:
+    def _record_copy(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        """Record direction and size for one explicit Warp copy."""
+        dest = args[0] if args else kwargs.get("dest")
+        src = args[1] if len(args) > 1 else kwargs.get("src")
+        if dest is None or src is None:
+            return
+        dest_is_cuda = str(getattr(dest, "device", "cpu")).startswith("cuda")
+        src_is_cuda = str(getattr(src, "device", "cpu")).startswith("cuda")
+        if dest_is_cuda == src_is_cuda:
+            return
+        if not src_is_cuda and dest_is_cuda:
+            self.h2d_bytes += self._copy_nbytes(src, kwargs.get("count", args[2] if len(args) > 2 else None))
+        elif src_is_cuda and not dest_is_cuda:
+            self.d2h_copies += 1
+
+    @staticmethod
+    def _copy_nbytes(value: Any, count: int | None) -> int:
+        if count is None and (nbytes := getattr(value, "nbytes", None)) is not None:
+            return int(nbytes)
+        if count is None:
+            count = math.prod(getattr(value, "shape", (0,)))
+        try:
+            import warp as wp
+
+            item_size = wp.types.type_size_in_bytes(value.dtype)
+        except Exception:
+            item_size = 0
+        return int(count) * int(item_size)
+
+    def as_record(self, torch_transfer: dict[str, Any] | None = None) -> dict[str, Any]:
         """Return only benchmark-side launch/readback observations for this scope."""
+        torch_available = torch_transfer is not None and torch_transfer.get("observation") == "torch_dispatch"
         return {
             "launches": dict(self.launches),
-            "h2d_bytes": self.h2d_bytes,
-            "d2h_readbacks": self.d2h_readbacks,
+            "h2d_bytes": self.h2d_bytes + int(torch_transfer["h2d_bytes"]) if torch_available else None,
+            "d2h_sync_count": (
+                self.d2h_sync_count + int(torch_transfer["d2h_sync_count"]) if torch_available else None
+            ),
+            "warp_h2d_bytes": self.h2d_bytes,
+            "warp_d2h_copies": self.d2h_copies,
+            "warp_d2h_sync_count": self.d2h_sync_count,
+            "torch_transfer_observation": "torch_dispatch" if torch_available else "unavailable",
         }
+
+
+def _observe_transfer_replay(adapter: _Adapter, warp: Any) -> dict[str, Any]:
+    """Observe one representative replay outside graph capture and timing scopes."""
+    scoped = _ScopedInstrumentation(warp)
+    try:
+        from torch.utils._python_dispatch import TorchDispatchMode
+    except (AttributeError, ImportError):
+        with scoped:
+            adapter.run_execution(1)
+        return scoped.as_record()
+
+    ledger = _TorchTransferLedger()
+
+    class _TransferMode(TorchDispatchMode):
+        def __torch_dispatch__(self, func: Any, types: Any, args: tuple[Any, ...] = (), kwargs: Any = None) -> Any:
+            del types
+            kwargs = {} if kwargs is None else kwargs
+            result = func(*args, **kwargs)
+            operator = str(func)
+            if "_to_copy" in operator and args:
+                ledger.record_transfer(
+                    result,
+                    args[0],
+                    synchronizing=not bool(kwargs.get("non_blocking", False)),
+                )
+            elif "copy_" in operator and len(args) >= 2:
+                non_blocking = kwargs.get("non_blocking", args[2] if len(args) > 2 else False)
+                ledger.record_transfer(args[0], args[1], synchronizing=not bool(non_blocking))
+            elif "_local_scalar_dense" in operator and args:
+                ledger.record_readback(args[0])
+            return result
+
+    with scoped, _TransferMode():
+        adapter.run_execution(1)
+    return scoped.as_record(ledger.as_record())
 
 
 def observe_runtime_scopes(adapter: _Adapter, iterations: int) -> list[str]:
@@ -1049,35 +1490,190 @@ def observe_runtime_scopes(adapter: _Adapter, iterations: int) -> list[str]:
 class _GlobalIntrospector:
     """Read actual finalized generation owners without analytical layout guesses."""
 
-    def inspect(self, generation: Any) -> dict[str, Any]:
+    _DESCRIPTOR_CATEGORIES = (
+        "registration",
+        "resolved_group",
+        "binding",
+        "store",
+        "articulation_binding",
+        "view",
+        "execution_plan",
+        "execution_range",
+        "eager_segment",
+    )
+
+    def __init__(self) -> None:
+        self._previous_pointers: dict[str, tuple[str, int]] = {}
+        self._pointer_replacements = 0
+        self._pointer_snapshot_count = 0
+
+    def inspect(
+        self,
+        generation: Any,
+        *,
+        manager: Any = None,
+        projection_launches: int = 0,
+    ) -> dict[str, Any]:
+        if generation is None:
+            self._previous_pointers.clear()
+            self._pointer_replacements = 0
+            self._pointer_snapshot_count = 0
+            return {
+                "canonical_allocation_count": 0,
+                "canonical_allocation_bytes": 0,
+                "storage_wrapper_count": 0,
+                "python_descriptor_count": 0,
+                "python_descriptor_counts": dict.fromkeys(self._DESCRIPTOR_CATEGORIES, 0),
+                "plan_staging_owner_count": 0,
+                "plan_staging_owner_bytes": 0,
+                "projection_bytes": 0,
+                "projection_launches": projection_launches,
+                "pointer_replacements": 0,
+                "pointer_snapshot_count": 0,
+                "clear_state_ownership": 0,
+            }
+
         stores = getattr(generation, "stores", {})
-        store_values = stores.values() if hasattr(stores, "values") else stores
-        canonical = self._owners_from([*store_values, getattr(generation, "joint_store", None)])
-        bindings = tuple(getattr(generation, "bindings", ()))
-        staging = self._owners_from(
-            [getattr(binding, "execution_plan", None) for binding in bindings]
-            + [getattr(binding, "backend_parameter_staging", None) for binding in bindings]
-            + list(getattr(generation, "backend_parameter_staging", {}).values())
+        store_items = tuple(stores.items()) if hasattr(stores, "items") else tuple(enumerate(stores))
+        joint_store = getattr(generation, "joint_store", None)
+        canonical_named = self._named_owners_from(
+            [
+                *[(f"stores[{getattr(key, '__qualname__', key)!s}]", store) for key, store in store_items],
+                ("joint_store.fields", getattr(joint_store, "_fields", {})),
+            ]
         )
+        bindings = tuple(getattr(generation, "bindings", ()))
+        staging_named = self._named_owners_from(
+            [
+                *[
+                    (f"bindings[{index}].execution_plan", getattr(binding, "execution_plan", None))
+                    for index, binding in enumerate(bindings)
+                ],
+                *[
+                    (
+                        f"bindings[{index}].backend_parameter_staging",
+                        getattr(binding, "backend_parameter_staging", None),
+                    )
+                    for index, binding in enumerate(bindings)
+                ],
+                *[
+                    (f"generation.backend_parameter_staging[{key!r}]", staging)
+                    for key, staging in getattr(generation, "backend_parameter_staging", {}).items()
+                ],
+            ]
+        )
+        projection_named = self._named_owners_from(
+            [("joint_store.compatibility_projections", getattr(joint_store, "_compatibility_projections", {}))]
+        )
+
+        canonical = self._deduplicate(canonical_named)
+        staging = {key: owner for key, owner in self._deduplicate(staging_named).items() if key not in canonical}
+        projection = {
+            key: owner
+            for key, owner in self._deduplicate(projection_named).items()
+            if key not in canonical and key not in staging
+        }
+        current_pointers = {
+            **{f"canonical:{path}": owner[0] for path, owner in canonical_named.items()},
+            **{f"staging:{path}": owner[0] for path, owner in staging_named.items()},
+            **{f"projection:{path}": owner[0] for path, owner in projection_named.items()},
+        }
+        pointer_replacements = sum(
+            previous != pointer
+            for path, pointer in current_pointers.items()
+            if (previous := self._previous_pointers.get(path)) is not None
+        )
+        self._pointer_replacements += pointer_replacements
+        self._pointer_snapshot_count += 1
+        self._previous_pointers = current_pointers
+        all_owners = {*canonical, *staging, *projection}
+        storage_wrapper_ids = {
+            owner[3] for named in (canonical_named, staging_named, projection_named) for owner in named.values()
+        }
+        python_descriptor_count, python_descriptor_counts = self._python_descriptor_inventory(generation, manager)
         return {
             "canonical_allocation_count": len(canonical),
             "canonical_allocation_bytes": sum(size for _, size in canonical.values()),
-            "descriptor_count": sum(len(getattr(store, "_fields", {})) for store in store_values),
+            "storage_wrapper_count": len(storage_wrapper_ids),
+            "python_descriptor_count": python_descriptor_count,
+            "python_descriptor_counts": python_descriptor_counts,
             "plan_staging_owner_count": len(staging),
             "plan_staging_owner_bytes": sum(size for _, size in staging.values()),
-            "projection_bytes": 0,
-            "projection_launches": 0,
-            "pointer_replacements": 0,
-            "clear_state_ownership": None,
+            "projection_bytes": sum(size for _, size in projection.values()),
+            "projection_launches": projection_launches,
+            "pointer_replacements": self._pointer_replacements,
+            "pointer_snapshot_count": self._pointer_snapshot_count,
+            "clear_state_ownership": len(all_owners),
         }
 
+    @classmethod
+    def _python_descriptor_inventory(cls, generation: Any, manager: Any) -> tuple[int, dict[str, int]]:
+        """Count exact manager-owned Python descriptors by semantic category."""
+
+        def values(container: Any) -> tuple[Any, ...]:
+            if container is None:
+                return ()
+            if isinstance(container, Mapping):
+                return tuple(container.values())
+            return tuple(container)
+
+        articulation_bindings = tuple(getattr(generation, "bindings", ()))
+        registrations = values(getattr(manager, "_registrations", None)) if manager is not None else ()
+        if not registrations:
+            registrations = tuple(getattr(binding, "registration", None) for binding in articulation_bindings)
+        nested_groups = values(getattr(generation, "groups", {}))
+        resolved_groups = tuple(group for groups in nested_groups for group in values(groups))
+        stores = values(getattr(generation, "stores", {}))
+        views = values(getattr(manager, "_views", None)) if manager is not None else ()
+        execution_plans = tuple(getattr(binding, "execution_plan", None) for binding in articulation_bindings)
+        execution_ranges = tuple(
+            execution_range
+            for plan in execution_plans
+            if plan is not None
+            for execution_range in getattr(plan, "stateless_ranges", ())
+        )
+        eager_segments = tuple(
+            segment for plan in execution_plans if plan is not None for segment in getattr(plan, "eager_segments", ())
+        )
+        binding_owners = (
+            *resolved_groups,
+            *(getattr(execution_range, "executor", None) for execution_range in execution_ranges),
+            *(getattr(segment, "actuator", None) for segment in eager_segments),
+        )
+        group_bindings = tuple(
+            getattr(owner, "__dict__", {}).get("_parameter_binding") for owner in binding_owners if owner is not None
+        )
+        category_values = {
+            "registration": registrations,
+            "resolved_group": resolved_groups,
+            "binding": group_bindings,
+            "store": stores,
+            "articulation_binding": articulation_bindings,
+            "view": views,
+            "execution_plan": execution_plans,
+            "execution_range": execution_ranges,
+            "eager_segment": eager_segments,
+        }
+        ids_by_category = {
+            category: {id(value) for value in category_values[category] if value is not None}
+            for category in cls._DESCRIPTOR_CATEGORIES
+        }
+        all_ids = set().union(*ids_by_category.values())
+        return len(all_ids), {category: len(ids_by_category[category]) for category in cls._DESCRIPTOR_CATEGORIES}
+
     @staticmethod
-    def _owners_from(roots: list[Any]) -> dict[tuple[str, int], tuple[Any, int]]:
-        """Collect allocation leaves from real current-generation owners only."""
-        found: dict[tuple[str, int], tuple[Any, int]] = {}
+    def _deduplicate(
+        named: dict[str, tuple[tuple[str, int], Any, int, int]],
+    ) -> dict[tuple[str, int], tuple[Any, int]]:
+        return {key: (owner, size) for key, owner, size, _ in named.values()}
+
+    @staticmethod
+    def _named_owners_from(roots: list[tuple[str, Any]]) -> dict[str, tuple[tuple[str, int], Any, int, int]]:
+        """Collect named allocation leaves from real current-generation owners only."""
+        found: dict[str, tuple[tuple[str, int], Any, int, int]] = {}
         visited: set[int] = set()
 
-        def visit(value: Any) -> None:
+        def visit(value: Any, path: str) -> None:
             if value is None or id(value) in visited:
                 return
             visited.add(id(value))
@@ -1091,31 +1687,46 @@ class _GlobalIntrospector:
                         nbytes = math.prod(raw.shape) * wp.types.type_size_in_bytes(raw.dtype)
                     except Exception:
                         nbytes = 0
-                found[(str(getattr(raw, "device", "unknown")), int(ptr))] = (raw, nbytes)
+                key = (str(getattr(raw, "device", "unknown")), int(ptr))
+                found[path] = (key, raw, nbytes, id(value))
                 return
-            if isinstance(value, dict):
-                for item in value.values():
-                    visit(item)
+            if isinstance(value, Mapping):
+                for key, item in value.items():
+                    visit(item, f"{path}[{key!r}]")
                 return
             if isinstance(value, (list, tuple)):
-                for item in value:
-                    visit(item)
+                for index, item in enumerate(value):
+                    visit(item, f"{path}[{index}]")
                 return
             for name in (
                 "_fields",
                 "_targets",
                 "_owner_slots",
                 "staging",
-                "_staging",
                 "stateless_ranges",
                 "eager_segments",
                 "static_scatter_epochs",
+                "joint_indices",
+                "owner_slots_by_field",
+                "gather_inputs",
+                "gather_outputs",
+                "implicit_inputs",
+                "implicit_outputs",
+                "scatter_inputs",
+                "scatter_outputs",
+                "action_scatter_outputs",
+                "telemetry_scatter_outputs",
             ):
-                visit(getattr(value, name, None))
+                visit(getattr(value, name, None), f"{path}.{name}")
 
-        for root in roots:
-            visit(root)
+        for path, root in roots:
+            visit(root, path)
         return found
+
+    @classmethod
+    def _owners_from(cls, roots: list[Any]) -> dict[tuple[str, int], tuple[Any, int]]:
+        """Compatibility helper for literal owner probes."""
+        return cls._deduplicate(cls._named_owners_from([(f"roots[{index}]", root) for index, root in enumerate(roots)]))
 
 
 def prepare_harness(run_root: Path, source: Path) -> tuple[Path, str]:
@@ -1207,35 +1818,52 @@ class Coordinator:
         return results
 
 
-def _smoke_record(args: argparse.Namespace, row: BuildRow, adapter: _Adapter) -> dict[str, Any]:
+def _smoke_record(
+    args: argparse.Namespace,
+    row: BuildRow,
+    adapter: _Adapter | None,
+    *,
+    structural: dict[str, Any] | None = None,
+    timing: dict[str, Any] | None = None,
+    counters: dict[str, Any] | None = None,
+    adapter_name: str | None = None,
+) -> dict[str, Any]:
+    revision = args.revision or "global"
     identity = AttemptIdentity(
         args.batch_id,
         row_key(row),
         "attempt-01",
         args.candidate_sha or "cpu-smoke",
-        {"global": args.revision_sha or "cpu-smoke"},
+        {revision: args.revision_sha or "cpu-smoke"},
         args.harness_sha256 or "cpu-smoke",
     )
+    if structural is None and adapter is not None:
+        structural = adapter.introspect()
+    first_application_count = getattr(adapter, "applications", 0)
+    if adapter is None and row.case == "B2":
+        first_application_count = 1
+    timing = {"samples_ms": [], "first_application_count": first_application_count} if timing is None else timing
     return {
         "schema": SCHEMA,
         "identity": asdict(identity),
         "kind": "singleton",
         "status": "accepted",
-        "boundary": "resolved_construction_to_first_application",
+        "boundary": "empty_finalize_clear" if row.case == "B0" else "resolved_construction_to_first_application",
         "telemetry": {"required": False, "available": True, "samples": [], "rejection_reasons": []},
         "members": [
             {
-                "revision": args.revision or "global",
+                "revision": revision,
                 "requested_execution": "cached_eager",
                 "effective_execution": "cached_eager",
                 "revision_sha": args.revision_sha or "cpu-smoke",
-                "adapter": type(adapter).__name__,
+                "adapter": adapter_name
+                or (type(adapter).__name__ if adapter is not None else "_GlobalCollectionAdapter"),
                 "resolved_row": asdict(row),
-                "source_emulation": row.case == "B3" and (args.revision or "global") != "global",
+                "source_emulation": row.case == "B3" and revision != "global",
                 "capability": {"supported": True, "reason": None},
-                "timing": {"samples_ms": [], "first_application_count": getattr(adapter, "applications", 1)},
-                "counters": {},
-                "structural": adapter.introspect(),
+                "timing": timing,
+                "counters": counters or {},
+                "structural": structural,
             }
         ],
         "paths": {"harness": None, "worktrees": {}, "cache": {}},
@@ -1247,13 +1875,116 @@ def _smoke_record(args: argparse.Namespace, row: BuildRow, adapter: _Adapter) ->
     }
 
 
+def _runtime_smoke_record(
+    args: argparse.Namespace,
+    row: RuntimeRow,
+    adapter: _Adapter | None,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one schema-valid singleton around an actual runtime observation."""
+    revision = args.revision or "global"
+    identity = AttemptIdentity(
+        args.batch_id,
+        row_key(row),
+        "attempt-01",
+        args.candidate_sha or "cpu-smoke",
+        {revision: args.revision_sha or "cpu-smoke"},
+        args.harness_sha256 or "cpu-smoke",
+    )
+    supported = result["status"] != "unsupported"
+    return {
+        "schema": SCHEMA,
+        "identity": asdict(identity),
+        "kind": "singleton",
+        "status": result["status"],
+        "boundary": "runtime_application",
+        "telemetry": {"required": False, "available": True, "samples": [], "rejection_reasons": []},
+        "members": [
+            {
+                "revision": revision,
+                "requested_execution": row.requested_execution,
+                "effective_execution": result.get("effective_execution"),
+                "revision_sha": args.revision_sha or "cpu-smoke",
+                "adapter": type(adapter).__name__ if adapter is not None else None,
+                "resolved_row": asdict(row),
+                "source_emulation": False,
+                "capability": {"supported": supported, "reason": None if supported else result.get("reason")},
+                "timing": result.get("timing", {}),
+                "counters": result.get("counters", {}),
+                "structural": adapter.introspect() if adapter is not None else None,
+            }
+        ],
+        "paths": {"harness": None, "worktrees": {}, "cache": {}},
+        "command": sys.argv,
+        "device": args.device,
+        "cache": {"policy": "private"},
+        "process": {"returncode": 0},
+        "metadata": {"reason": result.get("reason")},
+    }
+
+
+def _cleanup_workload(workload: _Workload | None) -> None:
+    if workload is not None and workload.network_file is not None:
+        Path(workload.network_file).unlink(missing_ok=True)
+
+
+def _write_smoke_attempt(args: argparse.Namespace, key: str, record: dict[str, Any]) -> None:
+    output = args.output_path / key.replace(":", "_")
+    attempt = allocate_attempt_dir(output)
+    write_attempt_atomically(attempt, record)
+
+
+def _run_runtime_child(args: argparse.Namespace) -> int:
+    revision = args.revision or "global"
+    if not args.child_row:
+        raise RuntimeError("runtime mode requires --child_row")
+    try:
+        selected_row = next(row for row in runtime_matrix(revision) if row_key(row) == args.child_row)
+    except StopIteration as error:
+        raise RuntimeError(f"unknown runtime child row: {args.child_row}") from error
+    row = RuntimeRow(
+        selected_row.actuator_type,
+        selected_row.groups,
+        selected_row.requested_execution,
+        selected_row.effective_execution,
+        args.num_worlds or selected_row.num_worlds,
+    )
+    if row.effective_execution is None:
+        result = {
+            "status": "unsupported",
+            "requested_execution": row.requested_execution,
+            "effective_execution": None,
+            "reason": f"{revision} does not support actuator graph execution",
+        }
+        _write_smoke_attempt(args, row_key(row), _runtime_smoke_record(args, row, None, result))
+        return 0
+
+    selected = select_adapter(revision, args.device)
+    if isinstance(selected, RevisionCapability):
+        raise RuntimeError(selected.reason)
+    adapter = selected
+    build_row = BuildRow("B5", row.num_worlds, 1, 1, row.groups, (row.actuator_type,))
+    workload: _Workload | None = make_workload(build_row, args.device)
+    try:
+        adapter.build_workload(workload)
+        adapter.introspect()
+        adapter.first_application(workload)
+        adapter.introspect()
+        result = measure_runtime(adapter, row, args.warmup_iterations, args.num_iterations)
+        _write_smoke_attempt(args, row_key(row), _runtime_smoke_record(args, row, adapter, result))
+    finally:
+        adapter.close()
+        _cleanup_workload(workload)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run a local smoke child or validate coordinate arguments."""
     args = parse_args(argv)
     if args.mode == "coordinate":
         return 0
-    if args.mode != "build":
-        return 0
+    if args.mode == "runtime":
+        return _run_runtime_child(args)
     rows = list(expand_build_matrix(args.case))
     if args.case != "all":
         row = rows[0]
@@ -1268,7 +1999,42 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         row = rows[0]
-    selected = select_adapter(args.revision or "global", args.device)
+    revision = args.revision or "global"
+    if row.global_only:
+        if revision != "global":
+            raise RuntimeError(f"{row.case} is a global-only structural case")
+        workload = make_workload(row, args.device)
+        try:
+            structural = run_global_structural_case(workload)
+            _write_smoke_attempt(args, row_key(row), _smoke_record(args, row, None, structural=structural))
+        finally:
+            _cleanup_workload(workload)
+        return 0
+
+    if args.phase in {"cold", "warm"}:
+        result = measure_build(
+            revision,
+            row,
+            args.device,
+            args.phase,
+            warmup_constructions=args.warmup_iterations,
+            measured_constructions=args.num_iterations,
+        )
+        _write_smoke_attempt(
+            args,
+            row_key(row),
+            _smoke_record(
+                args,
+                row,
+                None,
+                structural=result["structural"],
+                timing=result["timing"],
+                counters=result["counters"],
+                adapter_name=result["adapter_name"],
+            ),
+        )
+        return 0
+    selected = select_adapter(revision, args.device)
     if isinstance(selected, RevisionCapability):
         raise RuntimeError(selected.reason)
     adapter = selected
@@ -1276,11 +2042,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         adapter.build_workload(workload)
         adapter.first_application(workload)
-        output = args.output_path / row_key(row).replace(":", "_")
-        attempt = allocate_attempt_dir(output)
-        write_attempt_atomically(attempt, _smoke_record(args, row, adapter))
+        _write_smoke_attempt(args, row_key(row), _smoke_record(args, row, adapter))
     finally:
         adapter.close()
+        _cleanup_workload(workload)
     return 0
 
 
