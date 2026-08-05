@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -920,6 +922,60 @@ def test_parent_rejects_compile_prewarm_member_with_timing(tmp_path):
     evidence = json.loads((batch / "prewarm" / "prewarm-develop.json").read_text())
     assert evidence["status"] == "rejected"
     assert evidence["member"]["timing"] == {"samples_ms": [1.0]}
+
+
+def test_prewarm_evidence_is_exclusively_published_after_file_fsync(tmp_path, monkeypatch):
+    """A complete fsynced prewarm document becomes visible once and precedes its directory fsync."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_durable_prewarm")
+    context = _coordinate_context(benchmark, tmp_path)
+    coordinator = benchmark.Coordinator(
+        tmp_path / "run",
+        runner=_FakeChildRunner(benchmark),
+        worktree_probe=_clean_probe(benchmark, context),
+        sleep=lambda _: None,
+    )
+    batch = tmp_path / "run" / "batches" / "runtime-01"
+    batch.mkdir(parents=True)
+    events = []
+    real_fsync = benchmark.os.fsync
+    real_link = benchmark.os.link
+
+    def tracking_fsync(descriptor):
+        kind = "directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file"
+        events.append(("fsync", kind))
+        return real_fsync(descriptor)
+
+    def tracking_link(source, target):
+        target = Path(target)
+        if target.exists():
+            return real_link(source, target)
+        document = Path(source).read_text(encoding="utf-8")
+        assert target.name.startswith("prewarm-")
+        assert not target.exists()
+        with pytest.raises(FileNotFoundError):
+            target.read_text(encoding="utf-8")
+        assert document.endswith("\n")
+        assert json.loads(document)["schema"] == "actuator_collection_prewarm/v1"
+        assert events[-1] == ("fsync", "file")
+        result = real_link(source, target)
+        assert target.read_text(encoding="utf-8") == document
+        events.append(("publish", target.name))
+        return result
+
+    monkeypatch.setattr(benchmark.os, "fsync", tracking_fsync)
+    monkeypatch.setattr(benchmark.os, "link", tracking_link)
+    coordinator._prewarm_revisions(context, batch)
+
+    expected = []
+    for revision in ("develop", "current", "global"):
+        expected.extend([("fsync", "file"), ("publish", f"prewarm-{revision}.json"), ("fsync", "directory")])
+    assert events == expected
+
+    first = batch / "prewarm" / "prewarm-develop.json"
+    original = first.read_text(encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        benchmark._write_json_exclusive(first, {"replacement": True})
+    assert first.read_text(encoding="utf-8") == original
 
 
 def test_final_child_closes_adapter_and_persists_supported_failure(tmp_path, monkeypatch):

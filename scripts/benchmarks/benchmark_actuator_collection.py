@@ -608,26 +608,28 @@ def allocate_attempt_dir(observation_path: Path) -> Path:
     raise RuntimeError("attempt space exhausted")
 
 
-def write_attempt_atomically(attempt_dir: Path, record: dict[str, Any]) -> Path:
-    """Write a validated immutable attempt document by atomic rename."""
-    validate_attempt(record)
-    target = attempt_dir / "attempt.json"
-    if target.exists():
-        raise FileExistsError(target)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=attempt_dir, delete=False) as handle:
-        json.dump(record, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-        temp = Path(handle.name)
+def _write_json_exclusive(target: Path, payload: dict[str, Any]) -> Path:
+    """Durably publish complete JSON at a final path that must not already exist."""
+    temp: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
+            temp = Path(handle.name)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.link(temp, target)
-    except FileExistsError:
-        raise
     finally:
-        temp.unlink(missing_ok=True)
-    _fsync_directory(attempt_dir)
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+    _fsync_directory(target.parent)
     return target
+
+
+def write_attempt_atomically(attempt_dir: Path, record: dict[str, Any]) -> Path:
+    """Validate and durably publish one immutable attempt document."""
+    validate_attempt(record)
+    return _write_json_exclusive(attempt_dir / "attempt.json", record)
 
 
 def make_workload(row: BuildRow, device: str) -> _Workload:
@@ -2569,9 +2571,7 @@ class Coordinator:
                 "reason": failure,
             }
             evidence_path = root / f"prewarm-{revision}.json"
-            with evidence_path.open("x", encoding="utf-8") as handle:
-                json.dump(evidence, handle, indent=2, sort_keys=True)
-                handle.write("\n")
+            _write_json_exclusive(evidence_path, evidence)
             if failure:
                 raise RuntimeError(f"{revision} compile prewarm failed: {failure}")
 
@@ -2898,19 +2898,7 @@ class Coordinator:
 def _write_member_atomically(output_path: Path, payload: dict[str, Any]) -> Path:
     """Publish one immutable child member result without replace semantics."""
     output_path.mkdir(parents=True, exist_ok=True)
-    target = output_path / "member.json"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_path, delete=False) as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-        temp = Path(handle.name)
-    try:
-        os.link(temp, target)
-    finally:
-        temp.unlink(missing_ok=True)
-    _fsync_directory(output_path)
-    return target
+    return _write_json_exclusive(output_path / "member.json", payload)
 
 
 def _decode_child_row(args: argparse.Namespace) -> BuildRow | RuntimeRow:
