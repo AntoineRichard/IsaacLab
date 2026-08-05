@@ -28,6 +28,7 @@ from .ordering_resolvers import _resolve_articulation_ordering_names
 
 if TYPE_CHECKING:
     from isaaclab.actuators import ActuatorCollection
+    from isaaclab.actuators.actuator_control import ArticulationActuatorControl
     from isaaclab.utils.wrench_composer import WrenchComposer
 
     from .articulation_cfg import ArticulationCfg
@@ -2606,6 +2607,41 @@ class BaseArticulation(AssetBase):
                 device=self.device,
             )
         return backend_data
+
+    def _register_actuator_collection(
+        self, control: ArticulationActuatorControl
+    ) -> ActuatorCollection.ArticulationView:
+        """Register this articulation with the simulation-scoped actuator manager.
+
+        Registration publishes only a pending facade. The order-20 manager
+        callback binds its candidate storage and completes this asset after all
+        order-10 articulation registrations have finished.
+
+        Args:
+            control: Backend control bridge owned by this articulation.
+
+        Returns:
+            Pending articulation-scoped actuator facade.
+
+        Raises:
+            RuntimeError: If no simulation context is active.
+        """
+        sim_context = SimulationContext.instance()
+        if sim_context is None:
+            raise RuntimeError("Actuator registration requires an active SimulationContext.")
+        self._actuator_control = control
+        self.actuators = sim_context._get_actuator_collection().register_articulation(
+            key=self,
+            cfgs=self.cfg.actuators,
+            control=control,
+            replication_cfg_id=self._replication_cfg_id,
+            debug_validation=self.cfg.actuator_debug_validation,
+            debug_value_resolution=self.cfg.actuator_value_resolution_debug_print,
+        )
+        self._has_implicit_actuators = any(control._is_implicit_cfg(cfg) for cfg in self.cfg.actuators.values())
+        self._has_newton_actuators = control.native_active
+        self._defer_initialization()
+        return self.actuators
 
     @abstractmethod
     def _process_actuators_cfg(self) -> None:

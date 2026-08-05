@@ -16,16 +16,19 @@ Tests:
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
 
 from isaaclab.actuators import ActuatorCollection, actuator_collection, actuator_storage
-from isaaclab.actuators.actuator_control import ActuatorJointProperties
+from isaaclab.actuators.actuator_base import ActuatorBase
+from isaaclab.actuators.actuator_control import ActuatorJointProperties, ArticulationActuatorControl
 from isaaclab.actuators.actuator_pd import DCMotor, IdealPDActuator, ImplicitActuator
 from isaaclab.actuators.actuator_pd_cfg import DCMotorCfg, IdealPDActuatorCfg, ImplicitActuatorCfg
+from isaaclab.assets.articulation.base_articulation import BaseArticulation
+from isaaclab.assets.articulation.base_articulation_data import BaseArticulationData
 from isaaclab.assets.asset_base import AssetBase
 from isaaclab.cloner.clone_plan import ClonePlan
 from isaaclab.physics import PhysicsEvent
@@ -135,6 +138,190 @@ class _Control:
         self.asset.data.is_primed = False
         if self.invalidate_error is not None:
             raise self.invalidate_error
+
+
+class _BridgeData:
+    """Small data object exercising the real base binding and rollback seams."""
+
+    def __init__(self, key: str, events: list[str]) -> None:
+        self._key = key
+        self._events = events
+        self._actuator_view = None
+        self._is_primed = False
+
+    @property
+    def is_primed(self) -> bool:
+        return self._is_primed
+
+    @is_primed.setter
+    def is_primed(self, value: bool) -> None:
+        del value
+        if self._is_primed:
+            raise ValueError("The articulation data is already primed.")
+        self._is_primed = True
+        self._events.append(f"prime:{self._key}")
+
+    def bind_actuator_collection(self, actuators) -> None:
+        BaseArticulationData.bind_actuator_collection(self, actuators)
+
+    def unbind_actuator_collection(self) -> None:
+        BaseArticulationData.unbind_actuator_collection(self)
+
+    def _rollback_actuator_initialization(self) -> None:
+        BaseArticulationData._rollback_actuator_initialization(self)
+        self._events.append(f"unprime:{self._key}")
+
+
+class _BridgeArticulation:
+    """Backend-neutral articulation owner for shared manager/control tests."""
+
+    def __init__(
+        self,
+        key: str,
+        replication_cfg_id: int,
+        events: list[str],
+        *,
+        actuator_type: type[ActuatorBase] = IdealPDActuator,
+        bind_error: Exception | None = None,
+        completion_error: Exception | None = None,
+    ) -> None:
+        cfg_type = ImplicitActuatorCfg if actuator_type is ImplicitActuator else IdealPDActuatorCfg
+        self.cfg = SimpleNamespace(
+            actuators={
+                "drive": cfg_type(
+                    class_type=actuator_type,
+                    joint_names_expr=["joint_0"],
+                    stiffness=None,
+                    damping=None,
+                )
+            },
+            actuator_debug_validation=True,
+            actuator_value_resolution_debug_print=False,
+        )
+        self._key = key
+        self._replication_cfg_id = replication_cfg_id
+        self._events = events
+        self._bind_error = bind_error
+        self._completion_error = completion_error
+        self._data = _BridgeData(key, events)
+        self._is_initialized = False
+        self._initialization_deferred = False
+        self._num_instances = 1
+        self._num_joints = 1
+        self._num_fixed_tendons = 0
+        self._device = "cpu"
+
+    @property
+    def data(self) -> _BridgeData:
+        return self._data
+
+    @property
+    def num_instances(self) -> int:
+        return self._num_instances
+
+    @property
+    def num_joints(self) -> int:
+        return self._num_joints
+
+    @property
+    def num_fixed_tendons(self) -> int:
+        return self._num_fixed_tendons
+
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._is_initialized
+
+    def find_joints(self, name_keys):
+        del name_keys
+        return [0], ["joint_0"]
+
+    def update(self, dt: float) -> None:
+        assert dt == 0.0
+        self._events.append(f"update:{self._key}")
+
+    def _log_articulation_info(self) -> None:
+        self._events.append(f"log:{self._key}")
+
+    def _defer_initialization(self) -> None:
+        AssetBase._defer_initialization(self)
+
+    def _complete_deferred_initialization(self) -> None:
+        self._events.append(f"complete:{self._key}")
+        if self._completion_error is not None:
+            raise self._completion_error
+        AssetBase._complete_deferred_initialization(self)
+
+    def _rollback_deferred_initialization(self) -> None:
+        AssetBase._rollback_deferred_initialization(self)
+
+    def register_actuators(self, control: ArticulationActuatorControl):
+        return BaseArticulation._register_actuator_collection(self, control)
+
+
+class _BridgeControl(ArticulationActuatorControl):
+    """Concrete backend-I/O double using the real generic articulation bridge."""
+
+    def __init__(self, articulation: _BridgeArticulation, events: list[str]) -> None:
+        super().__init__(articulation)
+        self._events = events
+        self.prepared_binding = None
+        self.bind_ready_states: list[bool] = []
+        self.complete_ready_states: list[bool] = []
+        self.reset_calls = []
+        self.submit_calls = []
+
+    def get_source_joint_properties(self, joint_ids, source_env_ids) -> ActuatorJointProperties:
+        assert joint_ids.shape == (1,)
+        values = torch.ones((source_env_ids.shape[0], 1), dtype=torch.float32)
+        return ActuatorJointProperties(
+            stiffness=values,
+            damping=values * 2.0,
+            armature=values * 0.1,
+            friction=values * 0.2,
+            dynamic_friction=values * 0.3,
+            viscous_friction=values * 0.4,
+            effort_limit=values * 100.0,
+            velocity_limit=values * 20.0,
+        )
+
+    def write_resolved_joint_properties_staged(self, properties) -> None:
+        assert properties.properties
+        assert self._articulation.data._actuator_view is None
+        assert not self._articulation.is_initialized
+        self._events.append(f"solver:{self._articulation._key}")
+
+    def prepare_actuator_binding(self, binding) -> None:
+        super().prepare_actuator_binding(binding)
+        self.prepared_binding = binding
+        self._events.append(f"prepare:{self._articulation._key}")
+
+    def bind_actuator_view(self, view) -> None:
+        self.bind_ready_states.append(view.is_ready)
+        super().bind_actuator_view(view)
+        self._events.append(f"bind:{self._articulation._key}")
+        if self._articulation._bind_error is not None:
+            raise self._articulation._bind_error
+
+    def complete_articulation_initialization(self) -> None:
+        self.complete_ready_states.append(self._articulation.actuators.is_ready)
+        super().complete_articulation_initialization()
+
+    def invalidate_actuator_view(self) -> None:
+        self._events.append(f"invalidate:{self._articulation._key}")
+        try:
+            super().invalidate_actuator_view()
+        finally:
+            self.prepared_binding = None
+
+    def submit_commands(self, collection) -> None:
+        self.submit_calls.append(collection)
+
+    def reset_native_actuators(self, env_ids) -> None:
+        self.reset_calls.append(env_ids)
 
 
 class _StructuredError(RuntimeError):
@@ -450,6 +637,20 @@ def _make_fake_context(monkeypatch) -> SimulationContext:
     return SimulationContext(cfg)
 
 
+def _make_bridge_context(monkeypatch) -> SimulationContext:
+    """Create a context whose real actuator manager can resolve two bridge assets."""
+    context = _make_fake_context(monkeypatch)
+    context.set_clone_plan(
+        ClonePlan(
+            sources=("/World/envs/env_0",),
+            destinations=("/World/envs/env_{}",),
+            clone_mask=torch.ones((1, 1), dtype=torch.bool),
+            cfg_rows={1: (0,), 2: (0,)},
+        )
+    )
+    return context
+
+
 def _register(collection: ActuatorCollection, key: object, control: _Control):
     return collection.register_articulation(
         key=key,
@@ -482,6 +683,137 @@ def test_pending_view_rejects_runtime_access_before_publication() -> None:
 
     with pytest.raises(RuntimeError, match="pending actuator view"):
         _ = view.command
+
+
+def test_base_data_binding_is_pointer_only_and_reversible() -> None:
+    """Binding stores a pending facade pointer without reading any of its lazy aliases."""
+
+    class _PendingFacade:
+        @property
+        def command(self):
+            raise AssertionError("bind must not dereference pending command storage")
+
+    data = _BridgeData("pointer", [])
+    pending = _PendingFacade()
+
+    data.bind_actuator_collection(pending)
+
+    assert data._actuator_view is pending
+    data.unbind_actuator_collection()
+    assert data._actuator_view is None
+
+
+def test_shared_articulation_bridge_registers_then_completes_in_global_order(monkeypatch) -> None:
+    """The real manager binds every scoped view before completing either asset."""
+    context = _make_bridge_context(monkeypatch)
+    events: list[str] = []
+    first = _BridgeArticulation("first", 1, events)
+    second = _BridgeArticulation("second", 2, events, actuator_type=ImplicitActuator)
+    first_control = _BridgeControl(first, events)
+    second_control = _BridgeControl(second, events)
+
+    first_view = first.register_actuators(first_control)
+    second_view = second.register_actuators(second_control)
+    collection = context._get_actuator_collection()
+
+    assert first.actuators is first_view and second.actuators is second_view
+    assert first.data._actuator_view is None and second.data._actuator_view is None
+    assert not first.is_initialized and not second.is_initialized
+    assert first._initialization_deferred and second._initialization_deferred
+    assert not first._has_implicit_actuators and second._has_implicit_actuators
+    assert not first._has_newton_actuators and not second._has_newton_actuators
+    assert not first_view.is_ready and not second_view.is_ready
+    with pytest.raises(RuntimeError, match="pending actuator view"):
+        first_view.reset()
+    with pytest.raises(RuntimeError, match="pending actuator view"):
+        first_view.submit_commands()
+    registrations = collection._registrations
+    assert [registration.key for registration in registrations] == [first, second]
+    assert registrations[0].cfgs is first.cfg.actuators
+    assert registrations[0].replication_cfg_id == 1
+    assert registrations[0].debug_validation
+    assert not registrations[0].debug_value_resolution
+
+    collection.finalize()
+
+    assert events == [
+        "solver:first",
+        "solver:second",
+        "prepare:first",
+        "prepare:second",
+        "bind:first",
+        "bind:second",
+        "update:first",
+        "log:first",
+        "prime:first",
+        "complete:first",
+        "update:second",
+        "log:second",
+        "prime:second",
+        "complete:second",
+    ]
+    assert first_control.bind_ready_states == [False]
+    assert second_control.bind_ready_states == [False]
+    assert first_control.complete_ready_states == [False]
+    assert second_control.complete_ready_states == [False]
+    assert first.is_initialized and first.data.is_primed
+    assert second.is_initialized and second.data.is_primed
+    assert first.data._actuator_view is first_view
+    assert second.data._actuator_view is second_view
+    assert first.data._actuator_view.command.position.torch.data_ptr() == first_view.command.position.torch.data_ptr()
+    assert (
+        first_control.prepared_binding.command.position.torch.data_ptr() == first_view.command.position.torch.data_ptr()
+    )
+    assert not first_view.has_implicit_actuators and second_view.has_implicit_actuators
+
+    signed_env_ids = torch.tensor([-1], dtype=torch.int32)
+    first_view.reset(signed_env_ids)
+    first_view.compute(0.01)
+    first_view.submit_commands()
+    assert first_control.reset_calls == [signed_env_ids]
+    assert first_control.reset_calls[0] is signed_env_ids
+    assert first_control.submit_calls == [first_view]
+
+    collection.clear_generation()
+    with pytest.raises(RuntimeError, match="stale actuator view"):
+        first_view.reset()
+    with pytest.raises(RuntimeError, match="stale actuator view"):
+        first_view.submit_commands()
+
+
+@pytest.mark.parametrize("failure_phase", ["bind", "completion"])
+def test_shared_articulation_bridge_rolls_back_every_asset_and_data_binding(monkeypatch, failure_phase) -> None:
+    """One later bind or completion failure reverses every shared bridge transition."""
+    context = _make_bridge_context(monkeypatch)
+    events: list[str] = []
+    first = _BridgeArticulation("first", 1, events)
+    second = _BridgeArticulation(
+        "second",
+        2,
+        events,
+        bind_error=RuntimeError("second bind") if failure_phase == "bind" else None,
+        completion_error=RuntimeError("second completion") if failure_phase == "completion" else None,
+    )
+    first_control = _BridgeControl(first, events)
+    second_control = _BridgeControl(second, events)
+    first_view = first.register_actuators(first_control)
+    second_view = second.register_actuators(second_control)
+    collection = context._get_actuator_collection()
+
+    with pytest.raises(RuntimeError, match=f"second {failure_phase}"):
+        collection.finalize()
+
+    assert collection.generation is None
+    assert not first.is_initialized and not second.is_initialized
+    assert not first.data.is_primed and not second.data.is_primed
+    assert first.data._actuator_view is None and second.data._actuator_view is None
+    assert first._initialization_deferred and second._initialization_deferred
+    assert first_control.prepared_binding is None and second_control.prepared_binding is None
+    assert events.count("invalidate:first") == events.count("invalidate:second") == 1
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        _ = first_view.command
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        _ = second_view.command
 
 
 def test_failed_finalization_publishes_no_partial_generation() -> None:
@@ -885,12 +1217,122 @@ def test_explicit_config_order_blocks_or_enables_implicit_backend_gain_routes(ex
         assert view._backend_parameter_staging is None
     else:
         assert len(control.backend_writes) == 1
+        assert control.backend_writes[0][1].actuator_type is ImplicitActuator
         staging = view._backend_parameter_staging
         assert staging is not None
         torch.testing.assert_close(
             staging.target(ImplicitActuator, "stiffness").torch,
             torch.full((4, 2), 33.0),
         )
+
+
+def test_private_candidate_binding_exposes_backend_state_without_pending_facade_access() -> None:
+    """Backend preparation consumes candidate aliases while the public facade is pending."""
+
+    class _CandidateInspectingControl(_SourceResolvingControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.prepared = None
+            self.pending_view = None
+
+        def prepare_actuator_binding(self, binding) -> None:
+            with pytest.raises(RuntimeError, match="pending actuator view"):
+                _ = self.pending_view.command
+            self.prepared = {
+                "groups": binding.groups,
+                "raw_position": binding.command.position,
+                "raw_velocity": binding.command.velocity,
+                "raw_effort": binding.command.effort,
+                "processed_position": binding.joint_command.position,
+                "processed_velocity": binding.joint_command.velocity,
+                "processed_effort": binding.joint_command.effort,
+                "computed_effort": binding.computed_effort,
+                "applied_effort": binding.applied_effort,
+                "native_group_names": binding.native_group_names,
+            }
+
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _CandidateInspectingControl()
+    control.native_groups = {"drive"}
+    cfg = IdealPDActuatorCfg(
+        class_type=IdealPDActuator,
+        joint_names_expr=[".*"],
+        stiffness=None,
+        damping=None,
+    )
+    view = _register_managed(collection, "first", control, {"drive": cfg})
+    control.pending_view = view
+
+    collection.finalize()
+
+    assert control.prepared is not None
+    assert control.prepared["groups"]["drive"] is view["drive"]
+    for name in ("position", "velocity", "effort"):
+        assert control.prepared[f"raw_{name}"].torch.data_ptr() == getattr(view.command, name).torch.data_ptr()
+        assert (
+            control.prepared[f"processed_{name}"].torch.data_ptr() == getattr(view.joint_command, name).torch.data_ptr()
+        )
+    assert control.prepared["computed_effort"].torch.data_ptr() == view.computed_effort.torch.data_ptr()
+    assert control.prepared["applied_effort"].torch.data_ptr() == view.applied_effort.torch.data_ptr()
+    assert control.prepared["native_group_names"] == frozenset({"drive"})
+
+
+def test_manager_rejects_incomplete_private_binding_before_backend_prepare(monkeypatch) -> None:
+    """The transaction validates every candidate alias even when a control omits ``super()``."""
+
+    class _PrepareRecordingControl(_Control):
+        def __init__(self) -> None:
+            super().__init__(num_joints=1)
+            self.prepare_called = False
+
+        def prepare_actuator_binding(self, binding) -> None:
+            del binding
+            self.prepare_called = True
+
+    collection = ActuatorCollection(_Simulation())
+    control = _PrepareRecordingControl()
+    _register_managed(collection, "first", control)
+    bind_facade_storage = actuator_collection._CollectionGeneration.bind_facade_storage
+
+    def _drop_candidate_command(candidate) -> None:
+        bind_facade_storage(candidate)
+        (binding,) = candidate.bindings
+        candidate.bindings = (replace(binding, command=None),)
+
+    monkeypatch.setattr(
+        actuator_collection._CollectionGeneration,
+        "bind_facade_storage",
+        _drop_candidate_command,
+    )
+
+    with pytest.raises(RuntimeError, match="candidate binding.*command"):
+        collection.finalize()
+
+    assert not control.prepare_called
+
+
+def test_type_scoped_parameter_side_effect_carries_exact_actuator_type() -> None:
+    """Type-view backend routing identifies its exact class without a group binding."""
+    collection = ActuatorCollection(_VariantSimulation())
+    control = _RoutedSourceControl({"drive": (0, 1)})
+    control.native_groups = {"drive"}
+    cfg = IdealPDActuatorCfg(
+        class_type=IdealPDActuator,
+        joint_names_expr=["drive"],
+        stiffness=None,
+        damping=None,
+    )
+    view = _register_managed(collection, "first", control, {"drive": cfg})
+    collection.finalize()
+
+    view.by_type[IdealPDActuator].set_parameter_index("stiffness", 9.0)
+
+    assert len(control.backend_writes) == 1
+    name, write = control.backend_writes[0]
+    assert name == "stiffness"
+    assert write.actuator_type is IdealPDActuator
+    assert write.group_binding is None
+    assert write.scope == "type"
 
 
 def test_partial_implicit_gain_write_preserves_later_opaque_solver_defaults() -> None:
@@ -1604,7 +2046,13 @@ def test_deferred_asset_completion_requires_an_explicit_deferral() -> None:
 
     with pytest.raises(RuntimeError, match="not deferred"):
         asset._complete_deferred_initialization()
+    asset._rollback_deferred_initialization()
+    assert not asset._is_initialized
+    assert not asset._initialization_deferred
     asset._defer_initialization()
     asset._complete_deferred_initialization()
     assert asset._is_initialized
     assert not asset._initialization_deferred
+    asset._rollback_deferred_initialization()
+    assert not asset._is_initialized
+    assert asset._initialization_deferred

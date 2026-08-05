@@ -494,6 +494,13 @@ class AssetBase(ABC):
         self._initialization_deferred = False
         self._is_initialized = True
 
+    def _rollback_deferred_initialization(self) -> None:
+        """Restore the pre-publication state after deferred initialization fails."""
+        if not self._is_initialized and not self._initialization_deferred:
+            return
+        self._is_initialized = False
+        self._initialization_deferred = True
+
     def _invalidate_initialize_callback(self, event):
         """Invalidates the scene elements."""
         self._is_initialized = False

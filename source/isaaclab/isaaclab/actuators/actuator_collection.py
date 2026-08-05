@@ -12,6 +12,7 @@ import logging
 import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -123,12 +124,27 @@ class _ArticulationRegistration:
 
 
 @dataclass(frozen=True)
+class _ActuatorCommandBinding:
+    """Private candidate-owned aliases for one three-component command domain."""
+
+    position: ProxyArray
+    velocity: ProxyArray
+    effort: ProxyArray
+
+
+@dataclass(frozen=True)
 class _ArticulationBinding:
     """Private candidate binding for one articulation registration."""
 
     registration: _ArticulationRegistration
     layout: _ArticulationLayout
     backend_parameter_staging: _BackendParameterStaging | None = None
+    groups: Mapping[str, ActuatorBase] | None = None
+    command: _ActuatorCommandBinding | None = None
+    joint_command: _ActuatorCommandBinding | None = None
+    computed_effort: ProxyArray | None = None
+    applied_effort: ProxyArray | None = None
+    native_group_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -669,6 +685,25 @@ class _CollectionGeneration:
             if binding.layout.registration_key is not binding.registration.key:
                 raise ValueError(f"Candidate binding for {binding.registration.key!r} has an invalid registration key.")
 
+    def validate_backend_bindings(self) -> None:
+        """Validate candidate-owned backend aliases before any control prepares."""
+        for binding in self.bindings:
+            missing = [
+                name
+                for name in ("groups", "command", "joint_command", "computed_effort", "applied_effort")
+                if getattr(binding, name) is None
+            ]
+            if missing:
+                fields = ", ".join(missing)
+                raise RuntimeError(f"Private candidate binding for {binding.registration.key!r} is missing {fields}.")
+            assert binding.groups is not None
+            unknown_native_groups = binding.native_group_names.difference(binding.groups)
+            if unknown_native_groups:
+                names = ", ".join(repr(name) for name in sorted(unknown_native_groups))
+                raise RuntimeError(
+                    f"Private candidate binding for {binding.registration.key!r} has unknown native groups: {names}."
+                )
+
     def prepare_solver_properties(self) -> None:
         """Materialize final device targets and persistent gain staging after opaque overlays."""
         device_bindings = tuple(
@@ -842,6 +877,7 @@ class _CollectionGeneration:
 
     def bind_facade_storage(self) -> None:
         """Construct exact logical groups and bind candidate-owned typed arrays."""
+        updated_bindings: list[_ArticulationBinding] = []
         for binding in self.bindings:
             groups: dict[str, ActuatorBase] = {}
             control = binding.registration.control
@@ -942,6 +978,26 @@ class _CollectionGeneration:
                     }
                 )
                 actuator._release_managed_source_parameters()
+            updated_bindings.append(
+                replace(
+                    binding,
+                    groups=MappingProxyType(groups),
+                    command=_ActuatorCommandBinding(
+                        position=self.joint_store.articulation_proxy("raw_position", binding.layout),
+                        velocity=self.joint_store.articulation_proxy("raw_velocity", binding.layout),
+                        effort=self.joint_store.articulation_proxy("raw_effort", binding.layout),
+                    ),
+                    joint_command=_ActuatorCommandBinding(
+                        position=self.joint_store.articulation_proxy("processed_position", binding.layout),
+                        velocity=self.joint_store.articulation_proxy("processed_velocity", binding.layout),
+                        effort=self.joint_store.articulation_proxy("processed_effort", binding.layout),
+                    ),
+                    computed_effort=self.joint_store.articulation_proxy("computed_effort", binding.layout),
+                    applied_effort=self.joint_store.articulation_proxy("applied_effort", binding.layout),
+                    native_group_names=binding.registration.native_group_names,
+                )
+            )
+        self.bindings = tuple(updated_bindings)
 
     def publish_effort_telemetry(self) -> None:
         """Publish exact-type effort outputs in stable articulation joint order."""
@@ -1553,6 +1609,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._computed_effort: ProxyArray | None = None
             self._applied_effort: ProxyArray | None = None
             self._backend_parameter_staging: _BackendParameterStaging | None = None
+            self._has_implicit_actuators = False
 
         @property
         def generation(self) -> int:
@@ -1608,10 +1665,48 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 raise RuntimeError("Actuator telemetry storage is not available before the scoped facade is installed.")
             return self._applied_effort
 
+        @property
+        def has_implicit_actuators(self) -> bool:
+            """Whether this articulation has any implicit actuator groups."""
+            self._require_current_generation()
+            return self._has_implicit_actuators
+
+        def reset(
+            self,
+            env_ids: Sequence[int]
+            | torch.Tensor
+            | wp.array(dtype=wp.int32)
+            | wp.array(dtype=wp.int64)
+            | slice
+            | None = None,
+        ) -> None:
+            """Reset every actuator group and the backend-native actuator state.
+
+            Args:
+                env_ids: Signed environment indices to reset, or ``None`` for
+                    every articulation instance.
+            """
+            self._require_execution_ready()
+            resolved_env_ids = slice(None) if env_ids is None else env_ids
+            for actuator in dict.values(self):
+                actuator.reset(resolved_env_ids)
+            control = self._control
+            if control is None:
+                raise RuntimeError("stale actuator view")
+            control.reset_native_actuators(resolved_env_ids)
+
         def compute(self, dt: float = 0.0) -> None:
             """Reject execution while a topology mutation requires a safe rebuild."""
             del dt
             self._require_execution_ready()
+
+        def submit_commands(self) -> None:
+            """Submit processed command buffers through the backend control."""
+            self._require_execution_ready()
+            control = self._control
+            if control is None:
+                raise RuntimeError("stale actuator view")
+            control.submit_commands(self)
 
         def __getitem__(self, name: str) -> ActuatorBase:
             self._require_current_generation()
@@ -1733,27 +1828,43 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             generation: _CollectionGeneration,
             binding: _ArticulationBinding,
         ) -> None:
-            groups = generation.groups[binding.registration.key]
+            groups = binding.groups
+            command = binding.command
+            joint_command = binding.joint_command
+            computed_effort = binding.computed_effort
+            applied_effort = binding.applied_effort
+            if (
+                groups is None
+                or command is None
+                or joint_command is None
+                or computed_effort is None
+                or applied_effort is None
+            ):
+                raise RuntimeError("Cannot install an incomplete private candidate binding.")
             selector_state = generation.selector_states[binding.registration.key]
             self._selector_state = selector_state
             self._install_token = selector_state.token
             self._command = self.Command(
                 self,
                 selector_state.token,
-                generation.joint_store.articulation_proxy("raw_position", binding.layout),
-                generation.joint_store.articulation_proxy("raw_velocity", binding.layout),
-                generation.joint_store.articulation_proxy("raw_effort", binding.layout),
+                command.position,
+                command.velocity,
+                command.effort,
             )
             self._joint_command = self.JointCommand(
                 self,
                 selector_state.token,
-                generation.joint_store.articulation_proxy("processed_position", binding.layout),
-                generation.joint_store.articulation_proxy("processed_velocity", binding.layout),
-                generation.joint_store.articulation_proxy("processed_effort", binding.layout),
+                joint_command.position,
+                joint_command.velocity,
+                joint_command.effort,
             )
-            self._computed_effort = generation.joint_store.articulation_proxy("computed_effort", binding.layout)
-            self._applied_effort = generation.joint_store.articulation_proxy("applied_effort", binding.layout)
+            self._computed_effort = computed_effort
+            self._applied_effort = applied_effort
             self._backend_parameter_staging = binding.backend_parameter_staging
+            self._has_implicit_actuators = any(
+                issubclass(group_layout.actuator_type, ImplicitActuator)
+                for group_layout in binding.layout.group_layouts
+            )
             dict.__init__(self, groups)
             for group in groups.values():
                 group._bind_facade_view(self, selector_state.token)
@@ -2407,6 +2518,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     return None
             return _ActuatorParameterWrite(
                 value=value,
+                actuator_type=actuator_type,
                 canonical=target if group_binding is None else group_binding.arrays.get(name, target),
                 env_ids=env_ids,
                 joint_ids=joint_ids,
@@ -2442,6 +2554,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             self._computed_effort = None
             self._applied_effort = None
             self._backend_parameter_staging = None
+            self._has_implicit_actuators = False
             for group in tuple(dict.values(self)):
                 group._release_facade_storage()
             dict.clear(self)
@@ -2597,6 +2710,7 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             )
             candidate.validate()
             candidate.bind_facade_storage()
+            candidate.validate_backend_bindings()
             candidate.prepare_solver_properties()
             candidate.write_solver_properties()
             candidate.validate_solver_properties()

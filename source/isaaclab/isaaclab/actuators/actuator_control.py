@@ -71,6 +71,7 @@ class _ActuatorParameterWrite:
     """Canonical selection and backend ownership for one actuator parameter write."""
 
     value: torch.Tensor | wp.array
+    actuator_type: type[ActuatorBase]
     canonical: ProxyArray | None = None
     env_ids: torch.Tensor | wp.array | None = None
     joint_ids: torch.Tensor | wp.array | None = None
@@ -365,11 +366,14 @@ class ActuatorControl(ABC):
         return False
 
     @abstractmethod
-    def submit_commands(self, collection: ActuatorCollection) -> None:
+    def submit_commands(self, collection: ActuatorCollection | ActuatorCollection.ArticulationView) -> None:
         """Submit processed collection command buffers to the backend simulation."""
         raise NotImplementedError
 
-    def reset_native_actuators(self, env_ids: Sequence[int] | slice) -> None:
+    def reset_native_actuators(
+        self,
+        env_ids: Sequence[int] | torch.Tensor | wp.array(dtype=wp.int32) | wp.array(dtype=wp.int64) | slice,
+    ) -> None:
         """Reset backend-native actuator state for selected environments."""
 
     def write_native_actuator_gain(
@@ -396,6 +400,43 @@ class ArticulationActuatorControl(ActuatorControl):
 
     def __init__(self, articulation):
         self._articulation = articulation
+        self._actuator_binding: _ArticulationBinding | None = None
+        self._actuator_view: ActuatorCollection.ArticulationView | None = None
+
+    def prepare_actuator_binding(self, binding: _ArticulationBinding) -> None:
+        """Retain the private candidate binding before facade publication."""
+        self._actuator_binding = binding
+
+    def bind_actuator_view(self, view: ActuatorCollection.ArticulationView) -> None:
+        """Bind articulation data to the published scoped facade."""
+        if self._actuator_binding is None:
+            raise RuntimeError("Actuator candidate binding was not prepared before facade publication.")
+        self._actuator_view = view
+        try:
+            self._articulation.data.bind_actuator_collection(view)
+        except Exception:
+            self._actuator_view = None
+            raise
+
+    def complete_articulation_initialization(self) -> None:
+        """Prime articulation data and complete deferred asset initialization."""
+        if self._actuator_binding is None or self._actuator_view is None:
+            raise RuntimeError("Actuator facade must be prepared and bound before articulation completion.")
+        self._articulation.update(0.0)
+        self._articulation._log_articulation_info()
+        self._articulation.data.is_primed = True
+        self._articulation._complete_deferred_initialization()
+
+    def invalidate_actuator_view(self) -> None:
+        """Reverse data binding, priming, and deferred asset completion."""
+        try:
+            self._articulation.data._rollback_actuator_initialization()
+        finally:
+            try:
+                self._articulation._rollback_deferred_initialization()
+            finally:
+                self._actuator_view = None
+                self._actuator_binding = None
 
     @property
     def native_active(self) -> bool:

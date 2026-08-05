@@ -1144,6 +1144,7 @@ def test_backend_parameter_staging_uses_type_canonical_values_for_group_writes(d
     )
     write = _ActuatorParameterWrite(
         value=group_value,
+        actuator_type=IdealPDActuator,
         env_ids=torch.tensor([0, 1], dtype=torch.int32, device=device),
         joint_ids=torch.tensor([0], dtype=torch.int32, device=device),
         group_binding=binding,
@@ -1185,7 +1186,11 @@ def test_backend_parameter_staging_reuses_candidate_owned_default_selectors(
         device=device,
         owner_slots={(IdealPDActuator, "stiffness"): torch.tensor([1, 0], dtype=torch.int32, device=device)},
     )
-    write = _ActuatorParameterWrite(value=canonical.torch, canonical=canonical)
+    write = _ActuatorParameterWrite(
+        value=canonical.torch,
+        actuator_type=IdealPDActuator,
+        canonical=canonical,
+    )
     env_ids = staging._all_env_ids
     joint_ids = staging._all_joint_ids
 
@@ -1220,7 +1225,11 @@ def test_backend_parameter_staging_rejects_a_canonical_array_on_the_wrong_device
         owner_slots={(IdealPDActuator, "stiffness"): torch.tensor([0], dtype=torch.int32, device="cuda:0")},
     )
     canonical = ProxyArray(wp.from_torch(torch.ones((1, 1), dtype=torch.float32), dtype=wp.float32))
-    write = _ActuatorParameterWrite(value=canonical.torch, canonical=canonical)
+    write = _ActuatorParameterWrite(
+        value=canonical.torch,
+        actuator_type=IdealPDActuator,
+        canonical=canonical,
+    )
 
     with pytest.raises(ValueError, match="canonical.*candidate device"):
         staging.patch_write(actuator_type=IdealPDActuator, name="stiffness", write=write)

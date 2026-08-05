@@ -29,6 +29,7 @@ from isaaclab.utils.warp import ProxyArray
 from . import ordering_kernels
 
 if TYPE_CHECKING:
+    from isaaclab.actuators import ActuatorCollection
     from isaaclab.utils.buffers import TimestampedBufferWarp
 
     from .ordering import ArticulationNameMap
@@ -64,6 +65,51 @@ class BaseArticulationData(ABC):
         """
         # Set the parameters
         self.device = device
+        self._is_primed = False
+        self._actuator_view: ActuatorCollection.ArticulationView | None = None
+
+    @property
+    def is_primed(self) -> bool:
+        """Whether the articulation data is fully instantiated and ready to use."""
+        return self._is_primed
+
+    @is_primed.setter
+    def is_primed(self, value: bool) -> None:
+        """Mark the articulation data primed exactly once.
+
+        Args:
+            value: Requested primed state. For compatibility, the first write
+                marks the data primed regardless of this value.
+
+        Raises:
+            ValueError: If the articulation data is already primed.
+        """
+        del value
+        if self._is_primed:
+            raise ValueError("The articulation data is already primed.")
+        self._is_primed = True
+
+    def bind_actuator_collection(self, actuators: ActuatorCollection.ArticulationView) -> None:
+        """Bind the articulation-scoped actuator facade without resolving its lazy aliases.
+
+        Args:
+            actuators: Published articulation-scoped actuator facade.
+        """
+        self._actuator_view = actuators
+
+    def unbind_actuator_collection(self) -> None:
+        """Release the articulation-scoped actuator facade pointer."""
+        self._actuator_view = None
+        # Legacy concrete data adapters may retain this pointer in addition to
+        # ``_actuator_view``. Clear it so stale aliases cannot keep a failed
+        # generation reachable.
+        if hasattr(self, "_actuator_collection"):
+            setattr(self, "_actuator_collection", None)
+
+    def _rollback_actuator_initialization(self) -> None:
+        """Unbind actuator storage and restore the unprimed data state."""
+        self.unbind_actuator_collection()
+        self._is_primed = False
 
     @abstractmethod
     def update(self, dt: float) -> None:
