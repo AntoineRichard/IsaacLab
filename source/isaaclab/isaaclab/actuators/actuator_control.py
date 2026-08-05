@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 import torch
 import warp as wp
 
+from isaaclab.utils.string import ResolvableString, string_to_callable
 from isaaclab.utils.warp import ProxyArray
 
 from .actuator_base import ActuatorBase
@@ -594,9 +595,13 @@ class ArticulationActuatorControl(ActuatorControl):
 
     @staticmethod
     def _is_implicit_cfg(actuator_cfg: ActuatorBaseCfg) -> bool:
-        class_type = actuator_cfg.class_type
-        return (
-            "ImplicitActuator" in class_type
-            if isinstance(class_type, str)
-            else issubclass(class_type, ImplicitActuator)
-        )
+        configured_type = actuator_cfg.class_type
+        if isinstance(configured_type, ResolvableString):
+            actuator_type = configured_type._resolve()
+        elif isinstance(configured_type, str):
+            actuator_type = string_to_callable(configured_type)
+        else:
+            actuator_type = configured_type
+        if not isinstance(actuator_type, type) or not issubclass(actuator_type, ActuatorBase):
+            raise TypeError("Actuator configuration class_type must resolve to an ActuatorBase subclass.")
+        return issubclass(actuator_type, ImplicitActuator)

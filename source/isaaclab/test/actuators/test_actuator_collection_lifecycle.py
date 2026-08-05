@@ -36,6 +36,10 @@ from isaaclab.sim.service_locator import ServiceLocator
 from isaaclab.sim.simulation_context import SimulationContext
 
 
+class _NeutralDrive(ImplicitActuator):
+    """Serialized implicit actuator whose class name carries no implementation hint."""
+
+
 @dataclass
 class _Data:
     is_primed: bool = False
@@ -1238,6 +1242,26 @@ def test_managed_collection_resolves_builtin_lazy_cfg_classes_without_mutating_c
     assert isinstance(cfg.class_type, str)
     assert cfg.class_type is original_class_type
     assert view["drive"].joint_indices == slice(None)
+
+
+def test_bridge_classifies_serialized_custom_implicit_actuator_without_mutating_cfg(monkeypatch) -> None:
+    """Registration and native discovery must classify the resolved actuator class."""
+
+    class _NativeDiscoveryControl(_BridgeControl):
+        def discover_native_actuators(self, cfgs) -> set[str]:
+            return {name for name, cfg in cfgs.items() if not self._is_implicit_cfg(cfg)}
+
+    context = _make_bridge_context(monkeypatch)
+    articulation = _BridgeArticulation("custom", 1, [])
+    cfg = articulation.cfg.actuators["drive"]
+    serialized_class_type = f"{__name__}:_NeutralDrive"
+    cfg.class_type = serialized_class_type
+
+    articulation.register_actuators(_NativeDiscoveryControl(articulation, []))
+
+    assert articulation._has_implicit_actuators
+    assert context._get_actuator_collection()._registrations[0].native_group_names == frozenset()
+    assert cfg.class_type == serialized_class_type
 
 
 @pytest.mark.parametrize("explicit_type", [IdealPDActuator, _OpaqueIdealPD])
