@@ -101,14 +101,6 @@ class Articulation(BaseArticulation):
     __backend_native_orderings__: tuple[str, ...] = ("physx",)
     """PhysX tensor-view order already matches the ``"physx"`` convention."""
 
-    actuators: dict
-    """Dictionary of actuator instances for the articulation.
-
-    The keys are the actuator names and the values are the actuator instances. The actuator instances
-    are initialized based on the actuator configurations specified in the :attr:`ArticulationCfg.actuators`
-    attribute. They are used to compute the joint commands during the :meth:`write_data_to_sim` function.
-    """
-
     def __init__(self, cfg: ArticulationCfg):
         """Initialize the articulation.
 
