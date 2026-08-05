@@ -14,6 +14,7 @@ import os
 import stat
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1421,6 +1422,48 @@ def test_summary_writes_json_csv_and_markdown_from_validated_report(tmp_path):
     }
 
 
+def test_summary_outputs_keep_complete_identity_statistics_and_gate_evidence(tmp_path):
+    """Every format carries the same representative identity, statistic, and rejection evidence."""
+    summary = _load(_SUMMARY, "actuator_benchmark_summary_output_identity")
+    report = {
+        "candidate_sha": "g" * 40,
+        "selection_identity": {
+            "revision_shas": {"develop": "d" * 40, "current": "c" * 40, "global": "g" * 40},
+            "harness_sha256": "h" * 64,
+            "selected_attempt_paths": ["observations/row/attempt-01"],
+        },
+        "immutable_rejected_attempts": {"child failed": 2},
+        "comparisons": [
+            {
+                "comparison_identity": "B1|develop-global|warm",
+                "observation_key": "B1",
+                "baseline_process_medians_ms": [1.0] * 6,
+                "global_process_medians_ms": [2.0] * 6,
+                "ratio_median": 2.0,
+                "ratio_mean": 2.0,
+                "ratio_p95": 2.0,
+                "ratio_dispersion": 0.0,
+                "ratio_bootstrap_95": [2.0, 2.0],
+            }
+        ],
+        "capabilities": [
+            {
+                "observation_key": "runtime|implicit:g1:graph|historical-capability",
+                "status": "unsupported",
+                "members": [{"revision": "develop", "supported": False, "reason": "graph unavailable"}],
+                "telemetry": {"required": False, "available": True, "rejection_reasons": [], "samples": {}},
+                "structural": [{"pointer_replacements": 0}],
+                "counters": [{"gate": "passed"}],
+                "process": {"rejection_reasons": []},
+            }
+        ],
+    }
+    summary.write_outputs(report, tmp_path)
+    documents = {path.name: path.read_text(encoding="utf-8") for path in tmp_path.iterdir()}
+    expected = ("B1|develop-global|warm", "graph unavailable", "child failed", "h" * 64)
+    assert all(all(value in document for value in expected) for document in documents.values())
+
+
 def test_summary_rejects_incomplete_six_pair_manifest():
     """Accepted pair statistics reject a five-pair manifest before calculation."""
     benchmark = _load(_BENCHMARK, "actuator_benchmark_manifest_driver")
@@ -1531,6 +1574,7 @@ def _literal_v1_summary_record(*, attempt_id, observation_key, status="accepted"
 def test_summary_loads_only_selected_literal_v1_attempts_and_retains_rejections(tmp_path, monkeypatch):
     """An unselected accepted-looking document cannot become a process statistic."""
     summary = _load(_SUMMARY, "actuator_benchmark_summary_literal_selection")
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_summary_literal_selection_driver")
     run_root = tmp_path / "run"
     harness = run_root / "harness" / "benchmark_actuator_collection.py"
     harness.parent.mkdir(parents=True)
@@ -1547,7 +1591,12 @@ def test_summary_loads_only_selected_literal_v1_attempts_and_retains_rejections(
         record["identity"]["harness_sha256"] = digest
         record["paths"]["harness"] = str(harness)
         record["paths"]["worktrees"] = {revision: str(path) for revision, path in worktrees.items()}
-        attempt = run_root / "observations" / name / record["identity"]["attempt_id"]
+        attempt = (
+            run_root
+            / "observations"
+            / benchmark._safe_observation_name(record["identity"]["observation_key"])
+            / record["identity"]["attempt_id"]
+        )
         attempt.mkdir(parents=True)
         (attempt / "attempt.json").write_text(json.dumps(record), encoding="utf-8")
     manifest = {
@@ -1555,7 +1604,13 @@ def test_summary_loads_only_selected_literal_v1_attempts_and_retains_rejections(
         "candidate_sha": "g" * 40,
         "revision_shas": {"develop": "d" * 40, "current": "c" * 40, "global": "g" * 40},
         "harness_sha256": digest,
-        "attempts": ["observations/selected/attempt-01"],
+        "attempts": [
+            str(
+                Path("observations")
+                / benchmark._safe_observation_name(selected["identity"]["observation_key"])
+                / selected["identity"]["attempt_id"]
+            )
+        ],
     }
     (run_root / "accepted-attempts.json").write_text(json.dumps(manifest), encoding="utf-8")
     expected_heads = {"develop": "d" * 40, "current": "c" * 40, "global": "g" * 40}
@@ -1563,6 +1618,26 @@ def test_summary_loads_only_selected_literal_v1_attempts_and_retains_rejections(
     loaded = summary.load_selected_attempts(run_root, "g" * 40)
     assert [record["identity"]["observation_key"] for record in loaded.selected] == ["selected"]
     assert loaded.rejected_reasons == {"rejected": 1}
+    unselected["identity"]["batch_id"] = "different-batch"
+    unselected_path = (
+        Path("observations")
+        / benchmark._safe_observation_name(unselected["identity"]["observation_key"])
+        / unselected["identity"]["attempt_id"]
+    )
+    (run_root / unselected_path / "attempt.json").write_text(json.dumps(unselected), encoding="utf-8")
+    manifest["attempts"].append(str(unselected_path))
+    (run_root / "accepted-attempts.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="mixed selected batch"):
+        summary.load_selected_attempts(run_root, "g" * 40)
+    manifest["attempts"] = manifest["attempts"][:1]
+    selected_parent = run_root / manifest["attempts"][0]
+    forged = run_root / "observations" / "forged-parent" / selected_parent.name
+    forged.parent.mkdir(parents=True)
+    selected_parent.rename(forged)
+    manifest["attempts"] = [str(forged.relative_to(run_root))]
+    (run_root / "accepted-attempts.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="observation directory"):
+        summary.load_selected_attempts(run_root, "g" * 40)
 
 
 def _complete_runtime_schedule_records(benchmark):
@@ -1643,14 +1718,89 @@ def _complete_runtime_schedule_records(benchmark):
     return records
 
 
+def _complete_build_schedule_records(benchmark):
+    """Create the exact final-v1 build schedule, including capability singletons."""
+    template = _complete_runtime_schedule_records(benchmark)[0]
+    records = []
+    for number, observation in enumerate(benchmark.build_coordinate_schedule(6, 6), start=1):
+        unsupported = observation.unsupported_reason is not None
+        record = deepcopy(template)
+        record["identity"].update(
+            observation_key=observation.observation_key,
+            attempt_id=f"build-attempt-{number:03}",
+        )
+        record.update(
+            kind=observation.kind,
+            status="unsupported" if unsupported else "accepted",
+            boundary=observation.boundary,
+            members=[],
+            metadata={
+                "matrix": observation.matrix,
+                "row_key": observation.row_key,
+                "comparison": observation.comparison,
+                "mode_pair": observation.mode_pair,
+                "pair_id": observation.pair_id,
+                "order": observation.order,
+                "phase": observation.phase,
+            },
+            pair_id=observation.pair_id,
+            pair_order=observation.order,
+        )
+        record["command"] = ["coordinate", "--num_iterations", "100"]
+        for revision, requested, row in zip(
+            observation.revisions, observation.requested_executions, observation.child_rows, strict=True
+        ):
+            if observation.phase == "warm":
+                timing = {
+                    "samples_ms": [1.0],
+                    "total_ms": 10000.0,
+                    "per_construction_ms": 100.0,
+                    "construction_count": 100,
+                }
+            elif observation.phase == "cold":
+                timing = {"samples_ms": [1.0], "construction_count": 1}
+            else:
+                timing = {"samples_ms": [1.0]}
+            record["members"].append(
+                {
+                    "revision": revision,
+                    "requested_execution": requested,
+                    "effective_execution": None if unsupported else row.get("effective_execution", requested),
+                    "revision_sha": {"develop": "d" * 40, "current": "c" * 40, "global": "g" * 40}[revision],
+                    "adapter": revision,
+                    "resolved_row": row,
+                    "source_emulation": revision != "global" and row.get("case") == "B3",
+                    "capability": {
+                        "supported": not unsupported,
+                        "reason": observation.unsupported_reason if unsupported else None,
+                    },
+                    "timing": None if unsupported else timing,
+                    "counters": {},
+                    "structural": {} if revision == "global" else None,
+                    "execution": {"graph_capture_live": False},
+                    "process": {"returncode": None if unsupported else 0},
+                }
+            )
+        records.append(record)
+    return records
+
+
+def test_summary_accepts_complete_combined_build_and_runtime_schedule():
+    """The append-only final selection validates both frozen matrix partitions."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_summary_combined_driver")
+    summary = _load(_SUMMARY, "actuator_benchmark_summary_combined")
+    records = [*_complete_build_schedule_records(benchmark), *_complete_runtime_schedule_records(benchmark)]
+    summary._validate_schedule(records)
+
+
 def test_summary_rejects_final_schedule_member_and_graph_contract_mutations():
     """A missing row, swapped member, or eager graph relabel cannot reach statistics."""
     benchmark = _load(_BENCHMARK, "actuator_benchmark_summary_final_schedule_driver")
     summary = _load(_SUMMARY, "actuator_benchmark_summary_final_schedule")
     records = _complete_runtime_schedule_records(benchmark)
-    summary._validate_schedule(records)
+    summary._validate_matrix_schedule(records, "runtime")
     with pytest.raises(ValueError, match="final schedule mismatch"):
-        summary._validate_schedule(records[1:])
+        summary._validate_matrix_schedule(records[1:], "runtime")
     graph = next(
         record
         for record in records
@@ -1658,28 +1808,53 @@ def test_summary_rejects_final_schedule_member_and_graph_contract_mutations():
     )
     graph["members"] = list(reversed(graph["members"]))
     with pytest.raises(ValueError, match="wrong member order"):
-        summary._validate_schedule(records)
+        summary._validate_matrix_schedule(records, "runtime")
     graph["members"] = list(reversed(graph["members"]))
     global_member = next(member for member in graph["members"] if member["revision"] == "global")
     global_member["effective_execution"] = "cached_eager"
     with pytest.raises(ValueError, match="effective execution mismatch"):
-        summary._validate_schedule(records)
+        summary._validate_matrix_schedule(records, "runtime")
     records = _complete_runtime_schedule_records(benchmark)
     gpu_pair = next(record for record in records if record["kind"] == "pair")
     gpu_pair["device"] = "cuda:0"
-    gpu_pair["telemetry"].update(required=True, available=True)
+    gpu_pair["telemetry"].update(
+        required=True,
+        available=True,
+        samples={"pre": [{}] * 20, "post": [{}] * 20},
+    )
     with pytest.raises(ValueError, match="GPU telemetry"):
-        summary._validate_schedule(records)
+        summary._validate_matrix_schedule(records, "runtime")
+    records = _complete_runtime_schedule_records(benchmark)
+    gpu_pair = next(record for record in records if record["kind"] == "pair")
+    sample = {
+        "timestamp_s": 1.0,
+        "temperature_c": 40.0,
+        "utilization_pct": 0.0,
+        "sm_clock_mhz": 1800.0,
+        "memory_clock_mhz": 9000.0,
+        "throttle_reasons": "",
+        "compute_pids": [],
+    }
+    gpu_pair.update(
+        device="cuda:0",
+        telemetry={
+            "required": True,
+            "available": True,
+            "samples": {"pre": [sample] * 20, "post": [sample] * 20},
+            "rejection_reasons": [],
+        },
+    )
+    summary._validate_matrix_schedule(records, "runtime")
     records = _complete_runtime_schedule_records(benchmark)
     unsupported = next(record for record in records if record["status"] == "unsupported")
-    unsupported["members"][0]["capability"]["reason"] = ""
+    unsupported["members"][0]["capability"]["reason"] = "forged-but-nonempty"
     with pytest.raises(ValueError, match="capability/reason"):
-        summary._validate_schedule(records)
+        summary._validate_matrix_schedule(records, "runtime")
     records = _complete_runtime_schedule_records(benchmark)
     measured = next(record for record in records if record["kind"] == "pair")
     measured["members"][0]["timing"]["total_ms"] = 1.0
     with pytest.raises(ValueError, match="total/per-application"):
-        summary._validate_schedule(records)
+        summary._validate_matrix_schedule(records, "runtime")
 
 
 def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_path):
@@ -1716,10 +1891,15 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
     harness.write_bytes(_BENCHMARK.read_bytes())
     digest = hashlib.sha256(harness.read_bytes()).hexdigest()
     harness.with_name("benchmark_actuator_collection.sha256").write_text(digest + "\n", encoding="utf-8")
-    records = _complete_runtime_schedule_records(benchmark)
+    records = [*_complete_build_schedule_records(benchmark), *_complete_runtime_schedule_records(benchmark)]
     selected_paths = []
     for number, record in enumerate(records, start=1):
-        attempt = run_root / "observations" / f"row-{number:03}" / record["identity"]["attempt_id"]
+        attempt = (
+            run_root
+            / "observations"
+            / benchmark._safe_observation_name(record["identity"]["observation_key"])
+            / record["identity"]["attempt_id"]
+        )
         attempt.mkdir(parents=True)
         record["identity"].update(candidate_sha=revisions["global"], revision_shas=revisions, harness_sha256=digest)
         record["paths"]["harness"] = str(harness)
@@ -1761,7 +1941,7 @@ def test_summary_cli_writes_identity_parallel_outputs_from_final_manifest(tmp_pa
     assert set(reports) == {"benchmark-summary.json", "benchmark-summary.csv", "benchmark-summary.md"}
     assert revisions["global"] in reports["benchmark-summary.json"]
     assert "develop-cached_eager__global-graph" in reports["benchmark-summary.csv"]
-    assert "Capability" in reports["benchmark-summary.md"]
+    assert "capability" in reports["benchmark-summary.md"]
 
 
 def test_gpu_telemetry_requires_exactly_twenty_pre_and_post_samples():

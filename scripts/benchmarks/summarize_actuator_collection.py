@@ -40,6 +40,7 @@ class LoadedAttempts:
 
     manifest: dict[str, Any]
     selected: list[dict[str, Any]]
+    batch_id: str
     rejected_reasons: dict[str, int]
     unselected_attempt_count: int
 
@@ -179,6 +180,7 @@ def load_selected_attempts(run_root: Path, candidate_sha: str) -> LoadedAttempts
     selected: list[dict[str, Any]] = []
     selected_paths: set[Path] = set()
     keys: set[str] = set()
+    batch_id: str | None = None
     driver = _driver()
     for raw in manifest["attempts"]:
         attempt = _relative_attempt_path(run_root, raw)
@@ -204,6 +206,13 @@ def load_selected_attempts(run_root: Path, candidate_sha: str) -> LoadedAttempts
         observation = identity.get("observation_key")
         if not isinstance(observation, str) or observation in keys:
             raise ValueError("duplicate selected observation key")
+        expected_parent = run_root / "observations" / driver._safe_observation_name(observation)
+        if attempt.parent != expected_parent.resolve():
+            raise ValueError("selected observation directory identity mismatch")
+        if batch_id is None:
+            batch_id = identity.get("batch_id")
+        elif identity.get("batch_id") != batch_id:
+            raise ValueError("mixed selected batch identity")
         keys.add(observation)
         _validate_harness(record, run_root, digest)
         _validate_worktrees(record, revisions)
@@ -217,7 +226,11 @@ def load_selected_attempts(run_root: Path, candidate_sha: str) -> LoadedAttempts
         record = _read_json(document, "unselected attempt")
         if record.get("schema") == _ATTEMPT_SCHEMA and record.get("status") == "rejected":
             rejection_counts[_rejection_reason(record)] += 1
-    return LoadedAttempts(manifest, selected, dict(sorted(rejection_counts.items())), len(all_attempts) - len(selected))
+    if not isinstance(batch_id, str) or not batch_id:
+        raise ValueError("selected batch identity")
+    return LoadedAttempts(
+        manifest, selected, batch_id, dict(sorted(rejection_counts.items())), len(all_attempts) - len(selected)
+    )
 
 
 def _schedule_for(matrix: str) -> dict[str, Any]:
@@ -272,17 +285,68 @@ def _validate_telemetry(record: dict[str, Any]) -> None:
     if not isinstance(telemetry, dict):
         raise ValueError("telemetry")
     gpu_pair = record.get("kind") == "pair" and str(record.get("device", "")).startswith("cuda")
-    if gpu_pair:
-        samples = telemetry.get("samples")
-        if (
-            telemetry.get("required") is not True
-            or telemetry.get("available") is not True
-            or telemetry.get("rejection_reasons")
-            or not isinstance(samples, dict)
-            or len(samples.get("pre", [])) != 20
-            or len(samples.get("post", [])) != 20
-        ):
-            raise ValueError("incomplete accepted GPU telemetry")
+    if not gpu_pair:
+        return
+    samples = telemetry.get("samples")
+    if (
+        telemetry.get("required") is not True
+        or telemetry.get("available") is not True
+        or telemetry.get("rejection_reasons") != []
+        or not isinstance(samples, dict)
+    ):
+        raise ValueError("incomplete accepted GPU telemetry")
+    driver = _driver()
+    pre = _deserialize_telemetry_samples(driver, samples.get("pre"), "pre")
+    post = _deserialize_telemetry_samples(driver, samples.get("post"), "post")
+    if driver.validate_pair_telemetry(pre, post, record["device"]):
+        raise ValueError("GPU telemetry gate rejection")
+
+
+def _deserialize_telemetry_samples(driver: Any, payload: Any, window: str) -> list[Any]:
+    """Rebuild exact driver telemetry objects from immutable JSON evidence."""
+    if not isinstance(payload, list) or len(payload) != 20:
+        raise ValueError(f"incomplete accepted GPU telemetry {window} samples")
+    fields = {
+        "timestamp_s",
+        "temperature_c",
+        "utilization_pct",
+        "sm_clock_mhz",
+        "memory_clock_mhz",
+        "throttle_reasons",
+        "compute_pids",
+    }
+    samples = []
+    for value in payload:
+        if not isinstance(value, dict) or set(value) != fields:
+            raise ValueError("incomplete accepted GPU telemetry sample")
+        try:
+            timestamp = float(value["timestamp_s"])
+            pids = value["compute_pids"]
+            if not isinstance(pids, list) or any(not isinstance(pid, int) or isinstance(pid, bool) for pid in pids):
+                raise ValueError
+            metrics = ("temperature_c", "utilization_pct", "sm_clock_mhz", "memory_clock_mhz")
+            if any(
+                not isinstance(value[name], (int, float))
+                or isinstance(value[name], bool)
+                or not math.isfinite(float(value[name]))
+                for name in metrics
+            ) or not isinstance(value["throttle_reasons"], str):
+                raise ValueError
+            sample = driver.TelemetrySample(
+                timestamp,
+                float(value["temperature_c"]),
+                float(value["utilization_pct"]),
+                float(value["sm_clock_mhz"]),
+                float(value["memory_clock_mhz"]),
+                value["throttle_reasons"],
+                tuple(pids),
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("invalid accepted GPU telemetry sample") from error
+        if not math.isfinite(sample.timestamp_s):
+            raise ValueError("invalid accepted GPU telemetry timestamp")
+        samples.append(sample)
+    return samples
 
 
 def _expected_source_emulation(revision: str, row: dict[str, Any]) -> bool:
@@ -322,7 +386,7 @@ def _validate_member(record: dict[str, Any], observation: Any, member: dict[str,
     if not isinstance(capability, dict) or "supported" not in capability:
         raise ValueError("member capability")
     if observation.unsupported_reason is not None:
-        if capability.get("supported") is not False or not capability.get("reason"):
+        if capability.get("supported") is not False or capability.get("reason") != observation.unsupported_reason:
             raise ValueError("unsupported capability/reason")
         if member.get("effective_execution") is not None or member.get("timing") is not None:
             raise ValueError("unsupported member timing")
@@ -359,17 +423,31 @@ def _validate_observation(record: dict[str, Any], observation: Any) -> None:
         _validate_member(record, observation, member, index)
 
 
-def _validate_schedule(records: list[dict[str, Any]]) -> None:
-    matrices = {record.get("metadata", {}).get("matrix") for record in records}
-    if len(matrices) != 1 or matrices - {"build", "runtime"}:
-        raise ValueError("mixed or missing matrix identity")
-    expected = _schedule_for(next(iter(matrices)))
+def _validate_matrix_schedule(records: list[dict[str, Any]], matrix: str) -> None:
+    """Validate one complete driver-owned matrix partition."""
+    if any(record.get("metadata", {}).get("matrix") != matrix for record in records):
+        raise ValueError("mixed matrix partition")
+    expected = _schedule_for(matrix)
     actual = {record["identity"]["observation_key"]: record for record in records}
     if set(actual) != set(expected):
         missing, extra = set(expected) - set(actual), set(actual) - set(expected)
         raise ValueError(f"final schedule mismatch: missing={len(missing)}, extra={len(extra)}")
     for key, record in actual.items():
         _validate_observation(record, expected[key])
+
+
+def _validate_schedule(records: list[dict[str, Any]]) -> None:
+    """Validate the complete append-only build-plus-runtime final selection."""
+    partitions: dict[str, list[dict[str, Any]]] = {"build": [], "runtime": []}
+    for record in records:
+        matrix = record.get("metadata", {}).get("matrix")
+        if matrix not in partitions:
+            raise ValueError("missing matrix identity")
+        partitions[matrix].append(record)
+    if any(not partition for partition in partitions.values()):
+        raise ValueError("final selection requires build and runtime matrices")
+    for matrix, partition in partitions.items():
+        _validate_matrix_schedule(partition, matrix)
 
 
 def validate_pair_ids(pair_ids: list[str]) -> None:
@@ -507,6 +585,7 @@ def summarize_run(run_root: Path, candidate_sha: str, bootstrap_seed: int = 42) 
         "candidate_sha": candidate_sha,
         "bootstrap_seed": bootstrap_seed,
         "selection_identity": {
+            "batch_id": loaded.batch_id,
             "revision_shas": loaded.manifest["revision_shas"],
             "harness_sha256": loaded.manifest["harness_sha256"],
             "selected_attempt_paths": loaded.manifest["attempts"],
@@ -536,7 +615,35 @@ def summarize_run(run_root: Path, candidate_sha: str, bootstrap_seed: int = 42) 
             for record in loaded.selected
         ],
     }
+    report["rows"] = _normalized_rows(report)
     return report
+
+
+def _normalized_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize complete comparison and capability evidence for every output."""
+    selection = report.get("selection_identity", {})
+    common = {
+        "candidate_sha": report["candidate_sha"],
+        "batch_id": selection.get("batch_id"),
+        "revision_shas": selection.get("revision_shas", {}),
+        "harness_sha256": selection.get("harness_sha256"),
+        "selected_attempt_paths": selection.get("selected_attempt_paths", []),
+        "immutable_rejected_attempts": report.get("immutable_rejected_attempts", {}),
+    }
+    rows = [
+        {
+            "record_type": "comparison",
+            "identity": item.get("comparison_identity", item["observation_key"]),
+            **common,
+            **item,
+        }
+        for item in report.get("comparisons", [])
+    ]
+    rows.extend(
+        {"record_type": "capability", "identity": item["observation_key"], **common, **item}
+        for item in report.get("capabilities", [])
+    )
+    return rows
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -556,44 +663,26 @@ def _atomic_write(path: Path, content: str) -> None:
 
 def write_outputs(report: dict[str, Any], output_dir: Path) -> None:
     """Atomically write identity-parallel JSON, CSV and Markdown reports."""
+    report = {**report, "rows": report.get("rows") or _normalized_rows(report)}
     _atomic_write(output_dir / "benchmark-summary.json", json.dumps(report, indent=2, sort_keys=True) + "\n")
-    rows = [
-        {
-            "record_type": "comparison",
-            "identity": item["comparison_identity"] if "comparison_identity" in item else item["observation_key"],
-            "status": "accepted",
-            "ratio_median": item["ratio_median"],
-            "ratio_bootstrap_95": json.dumps(item["ratio_bootstrap_95"]),
-        }
-        for item in report.get("comparisons", [])
-    ]
-    rows.extend(
-        {
-            "record_type": "capability",
-            "identity": item["observation_key"],
-            "status": item["status"],
-            "ratio_median": "",
-            "ratio_bootstrap_95": "",
-        }
-        for item in report.get("capabilities", [])
-    )
+    rows = report["rows"]
     import io
 
     buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=("record_type", "identity", "status", "ratio_median", "ratio_bootstrap_95")
-    )
+    writer = csv.DictWriter(buffer, fieldnames=sorted({key for row in rows for key in row}))
     writer.writeheader()
-    writer.writerows(rows)
-    _atomic_write(output_dir / "benchmark-summary.csv", buffer.getvalue())
-    lines = ["# Actuator collection benchmark summary", "", f"Candidate SHA: `{report['candidate_sha']}`", ""]
-    lines.extend(
-        f"- Comparison `{row['identity']}`: median ratio {row['ratio_median']:.6g}"
+    writer.writerows(
+        {
+            key: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value
+            for key, value in row.items()
+        }
         for row in rows
-        if row["record_type"] == "comparison"
     )
+    _atomic_write(output_dir / "benchmark-summary.csv", buffer.getvalue())
+    lines = ["# Actuator collection benchmark summary", "", "## Normalized evidence rows", ""]
     lines.extend(
-        f"- Capability `{row['identity']}`: {row['status']}" for row in rows if row["record_type"] == "capability"
+        f"## {row['record_type']}: `{row['identity']}`\n\n```json\n{json.dumps(row, sort_keys=True)}\n```"
+        for row in rows
     )
     _atomic_write(output_dir / "benchmark-summary.md", "\n".join(lines) + "\n")
 
