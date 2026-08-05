@@ -1376,9 +1376,9 @@ class Articulation(BaseArticulation):
             self.data._joint_stiffness, self.data._joint_stiffness_backend
         )
         self.root_view.set_dof_stiffnesses(wp.clone(joint_stiffness_backend, device="cpu"), indices=cpu_env_ids)
-        refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
-        if refresh_sidecars is not None:
-            refresh_sidecars("stiffness", lambda: wp.to_torch(self.data._joint_stiffness))
+        actuators = self.actuators
+        if actuators._has_solver_compatibility_sidecar("stiffness"):
+            actuators._refresh_solver_compatibility_sidecars("stiffness", wp.to_torch(self.data._joint_stiffness))
 
     def write_joint_stiffness_to_sim_mask(
         self,
@@ -1483,9 +1483,9 @@ class Articulation(BaseArticulation):
             self.data._joint_damping, self.data._joint_damping_backend
         )
         self.root_view.set_dof_dampings(wp.clone(joint_damping_backend, device="cpu"), indices=cpu_env_ids)
-        refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
-        if refresh_sidecars is not None:
-            refresh_sidecars("damping", lambda: wp.to_torch(self.data._joint_damping))
+        actuators = self.actuators
+        if actuators._has_solver_compatibility_sidecar("damping"):
+            actuators._refresh_solver_compatibility_sidecars("damping", wp.to_torch(self.data._joint_damping))
 
     def write_actuator_stiffness_to_sim(
         self,
@@ -1948,9 +1948,9 @@ class Articulation(BaseArticulation):
         )
         self.root_view.set_dof_armatures(wp.clone(joint_armature_backend, device="cpu"), indices=cpu_env_ids)
         self.data._reset_dynamics(mass_matrix=True)
-        refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
-        if refresh_sidecars is not None:
-            refresh_sidecars("armature", lambda: wp.to_torch(self.data._joint_armature))
+        actuators = self.actuators
+        if actuators._has_solver_compatibility_sidecar("armature"):
+            actuators._refresh_solver_compatibility_sidecars("armature", wp.to_torch(self.data._joint_armature))
 
     def write_joint_armature_to_sim_mask(
         self,

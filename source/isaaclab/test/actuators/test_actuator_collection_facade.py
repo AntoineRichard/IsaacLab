@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import dis
 import gc
 import warnings
 import weakref
@@ -288,19 +289,19 @@ def test_solver_sidecar_refresh_updates_only_an_already_materialized_field(devic
 
 
 @pytest.mark.parametrize("device", _available_devices())
-def test_solver_sidecar_refresh_does_not_materialize_values_without_held_sidecars(device: str) -> None:
-    """Do not evaluate the solver data getter when no compatibility sidecar is held."""
+def test_solver_sidecar_presence_check_avoids_inactive_temporary_containers(device: str) -> None:
+    """Check held-sidecar presence without constructing a temporary container."""
     robot = make_finalized_robot(device=device)
-    values_read = False
+    instructions = {
+        instruction.opname
+        for instruction in dis.get_instructions(ActuatorCollection.ArticulationView._has_solver_compatibility_sidecar)
+    }
 
-    def get_values() -> torch.Tensor:
-        nonlocal values_read
-        values_read = True
-        return torch.full((2, 3), 8.0, device=device)
-
-    robot.actuators._refresh_solver_compatibility_sidecars("armature", get_values)
-
-    assert not values_read
+    assert "BUILD_LIST" not in instructions
+    assert "BUILD_TUPLE" not in instructions
+    assert "BUILD_MAP" not in instructions
+    assert "MAKE_FUNCTION" not in instructions
+    assert not robot.actuators._has_solver_compatibility_sidecar("armature")
     assert robot.actuators["hip"]._solver_compatibility_sidecars == {}
     assert robot.actuators["ankle"]._solver_compatibility_sidecars == {}
 

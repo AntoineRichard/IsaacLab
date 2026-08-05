@@ -27,6 +27,7 @@ simulation_app = AppLauncher(headless=True, device=resolve_test_sim_device()).ap
 
 """Rest everything follows."""
 
+import dis
 import sys
 import warnings
 from pathlib import Path
@@ -2157,6 +2158,7 @@ def test_global_actuator_solver_writers_do_not_read_unheld_sidecars(sim, device,
 
     monkeypatch.setattr(type(articulation.data), f"joint_{name}", property(fail_on_lazy_read))
     writer = getattr(articulation, f"write_joint_{name}_to_sim_{selection}")
+    assert "MAKE_FUNCTION" not in {instruction.opname for instruction in dis.get_instructions(writer)}
     if selection == "index":
         writer(**{name: 17.0})
     else:

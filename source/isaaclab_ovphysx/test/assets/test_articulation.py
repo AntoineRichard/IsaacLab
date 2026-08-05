@@ -50,6 +50,7 @@ device state, this is the supported pattern.
 
 from __future__ import annotations
 
+import dis
 import sys
 import warnings
 from pathlib import Path
@@ -3631,6 +3632,7 @@ def test_global_actuator_solver_writers_do_not_read_unheld_sidecars(
 
     monkeypatch.setattr(type(articulation.data), f"joint_{name}", property(fail_on_lazy_read))
     writer = getattr(articulation, f"write_joint_{name}_to_sim_{selection}")
+    assert "MAKE_FUNCTION" not in {instruction.opname for instruction in dis.get_instructions(writer)}
     if selection == "index":
         writer(**{name: 17.0})
     else:

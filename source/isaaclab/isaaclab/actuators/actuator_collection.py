@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import logging
 import warnings
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -1761,25 +1761,33 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             for name in tuple(self._compatibility_allocations):
                 self._refresh_compatibility_projection(name)
 
-        def _refresh_solver_compatibility_sidecars(self, name: str, get_values: Callable[[], torch.Tensor]) -> None:
+        def _has_solver_compatibility_sidecar(self, name: str) -> bool:
+            """Return whether any group holds a solver compatibility sidecar.
+
+            Args:
+                name: Solver parameter name.
+            """
+            if not self.is_ready:
+                return False
+            for actuator in dict.values(self):
+                sidecars = actuator.__dict__.get("_solver_compatibility_sidecars")
+                if sidecars is not None and name in sidecars:
+                    return True
+            return False
+
+        def _refresh_solver_compatibility_sidecars(self, name: str, values: torch.Tensor) -> None:
             """Refresh already materialized group solver sidecars after a backend write.
 
             Args:
                 name: Solver parameter name.
-                get_values: Returns complete articulation-order parameter values.
+                values: Complete articulation-order parameter values.
             """
             if not self.is_ready:
                 return
-            active_actuators = [
-                actuator
-                for actuator in dict.values(self)
-                if name in actuator.__dict__.get("_solver_compatibility_sidecars", {})
-            ]
-            if not active_actuators:
-                return
-            values = get_values()
-            for actuator in active_actuators:
-                actuator._refresh_solver_compatibility_sidecar(name, values)
+            for actuator in dict.values(self):
+                sidecars = actuator.__dict__.get("_solver_compatibility_sidecars")
+                if sidecars is not None and name in sidecars:
+                    actuator._refresh_solver_compatibility_sidecar(name, values)
 
         def _write_deprecated_actuator_gain(
             self,
@@ -3328,6 +3336,15 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
 
     def __setitem__(self, name: str, actuator: ActuatorBase) -> None:
         raise TypeError("ActuatorCollection membership is fixed after initialization.")
+
+    def _has_solver_compatibility_sidecar(self, name: str) -> bool:
+        """Return whether the deprecated direct collection holds a solver sidecar.
+
+        Args:
+            name: Solver parameter name.
+        """
+        del name
+        return False
 
     def _warn_deprecated(self, key: str, message: str, *, stacklevel: int = 3) -> None:
         """Emit one deprecation warning for the legacy collection construction path."""

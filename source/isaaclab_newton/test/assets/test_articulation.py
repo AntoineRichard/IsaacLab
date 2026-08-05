@@ -27,6 +27,7 @@ simulation_app = AppLauncher(headless=True, device=resolve_test_sim_device()).ap
 
 """Rest everything follows."""
 
+import dis
 import sys
 import warnings
 from copy import copy, deepcopy
@@ -1070,6 +1071,8 @@ def test_global_actuator_solver_writers_do_not_read_unheld_sidecars(
         raise AssertionError("solver writer read an unheld compatibility sidecar")
 
     monkeypatch.setattr(type(articulation.data), f"joint_{name}", property(_fail_read))
+    helper = getattr(Articulation, f"_write_joint_float_property_to_sim_{selection}")
+    assert "MAKE_FUNCTION" not in {instruction.opname for instruction in dis.get_instructions(helper)}
     _write_global_actuator_solver_property(articulation, name, selection)
 
     assert group._solver_compatibility_sidecars == {}
