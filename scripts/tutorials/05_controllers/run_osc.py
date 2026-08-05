@@ -217,7 +217,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
             default_joint_vel = robot.data.default_joint_vel.torch.clone()
             robot.write_joint_position_to_sim_index(position=default_joint_pos)
             robot.write_joint_velocity_to_sim_index(velocity=default_joint_vel)
-            robot.set_joint_effort_target_index(target=zero_joint_efforts)  # Set zero torques in the initial step
+            robot.actuators.command.set_effort_index(value=zero_joint_efforts)  # Set zero torques in the initial step
             robot.write_data_to_sim()
             robot.reset()
             # reset contact sensor
@@ -261,7 +261,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
                 nullspace_joint_pos_target=joint_centers,
             )
             # apply actions
-            robot.set_joint_effort_target_index(target=joint_efforts, joint_ids=arm_joint_ids)
+            robot.actuators.command.set_effort_index(value=joint_efforts, joint_ids=arm_joint_ids)
             robot.write_data_to_sim()
 
         # update marker positions

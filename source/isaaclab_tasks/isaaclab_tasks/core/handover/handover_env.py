@@ -138,7 +138,7 @@ class HandoverEnv(DirectMARLEnv):
 
         curr_targets[:, idx] = targets
         prev_targets[:, idx] = targets
-        hand.set_joint_position_target_index(target=targets, joint_ids=idx)
+        hand.actuators.command.set_position_index(value=targets, joint_ids=idx)
 
     def _hand_proprio_obs(self, agent: str) -> torch.Tensor:
         """Per-hand proprioceptive observation block for ``agent`` (133 dims).
@@ -269,7 +269,7 @@ class HandoverEnv(DirectMARLEnv):
         self.right_hand_prev_targets[env_ids] = dof_pos
         self.right_hand_curr_targets[env_ids] = dof_pos
 
-        self.right_hand.set_joint_position_target_index(target=dof_pos, env_ids=env_ids)
+        self.right_hand.actuators.command.set_position_index(value=dof_pos, env_ids=env_ids)
         self.right_hand.write_joint_position_to_sim_index(position=dof_pos, env_ids=env_ids)
         self.right_hand.write_joint_velocity_to_sim_index(velocity=dof_vel, env_ids=env_ids)
 
@@ -284,7 +284,7 @@ class HandoverEnv(DirectMARLEnv):
         self.left_hand_prev_targets[env_ids] = dof_pos
         self.left_hand_curr_targets[env_ids] = dof_pos
 
-        self.left_hand.set_joint_position_target_index(target=dof_pos, env_ids=env_ids)
+        self.left_hand.actuators.command.set_position_index(value=dof_pos, env_ids=env_ids)
         self.left_hand.write_joint_position_to_sim_index(position=dof_pos, env_ids=env_ids)
         self.left_hand.write_joint_velocity_to_sim_index(velocity=dof_vel, env_ids=env_ids)
 

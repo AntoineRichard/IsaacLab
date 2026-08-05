@@ -152,12 +152,12 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
             # Turn by applying different velocities
             action = turn_action
 
-        scene["Jetbot"].set_joint_velocity_target_index(target=action)
+        scene["Jetbot"].actuators.command.set_velocity_index(value=action)
 
         # wave
         wave_action = scene["Dofbot"].data.default_joint_pos.torch
         wave_action[:, 0:4] = 0.25 * np.sin(2 * np.pi * 0.5 * sim_time)
-        scene["Dofbot"].set_joint_position_target_index(target=wave_action)
+        scene["Dofbot"].actuators.command.set_position_index(value=wave_action)
 
         scene.write_data_to_sim()
         sim.step()

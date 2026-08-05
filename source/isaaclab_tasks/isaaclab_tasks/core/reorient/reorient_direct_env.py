@@ -87,7 +87,7 @@ class ReorientDirectEnv(DirectRLEnv):
 
         # -- visualization and articulation write handles --
         self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
-        self._set_joint_pos_target = self.hand.set_joint_position_target_index
+        self._set_joint_pos_target = self.hand.actuators.command.set_position_index
         self._write_obj_root_pose = self.object.write_root_pose_to_sim_index
         self._write_obj_root_vel = self.object.write_root_velocity_to_sim_index
         self._write_hand_joint_pos = self.hand.write_joint_position_to_sim_index
@@ -144,7 +144,7 @@ class ReorientDirectEnv(DirectRLEnv):
         self.prev_targets[:, self.actuated_dof_indices] = self.cur_targets[:, self.actuated_dof_indices]
 
         self._set_joint_pos_target(
-            target=self.cur_targets[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
+            value=self.cur_targets[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
         )
 
     def _get_observations(self) -> dict:
@@ -290,7 +290,7 @@ class ReorientDirectEnv(DirectRLEnv):
         self.prev_targets[env_ids] = dof_pos
         self.cur_targets[env_ids] = dof_pos
 
-        self._set_joint_pos_target(target=dof_pos, env_ids=env_ids)
+        self._set_joint_pos_target(value=dof_pos, env_ids=env_ids)
         self._write_hand_joint_pos(position=dof_pos, env_ids=env_ids)
         self._write_hand_joint_vel(velocity=dof_vel, env_ids=env_ids)
 

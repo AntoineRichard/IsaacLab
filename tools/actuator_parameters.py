@@ -656,8 +656,8 @@ def _record_step(
     sources = {
         "joint_pos": lambda a: a.data.joint_pos.torch,
         "joint_vel": lambda a: a.data.joint_vel.torch,
-        "applied_torque": lambda a: a.actuators.applied_torque.torch,
-        "computed_torque": lambda a: a.actuators.computed_torque.torch,
+        "applied_torque": lambda a: a.actuators.applied_effort.torch,
+        "computed_torque": lambda a: a.actuators.computed_effort.torch,
     }
     for key, read in sources.items():
         frame = torch.full((5,), float("nan"))

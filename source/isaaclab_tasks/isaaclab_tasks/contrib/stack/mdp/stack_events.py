@@ -95,8 +95,8 @@ def randomize_joint_by_gaussian_offset(
         joint_pos[:, gripper_ids] = asset.data.default_joint_pos.torch[env_ids][:, gripper_ids]
 
     # Set into the physics simulation
-    asset.set_joint_position_target_index(target=joint_pos, env_ids=env_ids)
-    asset.set_joint_velocity_target_index(target=joint_vel, env_ids=env_ids)
+    asset.actuators.command.set_position_index(value=joint_pos, env_ids=env_ids)
+    asset.actuators.command.set_velocity_index(value=joint_vel, env_ids=env_ids)
     asset.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
     asset.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 

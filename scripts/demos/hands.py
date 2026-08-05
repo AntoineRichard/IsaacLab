@@ -148,7 +148,7 @@ def run_simulator(sim: "sim_utils.SimulationContext", entities: dict[str, "Artic
             # generate joint positions
             joint_pos_target = robot.data.soft_joint_pos_limits.torch[..., grasp_mode]
             # apply action to the robot
-            robot.set_joint_position_target_index(target=joint_pos_target)
+            robot.actuators.command.set_position_index(value=joint_pos_target)
             # write data to sim
             robot.write_data_to_sim()
         # perform step

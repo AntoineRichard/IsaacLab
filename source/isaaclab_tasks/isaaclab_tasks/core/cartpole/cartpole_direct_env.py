@@ -60,7 +60,7 @@ class CartpoleEnv(DirectRLEnv):
         self.actions = self.action_scale * actions.clone()
 
     def _apply_action(self) -> None:
-        self.cartpole.set_joint_effort_target_index(target=self.actions, joint_ids=self._cart_dof_idx)
+        self.cartpole.actuators.command.set_effort_index(value=self.actions, joint_ids=self._cart_dof_idx)
 
     def _get_observations(self) -> dict:
         joint_pos_rel = self.joint_pos - self.cartpole.data.default_joint_pos.torch

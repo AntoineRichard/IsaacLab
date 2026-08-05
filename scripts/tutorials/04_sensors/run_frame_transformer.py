@@ -130,7 +130,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
     # Simulate physics
     while simulation_app.is_running():
         # perform this loop at policy control freq (50 Hz)
-        robot.set_joint_position_target_index(target=robot.data.default_joint_pos.torch.clone())
+        robot.actuators.command.set_position_index(value=robot.data.default_joint_pos.torch.clone())
         robot.write_data_to_sim()
         # perform step
         sim.step()

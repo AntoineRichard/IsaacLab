@@ -86,7 +86,7 @@ class LocomotionDirectEnv(DirectRLEnv):
     def _apply_action(self) -> None:
         # the action is clamped before scaling: unbounded joint efforts drive the solver to NaN
         forces = self.action_scale * self.joint_gears * torch.clamp(self.actions, -1.0, 1.0)
-        self.robot.set_joint_effort_target_index(target=forces, joint_ids=self._joint_dof_idx)
+        self.robot.actuators.command.set_effort_index(value=forces, joint_ids=self._joint_dof_idx)
 
     def _compute_intermediate_values(self):
         self.torso_position = self.robot.data.root_pos_w.torch

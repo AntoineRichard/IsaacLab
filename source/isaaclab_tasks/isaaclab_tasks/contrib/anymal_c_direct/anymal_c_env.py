@@ -89,7 +89,7 @@ class AnymalCEnv(DirectRLEnv):
         self._processed_actions = self.cfg.action_scale * self._actions + self._robot.data.default_joint_pos.torch
 
     def _apply_action(self):
-        self._robot.set_joint_position_target_index(target=self._processed_actions)
+        self._robot.actuators.command.set_position_index(value=self._processed_actions)
 
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
@@ -134,7 +134,7 @@ class AnymalCEnv(DirectRLEnv):
         # angular velocity x/y
         ang_vel_error = torch.sum(torch.square(self._robot.data.root_ang_vel_b.torch[:, :2]), dim=1)
         # joint torques
-        joint_torques = torch.sum(torch.square(self._robot.data.applied_torque.torch), dim=1)
+        joint_torques = torch.sum(torch.square(self._robot.actuators.applied_effort.torch), dim=1)
         # joint acceleration
         joint_accel = torch.sum(torch.square(self._robot.data.joint_acc.torch), dim=1)
         # action rate

@@ -2367,8 +2367,8 @@ def reset_scene_to_default(env: ManagerBasedEnv, env_ids: torch.Tensor, reset_jo
         articulation_asset.write_joint_velocity_to_sim_index(velocity=default_joint_vel, env_ids=env_ids)
         # reset joint targets if required
         if reset_joint_targets:
-            articulation_asset.set_joint_position_target_index(target=default_joint_pos, env_ids=env_ids)
-            articulation_asset.set_joint_velocity_target_index(target=default_joint_vel, env_ids=env_ids)
+            articulation_asset.actuators.command.set_position_index(value=default_joint_pos, env_ids=env_ids)
+            articulation_asset.actuators.command.set_velocity_index(value=default_joint_vel, env_ids=env_ids)
     # cable objects
     for cable_object in env.scene.cable_objects.values():
         segment_pose = cable_object.data.default_segment_pose_w.torch[env_ids].clone()

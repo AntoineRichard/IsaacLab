@@ -124,4 +124,4 @@ class AgileBasedLowerBodyAction(ActionTerm):
     def apply_actions(self):
         """Apply the actions to the environment."""
         # Store the raw actions
-        self._asset.set_joint_position_target_index(target=self._processed_actions, joint_ids=self._joint_ids)
+        self._asset.actuators.command.set_position_index(value=self._processed_actions, joint_ids=self._joint_ids)

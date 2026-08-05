@@ -360,8 +360,8 @@ class set_robot_to_grasp_pose(ManagerTermBase):
             joint_vel = torch.zeros_like(joint_pos)
 
             # Write to sim
-            self.robot_asset.set_joint_position_target_index(target=joint_pos, env_ids=env_ids)
-            self.robot_asset.set_joint_velocity_target_index(target=joint_vel, env_ids=env_ids)
+            self.robot_asset.actuators.command.set_position_index(value=joint_pos, env_ids=env_ids)
+            self.robot_asset.actuators.command.set_velocity_index(value=joint_vel, env_ids=env_ids)
             self.robot_asset.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
             self.robot_asset.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 
@@ -378,7 +378,9 @@ class set_robot_to_grasp_pose(ManagerTermBase):
             hand_grasp_width = self.hand_grasp_width[gear_key]
             self.gripper_joint_setter_func(joint_pos, [row_idx], self.finger_joints, hand_grasp_width)
 
-        self.robot_asset.set_joint_position_target_index(target=joint_pos, joint_ids=self.all_joints, env_ids=env_ids)
+        self.robot_asset.actuators.command.set_position_index(
+            value=joint_pos, joint_ids=self.all_joints, env_ids=env_ids
+        )
         self.robot_asset.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self.robot_asset.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 
@@ -388,7 +390,9 @@ class set_robot_to_grasp_pose(ManagerTermBase):
             hand_close_width = self.hand_close_width[gear_key]
             self.gripper_joint_setter_func(joint_pos, [row_idx], self.finger_joints, hand_close_width)
 
-        self.robot_asset.set_joint_position_target_index(target=joint_pos, joint_ids=self.all_joints, env_ids=env_ids)
+        self.robot_asset.actuators.command.set_position_index(
+            value=joint_pos, joint_ids=self.all_joints, env_ids=env_ids
+        )
 
 
 class randomize_gears_and_base_pose(ManagerTermBase):

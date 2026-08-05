@@ -310,7 +310,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
             default_joint_pos = scene["asset"].data.default_joint_pos.torch
             targets = default_joint_pos + 5 * (torch.rand_like(default_joint_pos) - 0.5)
             # -- apply action to the asset
-            scene["asset"].set_joint_position_target_index(target=targets)
+            scene["asset"].actuators.command.set_position_index(value=targets)
         # -- write data to sim
         scene.write_data_to_sim()
         # perform step

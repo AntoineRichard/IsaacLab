@@ -60,11 +60,11 @@ class PendulumEnv(DirectMARLEnv):
         self.actions = actions
 
     def _apply_action(self) -> None:
-        self.robot.set_joint_effort_target_index(
-            target=self.actions["cart"] * self.cfg.cart_action_scale, joint_ids=self._cart_dof_idx
+        self.robot.actuators.command.set_effort_index(
+            value=self.actions["cart"] * self.cfg.cart_action_scale, joint_ids=self._cart_dof_idx
         )
-        self.robot.set_joint_effort_target_index(
-            target=self.actions["pendulum"] * self.cfg.pendulum_action_scale, joint_ids=self._pendulum_dof_idx
+        self.robot.actuators.command.set_effort_index(
+            value=self.actions["pendulum"] * self.cfg.pendulum_action_scale, joint_ids=self._pendulum_dof_idx
         )
 
     def _get_observations(self) -> dict[str, torch.Tensor]:

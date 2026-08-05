@@ -1580,10 +1580,12 @@ class CuroboPlanner(MotionPlannerBase):
             env_joint_positions = (
                 self._to_env_device(joint_positions) if joint_positions.device != self.env.device else joint_positions
             )
-            self.robot.set_joint_position_target(env_joint_positions.view(1, -1), env_ids=[self.env_id])
+            self.robot.actuators.command.set_position_index(
+                value=env_joint_positions.view(1, -1), env_ids=[self.env_id]
+            )
             self._update_sphere_visualization(force_update=False)
         finally:
-            self.robot.set_joint_position_target(original_joints.unsqueeze(0), env_ids=[self.env_id])
+            self.robot.actuators.command.set_position_index(value=original_joints.unsqueeze(0), env_ids=[self.env_id])
 
     def _update_sphere_visualization(self, force_update: bool = True) -> None:
         """Update visual representation of robot collision spheres in USD stage.

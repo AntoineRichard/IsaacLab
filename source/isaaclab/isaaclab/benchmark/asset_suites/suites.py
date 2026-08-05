@@ -181,20 +181,20 @@ _ARTICULATION_PLAIN = (
         0.5,
     ),
     _indexed(
-        "set_joint_position_target",
-        {"target": ("instances", "joints")},
+        "actuators.command.set_position_index",
+        {"value": ("instances", "joints")},
         {"env_ids": "instances", "joint_ids": "joints"},
         "joint_targets",
     ),
     _indexed(
-        "set_joint_velocity_target",
-        {"target": ("instances", "joints")},
+        "actuators.command.set_velocity_index",
+        {"value": ("instances", "joints")},
         {"env_ids": "instances", "joint_ids": "joints"},
         "joint_targets",
     ),
     _indexed(
-        "set_joint_effort_target",
-        {"target": ("instances", "joints")},
+        "actuators.command.set_effort_index",
+        {"value": ("instances", "joints")},
         {"env_ids": "instances", "joint_ids": "joints"},
         "joint_targets",
     ),
@@ -226,7 +226,7 @@ _ARTICULATION_PLAIN = (
 
 _ARTICULATION_MASKS = tuple(
     _masked(
-        f"{spec.method_name}_mask" if not spec.method_name.startswith("set_joint_") else f"{spec.method_name}_mask",
+        f"{spec.method_name}_mask",
         {
             key: shape
             for key, shape in {
@@ -302,6 +302,9 @@ def _articulation_mask_specs() -> tuple[AssetMethodSpec, ...]:
             shapes = {"armature": ("instances", "joints")}
         elif spec.method_name == "write_joint_friction_coefficient_to_sim":
             shapes = {"joint_friction_coeff": ("instances", "joints")}
+        elif spec.method_name.startswith("actuators.command.set_"):
+            name = spec.method_name.removesuffix("_index") + "_mask"
+            shapes = {"value": ("instances", "joints")}
         else:
             shapes = {"target": ("instances", "joints")}
         mask_spec = _masked(name, shapes, {"env_mask": "instances", "joint_mask": "joints"}, spec.category)

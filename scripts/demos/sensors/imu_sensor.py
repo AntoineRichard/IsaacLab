@@ -96,7 +96,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
             print("[INFO]: Resetting robot state...")
         # Apply default actions to the robot
         targets = scene["robot"].data.default_joint_pos.torch
-        scene["robot"].set_joint_position_target_index(target=targets)
+        scene["robot"].actuators.command.set_position_index(value=targets)
         scene.write_data_to_sim()
         # perform step
         sim.step()

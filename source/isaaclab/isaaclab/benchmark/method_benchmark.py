@@ -206,7 +206,11 @@ class MethodBenchmarkRunner(BaseIsaacLabBenchmark):
         print("-" * 80)
 
         for i, benchmark in enumerate(benchmarks):
-            method = getattr(target_object, benchmark.method_name, None)
+            method = target_object
+            for attribute_name in benchmark.method_name.split("."):
+                method = getattr(method, attribute_name, None)
+                if method is None:
+                    break
 
             # Determine which modes to run for this benchmark
             available_modes = list(benchmark.input_generators.keys())

@@ -603,8 +603,8 @@ class InteractiveScene:
             articulation.write_joint_velocity_to_sim_index(velocity=joint_velocity, env_ids=env_ids)
             # FIXME: This is not generic as it assumes PD control over the joints.
             #   This assumption does not hold for effort controlled joints.
-            articulation.set_joint_position_target_index(target=joint_position, env_ids=env_ids)
-            articulation.set_joint_velocity_target_index(target=joint_velocity, env_ids=env_ids)
+            articulation.actuators.command.set_position_index(value=joint_position, env_ids=env_ids)
+            articulation.actuators.command.set_velocity_index(value=joint_velocity, env_ids=env_ids)
         # cable objects
         for asset_name, cable_object in self._cable_objects.items():
             asset_state = state["cable_object"][asset_name]

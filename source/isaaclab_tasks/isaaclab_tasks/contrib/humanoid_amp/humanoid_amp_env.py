@@ -84,7 +84,7 @@ class HumanoidAmpEnv(DirectRLEnv):
 
     def _apply_action(self):
         target = self.action_offset + self.action_scale * self.actions
-        self.robot.set_joint_position_target_index(target=target)
+        self.robot.actuators.command.set_position_index(value=target)
 
     def _get_observations(self) -> dict:
         # build task observation

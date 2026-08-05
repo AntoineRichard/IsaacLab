@@ -276,14 +276,14 @@ class PickAndPlaceEnv(DirectRLEnv):
             )
 
         # Set the joint effort targets for the picker
-        self.pick_and_place.set_joint_effort_target_index(
-            target=self.instant_controls[:, 0].unsqueeze(dim=1), joint_ids=self._x_dof_idx
+        self.pick_and_place.actuators.command.set_effort_index(
+            value=self.instant_controls[:, 0].unsqueeze(dim=1), joint_ids=self._x_dof_idx
         )
-        self.pick_and_place.set_joint_effort_target_index(
-            target=self.instant_controls[:, 1].unsqueeze(dim=1), joint_ids=self._y_dof_idx
+        self.pick_and_place.actuators.command.set_effort_index(
+            value=self.instant_controls[:, 1].unsqueeze(dim=1), joint_ids=self._y_dof_idx
         )
-        self.pick_and_place.set_joint_effort_target_index(
-            target=self.permanent_controls[:, 0].unsqueeze(dim=1), joint_ids=self._z_dof_idx
+        self.pick_and_place.actuators.command.set_effort_index(
+            value=self.permanent_controls[:, 0].unsqueeze(dim=1), joint_ids=self._z_dof_idx
         )
         # Set the gripper command
         self.gripper.set_grippers_command(self.instant_controls[:, 2])

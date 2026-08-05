@@ -172,7 +172,7 @@ def run_simulator(sim: "sim_utils.SimulationContext", entities: dict[str, "Artic
             # generate random joint positions
             joint_pos_target = robot.data.default_joint_pos.torch + torch.randn_like(robot.data.joint_pos.torch) * 0.1
             # apply action to the robot
-            robot.set_joint_position_target_index(target=joint_pos_target)
+            robot.actuators.command.set_position_index(value=joint_pos_target)
             # write data to sim
             robot.write_data_to_sim()
         # perform step

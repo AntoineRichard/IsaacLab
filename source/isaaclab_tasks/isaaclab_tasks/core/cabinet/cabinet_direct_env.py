@@ -159,7 +159,7 @@ class CabinetDirectEnv(DirectRLEnv):
         self.robot_dof_targets[:] = torch.clamp(targets, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
 
     def _apply_action(self):
-        self._robot.set_joint_position_target_index(target=self.robot_dof_targets)
+        self._robot.actuators.command.set_position_index(value=self.robot_dof_targets)
 
     # post-physics step calls
 
@@ -216,7 +216,7 @@ class CabinetDirectEnv(DirectRLEnv):
         )
         joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
-        self._robot.set_joint_position_target_index(target=joint_pos, env_ids=env_ids)
+        self._robot.actuators.command.set_position_index(value=joint_pos, env_ids=env_ids)
         self._robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self._robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 

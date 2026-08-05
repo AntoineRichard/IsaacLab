@@ -134,7 +134,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
         # -- generate actions/commands
         targets = scene["robot"].data.default_joint_pos.torch
         # -- apply action to the robot
-        scene["robot"].set_joint_position_target_index(target=targets)
+        scene["robot"].actuators.command.set_position_index(value=targets)
         # -- write data to sim
         scene.write_data_to_sim()
         # perform step

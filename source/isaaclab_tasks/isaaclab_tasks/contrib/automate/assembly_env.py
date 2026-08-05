@@ -517,8 +517,8 @@ class AssemblyEnv(DirectRLEnv):
         self.ctrl_target_joint_pos[:, 7:9] = self.ctrl_target_gripper_dof_pos
         self.joint_torque[:, 7:9] = 0.0
 
-        self._robot.set_joint_position_target_index(target=self.ctrl_target_joint_pos)
-        self._robot.set_joint_effort_target_index(target=self.joint_torque)
+        self._robot.actuators.command.set_position_index(value=self.ctrl_target_joint_pos)
+        self._robot.actuators.command.set_effort_index(value=self.joint_torque)
 
     def _get_dones(self):
         """Update intermediate values used for rewards and observations."""
@@ -732,7 +732,7 @@ class AssemblyEnv(DirectRLEnv):
             self._robot.write_joint_position_to_sim_index(position=self.joint_pos)
             self._robot.write_joint_velocity_to_sim_index(velocity=self.joint_vel)
             self._robot.reset()
-            self._robot.set_joint_position_target_index(target=self.ctrl_target_joint_pos)
+            self._robot.actuators.command.set_position_index(value=self.ctrl_target_joint_pos)
 
             # Simulate and update tensors.
             self.step_sim_no_action()
@@ -749,11 +749,11 @@ class AssemblyEnv(DirectRLEnv):
         joint_vel = torch.zeros_like(joint_pos)
         joint_effort = torch.zeros_like(joint_pos)
         self.ctrl_target_joint_pos[env_ids, :] = joint_pos
-        self._robot.set_joint_position_target_index(target=self.ctrl_target_joint_pos[env_ids], env_ids=env_ids)
+        self._robot.actuators.command.set_position_index(value=self.ctrl_target_joint_pos[env_ids], env_ids=env_ids)
         self._robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self._robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
         self._robot.reset()
-        self._robot.set_joint_effort_target_index(target=joint_effort, env_ids=env_ids)
+        self._robot.actuators.command.set_effort_index(value=joint_effort, env_ids=env_ids)
 
         self.step_sim_no_action()
 

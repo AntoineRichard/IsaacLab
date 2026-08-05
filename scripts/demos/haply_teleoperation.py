@@ -351,7 +351,7 @@ def run_simulator(
         joint_pos_target[6] = ee_rotation_angle  # panda_joint7 - end-effector rotation (button C)
         joint_pos_target[[-2, -1]] = gripper_target  # gripper
 
-        robot.set_joint_position_target_index(target=joint_pos_target.unsqueeze(0))
+        robot.actuators.command.set_position_index(value=joint_pos_target.unsqueeze(0))
 
         for _ in range(5):
             scene.write_data_to_sim()

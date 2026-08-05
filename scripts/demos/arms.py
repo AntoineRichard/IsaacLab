@@ -203,7 +203,7 @@ def run_simulator(sim: "sim_utils.SimulationContext", entities: dict[str, "Artic
             soft_limits = robot.data.soft_joint_pos_limits.torch
             joint_pos_target = joint_pos_target.clamp_(soft_limits[..., 0], soft_limits[..., 1])
             # apply action to the robot
-            robot.set_joint_position_target_index(target=joint_pos_target)
+            robot.actuators.command.set_position_index(value=joint_pos_target)
             # write data to sim
             robot.write_data_to_sim()
         # perform step
