@@ -2453,13 +2453,19 @@ def test_global_actuator_collection_clears_native_state_after_prepare_failure(de
         assert not control._native_active
         assert control._physx_actuator_wrapper is None
         assert control._native_actuator_graphs is None
+        assert control._backend_parameter_staging is None
+        assert not control._dirty_backend_parameters
+        assert control._actuator_binding is None
+        assert control._actuator_view is None
         assert articulation._physx_actuator_wrapper is None
         assert articulation.newton_actuator_adapter is None
-        assert articulation.newton_default_stiffness is None
-        assert articulation.newton_default_damping is None
-        assert articulation.newton_managed_local_joints is None
+        assert articulation._newton_native_ranges is None
         assert articulation._implicit_dof_mask is None
         assert articulation._implicit_dof_mask_owner is None
+        assert articulation._native_dof_mask is None
+        assert articulation._native_dof_mask_owner is None
+        assert articulation._native_dof_masks is None
+        assert articulation._native_dof_mask_owners is None
         assert articulation.data._sim_bind_joint_computed_effort is None
         assert not articulation._has_newton_actuators
         assert not articulation.actuators.is_ready
@@ -3135,7 +3141,7 @@ def test_global_actuator_collection_submits_processed_joint_commands(sim, device
 
     articulation.actuators.command.position.torch.fill_(-1.0)
     articulation.actuators.joint_command.position.torch.fill_(0.25)
-    articulation.write_data_to_sim()
+    articulation.actuators.submit_commands()
 
     torch.testing.assert_close(
         wp.to_torch(articulation.root_view.get_dof_position_targets()),
