@@ -3612,5 +3612,79 @@ def test_global_actuator_legacy_data_aliases_are_live_once(sim, num_articulation
     assert not caught
 
 
+@pytest.mark.parametrize("num_articulations", [1])
+@pytest.mark.parametrize("device", test_devices())
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+@pytest.mark.parametrize("selection", ["index", "mask"])
+def test_global_actuator_solver_writers_do_not_read_unheld_sidecars(
+    sim, num_articulations, device, name, selection, monkeypatch
+):
+    """Avoid OVPhysX property readback when no group holds a sidecar."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=num_articulations, device=device)
+    sim.reset()
+    group = articulation.actuators["joint"]
+    assert group.__dict__["_solver_compatibility_sidecars"] == {}
+
+    def fail_on_lazy_read(_data):
+        raise AssertionError("solver writer read an unheld compatibility sidecar")
+
+    monkeypatch.setattr(type(articulation.data), f"joint_{name}", property(fail_on_lazy_read))
+    writer = getattr(articulation, f"write_joint_{name}_to_sim_{selection}")
+    if selection == "index":
+        writer(**{name: 17.0})
+    else:
+        writer(**{name: torch.full((1, articulation.num_joints), 17.0, device=device)})
+    assert group.__dict__["_solver_compatibility_sidecars"] == {}
+
+
+@pytest.mark.parametrize("num_articulations", [1])
+@pytest.mark.parametrize("device", test_devices())
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+@pytest.mark.parametrize("selection", ["index", "mask"])
+def test_global_actuator_solver_writers_refresh_held_sidecars(sim, num_articulations, device, name, selection):
+    """Refresh the matching held OVPhysX sidecar after index and mask writes."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=num_articulations, device=device)
+    sim.reset()
+    group = articulation.actuators["joint"]
+    sidecar = group._get_compatibility_sidecar(name)
+
+    writer = getattr(articulation, f"write_joint_{name}_to_sim_{selection}")
+    if selection == "index":
+        writer(**{name: 23.0})
+    else:
+        writer(**{name: torch.full((1, articulation.num_joints), 23.0, device=device)})
+    torch.testing.assert_close(sidecar, torch.full_like(sidecar, 23.0))
+    assert set(group.__dict__["_solver_compatibility_sidecars"]) == {name}
+
+
+@pytest.mark.parametrize("num_articulations", [1])
+@pytest.mark.parametrize("device", test_devices())
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+@pytest.mark.parametrize("selection", ["index", "mask"])
+def test_global_actuator_solver_writer_failure_retains_held_sidecars(
+    sim, num_articulations, device, name, selection, monkeypatch
+):
+    """Leave held OVPhysX sidecars unchanged when CPU binding publication fails."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=num_articulations, device=device)
+    sim.reset()
+    group = articulation.actuators["joint"]
+    sidecar = group._get_compatibility_sidecar(name)
+    before = sidecar.clone()
+
+    def fail_push(*_args, **_kwargs):
+        raise RuntimeError("CPU binding write failed")
+
+    monkeypatch.setattr(articulation, "_push_joint_property", fail_push)
+    writer = getattr(articulation, f"write_joint_{name}_to_sim_{selection}")
+    values = 29.0 if selection == "index" else torch.full((1, articulation.num_joints), 29.0, device=device)
+    with pytest.raises(RuntimeError, match="CPU binding write failed"):
+        writer(**{name: values})
+    torch.testing.assert_close(sidecar, before)
+    assert set(group.__dict__["_solver_compatibility_sidecars"]) == {name}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--maxfail=1"])

@@ -9,6 +9,7 @@
 """Shared mocked articulation backend factories for interface tests."""
 
 import warnings
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 from _iface_test_boot import simulation_app
@@ -478,8 +479,8 @@ class _MockActuatorView(dict):
     def _get_compatibility_projection(self, name: str):
         return getattr(self, name)
 
-    def _refresh_solver_compatibility_sidecars(self, name: str, values: torch.Tensor) -> None:
-        del name, values
+    def _refresh_solver_compatibility_sidecars(self, name: str, get_values: Callable[[], torch.Tensor]) -> None:
+        del name, get_values
 
     @property
     def has_implicit_actuators(self) -> bool:

@@ -288,6 +288,24 @@ def test_solver_sidecar_refresh_updates_only_an_already_materialized_field(devic
 
 
 @pytest.mark.parametrize("device", _available_devices())
+def test_solver_sidecar_refresh_does_not_materialize_values_without_held_sidecars(device: str) -> None:
+    """Do not evaluate the solver data getter when no compatibility sidecar is held."""
+    robot = make_finalized_robot(device=device)
+    values_read = False
+
+    def get_values() -> torch.Tensor:
+        nonlocal values_read
+        values_read = True
+        return torch.full((2, 3), 8.0, device=device)
+
+    robot.actuators._refresh_solver_compatibility_sidecars("armature", get_values)
+
+    assert not values_read
+    assert robot.actuators["hip"]._solver_compatibility_sidecars == {}
+    assert robot.actuators["ankle"]._solver_compatibility_sidecars == {}
+
+
+@pytest.mark.parametrize("device", _available_devices())
 def test_compatibility_projections_use_legacy_fills_and_refresh_held_values_at_compute(device: str) -> None:
     """Unsupported joints retain fills while direct parameter mutation waits for compute."""
     robot = make_finalized_robot(

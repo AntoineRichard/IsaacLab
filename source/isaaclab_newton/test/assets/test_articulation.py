@@ -1026,6 +1026,101 @@ def test_newton_actuator_gain_writes_map_public_joint_subset_to_backend(
     torch.testing.assert_close(gather_controller_parameter("kd"), expected_damping)
 
 
+def _write_global_actuator_solver_property(articulation: Articulation, name: str, selection: str) -> None:
+    """Write a full single-joint solver property through the selected public API."""
+    writer = getattr(articulation, f"write_joint_{name}_to_sim_{selection}")
+    values = torch.full((articulation.num_instances, articulation.num_joints), 23.0, device=articulation.device)
+    if selection == "index":
+        writer(
+            **{name: values},
+            env_ids=torch.tensor([0], device=articulation.device, dtype=torch.long),
+            joint_ids=torch.tensor([0], device=articulation.device, dtype=torch.long),
+        )
+    else:
+        writer(
+            **{name: values},
+            env_mask=wp.array([True], dtype=wp.bool, device=articulation.device),
+            joint_mask=wp.array([True], dtype=wp.bool, device=articulation.device),
+        )
+
+
+def _make_global_actuator_solver_articulation(sim) -> Articulation:
+    """Create a finalized single-joint articulation with an implicit actuator group."""
+    articulation_cfg = generate_articulation_cfg("single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, 1, device=sim.device)
+    sim.reset()
+    return articulation
+
+
+@pytest.mark.parametrize("num_articulations", [1])
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("gravity_enabled", [False])
+@pytest.mark.parametrize("articulation_type", ["single_joint_implicit"])
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+@pytest.mark.parametrize("selection", ["index", "mask"])
+def test_global_actuator_solver_writers_do_not_read_unheld_sidecars(
+    sim, num_articulations, device, gravity_enabled, articulation_type, name, selection, monkeypatch
+):
+    """Avoid reading solver data when no actuator group holds a compatibility sidecar."""
+    articulation = _make_global_actuator_solver_articulation(sim)
+    group = articulation.actuators["joint"]
+    assert group._solver_compatibility_sidecars == {}
+
+    def _fail_read(_self):
+        raise AssertionError("solver writer read an unheld compatibility sidecar")
+
+    monkeypatch.setattr(type(articulation.data), f"joint_{name}", property(_fail_read))
+    _write_global_actuator_solver_property(articulation, name, selection)
+
+    assert group._solver_compatibility_sidecars == {}
+
+
+@pytest.mark.parametrize("num_articulations", [1])
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("gravity_enabled", [False])
+@pytest.mark.parametrize("articulation_type", ["single_joint_implicit"])
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+@pytest.mark.parametrize("selection", ["index", "mask"])
+def test_global_actuator_solver_writers_refresh_held_sidecars(
+    sim, num_articulations, device, gravity_enabled, articulation_type, name, selection
+):
+    """Refresh a held solver sidecar only after its public-order write succeeds."""
+    articulation = _make_global_actuator_solver_articulation(sim)
+    group = articulation.actuators["joint"]
+    sidecar = group._get_compatibility_sidecar(name)
+
+    _write_global_actuator_solver_property(articulation, name, selection)
+
+    torch.testing.assert_close(sidecar, torch.full_like(sidecar, 23.0))
+    assert set(group._solver_compatibility_sidecars) == {name}
+
+
+@pytest.mark.parametrize("num_articulations", [1])
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("gravity_enabled", [False])
+@pytest.mark.parametrize("articulation_type", ["single_joint_implicit"])
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+@pytest.mark.parametrize("selection", ["index", "mask"])
+def test_global_actuator_solver_writer_failure_retains_held_sidecars(
+    sim, num_articulations, device, gravity_enabled, articulation_type, name, selection, monkeypatch
+):
+    """Retain a held solver sidecar when the Newton model update fails."""
+    articulation = _make_global_actuator_solver_articulation(sim)
+    group = articulation.actuators["joint"]
+    sidecar = group._get_compatibility_sidecar(name)
+    before = sidecar.clone()
+
+    def _fail_model_change(*_args) -> None:
+        raise RuntimeError("model update failed")
+
+    monkeypatch.setattr(SimulationManager, "add_model_change", _fail_model_change)
+    with pytest.raises(RuntimeError, match="model update failed"):
+        _write_global_actuator_solver_property(articulation, name, selection)
+
+    torch.testing.assert_close(sidecar, before)
+    assert set(group._solver_compatibility_sidecars) == {name}
+
+
 @pytest.mark.parametrize("num_articulations", [1])
 @pytest.mark.parametrize("device", ["cpu"])
 @pytest.mark.parametrize("gravity_enabled", [False])

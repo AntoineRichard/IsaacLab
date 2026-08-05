@@ -1378,7 +1378,7 @@ class Articulation(BaseArticulation):
         self.root_view.set_dof_stiffnesses(wp.clone(joint_stiffness_backend, device="cpu"), indices=cpu_env_ids)
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("stiffness", self.data.joint_stiffness.torch)
+            refresh_sidecars("stiffness", lambda: wp.to_torch(self.data._joint_stiffness))
 
     def write_joint_stiffness_to_sim_mask(
         self,
@@ -1485,7 +1485,7 @@ class Articulation(BaseArticulation):
         self.root_view.set_dof_dampings(wp.clone(joint_damping_backend, device="cpu"), indices=cpu_env_ids)
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("damping", self.data.joint_damping.torch)
+            refresh_sidecars("damping", lambda: wp.to_torch(self.data._joint_damping))
 
     def write_actuator_stiffness_to_sim(
         self,
@@ -1950,7 +1950,7 @@ class Articulation(BaseArticulation):
         self.data._reset_dynamics(mass_matrix=True)
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("armature", self.data.joint_armature.torch)
+            refresh_sidecars("armature", lambda: wp.to_torch(self.data._joint_armature))
 
     def write_joint_armature_to_sim_mask(
         self,

@@ -2142,6 +2142,97 @@ def test_global_actuator_legacy_data_aliases_are_live_once(sim, device):
 
 
 @pytest.mark.parametrize("device", test_devices())
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+@pytest.mark.parametrize("selection", ["index", "mask"])
+def test_global_actuator_solver_writers_do_not_read_unheld_sidecars(sim, device, name, selection, monkeypatch):
+    """Avoid public solver-property reads when no group holds the matching sidecar."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
+    sim.reset()
+    group = articulation.actuators["joint"]
+    assert group.__dict__["_solver_compatibility_sidecars"] == {}
+
+    def fail_on_lazy_read(_data):
+        raise AssertionError("solver writer read an unheld compatibility sidecar")
+
+    monkeypatch.setattr(type(articulation.data), f"joint_{name}", property(fail_on_lazy_read))
+    writer = getattr(articulation, f"write_joint_{name}_to_sim_{selection}")
+    if selection == "index":
+        writer(**{name: 17.0})
+    else:
+        writer(**{name: torch.full((1, articulation.num_joints), 17.0, device=device)})
+    assert group.__dict__["_solver_compatibility_sidecars"] == {}
+
+
+@pytest.mark.parametrize("device", test_devices())
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+@pytest.mark.parametrize("selection", ["index", "mask"])
+def test_global_actuator_solver_writers_refresh_held_sidecars(sim, device, name, selection):
+    """Refresh only the matching materialized group solver sidecar after a write."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
+    sim.reset()
+    group = articulation.actuators["joint"]
+    sidecar = group._get_compatibility_sidecar(name)
+    assert set(group.__dict__["_solver_compatibility_sidecars"]) == {name}
+
+    writer = getattr(articulation, f"write_joint_{name}_to_sim_{selection}")
+    if selection == "index":
+        writer(**{name: 23.0})
+    else:
+        writer(**{name: torch.full((1, articulation.num_joints), 23.0, device=device)})
+
+    torch.testing.assert_close(sidecar, torch.full_like(sidecar, 23.0))
+    assert set(group.__dict__["_solver_compatibility_sidecars"]) == {name}
+
+
+@pytest.mark.parametrize("device", test_devices())
+@pytest.mark.parametrize("name", ["stiffness", "damping", "armature"])
+def test_global_actuator_solver_writer_failure_retains_held_sidecars(sim, device, name, monkeypatch):
+    """Leave held solver sidecars unchanged when the backend write raises."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
+    sim.reset()
+    group = articulation.actuators["joint"]
+    sidecar = group._get_compatibility_sidecar(name)
+    before = sidecar.clone()
+
+    def fail_backend_write(*_args, **_kwargs):
+        raise RuntimeError("backend write failed")
+
+    backend_writer = {
+        "stiffness": "set_dof_stiffnesses",
+        "damping": "set_dof_dampings",
+        "armature": "set_dof_armatures",
+    }[name]
+    monkeypatch.setattr(articulation.root_view, backend_writer, fail_backend_write)
+    with pytest.raises(RuntimeError, match="backend write failed"):
+        getattr(articulation, f"write_joint_{name}_to_sim_index")(**{name: 29.0})
+    torch.testing.assert_close(sidecar, before)
+    assert set(group.__dict__["_solver_compatibility_sidecars"]) == {name}
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_global_actuator_legacy_command_wrappers_warn_once_per_surface(sim, device):
+    """Emit one warning for each no-suffix, indexed, and masked command wrapper."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
+    sim.reset()
+    values = torch.full((1, articulation.num_joints), 0.5, device=device)
+    for command in ("position", "velocity", "effort"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            getattr(articulation, f"set_joint_{command}_target")(values)
+            getattr(articulation, f"set_joint_{command}_target")(values)
+            getattr(articulation, f"set_joint_{command}_target_index")(target=values, full_data=True)
+            getattr(articulation, f"set_joint_{command}_target_index")(target=values, full_data=True)
+            getattr(articulation, f"set_joint_{command}_target_mask")(target=values)
+            getattr(articulation, f"set_joint_{command}_target_mask")(target=values)
+        assert len(caught) == 3
+        assert all(issubclass(warning.category, DeprecationWarning) for warning in caught)
+
+
+@pytest.mark.parametrize("device", test_devices())
 def test_global_actuator_collection_applies_all_resolved_solver_properties(sim, device, monkeypatch):
     """Test direct rows resolve independently and publish solver properties before readiness."""
     articulation_cfg = generate_articulation_cfg(

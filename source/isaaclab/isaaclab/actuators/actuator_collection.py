@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import logging
 import warnings
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -1761,16 +1761,24 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             for name in tuple(self._compatibility_allocations):
                 self._refresh_compatibility_projection(name)
 
-        def _refresh_solver_compatibility_sidecars(self, name: str, values: torch.Tensor) -> None:
+        def _refresh_solver_compatibility_sidecars(self, name: str, get_values: Callable[[], torch.Tensor]) -> None:
             """Refresh already materialized group solver sidecars after a backend write.
 
             Args:
                 name: Solver parameter name.
-                values: Complete articulation-order parameter values.
+                get_values: Returns complete articulation-order parameter values.
             """
             if not self.is_ready:
                 return
-            for actuator in dict.values(self):
+            active_actuators = [
+                actuator
+                for actuator in dict.values(self)
+                if name in actuator.__dict__.get("_solver_compatibility_sidecars", {})
+            ]
+            if not active_actuators:
+                return
+            values = get_values()
+            for actuator in active_actuators:
                 actuator._refresh_solver_compatibility_sidecar(name, values)
 
         def _write_deprecated_actuator_gain(

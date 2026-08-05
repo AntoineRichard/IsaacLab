@@ -1282,7 +1282,7 @@ class Articulation(BaseArticulation):
         )
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("stiffness", self.data.joint_stiffness.torch)
+            refresh_sidecars("stiffness", lambda: wp.to_torch(self._data._joint_stiffness.data))
 
     def write_joint_stiffness_to_sim_mask(
         self,
@@ -1333,7 +1333,7 @@ class Articulation(BaseArticulation):
         )
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("stiffness", self.data.joint_stiffness.torch)
+            refresh_sidecars("stiffness", lambda: wp.to_torch(self._data._joint_stiffness.data))
 
     def write_joint_damping_to_sim_index(
         self,
@@ -1386,7 +1386,7 @@ class Articulation(BaseArticulation):
         )
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("damping", self.data.joint_damping.torch)
+            refresh_sidecars("damping", lambda: wp.to_torch(self._data._joint_damping.data))
 
     def write_joint_damping_to_sim_mask(
         self,
@@ -1437,7 +1437,7 @@ class Articulation(BaseArticulation):
         )
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("damping", self.data.joint_damping.torch)
+            refresh_sidecars("damping", lambda: wp.to_torch(self._data._joint_damping.data))
 
     def write_joint_position_limit_to_sim_index(
         self,
@@ -1880,7 +1880,7 @@ class Articulation(BaseArticulation):
         self._data._reset_dynamics(mass_matrix=True)
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("armature", self.data.joint_armature.torch)
+            refresh_sidecars("armature", lambda: wp.to_torch(self._data._joint_armature.data))
 
     def write_joint_armature_to_sim_mask(
         self,
@@ -1932,7 +1932,7 @@ class Articulation(BaseArticulation):
         self._data._reset_dynamics(mass_matrix=True)
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if refresh_sidecars is not None:
-            refresh_sidecars("armature", self.data.joint_armature.torch)
+            refresh_sidecars("armature", lambda: wp.to_torch(self._data._joint_armature.data))
 
     def write_joint_friction_coefficient_to_sim_index(
         self,

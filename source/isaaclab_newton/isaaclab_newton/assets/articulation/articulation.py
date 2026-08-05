@@ -1519,7 +1519,7 @@ class Articulation(BaseArticulation):
         SimulationManager.add_model_change(ModelFlags.JOINT_DOF_PROPERTIES)
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if value_name in {"stiffness", "damping", "armature"} and refresh_sidecars is not None:
-            refresh_sidecars(value_name, getattr(self.data, f"joint_{value_name}").torch)
+            refresh_sidecars(value_name, lambda: wp.to_torch(user_data))
 
     def _write_joint_float_property_to_sim_mask(
         self,
@@ -1557,7 +1557,7 @@ class Articulation(BaseArticulation):
         SimulationManager.add_model_change(ModelFlags.JOINT_DOF_PROPERTIES)
         refresh_sidecars = getattr(self.actuators, "_refresh_solver_compatibility_sidecars", None)
         if value_name in {"stiffness", "damping", "armature"} and refresh_sidecars is not None:
-            refresh_sidecars(value_name, getattr(self.data, f"joint_{value_name}").torch)
+            refresh_sidecars(value_name, lambda: wp.to_torch(user_data))
 
     def write_joint_stiffness_to_sim_index(
         self,
