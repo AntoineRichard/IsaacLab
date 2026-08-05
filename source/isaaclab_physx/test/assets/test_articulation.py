@@ -29,18 +29,29 @@ simulation_app = AppLauncher(headless=True, device=resolve_test_sim_device()).ap
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 import warp as wp
 from isaaclab_physx.assets import Articulation
+from isaaclab_physx.assets.articulation.actuator_control import PhysxActuatorControl
+from isaaclab_physx.physics import PhysxCfg
 
 from pxr import UsdPhysics
 
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
-from isaaclab.actuators import ActuatorBase, IdealPDActuatorCfg, ImplicitActuatorCfg
+from isaaclab.actuators import (
+    ActuatorBase,
+    DCMotor,
+    DCMotorCfg,
+    IdealPDActuator,
+    IdealPDActuatorCfg,
+    ImplicitActuatorCfg,
+)
+from isaaclab.actuators.actuator_control import _ActuatorParameterWrite
 from isaaclab.assets import ArticulationCfg, get_articulation_name_ordering
 from isaaclab.cloner import ClonePlan
 from isaaclab.controllers import (
@@ -51,10 +62,11 @@ from isaaclab.controllers import (
 )
 from isaaclab.envs.mdp.terminations import joint_effort_out_of_limit
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sim import SimulationContext, build_simulation_context
+from isaaclab.sim import SimulationCfg, SimulationContext, build_simulation_context
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import compute_pose_error, matrix_from_quat, quat_inv, subtract_frame_transforms
 from isaaclab.utils.version import get_isaac_sim_version, has_kit
+from isaaclab.utils.warp import ProxyArray
 
 ##
 # Pre-defined configs
@@ -218,6 +230,19 @@ def generate_articulation(
     )
 
     return articulation, translations
+
+
+def _clone_physx_solver_properties(articulation: Articulation) -> dict[str, torch.Tensor]:
+    """Clone every actuator-owned PhysX joint property in backend order."""
+    root_view = articulation.root_view
+    return {
+        "stiffness": wp.to_torch(root_view.get_dof_stiffnesses()).clone(),
+        "damping": wp.to_torch(root_view.get_dof_dampings()).clone(),
+        "effort_limit_sim": wp.to_torch(root_view.get_dof_max_forces()).clone(),
+        "velocity_limit_sim": wp.to_torch(root_view.get_dof_max_velocities()).clone(),
+        "armature": wp.to_torch(root_view.get_dof_armatures()).clone(),
+        "friction": wp.to_torch(root_view.get_dof_friction_properties()).clone(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2065,6 +2090,378 @@ def test_global_actuator_collection_publishes_scoped_view(sim, device):
 
 
 @pytest.mark.parametrize("device", test_devices())
+def test_global_actuator_collection_applies_all_resolved_solver_properties(sim, device, monkeypatch):
+    """Test that finalized actuator properties reach PhysX before publication."""
+    articulation_cfg = generate_articulation_cfg(
+        articulation_type="single_joint_implicit",
+        velocity_limit_sim=63.0,
+        effort_limit_sim=317.0,
+    )
+    actuator_cfg = articulation_cfg.actuators["joint"]
+    actuator_cfg.stiffness = 123.0
+    actuator_cfg.damping = 4.5
+    actuator_cfg.armature = 0.4
+    actuator_cfg.friction = 1.5
+    actuator_cfg.dynamic_friction = 0.75
+    actuator_cfg.viscous_friction = 0.25
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=2, device=device)
+
+    write_methods = (
+        "write_joint_effort_limit_to_sim_index",
+        "write_joint_velocity_limit_to_sim_index",
+        "write_joint_armature_to_sim_index",
+        "write_joint_friction_coefficient_to_sim_index",
+        "write_joint_stiffness_to_sim_index",
+        "write_joint_damping_to_sim_index",
+    )
+    write_counts = dict.fromkeys(write_methods, 0)
+    for method_name in write_methods:
+        original_method = getattr(Articulation, method_name)
+
+        def record_write(self, *args, _method_name=method_name, _original_method=original_method, **kwargs):
+            assert not self.actuators.is_ready
+            assert self.data._actuator_view is None
+            write_counts[_method_name] += 1
+            return _original_method(self, *args, **kwargs)
+
+        monkeypatch.setattr(Articulation, method_name, record_write)
+
+    validation_count = 0
+    original_validate = Articulation._validate_cfg
+
+    def record_validation(self):
+        nonlocal validation_count
+        assert write_counts == dict.fromkeys(write_methods, 1)
+        assert not self.actuators.is_ready
+        assert self.data._actuator_view is None
+        validation_count += 1
+        return original_validate(self)
+
+    monkeypatch.setattr(Articulation, "_validate_cfg", record_validation)
+
+    sim.reset()
+
+    properties = _clone_physx_solver_properties(articulation)
+    expected_shape = (articulation.num_instances, articulation.num_joints)
+    expected = {
+        "stiffness": 123.0,
+        "damping": 4.5,
+        "effort_limit_sim": 317.0,
+        "velocity_limit_sim": 63.0,
+        "armature": 0.4,
+    }
+    for name, value in expected.items():
+        torch.testing.assert_close(properties[name], torch.full(expected_shape, value, device=properties[name].device))
+    torch.testing.assert_close(
+        properties["friction"][..., 0],
+        torch.full(expected_shape, 1.5, device=properties["friction"].device),
+    )
+    torch.testing.assert_close(
+        properties["friction"][..., 1],
+        torch.full(expected_shape, 0.75, device=properties["friction"].device),
+    )
+    torch.testing.assert_close(
+        properties["friction"][..., 2],
+        torch.full(expected_shape, 0.25, device=properties["friction"].device),
+    )
+    assert write_counts == dict.fromkeys(write_methods, 1)
+    assert validation_count == 1
+    assert articulation._actuator_control._resolved_property_backend_snapshot is None
+    assert articulation._actuator_control._resolved_property_cache_snapshot is None
+
+
+@pytest.mark.parametrize("device", test_devices())
+@pytest.mark.parametrize("failure_phase", ["bind", "completion"])
+def test_global_actuator_collection_restores_solver_properties_after_publication_failure(
+    sim, device, failure_phase, monkeypatch
+):
+    """Test that publication failures restore exact PhysX and cache rows."""
+    articulation_cfg = generate_articulation_cfg(
+        articulation_type="single_joint_implicit",
+        velocity_limit_sim=67.0,
+        effort_limit_sim=319.0,
+    )
+    actuator_cfg = articulation_cfg.actuators["joint"]
+    actuator_cfg.stiffness = 127.0
+    actuator_cfg.damping = 4.75
+    actuator_cfg.armature = 0.45
+    actuator_cfg.friction = 1.6
+    actuator_cfg.dynamic_friction = 0.8
+    actuator_cfg.viscous_friction = 0.3
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=2, device=device)
+
+    backend_before: dict[str, torch.Tensor] = {}
+    backend_after_write: dict[str, torch.Tensor] = {}
+    cache_before: dict[str, torch.Tensor] = {}
+    original_write = PhysxActuatorControl.write_resolved_joint_properties_staged
+
+    def record_staged_write(control, properties):
+        backend_before.update(_clone_physx_solver_properties(control._articulation))
+        data = control._articulation.data
+        cache_before.update(
+            {
+                "stiffness": data.joint_stiffness.torch.clone(),
+                "damping": data.joint_damping.torch.clone(),
+                "effort_limit_sim": data.joint_effort_limits.torch.clone(),
+                "velocity_limit_sim": data.joint_vel_limits.torch.clone(),
+                "armature": data.joint_armature.torch.clone(),
+                "friction": data.joint_friction_coeff.torch.clone(),
+                "dynamic_friction": data.joint_dynamic_friction_coeff.torch.clone(),
+                "viscous_friction": data.joint_viscous_friction_coeff.torch.clone(),
+            }
+        )
+        original_write(control, properties)
+        backend_after_write.update(_clone_physx_solver_properties(control._articulation))
+
+    monkeypatch.setattr(PhysxActuatorControl, "write_resolved_joint_properties_staged", record_staged_write)
+    if failure_phase == "bind":
+        original_bind = PhysxActuatorControl.bind_actuator_view
+
+        def fail_after_bind(control, view):
+            original_bind(control, view)
+            assert control._articulation.data._actuator_view is view
+            raise RuntimeError("injected PhysX bind failure")
+
+        monkeypatch.setattr(PhysxActuatorControl, "bind_actuator_view", fail_after_bind)
+    else:
+        original_complete = PhysxActuatorControl.complete_articulation_initialization
+
+        def fail_after_completion(control):
+            original_complete(control)
+            assert control._articulation.data.is_primed
+            assert control._articulation.is_initialized
+            raise RuntimeError("injected PhysX completion failure")
+
+        monkeypatch.setattr(PhysxActuatorControl, "complete_articulation_initialization", fail_after_completion)
+
+    with pytest.raises(RuntimeError, match=f"injected PhysX {failure_phase} failure"):
+        sim.reset()
+
+    assert any(
+        not torch.equal(backend_before[name], backend_after_write[name])
+        for name in ("stiffness", "damping", "effort_limit_sim", "velocity_limit_sim", "armature", "friction")
+    )
+    restored = _clone_physx_solver_properties(articulation)
+    for name, expected in backend_before.items():
+        torch.testing.assert_close(restored[name], expected, rtol=0.0, atol=0.0)
+    restored_cache = {
+        "stiffness": articulation.data.joint_stiffness.torch,
+        "damping": articulation.data.joint_damping.torch,
+        "effort_limit_sim": articulation.data.joint_effort_limits.torch,
+        "velocity_limit_sim": articulation.data.joint_vel_limits.torch,
+        "armature": articulation.data.joint_armature.torch,
+        "friction": articulation.data.joint_friction_coeff.torch,
+        "dynamic_friction": articulation.data.joint_dynamic_friction_coeff.torch,
+        "viscous_friction": articulation.data.joint_viscous_friction_coeff.torch,
+    }
+    for name, expected in cache_before.items():
+        torch.testing.assert_close(restored_cache[name], expected, rtol=0.0, atol=0.0)
+    assert not articulation.actuators.is_ready
+    assert articulation.data._actuator_view is None
+    assert not articulation.data.is_primed
+    assert not articulation.is_initialized
+
+
+@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
+def test_global_actuator_collection_clears_native_state_after_prepare_failure(device, monkeypatch):
+    """Test that failed hosted-Newton preparation leaves no candidate state installed."""
+    sim_cfg = SimulationCfg(physics=PhysxCfg(), use_newton_actuators=True)
+    original_prepare = PhysxActuatorControl.prepare_actuator_binding
+    prepared_controls = []
+
+    def fail_after_native_prepare(control, binding):
+        assert not control._native_active
+        assert control._physx_actuator_wrapper is None
+        assert getattr(control._articulation, "newton_actuator_adapter", None) is None
+        assert not getattr(control._articulation, "_has_newton_actuators", False)
+        original_prepare(control, binding)
+        prepared_controls.append(control)
+        assert control._native_active
+        assert control._articulation.newton_actuator_adapter is not None
+        raise RuntimeError("injected hosted-Newton prepare failure")
+
+    monkeypatch.setattr(PhysxActuatorControl, "prepare_actuator_binding", fail_after_native_prepare)
+    with build_simulation_context(device=device, sim_cfg=sim_cfg) as sim:
+        sim._app_control_on_stop_handle = None
+        articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_explicit")
+        articulation, _ = generate_articulation(articulation_cfg, num_articulations=2, device=device)
+
+        with pytest.raises(RuntimeError, match="injected hosted-Newton prepare failure"):
+            sim.reset()
+
+        assert prepared_controls
+        assert all(control is prepared_controls[0] for control in prepared_controls)
+        control = prepared_controls[0]
+        assert not control._native_active
+        assert control._physx_actuator_wrapper is None
+        assert control._native_actuator_graphs is None
+        assert articulation._physx_actuator_wrapper is None
+        assert articulation.newton_actuator_adapter is None
+        assert articulation.newton_default_stiffness is None
+        assert articulation.newton_default_damping is None
+        assert articulation.newton_managed_local_joints is None
+        assert articulation._implicit_dof_mask is None
+        assert articulation._implicit_dof_mask_owner is None
+        assert articulation.data._sim_bind_joint_computed_effort is None
+        assert not articulation._has_newton_actuators
+        assert not articulation.actuators.is_ready
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_hosted_newton_parameter_writes_use_exact_type_owner_routes(device):
+    """Test indexed and masked native writes without implicit-drive staging."""
+    articulation = SimpleNamespace(device=device, num_instances=2, num_joints=3, num_fixed_tendons=0)
+    control = PhysxActuatorControl(articulation)
+    control._native_active = True
+
+    dc_controller = SimpleNamespace(
+        kp=wp.full(4, -1.0, dtype=wp.float32, device=device),
+        kd=wp.full(4, -1.0, dtype=wp.float32, device=device),
+    )
+    dc_clamping = SimpleNamespace(
+        max_motor_effort=wp.full(4, -1.0, dtype=wp.float32, device=device),
+        velocity_limit=wp.full(4, -1.0, dtype=wp.float32, device=device),
+        saturation_effort=wp.full(4, -1.0, dtype=wp.float32, device=device),
+    )
+    dc_actuator = SimpleNamespace(
+        indices=wp.array([0, 2, 3, 5], dtype=wp.uint32, device=device),
+        controller=dc_controller,
+        clamping=[dc_clamping],
+    )
+    ideal_clamping = SimpleNamespace(max_effort=wp.full(2, -1.0, dtype=wp.float32, device=device))
+    ideal_actuator = SimpleNamespace(
+        indices=wp.array([1, 4], dtype=wp.uint32, device=device),
+        controller=SimpleNamespace(
+            kp=wp.full(2, -1.0, dtype=wp.float32, device=device),
+            kd=wp.full(2, -1.0, dtype=wp.float32, device=device),
+        ),
+        clamping=[ideal_clamping],
+    )
+    articulation.newton_actuator_adapter = SimpleNamespace(actuators=[dc_actuator, ideal_actuator])
+
+    dc_owner_slots = torch.tensor([0, -1, 1], dtype=torch.int32, device=device)
+    stiffness = ProxyArray(wp.array([[11.0, 12.0], [21.0, 22.0]], dtype=wp.float32, device=device))
+    control.write_actuator_parameter(
+        "stiffness",
+        _ActuatorParameterWrite(
+            value=stiffness.torch,
+            actuator_type=DCMotor,
+            canonical=stiffness,
+            env_ids=torch.tensor([1], dtype=torch.int64, device=device),
+            joint_ids=torch.tensor([2], dtype=torch.int32, device=device),
+            backend_owner_slots=dc_owner_slots,
+            scope="type",
+        ),
+    )
+    saturation_effort = ProxyArray(wp.array([[31.0, 32.0], [41.0, 42.0]], dtype=wp.float32, device=device))
+    control.write_actuator_parameter(
+        "saturation_effort",
+        _ActuatorParameterWrite(
+            value=saturation_effort.torch,
+            actuator_type=DCMotor,
+            canonical=saturation_effort,
+            env_mask=torch.tensor([True, False], dtype=torch.bool, device=device),
+            joint_mask=torch.tensor([False, False, True], dtype=torch.bool, device=device),
+            backend_owner_slots=dc_owner_slots,
+            scope="group",
+        ),
+    )
+    ideal_owner_slots = torch.tensor([-1, 0, -1], dtype=torch.int32, device=device)
+    effort_limit = ProxyArray(wp.array([[51.0], [61.0]], dtype=wp.float32, device=device))
+    control.write_actuator_parameter(
+        "effort_limit",
+        _ActuatorParameterWrite(
+            value=effort_limit.torch,
+            actuator_type=IdealPDActuator,
+            canonical=effort_limit,
+            backend_owner_slots=ideal_owner_slots,
+            scope="type",
+        ),
+    )
+
+    wp.synchronize_device(device)
+    torch.testing.assert_close(wp.to_torch(dc_controller.kp), torch.tensor([-1.0, -1.0, -1.0, 22.0], device=device))
+    torch.testing.assert_close(
+        wp.to_torch(dc_clamping.saturation_effort), torch.tensor([-1.0, 32.0, -1.0, -1.0], device=device)
+    )
+    torch.testing.assert_close(wp.to_torch(ideal_clamping.max_effort), torch.tensor([51.0, 61.0], device=device))
+
+
+@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
+def test_hosted_newton_public_setters_update_real_dc_motor_components(device):
+    """Test that native DCMotor setters update real graph-capturable component arrays."""
+    sim_cfg = SimulationCfg(physics=PhysxCfg(), use_newton_actuators=True)
+    with build_simulation_context(device=device, sim_cfg=sim_cfg) as sim:
+        sim._app_control_on_stop_handle = None
+        articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_explicit")
+        articulation_cfg.actuators["joint"] = DCMotorCfg(
+            joint_names_expr=[".*"],
+            saturation_effort=120.0,
+            effort_limit=80.0,
+            velocity_limit=7.5,
+            stiffness=10.0,
+            damping=2.0,
+        )
+        articulation, _ = generate_articulation(articulation_cfg, num_articulations=2, device=device)
+        sim.reset()
+
+        actuator = articulation.actuators["joint"]
+        actuator.set_parameter_index("stiffness", 17.0)
+        actuator.set_parameter_index("damping", 3.0)
+        actuator.set_parameter_index("effort_limit", 29.0)
+        actuator.set_parameter_index("velocity_limit", 4.0)
+        actuator.set_parameter_index("saturation_effort", 31.0)
+        wp.synchronize_device(device)
+
+        adapter = articulation.newton_actuator_adapter
+        assert adapter is not None
+        assert len(adapter.actuators) == 1
+        native_actuator = adapter.actuators[0]
+        torch.testing.assert_close(
+            wp.to_torch(native_actuator.controller.kp),
+            torch.full((2,), 17.0, device=device),
+        )
+        torch.testing.assert_close(
+            wp.to_torch(native_actuator.controller.kd),
+            torch.full((2,), 3.0, device=device),
+        )
+        assert native_actuator.clamping is not None
+        assert len(native_actuator.clamping) == 1
+        clamping = native_actuator.clamping[0]
+        torch.testing.assert_close(
+            wp.to_torch(clamping.max_motor_effort),
+            torch.full((2,), 29.0, device=device),
+        )
+        torch.testing.assert_close(
+            wp.to_torch(clamping.velocity_limit),
+            torch.full((2,), 4.0, device=device),
+        )
+        torch.testing.assert_close(
+            wp.to_torch(clamping.saturation_effort),
+            torch.full((2,), 31.0, device=device),
+        )
+
+        capture_value = torch.tensor(37.0, dtype=torch.float32, device=device)
+        capture_env_ids = torch.tensor([1], dtype=torch.int64, device=device)
+        capture_joint_ids = torch.tensor([0], dtype=torch.int32, device=device)
+        with wp.ScopedCapture(device=device, force_module_load=True) as capture:
+            actuator.set_parameter_index(
+                "stiffness",
+                capture_value,
+                env_ids=capture_env_ids,
+                joint_ids=capture_joint_ids,
+            )
+        capture_value.fill_(41.0)
+        torch.cuda.synchronize()
+        wp.capture_launch(capture.graph)
+        torch.cuda.synchronize()
+        torch.testing.assert_close(
+            wp.to_torch(native_actuator.controller.kp),
+            torch.tensor([17.0, 41.0], device=device),
+        )
+
+
+@pytest.mark.parametrize("device", test_devices())
 def test_global_actuator_collection_submits_processed_joint_commands(sim, device):
     """Test that PhysX submits the scoped processed command rather than raw input."""
     articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
@@ -2082,17 +2479,55 @@ def test_global_actuator_collection_submits_processed_joint_commands(sim, device
 
 
 @pytest.mark.parametrize("device", test_devices())
-def test_global_implicit_gain_write_flushes_at_submission(sim, device):
-    """Test that an implicit gain write reaches PhysX at the next submit boundary."""
+@pytest.mark.parametrize(
+    ("parameter_name", "setter_name", "getter_name"),
+    [
+        ("stiffness", "set_dof_stiffnesses", "get_dof_stiffnesses"),
+        ("damping", "set_dof_dampings", "get_dof_dampings"),
+    ],
+)
+def test_global_implicit_gain_writes_coalesce_at_submission(
+    sim, device, parameter_name, setter_name, getter_name, monkeypatch
+):
+    """Test that repeated implicit gain writes issue one PhysX call at submit."""
     articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
     articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
     sim.reset()
 
-    articulation.actuators["joint"].set_parameter_index("stiffness", 37.0)
+    calls = []
+    original_setter = getattr(articulation.root_view, setter_name)
+
+    def record_setter(values, indices):
+        calls.append((values, indices))
+        return original_setter(values, indices)
+
+    monkeypatch.setattr(articulation.root_view, setter_name, record_setter)
+    articulation.actuators["joint"].set_parameter_index(parameter_name, 31.0)
+    articulation.actuators["joint"].set_parameter_index(parameter_name, 37.0)
     articulation.write_data_to_sim()
 
-    stiffness = wp.to_torch(articulation.root_view.get_dof_stiffnesses())
-    torch.testing.assert_close(stiffness, torch.full((1, 1), 37.0, device=stiffness.device))
+    assert len(calls) == 1
+    gain = wp.to_torch(getattr(articulation.root_view, getter_name)())
+    torch.testing.assert_close(gain, torch.full((1, 1), 37.0, device=gain.device))
+
+
+@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
+@pytest.mark.parametrize("parameter_name", ["stiffness", "damping"])
+def test_global_implicit_gain_public_setter_rejects_cuda_capture(sim, device, parameter_name):
+    """Test that the public setter rejects capture before mutating canonical storage."""
+    articulation_cfg = generate_articulation_cfg(articulation_type="single_joint_implicit")
+    articulation, _ = generate_articulation(articulation_cfg, num_articulations=1, device=device)
+    sim.reset()
+    before = getattr(articulation.actuators["joint"], parameter_name).clone()
+    capture_value = torch.tensor(43.0, dtype=torch.float32, device=device)
+    capture_sentinel = wp.zeros(1, dtype=wp.float32, device=device)
+
+    with wp.ScopedCapture(device=device):
+        with pytest.raises(RuntimeError, match="not supported during CUDA graph capture"):
+            articulation.actuators["joint"].set_parameter_index(parameter_name, capture_value)
+        capture_sentinel.zero_()
+
+    torch.testing.assert_close(getattr(articulation.actuators["joint"], parameter_name), before)
 
 
 @pytest.mark.parametrize("num_articulations", [1, 2])

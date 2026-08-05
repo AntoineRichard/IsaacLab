@@ -10,7 +10,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 import warp as wp
@@ -20,12 +20,13 @@ from isaaclab.actuators.actuator_control import ArticulationActuatorControl
 from isaaclab.actuators.actuator_pd import ImplicitActuator
 from isaaclab.assets.articulation import ordering_kernels
 from isaaclab.sim.utils.queries import find_first_matching_prim
+from isaaclab.utils.warp.index_kernel import IndexKernelDispatcher
 
 from isaaclab_physx.physics import PhysxManager as SimulationManager
 
 if TYPE_CHECKING:
     from isaaclab.actuators.actuator_collection import _ArticulationBinding
-    from isaaclab.actuators.actuator_control import _ActuatorParameterWrite
+    from isaaclab.actuators.actuator_control import _ActuatorParameterWrite, _ResolvedSolverProperties
     from isaaclab.actuators.actuator_storage import _BackendParameterStaging
 
     from .articulation import Articulation
@@ -33,6 +34,41 @@ if TYPE_CHECKING:
 _HAS_NEWTON_ACTUATORS = importlib.util.find_spec("isaaclab_newton.actuators") is not None
 
 logger = logging.getLogger(__name__)
+
+
+@wp.kernel(enable_backward=False)
+def _mark_native_parameter_selection(
+    ids: wp.array(dtype=Any),
+    selection: wp.array(dtype=wp.bool),
+) -> None:
+    """Mark one reusable native parameter selection mask."""
+    selection[wp.int32(ids[wp.tid()])] = True
+
+
+@wp.kernel(enable_backward=False)
+def _patch_native_parameter_mask(
+    indices: wp.array(dtype=wp.uint32),
+    canonical: wp.array2d(dtype=wp.float32),
+    owner_slots: wp.array(dtype=wp.int32),
+    env_mask: wp.array(dtype=wp.bool),
+    joint_mask: wp.array(dtype=wp.bool),
+    num_joints: int,
+    destination: wp.array(dtype=wp.float32),
+) -> None:
+    """Patch one hosted-native parameter through full articulation masks."""
+    native_slot = wp.tid()
+    flat_joint = wp.int32(indices[native_slot])
+    env_id = flat_joint // num_joints
+    joint_id = flat_joint - env_id * num_joints
+    compact_slot = owner_slots[joint_id]
+    if compact_slot >= 0 and env_mask[env_id] and joint_mask[joint_id]:
+        destination[native_slot] = canonical[env_id, compact_slot]
+
+
+_MARK_NATIVE_PARAMETER_SELECTION = IndexKernelDispatcher(
+    _mark_native_parameter_selection,
+    ("ids",),
+)
 
 
 class PhysxActuatorControl(ArticulationActuatorControl):
@@ -53,28 +89,154 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         self._native_actuator_graph_index = 0
         self._backend_parameter_staging: _BackendParameterStaging | None = None
         self._dirty_backend_parameters: set[str] = set()
+        self._resolved_property_backend_snapshot: dict[str, wp.array] | None = None
+        self._resolved_property_cache_snapshot: dict[str, wp.array] | None = None
+        self._all_env_mask = wp.ones(self.num_instances, dtype=wp.bool, device=self.device)
+        self._all_joint_mask = wp.ones(self.num_joints, dtype=wp.bool, device=self.device)
+        self._native_env_selection = wp.zeros(self.num_instances, dtype=wp.bool, device=self.device)
+        self._native_joint_selection = wp.zeros(self.num_joints, dtype=wp.bool, device=self.device)
 
     def invalidate_actuator_view(self) -> None:
-        """Release candidate-owned parameter staging after rollback or STOP."""
-        self._dirty_backend_parameters.clear()
-        self._backend_parameter_staging = None
-        super().invalidate_actuator_view()
+        """Release every candidate-owned PhysX and hosted-native binding."""
+        try:
+            self._clear_native_actuator_state()
+        finally:
+            self._dirty_backend_parameters.clear()
+            self._backend_parameter_staging = None
+            super().invalidate_actuator_view()
+
+    def write_resolved_joint_properties_staged(self, properties: _ResolvedSolverProperties) -> None:
+        """Apply one reversible set of resolved solver properties before publication."""
+        if self._resolved_property_backend_snapshot is not None:
+            raise RuntimeError("PhysX solver-property staging already owns an uncommitted snapshot.")
+        articulation = self._articulation
+        data = articulation.data
+        root_view = articulation.root_view
+        backend_snapshot = {
+            "stiffness": wp.clone(root_view.get_dof_stiffnesses(), device="cpu"),
+            "damping": wp.clone(root_view.get_dof_dampings(), device="cpu"),
+            "effort_limit_sim": wp.clone(root_view.get_dof_max_forces(), device="cpu"),
+            "velocity_limit_sim": wp.clone(root_view.get_dof_max_velocities(), device="cpu"),
+            "armature": wp.clone(root_view.get_dof_armatures(), device="cpu"),
+            "friction_properties": wp.clone(root_view.get_dof_friction_properties(), device="cpu"),
+        }
+        cache_attrs = (
+            "_joint_stiffness",
+            "_joint_damping",
+            "_joint_effort_limits",
+            "_joint_vel_limits",
+            "_joint_armature",
+            "_joint_friction_coeff",
+            "_joint_dynamic_friction_coeff",
+            "_joint_viscous_friction_coeff",
+            "_joint_stiffness_backend",
+            "_joint_damping_backend",
+            "_joint_effort_limits_backend",
+            "_joint_vel_limits_backend",
+            "_joint_armature_backend",
+            "_joint_friction_props_user",
+            "_joint_friction_props_backend",
+        )
+        cache_snapshot = {
+            name: wp.clone(value) for name in cache_attrs if (value := getattr(data, name, None)) is not None
+        }
+        self._resolved_property_backend_snapshot = backend_snapshot
+        self._resolved_property_cache_snapshot = cache_snapshot
+
+        def target(name: str) -> wp.array:
+            canonical_target = properties.properties[name].canonical_target
+            if canonical_target is None:
+                raise RuntimeError(f"PhysX requires a device target for resolved {name!r} properties.")
+            return canonical_target.warp
+
+        articulation.write_joint_effort_limit_to_sim_index(limits=target("effort_limit_sim"), full_data=True)
+        articulation.write_joint_velocity_limit_to_sim_index(limits=target("velocity_limit_sim"), full_data=True)
+        articulation.write_joint_armature_to_sim_index(armature=target("armature"), full_data=True)
+        articulation.write_joint_friction_coefficient_to_sim_index(
+            joint_friction_coeff=target("friction"),
+            joint_dynamic_friction_coeff=target("dynamic_friction"),
+            joint_viscous_friction_coeff=target("viscous_friction"),
+            full_data=True,
+        )
+        articulation.write_joint_stiffness_to_sim_index(stiffness=target("stiffness"), full_data=True)
+        articulation.write_joint_damping_to_sim_index(damping=target("damping"), full_data=True)
+
+    def validate_resolved_joint_properties(self) -> None:
+        """Validate PhysX configuration after staged solver writes and before publication."""
+        self._articulation._validate_cfg()
+
+    def restore_resolved_joint_properties(self) -> None:
+        """Restore exact backend and data-cache rows after failed finalization."""
+        backend_snapshot = self._resolved_property_backend_snapshot
+        cache_snapshot = self._resolved_property_cache_snapshot
+        if backend_snapshot is None or cache_snapshot is None:
+            return
+        articulation = self._articulation
+        root_view = articulation.root_view
+        indices = articulation._cpu_env_ids_all
+        failures: list[Exception] = []
+        backend_restores = (
+            (root_view.set_dof_max_forces, backend_snapshot["effort_limit_sim"]),
+            (root_view.set_dof_max_velocities, backend_snapshot["velocity_limit_sim"]),
+            (root_view.set_dof_armatures, backend_snapshot["armature"]),
+            (root_view.set_dof_friction_properties, backend_snapshot["friction_properties"]),
+            (root_view.set_dof_stiffnesses, backend_snapshot["stiffness"]),
+            (root_view.set_dof_dampings, backend_snapshot["damping"]),
+        )
+        try:
+            for restore, value in backend_restores:
+                try:
+                    restore(value, indices=indices)
+                except Exception as error:
+                    failures.append(error)
+            for name, value in cache_snapshot.items():
+                try:
+                    wp.copy(getattr(articulation.data, name), value)
+                except Exception as error:
+                    failures.append(error)
+            articulation.data._reset_dynamics(mass_matrix=True)
+        finally:
+            self._resolved_property_backend_snapshot = None
+            self._resolved_property_cache_snapshot = None
+        if failures:
+            first, *remaining = failures
+            for error in remaining:
+                first.add_note(f"Additional PhysX solver-property restore failure: {error}")
+            raise first
+
+    def commit_resolved_joint_properties(self) -> None:
+        """Release successful candidate snapshots after publication completes."""
+        self._resolved_property_backend_snapshot = None
+        self._resolved_property_cache_snapshot = None
+
+    def complete_articulation_initialization(self) -> None:
+        """Prime and complete an articulation already validated before publication."""
+        if self._actuator_binding is None or self._actuator_view is None:
+            raise RuntimeError("Actuator facade must be prepared and bound before articulation completion.")
+        articulation = self._articulation
+        articulation.update(0.0)
+        articulation._log_articulation_info()
+        articulation.data.is_primed = True
+        articulation._complete_deferred_initialization()
 
     def preflight_actuator_parameter_write(self, name: str, write: _ActuatorParameterWrite) -> None:
         """Reject deferred PhysX drive writes during CUDA graph capture."""
-        del write
-        if name in {"stiffness", "damping"} and wp.get_device(self.device).is_capturing:
+        if (
+            name in {"stiffness", "damping"}
+            and write.backend_parameter_staging is not None
+            and wp.get_device(self.device).is_capturing
+        ):
             raise RuntimeError("PhysX implicit actuator drive updates are not supported during CUDA graph capture.")
 
     def write_actuator_parameter(self, name: str, write: _ActuatorParameterWrite) -> None:
-        """Patch candidate-owned drive staging and defer the host boundary to submit."""
-        if name not in {"stiffness", "damping"}:
+        """Route implicit drives or hosted-native parameters through candidate metadata."""
+        if name in {"stiffness", "damping"} and write.backend_parameter_staging is not None:
+            write.backend_parameter_staging.patch_write(actuator_type=write.actuator_type, name=name, write=write)
+            self._dirty_backend_parameters.add(name)
             return
-        staging = write.backend_parameter_staging
-        if staging is None:
+        if not self._native_active:
             return
-        staging.patch_write(actuator_type=write.actuator_type, name=name, write=write)
-        self._dirty_backend_parameters.add(name)
+        self._write_native_actuator_parameter(name, write)
 
     def _flush_dirty_backend_parameters(self) -> None:
         """Coalesce pending implicit drive writes into one full-row PhysX call per property."""
@@ -143,16 +305,8 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         )
 
     def discover_native_actuators(self, actuator_cfgs: dict) -> set[str]:
-        """Discover hosted-Newton groups without dereferencing a pending facade."""
+        """Classify hosted-Newton groups without mutating candidate or backend state."""
         articulation = self._articulation
-        articulation._physx_actuator_wrapper = None
-        articulation.newton_actuator_adapter = None
-        articulation.newton_default_stiffness = None
-        articulation.newton_default_damping = None
-        articulation.newton_managed_local_joints = None
-        articulation._implicit_dof_mask = None
-        articulation._has_newton_actuators = False
-
         use_newton_actuators = getattr(articulation._sim_cfg, "use_newton_actuators", False)
         if use_newton_actuators and not _HAS_NEWTON_ACTUATORS:
             logger.warning(
@@ -163,17 +317,19 @@ class PhysxActuatorControl(ArticulationActuatorControl):
             return set()
         if not (use_newton_actuators and _HAS_NEWTON_ACTUATORS):
             return set()
-
-        self._native_active = True
-        articulation._has_newton_actuators = True
         return {name for name, actuator_cfg in actuator_cfgs.items() if not self._is_implicit_cfg(actuator_cfg)}
 
     def prepare_actuator_binding(self, binding: _ArticulationBinding) -> None:
         """Build hosted-Newton wrappers from private candidate binding aliases."""
         super().prepare_actuator_binding(binding)
         self._backend_parameter_staging = binding.backend_parameter_staging
-        if not self._native_active:
+        self._clear_native_actuator_state()
+        articulation = self._articulation
+        use_newton_actuators = getattr(articulation._sim_cfg, "use_newton_actuators", False)
+        if not (use_newton_actuators and _HAS_NEWTON_ACTUATORS):
             return
+        self._native_active = True
+        articulation._has_newton_actuators = True
 
         from isaaclab_newton.actuators import (  # noqa: PLC0415
             NewtonActuatorAdapter,
@@ -183,7 +339,6 @@ class PhysxActuatorControl(ArticulationActuatorControl):
 
         from isaaclab.sim.utils.stage import get_current_stage  # noqa: PLC0415
 
-        articulation = self._articulation
         self._physx_actuator_wrapper = PhysxActuatorWrapper.create(
             num_envs=self.num_instances,
             num_joints=self.num_joints,
@@ -230,6 +385,100 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         )
         assert binding.computed_effort is not None
         articulation._data._sim_bind_joint_computed_effort = binding.computed_effort.warp
+
+    def _clear_native_actuator_state(self) -> None:
+        """Clear all hosted-Newton fields installed by candidate preparation."""
+        self._native_active = False
+        self._physx_actuator_wrapper = None
+        self._native_actuator_graphs = None
+        self._native_actuator_graph_index = 0
+        articulation = self._articulation
+        articulation._physx_actuator_wrapper = None
+        articulation.newton_actuator_adapter = None
+        articulation.newton_default_stiffness = None
+        articulation.newton_default_damping = None
+        articulation.newton_managed_local_joints = None
+        articulation._implicit_dof_mask = None
+        articulation._implicit_dof_mask_owner = None
+        articulation._has_newton_actuators = False
+        data = getattr(articulation, "_data", None)
+        if data is not None:
+            data._sim_bind_joint_computed_effort = None
+
+    def _write_native_actuator_parameter(self, name: str, write: _ActuatorParameterWrite) -> None:
+        """Patch hosted-Newton controller arrays without allocating or synchronizing."""
+        canonical = write.canonical
+        owner_slots = write.backend_owner_slots
+        adapter = getattr(self._articulation, "newton_actuator_adapter", None)
+        if canonical is None or owner_slots is None or adapter is None:
+            return
+        use_masks = write.env_mask is not None or write.joint_mask is not None
+        if use_masks:
+            env_mask = self._all_env_mask if write.env_mask is None else write.env_mask
+            joint_mask = self._all_joint_mask if write.joint_mask is None else write.joint_mask
+        else:
+            env_mask = self._resolve_native_parameter_selection(
+                write.env_ids, self._all_env_mask, self._native_env_selection
+            )
+            joint_mask = self._resolve_native_parameter_selection(
+                write.joint_ids, self._all_joint_mask, self._native_joint_selection
+            )
+        for actuator in adapter.actuators:
+            for destination in self._native_parameter_destinations(actuator, name):
+                wp.launch(
+                    _patch_native_parameter_mask,
+                    dim=actuator.indices.shape[0],
+                    inputs=[
+                        actuator.indices,
+                        canonical.warp,
+                        owner_slots,
+                        env_mask,
+                        joint_mask,
+                        self.num_joints,
+                    ],
+                    outputs=[destination],
+                    device=self.device,
+                )
+
+    def _resolve_native_parameter_selection(
+        self,
+        ids: torch.Tensor | wp.array | None,
+        all_mask: wp.array,
+        scratch_mask: wp.array,
+    ) -> wp.array:
+        """Resolve signed indices through stable, capture-safe selection storage."""
+        if ids is None:
+            return all_mask
+        scratch_mask.zero_()
+        wp.launch(
+            _MARK_NATIVE_PARAMETER_SELECTION.select(ids),
+            dim=ids.shape[0],
+            inputs=[ids],
+            outputs=[scratch_mask],
+            device=self.device,
+        )
+        return scratch_mask
+
+    @staticmethod
+    def _native_parameter_destinations(actuator, name: str) -> tuple[wp.array, ...]:
+        """Return per-DOF Newton arrays implementing one exact-type parameter."""
+        controller_attrs = {"stiffness": ("kp",), "damping": ("kd",)}
+        clamping_attrs = {
+            "effort_limit": ("max_effort", "max_motor_effort"),
+            "velocity_limit": ("velocity_limit",),
+            "saturation_effort": ("saturation_effort",),
+        }
+        destinations = []
+        for attr in controller_attrs.get(name, ()):
+            value = getattr(actuator.controller, attr, None)
+            if isinstance(value, wp.array):
+                destinations.append(value)
+        for component in getattr(actuator, "clamping", None) or ():
+            for attr in clamping_attrs.get(name, ()):
+                value = getattr(component, attr, None)
+                if isinstance(value, wp.array):
+                    destinations.append(value)
+        return tuple(destinations)
 
     def finalize_native_actuators(self, collection: ActuatorCollection) -> None:
         """Deprecated collection-constructor hook retained for third-party callers."""
