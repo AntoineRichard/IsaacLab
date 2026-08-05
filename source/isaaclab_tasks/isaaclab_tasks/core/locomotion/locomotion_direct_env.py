@@ -201,7 +201,9 @@ class LocomotionDirectEnv(DirectRLEnv):
         joint_vel += sample_uniform(*self.cfg.initial_joint_vel_range, joint_vel.shape, joint_vel.device)
         joint_pos_limits = self.robot.data.soft_joint_pos_limits.torch[env_ids]
         joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
-        joint_vel_limits = self.robot.data.soft_joint_vel_limits.torch[env_ids]
+        joint_vel_limits = self.robot.data._get_actuator_compatibility_projection("soft_joint_vel_limits").torch[
+            env_ids
+        ]
         joint_vel = joint_vel.clamp_(-joint_vel_limits, joint_vel_limits)
         self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
