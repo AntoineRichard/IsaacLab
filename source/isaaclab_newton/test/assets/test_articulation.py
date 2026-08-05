@@ -1351,8 +1351,14 @@ def test_newton_rebind_preserves_lab_owned_actuator_gains(
 
     # Prime: explicit (IdealPD) actuators keep their PD in the collection-owned records,
     # while the solver's sim gains are zeroed so it applies no PD on these DOFs.
-    np.testing.assert_allclose(articulation.actuators["legs"].stiffness.warp.numpy(), 40.0)
-    np.testing.assert_allclose(articulation.actuators["legs"].damping.warp.numpy(), 5.0)
+    torch.testing.assert_close(
+        articulation.actuators["legs"].stiffness,
+        torch.full_like(articulation.actuators["legs"].stiffness, 40.0),
+    )
+    torch.testing.assert_close(
+        articulation.actuators["legs"].damping,
+        torch.full_like(articulation.actuators["legs"].damping, 5.0),
+    )
     np.testing.assert_allclose(data._sim_bind_joint_stiffness_sim.numpy(), 0.0)
     np.testing.assert_allclose(data._sim_bind_joint_damping_sim.numpy(), 0.0)
 
@@ -1377,8 +1383,14 @@ def test_newton_rebind_preserves_lab_owned_actuator_gains(
     data._create_simulation_bindings()
 
     # The collection-owned actuator gains must survive the rebind unchanged...
-    np.testing.assert_allclose(articulation.actuators["legs"].stiffness.warp.numpy(), 40.0)
-    np.testing.assert_allclose(articulation.actuators["legs"].damping.warp.numpy(), 5.0)
+    torch.testing.assert_close(
+        articulation.actuators["legs"].stiffness,
+        torch.full_like(articulation.actuators["legs"].stiffness, 40.0),
+    )
+    torch.testing.assert_close(
+        articulation.actuators["legs"].damping,
+        torch.full_like(articulation.actuators["legs"].damping, 5.0),
+    )
     # ...while the sim-owned mirrors track the solver's freshly seeded (sentinel) gains.
     if has_ordering:
         np.testing.assert_allclose(data._joint_stiffness_user.numpy(), sentinel_ke)
