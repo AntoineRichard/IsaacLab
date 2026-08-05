@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import warp as wp
+from torch.utils._python_dispatch import TorchDispatchMode
 
 from isaaclab.actuators import (
     ActuatorCollection,
@@ -35,6 +36,11 @@ from isaaclab.cloner import ClonePlan
 from isaaclab.utils.warp import ProxyArray
 
 
+def _available_devices() -> tuple[str, ...]:
+    """Return the devices available to actuator collection tests."""
+    return ("cpu", "cuda:0") if torch.cuda.is_available() else ("cpu",)
+
+
 def _implicit_cfg() -> ImplicitActuatorCfg:
     """Create a valid implicit actuator config for collection tests."""
     return ImplicitActuatorCfg(joint_names_expr=[".*"], stiffness=0.0, damping=0.0)
@@ -46,6 +52,26 @@ class SelectorRecordingActuator(ImplicitActuator):
     def compute(self, control_action, joint_pos, joint_vel):
         self.observed_joint_indices = control_action.joint_indices
         return super().compute(control_action, joint_pos, joint_vel)
+
+
+class MutationRecordingIdealPDActuator(IdealPDActuator):
+    """Explicit subclass that records the public action mutation contract."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.public_compute_calls = 0
+        self.observed_public_mutation = False
+
+    def compute(self, control_action, joint_pos, joint_vel):
+        self.public_compute_calls += 1
+        output = super().compute(control_action, joint_pos, joint_vel)
+        self.observed_public_mutation = (
+            output is control_action
+            and output.joint_positions is None
+            and output.joint_velocities is None
+            and output.joint_efforts is self.applied_effort
+        )
+        return output
 
 
 def _ideal_cfg(joints: list[str], *, stiffness: float, damping: float, effort_limit: float):
@@ -159,6 +185,106 @@ def _assert_collection_outputs_match_exactly(actual: ActuatorCollection, referen
         reference._soft_joint_vel_limits_ta.torch,
         rtol=0.0,
         atol=0.0,
+    )
+
+
+class _NoNewTensorStorage(TorchDispatchMode):
+    """Reject dispatcher results whose storage was not finalized during construction."""
+
+    def __init__(self, tensors: tuple[torch.Tensor, ...]):
+        super().__init__()
+        self._storage_pointers = {tensor.untyped_storage().data_ptr() for tensor in tensors}
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        result = func(*args, **({} if kwargs is None else kwargs))
+        leaves, _ = torch.utils._pytree.tree_flatten(result)
+        for tensor in leaves:
+            if isinstance(tensor, torch.Tensor):
+                assert tensor.untyped_storage().data_ptr() in self._storage_pointers, func
+        return result
+
+
+def _make_legacy_aggregated_explicit_collection(actuator_type, device: str) -> ActuatorCollection:
+    """Build two disjoint legacy groups that aggregate into one explicit executor."""
+    if actuator_type is IdealPDActuator:
+        cfgs = {
+            "first": _ideal_cfg(["joint_0", "joint_2"], stiffness=8.0, damping=0.5, effort_limit=12.0),
+            "second": _ideal_cfg(["joint_1", "joint_3"], stiffness=13.0, damping=1.0, effort_limit=18.0),
+        }
+    else:
+        cfgs = {
+            "first": _dc_cfg(
+                ["joint_0", "joint_2"],
+                stiffness=8.0,
+                damping=0.5,
+                effort_limit=20.0,
+                velocity_limit=10.0,
+                saturation_effort=40.0,
+            ),
+            "second": _dc_cfg(
+                ["joint_1", "joint_3"],
+                stiffness=13.0,
+                damping=1.0,
+                effort_limit=30.0,
+                velocity_limit=25.0,
+                saturation_effort=60.0,
+            ),
+        }
+    collection = ActuatorCollection(
+        cfgs,
+        FakeActuatorControl(joint_names=[f"joint_{index}" for index in range(4)], device=device),
+    )
+    assert len(collection._execution_batches) == 1
+    assert type(collection._execution_batches[0].actuator) is actuator_type
+    return collection
+
+
+def _legacy_explicit_batch_tensors(collection: ActuatorCollection) -> tuple[torch.Tensor, ...]:
+    """Return every explicit executor tensor whose storage must remain fixed."""
+    batch = collection._execution_batches[0]
+    action = batch.control_action
+    assert action is not None
+    actuator = batch.actuator
+    tensors = (
+        action.joint_positions,
+        action.joint_velocities,
+        action.joint_efforts,
+        action.joint_indices,
+        batch.joint_pos,
+        batch.joint_vel,
+        actuator.computed_effort,
+        actuator.applied_effort,
+        actuator._effort_limit_lower,
+        *(getattr(actuator, name) for name in type(actuator)._execution_parameter_names()),
+    )
+    if type(actuator) is DCMotor:
+        tensors += tuple(
+            tensor
+            for tensor in (
+                actuator._vel_at_effort_lim,
+                actuator._joint_vel,
+                getattr(actuator, "_zeros_effort", None),
+                actuator._torque_speed_top,
+                actuator._torque_speed_bottom,
+                actuator._max_effort,
+                actuator._min_effort,
+            )
+            if tensor is not None
+        )
+    return tensors
+
+
+def _tensor_storage_metadata(tensor: torch.Tensor) -> tuple[object, ...]:
+    """Describe tensor identity, storage, and view metadata without reading values."""
+    return (
+        id(tensor),
+        tensor.untyped_storage().data_ptr(),
+        tensor.data_ptr(),
+        tensor.storage_offset(),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        tensor.dtype,
+        tensor.device,
     )
 
 
@@ -580,14 +706,15 @@ def test_dc_motor_execution_batch_packs_different_saturation_efforts():
     )
 
 
-def test_ideal_pd_aggregate_matches_independent_groups_exactly(monkeypatch):
+@pytest.mark.parametrize("device", _available_devices())
+def test_ideal_pd_aggregate_matches_independent_groups_exactly(monkeypatch, device: str):
     joint_names = [f"joint_{index}" for index in range(4)]
     cfgs = {
         "hips": _ideal_cfg(["joint_0", "joint_2"], stiffness=12.0, damping=1.5, effort_limit=18.0),
         "knees": _ideal_cfg(["joint_1", "joint_3"], stiffness=27.0, damping=2.25, effort_limit=31.0),
     }
-    reference_control = FakeActuatorControl(joint_names=joint_names)
-    actual_control = FakeActuatorControl(joint_names=joint_names)
+    reference_control = FakeActuatorControl(joint_names=joint_names, device=device)
+    actual_control = FakeActuatorControl(joint_names=joint_names, device=device)
     reference = _make_unbatched_reference(monkeypatch, IdealPDActuator, cfgs, reference_control)
     actual = ActuatorCollection(cfgs, actual_control)
     _assign_deterministic_inputs(reference, reference_control)
@@ -599,7 +726,8 @@ def test_ideal_pd_aggregate_matches_independent_groups_exactly(monkeypatch):
     _assert_collection_outputs_match_exactly(actual, reference)
 
 
-def test_dc_motor_aggregate_matches_independent_groups_exactly(monkeypatch):
+@pytest.mark.parametrize("device", _available_devices())
+def test_dc_motor_aggregate_matches_independent_groups_exactly(monkeypatch, device: str):
     joint_names = [f"joint_{index}" for index in range(4)]
     cfgs = {
         "hips": _dc_cfg(
@@ -619,8 +747,8 @@ def test_dc_motor_aggregate_matches_independent_groups_exactly(monkeypatch):
             saturation_effort=60.0,
         ),
     }
-    reference_control = FakeActuatorControl(joint_names=joint_names)
-    actual_control = FakeActuatorControl(joint_names=joint_names)
+    reference_control = FakeActuatorControl(joint_names=joint_names, device=device)
+    actual_control = FakeActuatorControl(joint_names=joint_names, device=device)
     reference = _make_unbatched_reference(monkeypatch, DCMotor, cfgs, reference_control)
     actual = ActuatorCollection(cfgs, actual_control)
     _assign_deterministic_inputs(reference, reference_control)
@@ -709,7 +837,71 @@ def test_implicit_batch_bypasses_torch_actuator_compute(monkeypatch):
     torch.testing.assert_close(collection.joint_command.effort.torch, collection.command.effort.torch)
 
 
-def test_aggregate_computes_once_and_refreshes_group_outputs(monkeypatch):
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("actuator_type", (IdealPDActuator, DCMotor))
+def test_legacy_aggregated_explicit_builds_final_shape_runtime_state(actuator_type, device: str) -> None:
+    """Build every executor scratch tensor at the final aggregated shape."""
+    collection = _make_legacy_aggregated_explicit_collection(actuator_type, device)
+    actuator = collection._execution_batches[0].actuator
+    expected_shape = (2, 4)
+
+    assert all(
+        tensor.shape == expected_shape
+        for tensor in _legacy_explicit_batch_tensors(collection)
+        if tensor is not collection._execution_batches[0].control_action.joint_indices
+    )
+    if actuator_type is DCMotor:
+        assert hasattr(actuator, "_zeros_effort")
+        torch.testing.assert_close(actuator._zeros_effort, torch.zeros(expected_shape, device=device))
+        torch.testing.assert_close(
+            actuator._vel_at_effort_lim,
+            torch.tensor([[15.0, 15.0, 37.5, 37.5]], device=device).expand(2, -1),
+        )
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("actuator_type", (IdealPDActuator, DCMotor))
+def test_legacy_aggregated_explicit_first_compute_emits_no_resize_warning(actuator_type, device: str) -> None:
+    """Keep the first execution from resizing a source-shaped output buffer."""
+    collection = _make_legacy_aggregated_explicit_collection(actuator_type, device)
+    _assign_deterministic_inputs(collection, collection._control)
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        collection.compute()
+
+    assert not [warning for warning in caught_warnings if "resized" in str(warning.message)]
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("actuator_type", (IdealPDActuator, DCMotor))
+def test_legacy_aggregated_explicit_compute_preserves_tensor_storage(actuator_type, device: str) -> None:
+    """Keep every aggregated action, output, and scratch tensor pointer-stable from the first call."""
+    collection = _make_legacy_aggregated_explicit_collection(actuator_type, device)
+    _assign_deterministic_inputs(collection, collection._control)
+    tensors = _legacy_explicit_batch_tensors(collection)
+    fingerprints = tuple(_tensor_storage_metadata(tensor) for tensor in tensors)
+
+    collection.compute()
+    collection.compute()
+
+    assert tuple(_tensor_storage_metadata(tensor) for tensor in tensors) == fingerprints
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize("actuator_type", (IdealPDActuator, DCMotor))
+def test_warmed_legacy_aggregated_explicit_compute_allocates_no_tensor_storage(actuator_type, device: str) -> None:
+    """Execute the warmed legacy exact built-in hot path only against finalized storage."""
+    collection = _make_legacy_aggregated_explicit_collection(actuator_type, device)
+    _assign_deterministic_inputs(collection, collection._control)
+    collection.compute()
+    tensors = _legacy_explicit_batch_tensors(collection)
+
+    with _NoNewTensorStorage(tensors):
+        collection.compute()
+
+
+def test_aggregate_executes_once_and_refreshes_group_outputs(monkeypatch):
     control = FakeActuatorControl(joint_names=[f"joint_{index}" for index in range(6)])
     collection = ActuatorCollection(
         {
@@ -719,15 +911,18 @@ def test_aggregate_computes_once_and_refreshes_group_outputs(monkeypatch):
         },
         control,
     )
-    compute_calls = 0
+    execution_calls = 0
     scatter_calls = 0
-    original_compute = IdealPDActuator.compute
+    original_compute_execution = IdealPDActuator._compute_execution
     original_scatter = collection._scatter_actuator_output
 
-    def counted_compute(self, control_action, joint_pos, joint_vel):
-        nonlocal compute_calls
-        compute_calls += 1
-        return original_compute(self, control_action, joint_pos, joint_vel)
+    def counted_compute_execution(self, control_action, joint_pos, joint_vel):
+        nonlocal execution_calls
+        execution_calls += 1
+        return original_compute_execution(self, control_action, joint_pos, joint_vel)
+
+    def fail_public_compute(*args, **kwargs):
+        raise AssertionError("Exact aggregated built-ins must use their private execution path")
 
     def counted_scatter(actuator, control_action, joint_indices=None):
         nonlocal scatter_calls
@@ -736,7 +931,8 @@ def test_aggregate_computes_once_and_refreshes_group_outputs(monkeypatch):
             return original_scatter(actuator, control_action)
         return original_scatter(actuator, control_action, joint_indices)
 
-    monkeypatch.setattr(IdealPDActuator, "compute", counted_compute)
+    monkeypatch.setattr(IdealPDActuator, "_compute_execution", counted_compute_execution)
+    monkeypatch.setattr(IdealPDActuator, "compute", fail_public_compute)
     monkeypatch.setattr(collection, "_scatter_actuator_output", counted_scatter)
     collection.command.position.torch.copy_(torch.arange(12, dtype=torch.float32).reshape(2, 6) + 0.25)
     collection.command.velocity.torch.copy_(torch.arange(12, dtype=torch.float32).reshape(2, 6) * -0.5 - 0.75)
@@ -744,7 +940,7 @@ def test_aggregate_computes_once_and_refreshes_group_outputs(monkeypatch):
 
     collection.compute()
 
-    assert compute_calls == 1
+    assert execution_calls == 1
     assert scatter_calls == 1
     batch = collection._execution_batches[0]
     for group_name, group_slice in zip(batch.group_names, batch.group_slices):
@@ -767,7 +963,7 @@ def test_aggregate_computes_once_and_refreshes_group_outputs(monkeypatch):
 
     collection.compute()
 
-    assert compute_calls == 2
+    assert execution_calls == 2
     assert scatter_calls == 2
     assert collection["hips"].computed_effort is first_hips_output
     for group_name, group_slice in zip(batch.group_names, batch.group_slices):
@@ -783,6 +979,27 @@ def test_aggregate_computes_once_and_refreshes_group_outputs(monkeypatch):
             rtol=0.0,
             atol=0.0,
         )
+
+
+def test_explicit_subclasses_use_public_compute_mutation_contract() -> None:
+    """Keep custom explicit subclasses on the public method and its action mutation contract."""
+    first = _ideal_cfg(["joint_0", "joint_2"], stiffness=8.0, damping=0.5, effort_limit=12.0)
+    second = _ideal_cfg(["joint_1", "joint_3"], stiffness=13.0, damping=1.0, effort_limit=18.0)
+    first.class_type = MutationRecordingIdealPDActuator
+    second.class_type = MutationRecordingIdealPDActuator
+    collection = ActuatorCollection(
+        {"first": first, "second": second},
+        FakeActuatorControl(joint_names=[f"joint_{index}" for index in range(4)]),
+    )
+    _assign_deterministic_inputs(collection, collection._control)
+
+    collection.compute()
+
+    assert len(collection._execution_batches) == 2
+    for batch in collection._execution_batches:
+        assert type(batch.actuator) is MutationRecordingIdealPDActuator
+        assert batch.actuator.public_compute_calls == 1
+        assert batch.actuator.observed_public_mutation
 
 
 def test_stateless_explicit_batch_preserves_output_storage():

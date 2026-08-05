@@ -3518,11 +3518,21 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                 command_pos = control_action.joint_positions
                 command_vel = control_action.joint_velocities
                 command_effort = control_action.joint_efforts
-                control_action = actuator.compute(
-                    control_action,
-                    joint_pos=batch.joint_pos,
-                    joint_vel=batch.joint_vel,
-                )
+                if type(actuator) in (IdealPDActuator, DCMotor):
+                    actuator._compute_execution(
+                        control_action,
+                        joint_pos=batch.joint_pos,
+                        joint_vel=batch.joint_vel,
+                    )
+                    control_action.joint_positions = None
+                    control_action.joint_velocities = None
+                    control_action.joint_efforts = actuator.applied_effort
+                else:
+                    control_action = actuator.compute(
+                        control_action,
+                        joint_pos=batch.joint_pos,
+                        joint_vel=batch.joint_vel,
+                    )
                 self._scatter_actuator_output(actuator, control_action, batch.joint_indices_wp)
                 control_action.joint_positions = command_pos
                 control_action.joint_velocities = command_vel

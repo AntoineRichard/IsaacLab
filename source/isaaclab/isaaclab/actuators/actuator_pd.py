@@ -250,6 +250,13 @@ class IdealPDActuator(ActuatorBase):
         self._clip_effort_into(effort, clipped_effort)
         return clipped_effort
 
+    @classmethod
+    def _build_execution_actuator(cls, actuators: Sequence[ActuatorBase]) -> ActuatorBase:
+        """Build an executor and rebuild its scratch after final output allocation."""
+        executor = super()._build_execution_actuator(actuators)
+        executor._rebuild_managed_runtime_state()
+        return executor
+
     def _rebuild_managed_runtime_state(self) -> None:
         """Rebuild execution scratch after canonical parameter binding."""
         self._effort_limit_lower = torch.zeros_like(self.computed_effort)
@@ -354,12 +361,6 @@ class DCMotor(IdealPDActuator):
     Helper functions.
     """
 
-    @classmethod
-    def _build_execution_actuator(cls, actuators: Sequence[ActuatorBase]) -> ActuatorBase:
-        executor = super()._build_execution_actuator(actuators)
-        executor._rebuild_managed_runtime_state()
-        return executor
-
     def _rebuild_managed_runtime_state(self) -> None:
         """Rebuild DC motor derived state for the final articulation-world count."""
         super()._rebuild_managed_runtime_state()
@@ -367,8 +368,12 @@ class DCMotor(IdealPDActuator):
 
     def _allocate_execution_scratch(self) -> None:
         """Allocate fixed DC motor clipping scratch for the current execution shape."""
-        self._vel_at_effort_lim = torch.zeros_like(self.computed_effort)
+        self._vel_at_effort_lim = torch.empty_like(self.computed_effort)
+        torch.div(self.effort_limit, self.saturation_effort, out=self._vel_at_effort_lim)
+        torch.add(self._vel_at_effort_lim, 1.0, out=self._vel_at_effort_lim)
+        torch.mul(self.velocity_limit, self._vel_at_effort_lim, out=self._vel_at_effort_lim)
         self._joint_vel = torch.zeros_like(self.computed_effort)
+        self._zeros_effort = torch.zeros_like(self.computed_effort)
         self._torque_speed_top = torch.zeros_like(self.computed_effort)
         self._torque_speed_bottom = torch.zeros_like(self.computed_effort)
         self._max_effort = torch.zeros_like(self.computed_effort)
