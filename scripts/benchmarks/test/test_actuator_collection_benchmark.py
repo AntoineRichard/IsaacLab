@@ -387,7 +387,7 @@ def test_final_harness_sync_is_excluded_from_d2h_count():
     counter = benchmark._ScopedInstrumentation(None)
     counter.record_readback()
     counter.record_readback(final_timing_sync=True)
-    assert counter.d2h_readbacks == 1
+    assert counter.d2h_sync_count == 1
 
 
 def test_capture_and_replay_observation_scopes_are_separate():
@@ -1016,7 +1016,7 @@ def test_final_child_closes_adapter_and_persists_supported_failure(tmp_path, mon
     assert payload["identity"]["attempt_id"] == "attempt-03"
     assert payload["revision_sha"] == "a" * 40
     assert payload["status"] == "rejected"
-    assert payload["reason"] == "build_workload: RuntimeError: construction failed"
+    assert "construction failed" in payload["reason"]
 
 
 def test_final_child_compile_prewarm_uses_explicit_untimed_contract(tmp_path, monkeypatch):
@@ -1065,11 +1065,32 @@ def test_final_run_cli_writes_real_member_contract_with_exact_identity(tmp_path,
     """The actual child CLI, not only the fake runner, writes the parent-consumed schema."""
     benchmark = _load(_BENCHMARK, "actuator_benchmark_final_child_contract")
     row = benchmark.expand_build_matrix("B1")[0]
+    measurements = []
 
     class Adapter(benchmark._MemoryAdapter):
         pass
 
     monkeypatch.setattr(benchmark, "select_adapter", lambda revision, device: Adapter(revision, device))
+    monkeypatch.setattr(
+        benchmark,
+        "measure_build",
+        lambda revision,
+        resolved_row,
+        device,
+        phase,
+        *,
+        warmup_constructions,
+        measured_constructions: measurements.append(
+            (revision, resolved_row, device, phase, warmup_constructions, measured_constructions)
+        )
+        or {
+            "status": "accepted",
+            "adapter_name": "MeasuredBuildAdapter",
+            "timing": {"samples_ms": [1.25]},
+            "counters": {"measurement": "build"},
+            "structural": {"owner_count": 1},
+        },
+    )
     output = tmp_path / "members" / "global"
     argv = [
         "--mode",
@@ -1110,7 +1131,90 @@ def test_final_run_cli_writes_real_member_contract_with_exact_identity(tmp_path,
     }
     assert payload["member"]["revision"] == "global"
     assert payload["member"]["resolved_row"] == benchmark._row_payload(row)
+    assert measurements == [("global", row, "cpu", "cold", 10, 100)]
+    assert payload["member"]["adapter"] == "MeasuredBuildAdapter"
+    assert payload["member"]["timing"] == {"samples_ms": [1.25]}
+    assert payload["member"]["counters"] == {"measurement": "build"}
+    assert not (output / "attempt.json").exists()
     assert payload["metadata"]["python"]
+
+
+def test_final_runtime_child_uses_runtime_measurement_and_member_publication(tmp_path, monkeypatch):
+    """A coordinator-shaped runtime child must use the runtime lane and publish only its member."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_final_runtime_integration")
+    row = benchmark.RuntimeRow("implicit", 3, "cached_eager", "cached_eager", 4)
+    adapter = benchmark._MemoryAdapter("global", "cpu")
+    measurements = []
+    monkeypatch.setattr(benchmark, "select_adapter", lambda *_args: adapter)
+    monkeypatch.setattr(
+        benchmark,
+        "measure_runtime",
+        lambda received_adapter, received_row, warmups, iterations: measurements.append(
+            (received_adapter, received_row, warmups, iterations)
+        )
+        or {
+            "status": "accepted",
+            "effective_execution": "cached_eager",
+            "timing": {"samples_ms": [0.5]},
+            "counters": {"measurement": "runtime"},
+            "reason": None,
+        },
+    )
+    args = SimpleNamespace(
+        mode="runtime",
+        revision="global",
+        revision_sha="a" * 40,
+        candidate_sha="a" * 40,
+        observation_key="runtime|implicit",
+        attempt_id="attempt-08",
+        phase="runtime",
+        child_row=json.dumps(benchmark._row_payload(row)),
+        harness_sha256="f" * 64,
+        batch_id="runtime-01",
+        device="cpu",
+        warmup_iterations=2,
+        num_iterations=4,
+        output_path=tmp_path / "member",
+    )
+    assert benchmark._run_final_child(args) == 0
+    payload = json.loads((args.output_path / "member.json").read_text())
+    assert measurements == [(adapter, row, 2, 4)]
+    assert payload["member"]["timing"] == {"samples_ms": [0.5]}
+    assert payload["member"]["counters"] == {"measurement": "runtime"}
+    assert not (args.output_path / "attempt.json").exists()
+
+
+def test_final_global_structural_child_uses_real_structural_helper(tmp_path, monkeypatch):
+    """Global-only children must execute their structural sequence rather than a generic build path."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_final_structural_integration")
+    row = next(item for item in benchmark.expand_build_matrix("B6") if item.case == "B6")
+    calls = []
+    monkeypatch.setattr(
+        benchmark,
+        "run_global_structural_case",
+        lambda workload: calls.append(workload.row) or {"projection_count": 2},
+    )
+    args = SimpleNamespace(
+        mode="build",
+        revision="global",
+        revision_sha="a" * 40,
+        candidate_sha="a" * 40,
+        observation_key="build|B6|global",
+        attempt_id="attempt-09",
+        phase="structural",
+        child_row=json.dumps(benchmark._row_payload(row)),
+        harness_sha256="f" * 64,
+        batch_id="build-01",
+        device="cpu",
+        warmup_iterations=1,
+        num_iterations=1,
+        output_path=tmp_path / "member",
+    )
+    assert benchmark._run_final_child(args) == 0
+    payload = json.loads((args.output_path / "member.json").read_text())
+    assert calls == [row]
+    assert payload["member"]["structural"] == {"projection_count": 2}
+    assert payload["member"]["effective_execution"] == "structural"
 
 
 def test_gpu_telemetry_window_has_twenty_samples_and_nineteen_cadence_sleeps(tmp_path):
@@ -1339,3 +1443,497 @@ def test_gpu_telemetry_requires_exactly_twenty_pre_and_post_samples():
         "required telemetry unavailable"
     ]
     assert benchmark.validate_pair_telemetry([sample] * 20, [sample] * 20, "cuda:0") == []
+
+
+# Runtime-lane regression union.  These checks deliberately remain separate
+# from the coordinator contracts above: they exercise measurement evidence and
+# current-generation inspection owned by the runtime lane.
+def test_global_introspection_counts_alias_descriptors_and_fixed_plan_owners():
+    """Physical aliases and fixed plan arrays have distinct accounting roles."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_descriptor_inventory")
+    owner = type("Owner", (), {"warp": type("Warp", (), {"ptr": 3, "device": "cuda:0", "nbytes": 24})()})()
+    fixed = type("Owner", (), {"warp": type("Warp", (), {"ptr": 5, "device": "cuda:0", "nbytes": 16})()})()
+    store = type("Store", (), {"_fields": {"stiffness": owner, "damping": owner}})()
+    plan = type("Plan", (), {"stateless_ranges": (), "eager_segments": (), "static_scatter_epochs": (fixed,)})()
+    binding = type("Binding", (), {"execution_plan": plan, "backend_parameter_staging": None})()
+    generation = type("Generation", (), {"stores": {object: store}, "joint_store": None, "bindings": (binding,)})()
+    report = benchmark._GlobalIntrospector().inspect(generation)
+    assert report["canonical_allocation_count"] == 1
+    assert report["plan_staging_owner_bytes"] == 16
+
+
+def test_global_introspection_counts_exact_python_descriptor_categories():
+    """The descriptor inventory names all semantic manager-owned categories."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_python_descriptors")
+    group = type("Group", (), {})()
+    group._parameter_binding = object()
+    plan = type("Plan", (), {"stateless_ranges": (object(),), "eager_segments": (object(),)})()
+    binding = type("Binding", (), {"registration": object(), "execution_plan": plan})()
+    manager = type("Manager", (), {"_registrations": [binding.registration], "_views": {"robot": object()}})()
+    generation = type(
+        "Generation",
+        (),
+        {
+            "stores": {object: object()},
+            "joint_store": None,
+            "groups": {"robot": {"group": group}},
+            "bindings": (binding,),
+        },
+    )()
+    report = benchmark._GlobalIntrospector().inspect(generation, manager=manager)
+    assert set(report["python_descriptor_counts"]) == set(benchmark._GlobalIntrospector._DESCRIPTOR_CATEGORIES)
+    assert report["python_descriptor_count"] == 9
+
+
+def test_global_introspection_counts_aggregate_executor_binding():
+    """The aggregate executor binding is distinct from its facade binding."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_executor_descriptor")
+    group = type("Group", (), {})()
+    group._parameter_binding = object()
+    executor = type("Executor", (), {})()
+    executor._parameter_binding = object()
+    plan = type(
+        "Plan", (), {"stateless_ranges": (type("Range", (), {"executor": executor})(),), "eager_segments": ()}
+    )()
+    binding = type("Binding", (), {"registration": object(), "execution_plan": plan})()
+    generation = type(
+        "Generation",
+        (),
+        {"stores": {object: object()}, "joint_store": None, "groups": {"robot": {"x": group}}, "bindings": (binding,)},
+    )()
+    report = benchmark._GlobalIntrospector().inspect(generation)
+    assert report["python_descriptor_counts"]["binding"] == 2
+
+
+def test_scoped_instrumentation_counts_transfer_direction_and_graph_replay():
+    """Warp transfer direction and capture replay remain separate observations."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_transfer_instrument")
+
+    def array(device, nbytes):
+        return type("Array", (), {"device": device, "nbytes": nbytes})()
+
+    warp = type(
+        "Warp",
+        (),
+        {
+            "launch": lambda *_args, **_kwargs: None,
+            "launch_tiled": lambda *_args, **_kwargs: None,
+            "copy": lambda *_args, **_kwargs: None,
+            "capture_launch": lambda *_args, **_kwargs: None,
+        },
+    )()
+    with benchmark._ScopedInstrumentation(warp) as counters:
+        warp.copy(array("cuda:0", 16), array("cpu", 16))
+        warp.copy(array("cpu", 16), array("cuda:0", 16))
+        warp.capture_launch(object())
+    record = counters.as_record()
+    assert record["warp_h2d_bytes"] == 16 and record["warp_d2h_copies"] == 1
+    assert record["launches"]["capture_launch"] == 1
+
+
+def test_torch_transfer_ledger_detects_h2d_and_readback_but_excludes_harness_sync():
+    """The dedicated Torch probe excludes the harness-owned timing readback."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_torch_transfer_ledger")
+
+    def tensor(device, nbytes):
+        return type("Tensor", (), {"device": device, "nbytes": nbytes})()
+
+    ledger = benchmark._TorchTransferLedger()
+    ledger.record_transfer(tensor("cuda:0", 16), tensor("cpu", 16), synchronizing=False)
+    ledger.record_readback(tensor("cuda:0", 4))
+    ledger.record_readback(tensor("cuda:0", 4), final_timing_sync=True)
+    assert ledger.as_record() == {"observation": "torch_dispatch", "h2d_bytes": 16, "d2h_sync_count": 1}
+
+
+def test_runtime_measurement_reports_total_and_per_application_time():
+    """Runtime evidence records total and normalized application timings."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_runtime_timing")
+    adapter = benchmark._MemoryAdapter("global", "cpu")
+    row = benchmark.RuntimeRow("implicit", 1, "cached_eager", "cached_eager", 1)
+    result = benchmark.measure_runtime(adapter, row, warmups=2, iterations=4)
+    assert result["timing"]["per_application_ms"] == pytest.approx(result["timing"]["total_ms"] / 4)
+    assert result["timing"]["application_count"] == 4 and adapter.applications == 7
+
+
+def test_runtime_warmup_precedes_allocator_baseline_and_replay_scope(monkeypatch):
+    """Allocator baselining occurs after warmup and before measured replay."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_runtime_scope_order")
+    events = []
+    adapter = benchmark._MemoryAdapter("global", "cpu")
+    monkeypatch.setattr(benchmark, "_steady_allocation_bytes", lambda _device: events.append(adapter.applications) or 0)
+    monkeypatch.setattr(
+        benchmark,
+        "_observe_transfer_replay",
+        lambda active, _warp: active.run_execution(1) or {"h2d_bytes": 0, "d2h_sync_count": 0},
+    )
+    benchmark.measure_runtime(adapter, benchmark.RuntimeRow("implicit", 1, "cached_eager", "cached_eager", 1), 2, 4)
+    assert events == [3, 7]
+
+
+def test_runtime_snapshots_global_pointers_before_and_after_warmup_and_replay(monkeypatch):
+    """Pointer evidence is observed across the complete runtime sequence."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_runtime_pointer_snapshots")
+    snapshots = []
+
+    class Adapter(benchmark._MemoryAdapter):
+        def introspect(self):
+            snapshots.append(self.applications)
+            return {"pointer_replacements": 0, "pointer_snapshot_count": len(snapshots)}
+
+    adapter = Adapter("global", "cpu")
+    monkeypatch.setattr(
+        benchmark,
+        "_observe_transfer_replay",
+        lambda active, _warp: active.run_execution(1) or {"h2d_bytes": 0, "d2h_sync_count": 0},
+    )
+    benchmark.measure_runtime(adapter, benchmark.RuntimeRow("implicit", 1, "cached_eager", "cached_eager", 1), 2, 4)
+    assert snapshots == [0, 2, 3, 7]
+
+
+@pytest.mark.parametrize(("phase", "warmups", "samples"), (("cold", 0, 1), ("warm", 10, 100)))
+def test_build_measurement_uses_fresh_workloads_and_adapters_per_sample(phase, warmups, samples):
+    """Every construction sample owns a fresh workload and adapter."""
+    benchmark = _load(_BENCHMARK, f"actuator_benchmark_fresh_build_{phase}")
+    created = []
+
+    class Adapter(benchmark._MemoryAdapter):
+        def __init__(self, revision, device):
+            super().__init__(revision, device)
+            created.append(self)
+
+    result = benchmark.measure_build(
+        "develop", benchmark.expand_build_matrix("B1")[0], "cpu", phase, adapter_factory=Adapter
+    )
+    assert len(created) == warmups + samples
+    assert result["timing"]["construction_count"] == samples
+
+
+def test_build_measurement_starts_after_fixture_creation_and_closes_after_first_application(monkeypatch):
+    """Fixture preparation is outside the measured construction boundary."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_build_boundary")
+    events = []
+
+    class Adapter(benchmark._MemoryAdapter):
+        def build_workload(self, workload):
+            events.append("build")
+            super().build_workload(workload)
+
+        def first_application(self, workload):
+            events.append("first")
+            super().first_application(workload)
+
+        def close(self):
+            events.append("close")
+            super().close()
+
+    monkeypatch.setattr(benchmark, "_synchronize_boundary", lambda _device: events.append("sync"))
+    benchmark.measure_build("develop", benchmark.expand_build_matrix("B1")[0], "cpu", "cold", adapter_factory=Adapter)
+    assert events == ["build", "first", "sync", "close"]
+
+
+def test_build_measurement_cleans_adapter_and_checkpoint_after_build_failure(tmp_path):
+    """Failed construction closes the adapter and removes its driver checkpoint."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_build_cleanup")
+    checkpoint = tmp_path / "network.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    closed = []
+
+    class Adapter(benchmark._MemoryAdapter):
+        def build_workload(self, workload):
+            self.workload = workload
+            raise RuntimeError("build failed")
+
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    def workload(row, device):
+        return benchmark._Workload(row, device, ("joint_0",), ((1.0,),), (0.1,), str(checkpoint))
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        benchmark.measure_build(
+            "develop",
+            benchmark.expand_build_matrix("B1")[0],
+            "cpu",
+            "cold",
+            adapter_factory=Adapter,
+            workload_factory=workload,
+        )
+    assert closed == [True] and not checkpoint.exists()
+
+
+def test_build_measurement_keeps_global_decomposition_out_of_comparable_timing():
+    """Global decomposition evidence is nested outside comparable timing samples."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_build_decomposition")
+
+    class Adapter(benchmark._MemoryAdapter):
+        def build_workload(self, workload):
+            super().build_workload(workload)
+            self.build_decomposition_ms = {"registration": 1.25}
+
+    result = benchmark.measure_build(
+        "global", benchmark.expand_build_matrix("B1")[0], "cpu", "cold", adapter_factory=Adapter
+    )
+    assert "registration" not in result["timing"]
+    assert result["counters"]["global_decomposition_samples_ms"] == {"registration": [1.25]}
+
+
+def test_build_coordinator_uses_one_fresh_child_per_cold_row():
+    """Frozen cold observations allocate independent child identities."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_cold_schedule")
+    rows = [
+        item
+        for item in benchmark.build_coordinate_schedule(2, 2)
+        if item.phase == "cold" and item.row_key.startswith("B1:")
+    ]
+    assert len(rows) == 12 and len({item.observation_key for item in rows}) == 12
+
+
+def test_coordinator_never_constructs_a_collection(tmp_path, monkeypatch):
+    """Schedule expansion does not import or select a target actuator adapter."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_parent")
+    monkeypatch.setattr(benchmark, "select_adapter", lambda *_args: pytest.fail("parent selected adapter"))
+    assert benchmark.Coordinator(tmp_path)
+    assert benchmark.build_coordinate_schedule(2, 2)
+
+
+def test_workload_preserves_each_requested_group_as_a_distinct_joint_domain():
+    """The B5/12 workload never collapses twelve group domains."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_group_domains")
+    row = next(
+        row for row in benchmark.expand_build_matrix("B5") if row.actuator_types == ("ideal_pd",) and row.groups == 12
+    )
+    workload = benchmark.make_workload(row, "cpu")
+    assert workload.joint_names == tuple(f"joint_{index}" for index in range(12))
+    assert len(workload.group_values) == 12
+
+
+def test_global_introspection_reads_real_generation_owners_not_dictionary_keys():
+    """Canonical and staging metrics inspect concrete owners rather than mapping keys."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_real_introspection")
+
+    def owner(ptr, nbytes):
+        return type("Owner", (), {"warp": type("Warp", (), {"ptr": ptr, "device": "cuda:0", "nbytes": nbytes})()})()
+
+    canonical, staging = owner(3, 24), owner(5, 40)
+    store = type("Store", (), {"_fields": {"stiffness": canonical}})()
+    plan = type("Plan", (), {"_staging": {"implicit": staging}})()
+    binding = type("Binding", (), {"execution_plan": plan, "backend_parameter_staging": staging})()
+    generation = type("Generation", (), {"stores": {object: store}, "joint_store": None, "bindings": (binding,)})()
+    report = benchmark._GlobalIntrospector().inspect(generation)
+    assert report["canonical_allocation_bytes"] == 24 and report["plan_staging_owner_bytes"] == 40
+
+
+def test_global_introspection_deduplicates_domains_and_observes_projection_lifecycle():
+    """Projection replacement updates only the observed pointer lifecycle."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_introspection_lifecycle")
+
+    def owner(ptr):
+        return type("Owner", (), {"warp": type("Warp", (), {"ptr": ptr, "device": "cuda:0", "nbytes": 40})()})()
+
+    projection = {"soft": owner(5)}
+    joint = type("Joint", (), {"_fields": {}, "_compatibility_projections": projection})()
+    generation = type("Generation", (), {"stores": {}, "joint_store": joint, "bindings": ()})()
+    introspector = benchmark._GlobalIntrospector()
+    assert introspector.inspect(generation)["projection_bytes"] == 40
+    projection["soft"] = owner(7)
+    assert introspector.inspect(generation)["pointer_replacements"] == 1
+
+
+def test_global_b0_b2_b6_and_b8_probes_exercise_manager_lifecycle_and_projections():
+    """All candidate-only rows execute their dedicated lifecycle helper."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_global_lifecycle")
+    results = {
+        case: benchmark.run_global_structural_case(
+            benchmark.make_workload(benchmark.expand_build_matrix(case)[0], "cpu")
+        )
+        for case in ("B0", "B2", "B6", "B8")
+    }
+    assert results["B0"]["cleared"] and results["B2"]["articulation_count"] == 2
+    assert results["B6"]["projection_count"] == 2 and results["B8"]["old_view_stale"]
+
+
+def test_global_adapter_reports_only_current_generation_structural_owners():
+    """A live global adapter reports concrete current-generation ownership."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_live_introspection")
+    adapter = benchmark._GlobalCollectionAdapter("global", "cpu")
+    try:
+        adapter.build_workload(benchmark.make_workload(benchmark.expand_build_matrix("B1")[0], "cpu"))
+        report = adapter.introspect()
+        assert report["canonical_allocation_count"] > 0 and report["python_descriptor_count"] > 0
+    finally:
+        adapter.close()
+
+
+def test_global_b1_python_descriptor_count_does_not_scale_with_worlds():
+    """B1's Python descriptor inventory remains independent of world count."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_live_descriptor_scaling")
+    reports = []
+    for worlds in (1, 64):
+        row = benchmark.expand_build_matrix("B1")[0]
+        row = benchmark.BuildRow(
+            row.case, worlds, row.num_sources, row.num_articulations, row.groups, row.actuator_types
+        )
+        adapter = benchmark._GlobalCollectionAdapter("global", "cpu")
+        try:
+            adapter.build_workload(benchmark.make_workload(row, "cpu"))
+            reports.append(adapter.introspect())
+        finally:
+            adapter.close()
+    assert reports[0]["python_descriptor_count"] == reports[1]["python_descriptor_count"]
+
+
+def test_cold_build_cli_publishes_one_measured_construction_and_pointer_snapshots(tmp_path):
+    """The non-final cold CLI publishes one construction and stability evidence."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_build_cli_cold")
+    output = tmp_path / "cold"
+    assert (
+        benchmark.main(
+            [
+                "--mode",
+                "build",
+                "--revision",
+                "global",
+                "--case",
+                "B1",
+                "--num_worlds",
+                "1",
+                "--phase",
+                "cold",
+                "--device",
+                "cpu",
+                "--output_path",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    member = json.loads(next(output.glob("*/*/attempt.json")).read_text())["members"][0]
+    assert member["timing"]["construction_count"] == 1 and member["structural"]["pointer_snapshot_count"] >= 2
+
+
+@pytest.mark.parametrize("case", ("B0", "B2", "B6", "B8"))
+def test_global_structural_cli_records_the_case_specific_observation(case, tmp_path):
+    """Each global-only CLI row writes its own structural evidence."""
+    benchmark = _load(_BENCHMARK, f"actuator_benchmark_structural_cli_{case}")
+    output = tmp_path / case
+    assert (
+        benchmark.main(
+            [
+                "--mode",
+                "build",
+                "--revision",
+                "global",
+                "--case",
+                case,
+                "--num_worlds",
+                "1",
+                "--device",
+                "cpu",
+                "--output_path",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    record = json.loads(next(output.glob("*/*/attempt.json")).read_text())
+    assert record["members"][0]["structural"]
+
+
+def test_global_only_cli_rejects_historical_revision_before_adapter_selection(tmp_path, monkeypatch):
+    """A historical global-only smoke row fails without selecting an adapter."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_structural_revision_gate")
+    monkeypatch.setattr(benchmark, "select_adapter", lambda *_args: pytest.fail("adapter selection reached"))
+    with pytest.raises(RuntimeError, match="global-only"):
+        benchmark.main(
+            [
+                "--mode",
+                "build",
+                "--revision",
+                "develop",
+                "--case",
+                "B2",
+                "--device",
+                "cpu",
+                "--output_path",
+                str(tmp_path),
+            ]
+        )
+
+
+def test_global_adapter_close_is_idempotent_permanent_and_rejects_registration():
+    """Closing a global adapter is idempotent and permanently closes its manager."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_manager_close")
+    adapter = benchmark._GlobalCollectionAdapter("global", "cpu")
+    adapter.build_workload(benchmark.make_workload(benchmark.expand_build_matrix("B1")[0], "cpu"))
+    manager = adapter.manager
+    adapter.close()
+    adapter.close()
+    assert manager._closed is True
+    with pytest.raises(RuntimeError, match="closed"):
+        manager.register_articulation(
+            key="late",
+            cfgs={},
+            control=None,
+            replication_cfg_id=1,
+            debug_validation=False,
+            debug_value_resolution=False,
+        )
+
+
+def test_runtime_cli_executes_requested_child_and_writes_runtime_evidence(tmp_path):
+    """The smoke runtime CLI executes work and publishes its attempt evidence."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_runtime_cli")
+    output = tmp_path / "runtime"
+    assert (
+        benchmark.main(
+            [
+                "--mode",
+                "runtime",
+                "--revision",
+                "global",
+                "--child_row",
+                "implicit:g1:cached_eager",
+                "--num_worlds",
+                "1",
+                "--warmup_iterations",
+                "1",
+                "--num_iterations",
+                "2",
+                "--device",
+                "cpu",
+                "--output_path",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    member = json.loads(next(output.glob("*/*/attempt.json")).read_text())["members"][0]
+    assert member["timing"]["application_count"] == 2
+
+
+def test_b7_builds_deterministic_local_neural_and_eager_fallback_groups():
+    """B7 creates local neural, delayed, remotized, and opaque eager groups."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_b7")
+    adapter = benchmark._GlobalCollectionAdapter("global", "cpu")
+    try:
+        workload = benchmark.make_workload(benchmark.expand_build_matrix("B7")[0], "cpu")
+        adapter.build_workload(workload)
+        adapter.first_application(workload)
+        assert set(adapter.view) == {"group_0", "group_1", "group_2", "group_3"}
+        assert type(adapter.view["group_3"]) is benchmark._opaque_actuator_type()
+    finally:
+        adapter.close()
+
+
+def test_tiny_checkpoint_removes_partial_file_when_torchscript_creation_fails(tmp_path, monkeypatch):
+    """A failed local TorchScript checkpoint cannot leave a partial file behind."""
+    benchmark = _load(_BENCHMARK, "actuator_benchmark_checkpoint_cleanup")
+    import torch
+
+    original = benchmark.tempfile.mkstemp
+    monkeypatch.setattr(benchmark.tempfile, "mkstemp", lambda *_args, **_kwargs: original(dir=tmp_path, suffix=".pt"))
+    monkeypatch.setattr(torch.jit, "trace", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("trace")))
+    with pytest.raises(RuntimeError, match="trace"):
+        benchmark._tiny_mlp_checkpoint("cpu")
+    assert list(tmp_path.iterdir()) == []

@@ -487,9 +487,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     ):
         parser.error("--mode coordinate does not accept workload, selector, or output arguments")
-    if args.case == "all" and any(
-        getattr(args, name) is not None
-        for name in ("num_worlds", "num_sources", "num_articulations", "groups", "actuator_types")
+    if (
+        args.mode == "build"
+        and args.case == "all"
+        and any(
+            getattr(args, name) is not None
+            for name in ("num_worlds", "num_sources", "num_articulations", "groups", "actuator_types")
+        )
     ):
         parser.error("--case all does not accept scalar workload overrides")
     if args.final_run:
@@ -2946,6 +2950,7 @@ def _run_final_child(args: argparse.Namespace) -> int:
         "harness_sha256": args.harness_sha256,
     }
     adapter: _Adapter | None = None
+    workload: _Workload | None = None
     status = "rejected"
     reason: str | None = None
     row_payload: dict[str, Any]
@@ -2955,12 +2960,65 @@ def _run_final_child(args: argparse.Namespace) -> int:
     try:
         row = _decode_child_row(args)
         row_payload = _row_payload(row)
-        selected = select_adapter(args.revision, args.device)
-        if isinstance(selected, RevisionCapability):
-            revision_capability = selected
-            status = "unsupported"
-            reason = selected.reason
+        if isinstance(row, BuildRow) and row.global_only:
+            if args.revision != "global":
+                revision_capability = RevisionCapability(False, f"{row.case} is a global-only structural case")
+                status = "unsupported"
+                reason = revision_capability.reason
+            else:
+                workload = make_workload(row, args.device)
+                started = time.perf_counter_ns()
+                structural = run_global_structural_case(workload)
+                status = "accepted"
+                timing = {"samples_ms": [(time.perf_counter_ns() - started) / 1_000_000]}
+                effective_execution = args.phase
+                member = {
+                    "revision": args.revision,
+                    "requested_execution": args.phase,
+                    "effective_execution": effective_execution,
+                    "revision_sha": args.revision_sha,
+                    "adapter": "_GlobalCollectionAdapter",
+                    "resolved_row": row_payload,
+                    "source_emulation": False,
+                    "capability": {"supported": True, "reason": None},
+                    "timing": timing,
+                    "counters": {"measurement": "structural"},
+                    "structural": structural,
+                    "execution": {"graph_capture_live": False},
+                }
+        elif isinstance(row, BuildRow) and args.phase in {"cold", "warm"}:
+            result = measure_build(
+                args.revision,
+                row,
+                args.device,
+                args.phase,
+                warmup_constructions=args.warmup_iterations,
+                measured_constructions=args.num_iterations,
+            )
+            status = result["status"]
+            timing = result["timing"]
+            effective_execution = args.phase
+            member = {
+                "revision": args.revision,
+                "requested_execution": args.phase,
+                "effective_execution": effective_execution,
+                "revision_sha": args.revision_sha,
+                "adapter": result["adapter_name"],
+                "resolved_row": row_payload,
+                "source_emulation": args.revision != "global" and row.case == "B3",
+                "capability": {"supported": True, "reason": None},
+                "timing": timing,
+                "counters": result["counters"],
+                "structural": result["structural"],
+                "execution": {"graph_capture_live": False},
+            }
         else:
+            selected = select_adapter(args.revision, args.device)
+            if isinstance(selected, RevisionCapability):
+                revision_capability = selected
+                status = "unsupported"
+                reason = selected.reason
+                raise StopIteration
             adapter = selected
             build_row = row if isinstance(row, BuildRow) else _runtime_build_row(row)
             workload = make_workload(build_row, args.device)
@@ -3018,21 +3076,25 @@ def _run_final_child(args: argparse.Namespace) -> int:
                 "source_emulation": args.revision != "global" and isinstance(row, BuildRow) and row.case == "B3",
                 "capability": {"supported": True, "reason": None},
                 "timing": timing,
-                "counters": {},
+                "counters": result.get("counters", {}) if isinstance(row, RuntimeRow) else {},
                 "structural": adapter.introspect(),
                 "execution": {"graph_capture_live": graph_capture_live},
             }
+    except StopIteration:
+        pass
     except Exception as error:
         status = "rejected"
         reason = str(error)
     finally:
-        if adapter is not None:
-            try:
+        try:
+            if adapter is not None:
                 adapter.close()
-            except Exception as error:
-                if reason is None:
-                    reason = f"close: {type(error).__name__}: {error}"
-                    status = "rejected"
+        except Exception as error:
+            if reason is None:
+                reason = f"close: {type(error).__name__}: {error}"
+                status = "rejected"
+        finally:
+            _cleanup_workload(workload)
     if row is None:
         try:
             raw = json.loads(args.child_row)
