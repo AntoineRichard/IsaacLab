@@ -1156,6 +1156,136 @@ def test_no_clone_plan_preserves_distinct_backend_rows_in_typed_and_solver_stora
     assert layout.clone_plan_metadata is None
 
 
+def test_no_clone_plan_cpu_solver_transport_keeps_distinct_source_rows_on_host() -> None:
+    """CPU solver transport must retain every no-plan source row on the host."""
+
+    class _CpuSourceControl(_RoutedSourceControl):
+        def resolved_solver_property_transport(self) -> str:
+            return "cpu"
+
+    collection = ActuatorCollection(_NoClonePlanSimulation())
+    control = _CpuSourceControl({"all": (0, 1)})
+    cfg = ImplicitActuatorCfg(
+        class_type=ImplicitActuator,
+        joint_names_expr=["all"],
+        stiffness=None,
+        damping=None,
+    )
+    view = _register_managed(collection, "first", control, {"drive": cfg})
+
+    collection.finalize()
+
+    expected_rows = torch.tensor([[1.0, 1.0], [11.0, 11.0], [21.0, 21.0], [31.0, 31.0]], dtype=torch.float32)
+    source_env_ids = control.requested_source_env_ids
+    assert source_env_ids is not None
+    assert source_env_ids.device.type == "cpu"
+    torch.testing.assert_close(
+        source_env_ids,
+        torch.tensor([0, 1, 2, 3], dtype=torch.int64),
+    )
+    torch.testing.assert_close(view["drive"].stiffness, expected_rows)
+    stiffness = control.solver_properties["stiffness"]
+    assert stiffness.transport == "cpu"
+    assert stiffness.source_rows.device.type == "cpu"
+    torch.testing.assert_close(stiffness.source_rows, expected_rows)
+    source_slots = stiffness.source_slot_by_backend_row
+    assert source_slots is not None
+    assert source_slots.device.type == "cpu"
+    torch.testing.assert_close(
+        source_slots,
+        torch.tensor([0, 1, 2, 3], dtype=torch.int64),
+    )
+    assert stiffness.source_assignment is None
+    assert stiffness.canonical_target is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for no-plan device transport coverage")
+def test_no_clone_plan_cuda_solver_transport_stays_device_resident_without_host_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CUDA solver transport must retain distinct no-plan rows without a host transfer."""
+    collection = ActuatorCollection(_NoClonePlanSimulation())
+    control = _RoutedSourceControl({"all": (0, 1)}, device="cuda")
+    cfg = ImplicitActuatorCfg(
+        class_type=ImplicitActuator,
+        joint_names_expr=["all"],
+        stiffness=None,
+        damping=None,
+    )
+    view = _register_managed(collection, "first", control, {"drive": cfg})
+
+    cuda_to_cpu_transfers: list[tuple[str, tuple[int, ...]]] = []
+    original_to = torch.Tensor.to
+    original_cpu = torch.Tensor.cpu
+    original_tolist = torch.Tensor.tolist
+    original_item = torch.Tensor.item
+
+    def _requested_device(args, kwargs) -> torch.device | None:
+        requested_device = kwargs.get("device", args[0] if args else None)
+        if isinstance(requested_device, torch.Tensor):
+            return requested_device.device
+        if isinstance(requested_device, (str, torch.device)):
+            return torch.device(requested_device)
+        return None
+
+    def _record_to(self, *args, **kwargs):
+        requested_device = _requested_device(args, kwargs)
+        if self.is_cuda and requested_device is not None and requested_device.type == "cpu":
+            cuda_to_cpu_transfers.append(("to", tuple(self.shape)))
+        return original_to(self, *args, **kwargs)
+
+    def _record_cpu(self, *args, **kwargs):
+        if self.is_cuda:
+            cuda_to_cpu_transfers.append(("cpu", tuple(self.shape)))
+        return original_cpu(self, *args, **kwargs)
+
+    def _record_tolist(self):
+        if self.is_cuda:
+            cuda_to_cpu_transfers.append(("tolist", tuple(self.shape)))
+        return original_tolist(self)
+
+    def _record_item(self):
+        if self.is_cuda:
+            cuda_to_cpu_transfers.append(("item", tuple(self.shape)))
+        return original_item(self)
+
+    with monkeypatch.context() as transfer_spy:
+        transfer_spy.setattr(torch.Tensor, "to", _record_to)
+        transfer_spy.setattr(torch.Tensor, "cpu", _record_cpu)
+        transfer_spy.setattr(torch.Tensor, "tolist", _record_tolist)
+        transfer_spy.setattr(torch.Tensor, "item", _record_item)
+        collection.finalize()
+
+    assert cuda_to_cpu_transfers == []
+    expected_rows = torch.tensor(
+        [[1.0, 1.0], [11.0, 11.0], [21.0, 21.0], [31.0, 31.0]], dtype=torch.float32, device="cuda"
+    )
+    source_env_ids = control.requested_source_env_ids
+    assert source_env_ids is not None
+    assert source_env_ids.device.type == "cuda"
+    torch.testing.assert_close(
+        source_env_ids,
+        torch.tensor([0, 1, 2, 3], dtype=torch.int64, device="cuda"),
+    )
+    torch.testing.assert_close(view["drive"].stiffness, expected_rows)
+    stiffness = control.solver_properties["stiffness"]
+    assert stiffness.transport == "device"
+    assert stiffness.source_rows.device.type == "cuda"
+    torch.testing.assert_close(stiffness.source_rows, expected_rows)
+    assert stiffness.source_slot_by_backend_row is None
+    source_assignment = stiffness.source_assignment
+    assert source_assignment is not None
+    assert source_assignment.device.type == "cuda"
+    torch.testing.assert_close(
+        source_assignment,
+        torch.tensor([0, 1, 2, 3], dtype=torch.int32, device="cuda"),
+    )
+    canonical_target = stiffness.canonical_target
+    assert canonical_target is not None
+    assert canonical_target.torch.device.type == "cuda"
+    torch.testing.assert_close(canonical_target.torch, expected_rows)
+
+
 def test_successful_finalization_releases_build_only_solver_staging() -> None:
     """Successful publication keeps runtime gain staging but releases solver build state."""
 
