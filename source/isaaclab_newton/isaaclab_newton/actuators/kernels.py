@@ -28,6 +28,100 @@ def zero_at_indices_kernel(data: wp.array(dtype=wp.float32), indices: wp.array(d
 
 
 @wp.kernel(enable_backward=False)
+def validate_direct_range_order(
+    indices: wp.array(dtype=wp.uint32),
+    compact_joint_ids: wp.array(dtype=wp.int32),
+    user_to_backend: wp.array(dtype=wp.int32),
+    dof_offset: int,
+    env_stride: int,
+    has_joint_ordering: bool,
+    error_flag: wp.array(dtype=wp.int32),
+):
+    """Set ``error_flag`` when a controller is not canonical world-major order."""
+    index = wp.tid()
+    type_dof_count = compact_joint_ids.shape[0]
+    env_id = index // type_dof_count
+    user_joint_id = compact_joint_ids[index - env_id * type_dof_count]
+    backend_joint_id = user_joint_id
+    if has_joint_ordering:
+        backend_joint_id = user_to_backend[user_joint_id]
+    expected = env_id * env_stride + dof_offset + backend_joint_id
+    if int(indices[index]) != expected:
+        error_flag[0] = 1
+
+
+@wp.kernel(enable_backward=False)
+def build_controller_slot_map(
+    indices: wp.array(dtype=wp.uint32),
+    controller_slots: wp.array(dtype=wp.int32),
+):
+    """Record the immutable controller position for every physical DOF index."""
+    controller_slots[int(indices[wp.tid()])] = wp.tid()
+
+
+@wp.kernel(enable_backward=False)
+def gather_canonical_range_to_controller(
+    canonical: wp.array2d(dtype=wp.float32),
+    compact_joint_ids: wp.array(dtype=wp.int32),
+    user_to_backend: wp.array(dtype=wp.int32),
+    controller_slots: wp.array(dtype=wp.int32),
+    dof_offset: int,
+    env_stride: int,
+    has_joint_ordering: bool,
+    controller_values: wp.array(dtype=wp.float32),
+):
+    """Gather one canonical world-major range into fixed controller slots."""
+    env_id, compact_dof = wp.tid()
+    backend_joint = compact_joint_ids[compact_dof]
+    if has_joint_ordering:
+        backend_joint = user_to_backend[backend_joint]
+    physical_index = env_id * env_stride + dof_offset + backend_joint
+    controller_slot = controller_slots[physical_index]
+    if controller_slot >= 0:
+        controller_values[controller_slot] = canonical[env_id, compact_dof]
+
+
+@wp.kernel(enable_backward=False)
+def scatter_controller_range_to_canonical(
+    controller_values: wp.array(dtype=wp.float32),
+    compact_joint_ids: wp.array(dtype=wp.int32),
+    user_to_backend: wp.array(dtype=wp.int32),
+    controller_slots: wp.array(dtype=wp.int32),
+    dof_offset: int,
+    env_stride: int,
+    has_joint_ordering: bool,
+    canonical: wp.array2d(dtype=wp.float32),
+):
+    """Scatter fixed controller slots into one canonical world-major range."""
+    env_id, compact_dof = wp.tid()
+    backend_joint = compact_joint_ids[compact_dof]
+    if has_joint_ordering:
+        backend_joint = user_to_backend[backend_joint]
+    physical_index = env_id * env_stride + dof_offset + backend_joint
+    controller_slot = controller_slots[physical_index]
+    if controller_slot >= 0:
+        canonical[env_id, compact_dof] = controller_values[controller_slot]
+
+
+@wp.kernel(enable_backward=False)
+def merge_native_command_fields(
+    raw_position: wp.array2d(dtype=wp.float32),
+    raw_velocity: wp.array2d(dtype=wp.float32),
+    raw_effort: wp.array2d(dtype=wp.float32),
+    native_owner: wp.array(dtype=wp.int32),
+    processed_position: wp.array2d(dtype=wp.float32),
+    processed_velocity: wp.array2d(dtype=wp.float32),
+    processed_effort: wp.array2d(dtype=wp.float32),
+):
+    """Copy raw command fields only into native-owned public joint slots."""
+    env_id, joint_id = wp.tid()
+    if native_owner[joint_id] != 0:
+        processed_position[env_id, joint_id] = raw_position[env_id, joint_id]
+        processed_velocity[env_id, joint_id] = raw_velocity[env_id, joint_id]
+        processed_effort[env_id, joint_id] = raw_effort[env_id, joint_id]
+
+
+@wp.kernel(enable_backward=False)
 def set_mask_kernel(mask: wp.array(dtype=wp.bool), indices: wp.array(dtype=wp.int32)):
     """Set ``mask[indices[i]] = True`` for each ``i``. The mask must be pre-zeroed."""
     i = wp.tid()
@@ -232,6 +326,7 @@ def sync_torque_telemetry(
     joint_damping: wp.array2d(dtype=wp.float32),
     effort_limit: wp.array2d(dtype=wp.float32),
     joint_modes: wp.array(dtype=wp.int32),
+    native_owner: wp.array(dtype=wp.int32),
     sim_bind_joint_effort: wp.array2d(dtype=wp.float32),
     actuator_computed_effort: wp.array2d(dtype=wp.float32),
     user_to_backend: wp.array(dtype=wp.int32),
@@ -255,6 +350,8 @@ def sync_torque_telemetry(
     telemetry; the FF written into ``joint_f`` is not bounded by it.
     """
     i, user_j = wp.tid()
+    if native_owner[user_j] == 0:
+        return
     backend_j = user_j
     if sim_buffers_are_backend_order:
         backend_j = user_to_backend[user_j]
@@ -302,3 +399,21 @@ def build_implicit_dof_mask(
         else:
             modes[j_ids.long()] = 1
     return wp.from_torch(modes, dtype=wp.int32), modes
+
+
+def build_native_dof_mask(
+    actuators: dict[str, ActuatorBase],
+    native_group_names: frozenset[str],
+    num_joints: int,
+    device: str,
+) -> tuple[wp.array, torch.Tensor]:
+    """Build a private public-joint native ownership mask at candidate construction."""
+    owners = torch.zeros(num_joints, dtype=torch.int32, device=device)
+    for name in native_group_names:
+        actuator = actuators[name]
+        joint_ids = actuator.joint_indices
+        if isinstance(joint_ids, slice) or joint_ids is None:
+            owners[:] = 1
+        else:
+            owners[joint_ids.long()] = 1
+    return wp.from_torch(owners, dtype=wp.int32), owners

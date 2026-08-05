@@ -144,6 +144,113 @@ def test_unregister_post_actuator_callback_removes_exact_callback_idempotently(m
     assert callbacks[0] is equal_but_distinct
 
 
+def test_native_adapter_direct_range_aliases_private_canonical_type_storage() -> None:
+    """Compatible native ranges keep controller and output pointers canonical."""
+    from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
+
+    from isaaclab.utils.warp import ProxyArray
+
+    class _NativeType:
+        pass
+
+    canonical = {
+        name: ProxyArray(wp.zeros((2, 2), dtype=wp.float32, device="cpu"))
+        for name in ("stiffness", "damping", "computed_effort", "applied_effort")
+    }
+    controller = SimpleNamespace(
+        kp=wp.zeros(4, dtype=wp.float32, device="cpu"), kd=wp.zeros(4, dtype=wp.float32, device="cpu")
+    )
+    actuator = SimpleNamespace(
+        indices=wp.array([0, 1, 2, 3], dtype=wp.uint32, device="cpu"),
+        controller=controller,
+        clamping=(),
+        _computed_forces=wp.zeros(4, dtype=wp.float32, device="cpu"),
+        _applied_forces=wp.zeros(4, dtype=wp.float32, device="cpu"),
+    )
+    group = SimpleNamespace(_parameter_binding=SimpleNamespace(arrays=canonical))
+    binding = SimpleNamespace(
+        groups={"native": group},
+        native_group_names=frozenset({"native"}),
+        computed_effort=canonical["computed_effort"],
+        layout=SimpleNamespace(
+            num_joints=2,
+            type_layouts={_NativeType: SimpleNamespace(num_worlds=2, num_dofs=2, compact_joint_indices=(0, 1))},
+            group_layouts=(SimpleNamespace(name="native", actuator_type=_NativeType),),
+        ),
+    )
+    adapter = object.__new__(NewtonActuatorAdapter)
+    adapter.actuators = [actuator]
+    adapter._device = "cpu"
+    adapter.num_joints = 2
+
+    native_binding = adapter.bind_articulation(binding, dof_offset=0)
+
+    (native_range,) = native_binding.ranges
+    assert native_range.direct
+    assert controller.kp.ptr == canonical["stiffness"].warp.ptr
+    assert controller.kd.ptr == canonical["damping"].warp.ptr
+    assert actuator._computed_forces.ptr == canonical["computed_effort"].warp.ptr
+    assert actuator._applied_forces.ptr == canonical["applied_effort"].warp.ptr
+
+
+def test_global_native_actuator_staging_survives_two_articulation_registrations() -> None:
+    """A globally merged controller never rebinds one articulation over another."""
+    from isaaclab_newton.actuators.adapter import NewtonActuatorAdapter
+
+    from isaaclab.utils.warp import ProxyArray
+
+    class _NativeType:
+        pass
+
+    controller = SimpleNamespace(
+        kp=wp.zeros(4, dtype=wp.float32, device="cpu"), kd=wp.zeros(4, dtype=wp.float32, device="cpu")
+    )
+    actuator = SimpleNamespace(
+        indices=wp.array([0, 1, 2, 3], dtype=wp.uint32, device="cpu"),
+        controller=controller,
+        clamping=(),
+        _computed_forces=wp.zeros(4, dtype=wp.float32, device="cpu"),
+        _applied_forces=wp.zeros(4, dtype=wp.float32, device="cpu"),
+    )
+    original_kp = controller.kp
+
+    def binding(key: str) -> SimpleNamespace:
+        arrays = {
+            name: ProxyArray(wp.zeros((2, 1), dtype=wp.float32, device="cpu"))
+            for name in ("stiffness", "damping", "computed_effort", "applied_effort")
+        }
+        return SimpleNamespace(
+            groups={"native": SimpleNamespace(_parameter_binding=SimpleNamespace(arrays=arrays))},
+            native_group_names=frozenset({"native"}),
+            computed_effort=arrays["computed_effort"],
+            registration=SimpleNamespace(key=key),
+            layout=SimpleNamespace(
+                num_joints=1,
+                type_layouts={_NativeType: SimpleNamespace(num_worlds=2, num_dofs=1, compact_joint_indices=(0,))},
+                group_layouts=(SimpleNamespace(name="native", actuator_type=_NativeType),),
+            ),
+        )
+
+    adapter = object.__new__(NewtonActuatorAdapter)
+    adapter.actuators = [actuator]
+    adapter._device = "cpu"
+    adapter.num_joints = 2
+    adapter._num_envs = 2
+    adapter._global_native_bindings = {}
+
+    first = adapter.bind_articulation(binding("first"), dof_offset=0)
+    first_kp = controller.kp
+    second = adapter.bind_articulation(binding("second"), dof_offset=1)
+
+    assert not first.ranges[0].direct
+    assert not second.ranges[0].direct
+    assert controller.kp is first_kp
+    adapter.unregister_articulation_ranges(first.ranges)
+    assert controller.kp is first_kp
+    adapter.unregister_articulation_ranges(second.ranges)
+    assert controller.kp is original_kp
+
+
 def test_control_invalidation_deregisters_telemetry_before_releasing_candidate(monkeypatch) -> None:
     """A rollback cannot leave telemetry able to touch candidate-owned state."""
     from isaaclab_newton.assets.articulation.actuator_control import NewtonActuatorControl
@@ -529,9 +636,7 @@ def test_failed_native_prepare_restores_all_candidate_specific_state(monkeypatch
         name: object()
         for name in (
             "newton_actuator_adapter",
-            "newton_default_stiffness",
-            "newton_default_damping",
-            "newton_managed_local_joints",
+            "_newton_native_ranges",
             "_implicit_dof_mask",
             "_implicit_dof_mask_owner",
         )
@@ -558,14 +663,12 @@ def test_failed_native_prepare_restores_all_candidate_specific_state(monkeypatch
         **original,
     )
     candidate_binding = SimpleNamespace(
-        stiffness=torch.full((2, 3), 10.0),
-        damping=torch.full((2, 3), 2.0),
-        joint_indices=torch.tensor([0, 2], dtype=torch.int32),
         implicit_dof_mask=wp.zeros(3, dtype=wp.int32, device="cpu"),
         implicit_dof_mask_owner=torch.zeros(3, dtype=torch.int32),
         computed_effort_view=wp.zeros((2, 3), dtype=wp.float32, device="cpu"),
+        ranges=(),
     )
-    adapter = SimpleNamespace(bind_articulation=lambda **kwargs: candidate_binding)
+    adapter = SimpleNamespace(bind_articulation=lambda *_args, **_kwargs: candidate_binding)
     monkeypatch.setattr(control_module.SimulationManager, "_adapter", adapter)
     callbacks = []
     monkeypatch.setattr(control_module.SimulationManager, "_post_actuator_callbacks", callbacks)

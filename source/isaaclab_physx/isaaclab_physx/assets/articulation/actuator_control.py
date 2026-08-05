@@ -340,6 +340,7 @@ class PhysxActuatorControl(ArticulationActuatorControl):
             NewtonActuatorAdapter,
             PhysxActuatorWrapper,
             build_implicit_dof_mask,
+            build_native_dof_mask,
         )
 
         from isaaclab.sim.utils.stage import get_current_stage  # noqa: PLC0415
@@ -350,6 +351,10 @@ class PhysxActuatorControl(ArticulationActuatorControl):
             device=self.device,
         )
         articulation._physx_actuator_wrapper = self._physx_actuator_wrapper
+        assert binding.groups is not None
+        articulation._native_dof_mask, articulation._native_dof_mask_owner = build_native_dof_mask(
+            dict(binding.groups), binding.native_group_names, self.num_joints, self.device
+        )
         if binding.native_group_names:
             first_prim = find_first_matching_prim(articulation.cfg.prim_path)
             art_prim_path = str(first_prim.GetPath()) if first_prim is not None else None
@@ -365,20 +370,20 @@ class PhysxActuatorControl(ArticulationActuatorControl):
             wrapper.joint_q = articulation._data.joint_pos.warp.reshape(-1)
             wrapper.joint_qd = articulation._data.joint_vel.warp.reshape(-1)
             assert binding.command is not None
-            wrapper.joint_target_pos = binding.command.position.warp.reshape(-1)
-            wrapper.joint_target_vel = binding.command.velocity.warp.reshape(-1)
-            wrapper.joint_act = binding.command.effort.warp.reshape(-1)
+            assert binding.joint_command is not None
+            wrapper.joint_target_pos = binding.joint_command.position.warp.reshape(-1)
+            wrapper.joint_target_vel = binding.joint_command.velocity.warp.reshape(-1)
+            wrapper.joint_act = binding.joint_command.effort.warp.reshape(-1)
+            wrapper.joint_f_2d = binding.joint_command.effort.warp
+            wrapper.joint_f = wrapper.joint_f_2d.reshape(-1)
             adapter.finalize(wrapper)
             articulation.newton_actuator_adapter = adapter
             assert binding.groups is not None
             native_binding = adapter.bind_articulation(
-                lab_actuators=dict(binding.groups),
+                binding,
                 dof_offset=0,
-                num_joints=self.num_joints,
             )
-            articulation.newton_default_stiffness = native_binding.stiffness
-            articulation.newton_default_damping = native_binding.damping
-            articulation.newton_managed_local_joints = native_binding.joint_indices
+            articulation._newton_native_ranges = native_binding.ranges
             articulation._implicit_dof_mask = native_binding.implicit_dof_mask
             articulation._implicit_dof_mask_owner = native_binding.implicit_dof_mask_owner
             articulation._data._sim_bind_joint_computed_effort = native_binding.computed_effort_view
@@ -398,13 +403,17 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         self._native_actuator_graphs = None
         self._native_actuator_graph_index = 0
         articulation = self._articulation
+        adapter = getattr(articulation, "newton_actuator_adapter", None)
+        ranges = getattr(articulation, "_newton_native_ranges", None)
+        if adapter is not None and ranges:
+            adapter.unregister_articulation_ranges(ranges)
         articulation._physx_actuator_wrapper = None
         articulation.newton_actuator_adapter = None
-        articulation.newton_default_stiffness = None
-        articulation.newton_default_damping = None
-        articulation.newton_managed_local_joints = None
+        articulation._newton_native_ranges = None
         articulation._implicit_dof_mask = None
         articulation._implicit_dof_mask_owner = None
+        articulation._native_dof_mask = None
+        articulation._native_dof_mask_owner = None
         articulation._has_newton_actuators = False
         data = getattr(articulation, "_data", None)
         if data is not None:
@@ -490,11 +499,29 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         del collection
         return
 
-    def compute_native_actuators(self, collection: ActuatorCollection.ArticulationView, dt: float) -> bool:
+    def compute_native_actuators(self, collection: ActuatorCollection.ArticulationView, dt: float) -> None:
         if not self._native_active:
-            return False
+            return
 
         articulation = self._articulation
+        from isaaclab_newton.actuators import kernels as actuator_kernels  # noqa: PLC0415
+
+        wp.launch(
+            actuator_kernels.merge_native_command_fields,
+            dim=(self.num_instances, self.num_joints),
+            inputs=[
+                collection.command.position.warp,
+                collection.command.velocity.warp,
+                collection.command.effort.warp,
+                articulation._native_dof_mask,
+            ],
+            outputs=[
+                collection.joint_command.position.warp,
+                collection.joint_command.velocity.warp,
+                collection.joint_command.effort.warp,
+            ],
+            device=self.device,
+        )
         if articulation.newton_actuator_adapter is not None:
             adapter = articulation.newton_actuator_adapter
             device = wp.get_device(self.device)
@@ -521,18 +548,17 @@ class PhysxActuatorControl(ArticulationActuatorControl):
                         wp.capture_launch(self._native_actuator_graphs[self._native_actuator_graph_index])
                         adapter._swap_state_buffers()
                         self._native_actuator_graph_index ^= 1
-                        return True
+                        return
 
         self._run_native_actuator_kernels(collection)
-        return True
 
     def _run_native_actuator_kernels(self, collection: ActuatorCollection.ArticulationView) -> None:
         from isaaclab_newton.actuators import kernels as actuator_kernels  # noqa: PLC0415
 
         articulation = self._articulation
         wrapper = self._physx_actuator_wrapper
-        wrapper.joint_f_2d.assign(collection.command.effort.warp)
         if articulation.newton_actuator_adapter is not None:
+            articulation.newton_actuator_adapter.gather_staged_ranges(articulation._newton_native_ranges or ())
             articulation.newton_actuator_adapter.step(wrapper, wrapper, SimulationManager.get_physics_dt())
 
         wp.launch(
@@ -547,6 +573,7 @@ class PhysxActuatorControl(ArticulationActuatorControl):
                 articulation._data.joint_damping.warp,
                 articulation._data.joint_effort_limits.warp,
                 articulation._implicit_dof_mask,
+                articulation._native_dof_mask,
                 wrapper.joint_f_2d,
                 articulation._data._sim_bind_joint_computed_effort,
                 articulation._ALL_JOINT_INDICES,

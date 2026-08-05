@@ -179,7 +179,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
 
         from newton import Model as NewtonModel  # noqa: PLC0415
 
-        from isaaclab_newton.actuators import build_implicit_dof_mask  # noqa: PLC0415
+        from isaaclab_newton.actuators import build_implicit_dof_mask, build_native_dof_mask  # noqa: PLC0415
         from isaaclab_newton.actuators import kernels as actuator_kernels  # noqa: PLC0415
 
         articulation = self._articulation
@@ -190,6 +190,9 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             or binding.applied_effort is None
         ):
             raise RuntimeError("Newton actuator preparation requires a complete private articulation binding.")
+        articulation._native_dof_mask, articulation._native_dof_mask_owner = build_native_dof_mask(
+            dict(binding.groups), getattr(binding, "native_group_names", frozenset()), self.num_joints, self.device
+        )
         adapter = SimulationManager._adapter
         if adapter is not None:
             dof_layout = articulation._root_view.frequency_layouts[NewtonModel.AttributeFrequency.JOINT_DOF]
@@ -201,17 +204,14 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 arti_start = 0
             joint_ordering = articulation.data.joint_ordering
             native_binding = adapter.bind_articulation(
-                lab_actuators=dict(binding.groups),
+                binding,
                 dof_offset=arti_start,
-                num_joints=self.num_joints,
                 joint_user_to_backend_indices=(
                     joint_ordering.user_to_backend_indices if joint_ordering is not None else None
                 ),
             )
             articulation.newton_actuator_adapter = adapter
-            articulation.newton_default_stiffness = native_binding.stiffness
-            articulation.newton_default_damping = native_binding.damping
-            articulation.newton_managed_local_joints = native_binding.joint_indices
+            articulation._newton_native_ranges = native_binding.ranges
             articulation._implicit_dof_mask = native_binding.implicit_dof_mask
             articulation._implicit_dof_mask_owner = native_binding.implicit_dof_mask_owner
             articulation._data._sim_bind_joint_computed_effort = native_binding.computed_effort_view
@@ -237,6 +237,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                     articulation._data.joint_damping.warp,
                     articulation._data.joint_effort_limits.warp,
                     articulation._implicit_dof_mask,
+                    articulation._native_dof_mask,
                     articulation._data._sim_bind_joint_effort,
                     articulation._data._sim_bind_joint_computed_effort,
                     articulation._joint_user_to_backend_map(),
@@ -255,7 +256,11 @@ class NewtonActuatorControl(ArticulationActuatorControl):
     def invalidate_actuator_view(self) -> None:
         """Restore candidate state before releasing the private binding."""
         failures: list[Exception] = []
-        for cleanup in (self._unregister_post_actuator_callback, self._restore_candidate_state):
+        for cleanup in (
+            self._unregister_post_actuator_callback,
+            self._unregister_native_ranges,
+            self._restore_candidate_state,
+        ):
             try:
                 cleanup()
             except Exception as error:
@@ -270,6 +275,15 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 first.add_note(f"Additional Newton actuator invalidation failure: {error}")
             raise first
 
+    def _unregister_native_ranges(self) -> None:
+        """Drop this articulation's exact global adapter registrations."""
+        articulation = self._articulation
+        adapter = getattr(articulation, "newton_actuator_adapter", None)
+        ranges = getattr(articulation, "_newton_native_ranges", None)
+        if adapter is not None and ranges:
+            adapter.unregister_articulation_ranges(ranges)
+        articulation._newton_native_ranges = None
+
     def _snapshot_candidate_state(self) -> None:
         """Retain and clear every field replaced by native candidate preparation."""
         if self._candidate_state_snapshot is not None:
@@ -277,9 +291,9 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         articulation = self._articulation
         state_fields = (
             (articulation, "newton_actuator_adapter"),
-            (articulation, "newton_default_stiffness"),
-            (articulation, "newton_default_damping"),
-            (articulation, "newton_managed_local_joints"),
+            (articulation, "_newton_native_ranges"),
+            (articulation, "_native_dof_mask"),
+            (articulation, "_native_dof_mask_owner"),
             (articulation, "_implicit_dof_mask"),
             (articulation, "_implicit_dof_mask_owner"),
             (articulation._data, "_sim_bind_joint_computed_effort"),
@@ -417,6 +431,33 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                         outputs=[component.corner_velocity],
                         device=self.device,
                     )
+
+    def compute_native_actuators(self, collection: ActuatorCollection.ArticulationView, dt: float) -> None:
+        """Merge native raw command fields without physically stepping Newton."""
+        del dt
+        if not self._native_active:
+            return
+        from isaaclab_newton.actuators import kernels as actuator_kernels  # noqa: PLC0415
+
+        native_mask = getattr(self._articulation, "_native_dof_mask", None)
+        if native_mask is None:
+            return
+        wp.launch(
+            actuator_kernels.merge_native_command_fields,
+            dim=(self.num_instances, self.num_joints),
+            inputs=[
+                collection.command.position.warp,
+                collection.command.velocity.warp,
+                collection.command.effort.warp,
+                native_mask,
+            ],
+            outputs=[
+                collection.joint_command.position.warp,
+                collection.joint_command.velocity.warp,
+                collection.joint_command.effort.warp,
+            ],
+            device=self.device,
+        )
 
     def submit_commands(self, collection: ActuatorCollection | ActuatorCollection.ArticulationView) -> None:
         articulation = self._articulation

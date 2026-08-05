@@ -17,7 +17,7 @@ to controller arrays.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -27,15 +27,54 @@ import warp as wp
 from newton.actuators import Actuator, Clamping, Delay
 
 from .kernels import (
+    build_controller_slot_map,
     build_implicit_dof_mask,
     build_per_dof_env_mask_kernel,
+    gather_canonical_range_to_controller,
     scatter_gain_kernel,
     set_mask_kernel,
+    validate_direct_range_order,
     zero_at_indices_kernel,
 )
 
 if TYPE_CHECKING:
-    from isaaclab.actuators import ActuatorBase
+    from isaaclab.actuators.actuator_collection import _ArticulationBinding
+
+
+@dataclass(frozen=True)
+class _NativeRangeBinding:
+    """One native controller range bound to canonical actuator storage."""
+
+    group_names: tuple[str, ...]
+    actuator: Actuator
+    direct: bool
+    canonical_parameters: Mapping[str, wp.array]
+    canonical_computed_effort: wp.array
+    canonical_applied_effort: wp.array
+    staging: object | None = None
+    validation_error_flag: wp.array | None = None
+    handle: object | None = None
+    compact_joint_ids: wp.array | None = None
+    controller_slots: wp.array | None = None
+    dof_offset: int = 0
+    has_joint_ordering: bool = False
+    user_to_backend: wp.array | None = None
+
+
+@dataclass
+class _GlobalNativeActuatorBinding:
+    """Adapter-owned staged binding for one globally shared Newton actuator."""
+
+    actuator: Actuator
+    original_parameters: list[tuple[object, str, wp.array]]
+    staged_parameters: list[tuple[object, str, wp.array]]
+    original_computed_effort: wp.array | None
+    original_applied_effort: wp.array | None
+    staged_computed_effort: wp.array | None
+    staged_applied_effort: wp.array | None
+    controller_slots: wp.array
+    registrations: set[object]
+
 
 # ---------------------------------------------------------------------------
 # Abstract base — backend-independent logic
@@ -60,15 +99,6 @@ class NewtonActuatorAdapter:
         per-articulation view of the adapter's computed-effort buffer.
         """
 
-        stiffness: torch.Tensor
-        """Initial stiffness gains [N/m or N·m/rad, depending on joint type], shape ``(num_envs, num_joints)``."""
-
-        damping: torch.Tensor
-        """Initial damping gains [N·s/m or N·m·s/rad, depending on joint type], shape ``(num_envs, num_joints)``."""
-
-        joint_indices: torch.Tensor | slice
-        """Managed columns; ``slice(None)`` when every joint is managed, else a ``torch.int32`` index tensor."""
-
         implicit_dof_mask: wp.array
         """Per-DOF mask consumed by ``sync_torque_telemetry``; ``1`` on implicit-actuator DOFs, ``0`` otherwise."""
 
@@ -76,7 +106,10 @@ class NewtonActuatorAdapter:
         """Torch tensor owning the memory :attr:`implicit_dof_mask` aliases; keep referenced for the mask's lifetime."""
 
         computed_effort_view: wp.array
-        """This articulation's slice of the adapter's pre-clamp computed-effort buffer, ``(num_envs, num_joints)``."""
+        """Private articulation telemetry destination in public joint order."""
+
+        ranges: tuple[_NativeRangeBinding, ...]
+        """Immutable direct or staged native ranges retained through binding lifetime."""
 
     def __init__(
         self,
@@ -92,6 +125,7 @@ class NewtonActuatorAdapter:
         self._num_envs = num_envs
         self._dof_offset = dof_offset
         self._device = device
+        self._global_native_bindings: dict[int, _GlobalNativeActuatorBinding] = {}
 
         # Collect the set of local DOFs covered by some actuator. Only the
         # env-0 slice of each actuator's flat ``indices`` array is needed —
@@ -113,18 +147,6 @@ class NewtonActuatorAdapter:
         self._states_a = [act.state() for act in actuators]
         self._states_b = [act.state() for act in actuators]
 
-        # Pre-clamp computed effort buffer. Each Newton actuator scatter-adds
-        # its raw controller output to ``sim_control.joint_computed_f`` when
-        # ``control_computed_output_attr`` is set; we route that to this
-        # buffer so the post-actuator telemetry kernel can report the actual
-        # computed (pre-clamp) effort instead of mirroring ``joint_f``. The
-        # binding onto ``sim_control`` happens in :meth:`finalize`.
-        self._computed_effort = wp.zeros(
-            num_envs * num_joints,
-            dtype=wp.float32,
-            device=device,
-        )
-        self.computed_effort_2d = self._computed_effort.reshape((num_envs, num_joints))
         for act in actuators:
             act.control_computed_output_attr = "joint_computed_f"
 
@@ -138,7 +160,7 @@ class NewtonActuatorAdapter:
                 :class:`~isaaclab_newton.actuators.physx_wrapper.PhysxActuatorWrapper`
                 on the PhysX backend.
         """
-        sim_control.joint_computed_f = self._computed_effort
+        del sim_control
 
     def step(self, sim_state: Any, sim_control: Any, dt: float) -> None:
         """Zero actuated DOFs, step all actuators, and swap state buffers.
@@ -154,8 +176,6 @@ class NewtonActuatorAdapter:
                 on the PhysX backend.
             dt: Physics timestep [s].
         """
-        # Zero before scatter-add (actuators accumulate into this buffer).
-        self._computed_effort.zero_()
         for act in self.actuators:
             wp.launch(
                 zero_at_indices_kernel,
@@ -220,34 +240,19 @@ class NewtonActuatorAdapter:
 
     def bind_articulation(
         self,
+        binding: _ArticulationBinding,
         *,
-        lab_actuators: dict[str, ActuatorBase],
         dof_offset: int,
-        num_joints: int,
         joint_user_to_backend_indices: Sequence[int] | None = None,
     ) -> ArticulationBinding:
-        """Assemble the Newton fast-path init state for one articulation.
-
-        Consolidates the pieces the articulation formerly built with
-        separate :func:`build_newton_actuator_defaults` and
-        :func:`build_implicit_dof_mask` calls plus a manual
-        computed-effort slice: it snapshots the initial gains, builds the
-        implicit-DOF mask, and slices this adapter's computed-effort buffer
-        to the articulation's columns. Whole-model quantities
-        (:attr:`actuators`, :attr:`num_joints` as the env stride,
-        ``num_envs``, ``device``) come from the adapter; only the
-        articulation-local placement varies per call.
+        """Bind private canonical ranges for one articulation.
 
         Args:
-            lab_actuators: The articulation's Isaac Lab actuator groups in
-                public joint order. Only :class:`~isaaclab.actuators.ImplicitActuator`
-                groups contribute to :attr:`ArticulationBinding.implicit_dof_mask`.
+            binding: Unpublished private actuator binding. No facade is read
+                while aliases are installed.
             dof_offset: Offset of this articulation's DOFs in the adapter's
                 env-major global index space (``0`` on PhysX, view-dependent
                 on Newton).
-            num_joints: Articulation-local joint count. Distinct from
-                :attr:`num_joints`, which is the whole-model per-env DOF
-                stride used to lay out the actuator index arrays.
             joint_user_to_backend_indices: Complete permutation from public
                 joint indices to adapter-local joint indices. ``None``
                 preserves adapter-local order (the PhysX case, whose adapter
@@ -256,25 +261,262 @@ class NewtonActuatorAdapter:
         Returns:
             The bundled :class:`ArticulationBinding` for this articulation.
         """
-        stiffness, damping, joint_indices = build_newton_actuator_defaults(
-            actuators=self.actuators,
-            num_envs=self._num_envs,
-            num_joints=num_joints,
+        if binding.groups is None:
+            raise RuntimeError("Newton canonical binding requires private actuator groups.")
+        ranges = self._bind_canonical_ranges(
+            binding,
             dof_offset=dof_offset,
-            env_stride=self.num_joints,
-            device=self._device,
             joint_user_to_backend_indices=joint_user_to_backend_indices,
         )
-        implicit_dof_mask, implicit_dof_mask_owner = build_implicit_dof_mask(lab_actuators, num_joints, self._device)
-        computed_effort_view = self.computed_effort_2d[:, dof_offset : dof_offset + num_joints]
+        implicit_dof_mask, implicit_dof_mask_owner = build_implicit_dof_mask(
+            dict(binding.groups), binding.layout.num_joints, self._device
+        )
         return self.ArticulationBinding(
-            stiffness=stiffness,
-            damping=damping,
-            joint_indices=joint_indices,
             implicit_dof_mask=implicit_dof_mask,
             implicit_dof_mask_owner=implicit_dof_mask_owner,
-            computed_effort_view=computed_effort_view,
+            computed_effort_view=binding.computed_effort.warp,
+            ranges=ranges,
         )
+
+    def _bind_canonical_ranges(
+        self,
+        binding: _ArticulationBinding,
+        *,
+        dof_offset: int,
+        joint_user_to_backend_indices: Sequence[int] | None,
+    ) -> tuple[_NativeRangeBinding, ...]:
+        """Alias exact native type blocks when their 1-D controller ABI permits it."""
+        assert binding.groups is not None
+        ranges: list[_NativeRangeBinding] = []
+        for actuator_type, type_layout in binding.layout.type_layouts.items():
+            group_names = tuple(
+                group.name
+                for group in binding.layout.group_layouts
+                if group.actuator_type is actuator_type and group.name in binding.native_group_names
+            )
+            if not group_names:
+                continue
+            group = binding.groups[group_names[0]]
+            parameter_binding = group.__dict__.get("_parameter_binding")
+            if parameter_binding is None:
+                raise RuntimeError(f"Native actuator type {actuator_type.__name__} has no canonical parameter storage.")
+            arrays = parameter_binding.arrays
+            expected_size = type_layout.num_worlds * type_layout.num_dofs
+            compatible = tuple(
+                act
+                for act in self.actuators
+                if act.indices.shape[0] == expected_size
+                and self._has_direct_range_order(
+                    act,
+                    type_layout.compact_joint_indices,
+                    dof_offset=dof_offset,
+                    joint_user_to_backend_indices=joint_user_to_backend_indices,
+                )
+            )
+            direct = len(compatible) == 1
+            actuator = compatible[0] if direct else self._select_staged_actuator()
+            canonical_parameters = {name: value.warp for name, value in arrays.items()}
+            computed = arrays["computed_effort"].warp
+            applied = arrays["applied_effort"].warp
+            handle = object()
+            staging = None
+            if direct:
+                self._bind_direct_parameters(actuator, canonical_parameters)
+                actuator._computed_forces = computed.reshape(-1)
+                if getattr(actuator, "_applied_forces", None) is not None:
+                    actuator._applied_forces = applied.reshape(-1)
+            else:
+                staging = self._register_staged_actuator(actuator, handle)
+            ranges.append(
+                _NativeRangeBinding(
+                    group_names=group_names,
+                    actuator=actuator,
+                    direct=direct,
+                    canonical_parameters=canonical_parameters,
+                    canonical_computed_effort=computed,
+                    canonical_applied_effort=applied,
+                    staging=staging,
+                    handle=handle,
+                    compact_joint_ids=wp.array(type_layout.compact_joint_indices, dtype=wp.int32, device=self._device),
+                    controller_slots=None if direct else staging.controller_slots,
+                    dof_offset=dof_offset,
+                    has_joint_ordering=joint_user_to_backend_indices is not None,
+                    user_to_backend=(
+                        wp.array(joint_user_to_backend_indices, dtype=wp.int32, device=self._device)
+                        if joint_user_to_backend_indices is not None
+                        else wp.array(list(range(binding.layout.num_joints)), dtype=wp.int32, device=self._device)
+                    ),
+                )
+            )
+        return tuple(ranges)
+
+    def _select_staged_actuator(self) -> Actuator:
+        """Select the global controller whose immutable slot map will be staged."""
+        if len(self.actuators) != 1:
+            raise RuntimeError("Cannot infer a staged Newton controller range from multiple global actuators.")
+        return self.actuators[0]
+
+    def _register_staged_actuator(self, actuator: Actuator, handle: object) -> _GlobalNativeActuatorBinding:
+        """Install one persistent controller-sized staging set and retain an exact handle."""
+        registry = self._global_native_bindings
+        key = id(actuator)
+        global_binding = registry.get(key)
+        if global_binding is None:
+            original_parameters: list[tuple[object, str, wp.array]] = []
+            staged_parameters: list[tuple[object, str, wp.array]] = []
+            for component in (actuator.controller, *(actuator.clamping or ())):
+                for name in (
+                    "kp",
+                    "kd",
+                    "max_effort",
+                    "max_motor_effort",
+                    "velocity_limit",
+                    "saturation_effort",
+                ):
+                    value = getattr(component, name, None)
+                    if isinstance(value, wp.array):
+                        original_parameters.append((component, name, value))
+                        staged = wp.clone(value)
+                        staged_parameters.append((component, name, staged))
+                        setattr(component, name, staged)
+            original_computed = getattr(actuator, "_computed_forces", None)
+            original_applied = getattr(actuator, "_applied_forces", None)
+            staged_computed = wp.clone(original_computed) if isinstance(original_computed, wp.array) else None
+            staged_applied = wp.clone(original_applied) if isinstance(original_applied, wp.array) else None
+            if staged_computed is not None:
+                actuator._computed_forces = staged_computed
+            if staged_applied is not None:
+                actuator._applied_forces = staged_applied
+            global_binding = _GlobalNativeActuatorBinding(
+                actuator=actuator,
+                original_parameters=original_parameters,
+                staged_parameters=staged_parameters,
+                original_computed_effort=original_computed,
+                original_applied_effort=original_applied,
+                staged_computed_effort=staged_computed,
+                staged_applied_effort=staged_applied,
+                controller_slots=wp.full(self._num_envs * self.num_joints, -1, dtype=wp.int32, device=self._device),
+                registrations=set(),
+            )
+            wp.launch(
+                build_controller_slot_map,
+                dim=actuator.indices.shape[0],
+                inputs=[actuator.indices, global_binding.controller_slots],
+                device=self._device,
+            )
+            registry[key] = global_binding
+        global_binding.registrations.add(handle)
+        return global_binding
+
+    def unregister_articulation_ranges(self, ranges: Sequence[_NativeRangeBinding]) -> None:
+        """Release exact staged registrations and restore pointers after the last user leaves."""
+        for range_binding in ranges:
+            handle = range_binding.handle
+            if range_binding.direct or handle is None:
+                continue
+            key = id(range_binding.actuator)
+            global_binding = self._global_native_bindings.get(key)
+            if global_binding is None:
+                continue
+            global_binding.registrations.discard(handle)
+            if global_binding.registrations:
+                continue
+            for component, name, value in global_binding.original_parameters:
+                setattr(component, name, value)
+            if global_binding.original_computed_effort is not None:
+                global_binding.actuator._computed_forces = global_binding.original_computed_effort
+            if global_binding.original_applied_effort is not None:
+                global_binding.actuator._applied_forces = global_binding.original_applied_effort
+            del self._global_native_bindings[key]
+
+    def gather_staged_ranges(self, ranges: Sequence[_NativeRangeBinding]) -> None:
+        """Refresh persistent staged controller parameters from canonical storage."""
+        for range_binding in ranges:
+            if range_binding.direct or range_binding.staging is None:
+                continue
+            assert range_binding.compact_joint_ids is not None
+            assert range_binding.controller_slots is not None
+            assert range_binding.user_to_backend is not None
+            for component, name, staged in range_binding.staging.staged_parameters:
+                canonical_name = {
+                    "kp": "stiffness",
+                    "kd": "damping",
+                    "max_effort": "max_effort",
+                    "max_motor_effort": "max_motor_effort",
+                    "velocity_limit": "velocity_limit",
+                    "saturation_effort": "saturation_effort",
+                }.get(name)
+                if canonical_name is None or canonical_name not in range_binding.canonical_parameters:
+                    continue
+                wp.launch(
+                    gather_canonical_range_to_controller,
+                    dim=(range_binding.canonical_computed_effort.shape[0], range_binding.compact_joint_ids.shape[0]),
+                    inputs=[
+                        range_binding.canonical_parameters[canonical_name],
+                        range_binding.compact_joint_ids,
+                        range_binding.user_to_backend,
+                        range_binding.controller_slots,
+                        range_binding.dof_offset,
+                        self.num_joints,
+                        range_binding.has_joint_ordering,
+                        staged,
+                    ],
+                    device=self._device,
+                )
+
+    def _has_direct_range_order(
+        self,
+        actuator: Actuator,
+        compact_joint_indices: Sequence[int],
+        *,
+        dof_offset: int,
+        joint_user_to_backend_indices: Sequence[int] | None,
+    ) -> bool:
+        """Validate one candidate direct controller alias entirely on device."""
+        compact_joint_ids = wp.array(compact_joint_indices, dtype=wp.int32, device=self._device)
+        if joint_user_to_backend_indices is None:
+            user_to_backend = wp.array(list(range(len(compact_joint_indices))), dtype=wp.int32, device=self._device)
+            has_joint_ordering = False
+        else:
+            user_to_backend = wp.array(joint_user_to_backend_indices, dtype=wp.int32, device=self._device)
+            has_joint_ordering = True
+        error_flag = wp.zeros(1, dtype=wp.int32, device=self._device)
+        wp.launch(
+            validate_direct_range_order,
+            dim=actuator.indices.shape[0],
+            inputs=[
+                actuator.indices,
+                compact_joint_ids,
+                user_to_backend,
+                dof_offset,
+                self.num_joints,
+                has_joint_ordering,
+                error_flag,
+            ],
+            device=self._device,
+        )
+        return int(wp.to_torch(error_flag)[0]) == 0
+
+    @staticmethod
+    def _bind_direct_parameters(actuator: Actuator, parameters: Mapping[str, wp.array]) -> None:
+        """Rebind recognised Newton component arrays to canonical flat aliases."""
+        names = {
+            "stiffness": "kp",
+            "damping": "kd",
+            "effort_limit": "max_effort",
+            "max_effort": "max_effort",
+            "max_motor_effort": "max_motor_effort",
+            "velocity_limit": "velocity_limit",
+            "saturation_effort": "saturation_effort",
+        }
+        components = (actuator.controller, *(actuator.clamping or ()))
+        for canonical_name, component_name in names.items():
+            parameter = parameters.get(canonical_name)
+            if parameter is None:
+                continue
+            for component in components:
+                if hasattr(component, component_name):
+                    setattr(component, component_name, parameter.reshape(-1))
 
     @property
     def is_all_graphable(self) -> bool:
