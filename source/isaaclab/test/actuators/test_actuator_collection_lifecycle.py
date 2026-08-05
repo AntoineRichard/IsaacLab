@@ -650,7 +650,8 @@ def _make_fake_context(monkeypatch) -> SimulationContext:
     monkeypatch.setattr("isaaclab.sim.simulation_context.SimulationContext._init_usd_physics_scene", lambda self: None)
     monkeypatch.setattr("isaaclab.sim.simulation_context.SceneDataProvider", lambda backend: object())
     monkeypatch.setattr(
-        "isaaclab.sim.simulation_context.RenderContext", lambda: SimpleNamespace(ensure_initialize=lambda: None)
+        "isaaclab.sim.simulation_context.RenderContext",
+        lambda: SimpleNamespace(ensure_initialize=lambda: None, close=lambda: None),
     )
     monkeypatch.setattr("isaaclab.sim.simulation_context.VisMarkerRegistry", lambda: SimpleNamespace())
     monkeypatch.setattr("isaaclab.sim.simulation_context.SettingsManager.instance", lambda: _Settings())
