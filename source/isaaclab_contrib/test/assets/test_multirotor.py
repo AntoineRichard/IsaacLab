@@ -26,9 +26,11 @@ import torch
 
 import isaaclab.sim as sim_utils
 import isaaclab.sim.utils.prims as prim_utils
+from isaaclab.actuators import ActuatorCollection
 from isaaclab.sim import build_simulation_context
 
 from isaaclab_contrib.assets import Multirotor, MultirotorCfg
+from isaaclab_contrib.assets.multirotor.multirotor import _ThrusterCollection
 
 # Best-effort: suppress unraisable destructor warnings emitted during
 # teardown of partially-constructed assets in CI/dev environments. We still
@@ -171,6 +173,55 @@ def test_multirotor_data_annotations():
     assert getattr(md, "default_thruster_rps", None) is None
     assert getattr(md, "thrust_target", None) is None
     assert getattr(md, "applied_thrust", None) is None
+
+
+def test_thruster_collection_remains_a_name_keyed_unregistered_mapping(monkeypatch) -> None:
+    """Thruster mappings retain dict behavior without entering joint-actuator storage."""
+
+    class _FakeThruster:
+        def __init__(self, **kwargs) -> None:
+            self.thruster_names = kwargs.get("thruster_names", [])
+            self.reset_ids = []
+
+        def reset(self, env_ids) -> None:
+            self.reset_ids.append(env_ids)
+
+    registrations = []
+
+    def _forbid_joint_registration(*args, **kwargs) -> None:
+        registrations.append((args, kwargs))
+        raise AssertionError("thrusters must not register with ActuatorCollection")
+
+    monkeypatch.setattr(ActuatorCollection, "register_articulation", _forbid_joint_registration)
+    monkeypatch.setattr(Multirotor, "num_instances", property(lambda self: 2))
+    monkeypatch.setattr(Multirotor, "device", property(lambda self: "cpu"))
+    multirotor = object.__new__(Multirotor)
+    multirotor._initialize_handle = None
+    multirotor._invalidate_initialize_handle = None
+    multirotor._prim_deletion_handle = None
+    multirotor.cfg = types.SimpleNamespace(
+        actuators={"rotors": types.SimpleNamespace(thruster_names_expr=["rotor_0"], class_type=_FakeThruster)}
+    )
+    multirotor._data = types.SimpleNamespace(default_thruster_rps=torch.zeros((2, 1)))
+    multirotor.find_bodies = lambda expressions: ([0], ["rotor_0"])
+
+    Multirotor._process_thruster_cfg(multirotor)
+
+    left = multirotor.actuators["rotors"]
+    right = _FakeThruster()
+    multirotor.actuators.update(auxiliary=right)
+
+    assert type(multirotor.actuators) is _ThrusterCollection
+    assert list(multirotor.actuators) == ["rotors", "auxiliary"]
+    assert list(multirotor.actuators.values()) == [left, right]
+    assert not isinstance(multirotor.actuators, ActuatorCollection)
+    assert registrations == []
+
+    env_ids = torch.tensor([1])
+    multirotor.actuators.reset(env_ids)
+
+    assert left.reset_ids[0] is env_ids
+    assert right.reset_ids[0] is env_ids
 
 
 def test_set_thrust_target_env_slice_unit():

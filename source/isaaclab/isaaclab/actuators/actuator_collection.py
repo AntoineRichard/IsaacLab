@@ -669,7 +669,7 @@ class _CollectionGeneration:
                     )
                 )
             except Exception as error:
-                error.add_note(f"Failed to build actuator candidate for {registration.key!r}.")
+                error.add_note(f"Failed to build actuator candidate for {_registration_context(registration)}.")
                 raise
 
         stores: dict[type, _TypedStore] = {}
@@ -1125,6 +1125,18 @@ def _binding_context(binding: _ArticulationBinding) -> str:
     """Describe the articulation groups involved in a binding failure."""
     groups = ", ".join(f"{group.name} ({group.actuator_type.__name__})" for group in binding.layout.group_layouts)
     return f"articulation {binding.registration.key!r}; actuator groups: {groups or '<none>'}"
+
+
+def _registration_context(registration: _ArticulationRegistration) -> str:
+    """Describe configured groups when candidate construction fails before binding exists."""
+    groups = []
+    for name, cfg in registration.cfgs.items():
+        try:
+            type_name = _resolve_actuator_type(cfg).__name__
+        except Exception:
+            type_name = repr(getattr(cfg, "class_type", None))
+        groups.append(f"{name} ({type_name})")
+    return f"articulation {registration.key!r}; actuator groups: {', '.join(groups) or '<none>'}"
 
 
 def _raise_cleanup_failures(failures: list[Exception]) -> None:

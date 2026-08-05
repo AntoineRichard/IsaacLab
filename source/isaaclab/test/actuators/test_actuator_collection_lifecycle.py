@@ -1108,6 +1108,51 @@ def test_routed_implicit_staging_survives_invalidation_then_closes_after_second_
     assert second_control.bound_staging._all_env_ids is None
 
 
+def test_finalization_error_names_articulation_type_and_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pre-publication DC motor schema mismatch names its full configuration context."""
+
+    resolve_managed_registration = DCMotor._resolve_managed_registration.__func__
+
+    def _resolve_with_unknown_schema_field(cls, **kwargs):
+        resolved = resolve_managed_registration(cls, **kwargs)
+        return replace(
+            resolved,
+            source_values={
+                **resolved.source_values,
+                "made_up": torch.zeros_like(resolved.source_values["stiffness"]),
+            },
+        )
+
+    monkeypatch.setattr(DCMotor, "_resolve_managed_registration", classmethod(_resolve_with_unknown_schema_field))
+
+    def _dc_motor_cfg() -> DCMotorCfg:
+        return DCMotorCfg(
+            class_type=DCMotor,
+            joint_names_expr=[".*"],
+            stiffness=1.0,
+            damping=2.0,
+            effort_limit=3.0,
+            velocity_limit=4.0,
+            saturation_effort=5.0,
+        )
+
+    collection = ActuatorCollection(_VariantSimulation())
+    _register_managed(
+        collection,
+        "left_arm",
+        _SourceResolvingControl(),
+        {"wrist": _dc_motor_cfg(), "fingers": _dc_motor_cfg()},
+    )
+
+    with pytest.raises(ValueError, match="made_up.*DCMotor.*wrist") as caught:
+        collection.finalize()
+
+    context = "\n".join((str(caught.value), *caught.value.__notes__))
+    assert "left_arm" in context
+    assert "DCMotor" in context
+    assert "wrist" in context and "fingers" in context
+
+
 def test_completion_preserves_structured_exception_and_adds_binding_context() -> None:
     collection = ActuatorCollection(_Simulation())
     error = _StructuredError(17, "structured completion")

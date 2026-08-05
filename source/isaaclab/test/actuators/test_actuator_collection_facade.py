@@ -26,6 +26,7 @@ from isaaclab.actuators.actuator_storage import _ACTUATOR_NET_MLP_SCHEMA
 from isaaclab.assets.articulation.base_articulation_data import BaseArticulationData
 from isaaclab.cloner.clone_plan import ClonePlan
 from isaaclab.utils.types import ArticulationActions
+from isaaclab.utils.warp import ProxyArray
 
 
 def _available_devices() -> tuple[str, ...]:
@@ -63,6 +64,8 @@ class _Control:
         self._joint_names = ("hip", "knee", "ankle")
         self._device = device
         self._num_worlds = num_worlds
+        self._joint_pos = ProxyArray(wp.zeros((num_worlds, len(self._joint_names)), dtype=wp.float32, device=device))
+        self._joint_vel = ProxyArray(wp.zeros((num_worlds, len(self._joint_names)), dtype=wp.float32, device=device))
         self.parameter_writes = []
 
     @property
@@ -76,6 +79,14 @@ class _Control:
     @property
     def device(self) -> str:
         return self._device
+
+    @property
+    def joint_pos(self) -> ProxyArray:
+        return self._joint_pos
+
+    @property
+    def joint_vel(self) -> ProxyArray:
+        return self._joint_vel
 
     def discover_native_actuators(self, cfgs) -> set[str]:
         del cfgs
@@ -502,11 +513,13 @@ def test_unknown_groups_and_opaque_exact_classes_are_not_typed() -> None:
     robot = make_finalized_robot(groups={"managed": _ideal_cfg(["hip"]), "opaque": _custom_cfg(["ankle"])})
 
     assert type(robot.actuators["opaque"]) is _CustomIdealPD
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="missing"):
         _ = robot.actuators["missing"]
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="DCMotor"):
+        _ = robot.actuators.by_type[DCMotor]
+    with pytest.raises(KeyError, match="_CustomIdealPD"):
         _ = robot.actuators.by_type[_CustomIdealPD]
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="ActuatorBase"):
         _ = robot.actuators.by_type[ActuatorBase]
 
 
@@ -1817,8 +1830,8 @@ def test_unknown_parameter_fails_before_a_parameter_write() -> None:
     group = make_finalized_robot().actuators["hip"]
     before = group.parameters["stiffness"].torch.clone()
 
-    with pytest.raises(KeyError, match="unknown"):
-        group.set_parameter_index("unknown", 1.0)
+    with pytest.raises(KeyError, match="made_up"):
+        group.set_parameter_index("made_up", 1.0)
 
     torch.testing.assert_close(group.parameters["stiffness"].torch, before)
 
@@ -2239,8 +2252,8 @@ def test_group_parameter_mask_forwards_its_owner_binding_to_the_backend() -> Non
 
 
 @pytest.mark.parametrize("device", _available_devices())
-def test_native_group_parameter_write_uses_native_owner_for_overlapping_exact_type(device: str) -> None:
-    """Catch exact-type backend routing that selects an ordinary overlapping actuator over its native owner."""
+def test_native_group_parameter_write_uses_native_owner_for_overlapping_types(device: str) -> None:
+    """Catch cross-type backend routing that selects an ordinary group over its native owner."""
 
     class _NativeControl(_Control):
         def __init__(self, device: str) -> None:
@@ -2270,7 +2283,7 @@ def test_native_group_parameter_write_uses_native_owner_for_overlapping_exact_ty
     control = _NativeControl(device)
     view = collection.register_articulation(
         key="robot",
-        cfgs={"ordinary": _ideal_cfg(["hip"]), "native": _ideal_cfg(["hip"])},
+        cfgs={"ordinary": _ideal_cfg(["hip"]), "native": _dc_cfg(["hip"])},
         control=control,
         replication_cfg_id=1,
         debug_validation=False,
@@ -2285,7 +2298,7 @@ def test_native_group_parameter_write_uses_native_owner_for_overlapping_exact_ty
     assert control.parameter_writes[-1][1].backend_owner_slots is not None
     torch.testing.assert_close(
         control.parameter_writes[-1][1].backend_owner_slots,
-        torch.tensor([1, -1, -1], dtype=torch.int32, device=device),
+        torch.tensor([0, -1, -1], dtype=torch.int32, device=device),
     )
     torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 7.0, device=device))
     torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2, device=device))
@@ -2295,9 +2308,9 @@ def test_native_group_parameter_write_uses_native_owner_for_overlapping_exact_ty
     view.by_type[IdealPDActuator].set_parameter_index("stiffness", 11.0, joint_ids=torch.tensor([0], device=device))
     assert control.parameter_writes[-1][0] == "stiffness"
     assert control.parameter_writes[-1][1].backend_owner_slots is not None
-    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 11.0, device=device))
+    torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 9.0, device=device))
     torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2, device=device))
-    view.by_type[IdealPDActuator].set_parameter_mask("stiffness", 13.0)
+    view.by_type[DCMotor].set_parameter_mask("stiffness", 13.0)
     torch.testing.assert_close(control.backend_stiffness[:, 0], torch.full((2,), 13.0, device=device))
     torch.testing.assert_close(control.backend_stiffness[:, 1], torch.ones(2, device=device))
 
