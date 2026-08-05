@@ -1013,20 +1013,19 @@ Use compact group/type parameter setters for runtime gain changes:
 
 .. code-block:: python
 
-   robot.actuators["<group>"].set_parameter_index(
-       "stiffness", stiffness, env_ids=env_ids, joint_ids=joint_ids
-   )
-   robot.actuators["<group>"].set_parameter_index(
-       "damping", damping, env_ids=env_ids, joint_ids=joint_ids
-   )
+   group = robot.actuators["<group>"]
+   if "stiffness" in group.parameter_names:
+       group.set_parameter_index("stiffness", stiffness, env_ids=env_ids, joint_ids=joint_ids)
+   if "damping" in group.parameter_names:
+       group.set_parameter_index("damping", damping, env_ids=env_ids, joint_ids=joint_ids)
 
 
 Property Relocations (Data Class)
 ---------------------------------
 
-The following properties on :class:`~isaaclab.assets.ArticulationData` move to the actuator
-collection under the command view. The old properties are deprecated and will be removed in a
-future release:
+The following properties on :class:`~isaaclab.assets.ArticulationData` move to actuator collection
+command aliases, collection-level telemetry, or compact group/type parameters. The old properties
+are deprecated and will be removed in a future release:
 
 .. list-table::
    :header-rows: 1

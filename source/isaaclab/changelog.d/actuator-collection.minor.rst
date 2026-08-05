@@ -16,6 +16,6 @@ Deprecated
   properties on articulation data in favor of the command view on
   :attr:`~isaaclab.assets.Articulation.actuators`.
 * Deprecated actuator data ``*_torque`` and dense compatibility properties.
-  Use :attr:`~isaaclab.actuators.ActuatorCollection.computed_effort` /
-  :attr:`~isaaclab.actuators.ActuatorCollection.applied_effort` and compact
+  Use :attr:`~isaaclab.actuators.ActuatorCollection.ArticulationView.computed_effort` /
+  :attr:`~isaaclab.actuators.ActuatorCollection.ArticulationView.applied_effort` and compact
   group or exact-type actuator parameters instead.

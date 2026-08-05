@@ -112,8 +112,8 @@ Where the gains land differs by path, and this is the single most common source 
 
     Because the whole pipeline runs inside :meth:`~isaaclab.assets.Articulation.write_data_to_sim`,
     a command you set is not visible in the simulation until the next physics step. Telemetry
-    buffers (:attr:`~isaaclab.actuators.ActuatorCollection.computed_effort`,
-    :attr:`~isaaclab.actuators.ActuatorCollection.applied_effort`) reflect the most recent step.
+    buffers (:attr:`~isaaclab.actuators.ActuatorCollection.ArticulationView.computed_effort`,
+    :attr:`~isaaclab.actuators.ActuatorCollection.ArticulationView.applied_effort`) reflect the most recent step.
 
 
 Choosing a model
@@ -533,8 +533,8 @@ arrays through ``.torch`` (or ``.warp``):
     applied = robot.actuators.applied_effort.torch      # after clipping [N or N·m]
     computed = robot.actuators.computed_effort.torch   # before clipping [N or N·m]
 
-:attr:`~isaaclab.actuators.ActuatorCollection.computed_effort` is the model output before clipping
-and :attr:`~isaaclab.actuators.ActuatorCollection.applied_effort` is the value after clipping (for
+:attr:`~isaaclab.actuators.ActuatorCollection.ArticulationView.computed_effort` is the model output before clipping
+and :attr:`~isaaclab.actuators.ActuatorCollection.ArticulationView.applied_effort` is the value after clipping (for
 implicit actuators these are the approximate torques the model records for reward/telemetry use).
 
 **Randomizing gains.** To change actuator stiffness or damping at runtime -- for example in a domain
