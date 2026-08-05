@@ -27,6 +27,10 @@ from isaaclab.cloner.clone_plan import ClonePlan
 from isaaclab.utils.types import ArticulationActions
 
 
+def _available_devices() -> tuple[str, ...]:
+    return ("cpu", "cuda") if torch.cuda.is_available() else ("cpu",)
+
+
 class _CustomIdealPD(IdealPDActuator):
     """Opaque custom actuator that deliberately has no exact managed schema."""
 
@@ -175,14 +179,21 @@ def make_finalized_robot(*, groups=None, device: str = "cpu", debug_validation: 
     return SimpleNamespace(collection=collection, actuators=view)
 
 
-def test_compatibility_projections_are_lazy_stable_and_refresh_after_parameter_write() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_compatibility_projections_are_lazy_stable_and_refresh_after_parameter_write(device: str) -> None:
     """Legacy dense projections allocate only on access and retain their pointer."""
-    robot = make_finalized_robot()
+    robot = make_finalized_robot(device=device)
 
     assert robot.actuators._compatibility_allocations == {}
+    assert robot.collection._active_generation.joint_store._compatibility_projections == {}
+    robot.actuators.compute()
+    assert robot.actuators._compatibility_allocations == {}
+    assert robot.collection._active_generation.joint_store._compatibility_projections == {}
     velocity_limits = robot.actuators._get_compatibility_projection("soft_joint_vel_limits")
     gear_ratio = robot.actuators._get_compatibility_projection("gear_ratio")
 
+    assert velocity_limits.torch.device.type == torch.device(device).type
+    assert gear_ratio.torch.device.type == torch.device(device).type
     assert robot.actuators._compatibility_allocations == {
         "soft_joint_vel_limits": velocity_limits,
         "gear_ratio": gear_ratio,
@@ -196,51 +207,57 @@ def test_compatibility_projections_are_lazy_stable_and_refresh_after_parameter_w
     torch.testing.assert_close(gear_ratio.torch, torch.ones_like(gear_ratio.torch))
 
     robot.actuators["hip"].set_parameter_index(
-        "velocity_limit", torch.full((2, 2), 9.0), joint_ids=torch.tensor([0, 1])
+        "velocity_limit",
+        torch.full((2, 2), 9.0, device=device),
+        joint_ids=torch.tensor([0, 1], device=device),
     )
 
-    torch.testing.assert_close(velocity_limits.torch[:, 0], torch.full((2,), 9.0))
-    torch.testing.assert_close(velocity_limits.torch[:, 1], torch.full((2,), 4.0))
+    torch.testing.assert_close(velocity_limits.torch[:, 0], torch.full((2,), 9.0, device=device))
+    torch.testing.assert_close(velocity_limits.torch[:, 1], torch.full((2,), 4.0, device=device))
 
 
-def test_deprecated_gain_writer_routes_only_capable_exact_type_views_and_warns_once() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_deprecated_gain_writer_routes_only_capable_exact_type_views_and_warns_once(device: str) -> None:
     """The compatibility writer uses canonical type setters without sidecars."""
-    robot = make_finalized_robot()
-    values = torch.tensor([[11.0, 13.0, 17.0]])
+    robot = make_finalized_robot(device=device)
+    values = torch.tensor([[11.0, 13.0, 17.0]], device=device)
+    env_ids = torch.tensor([0], device=device)
+    joint_ids = torch.tensor([0, 1, 2], device=device)
 
     with pytest.warns(DeprecationWarning, match="set_parameter_index"):
-        robot.actuators.write_actuator_stiffness_to_sim(
-            stiffness=values, env_ids=torch.tensor([0]), joint_ids=torch.tensor([0, 1, 2])
-        )
+        robot.actuators.write_actuator_stiffness_to_sim(stiffness=values, env_ids=env_ids, joint_ids=joint_ids)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        robot.actuators.write_actuator_stiffness_to_sim(
-            stiffness=values, env_ids=torch.tensor([0]), joint_ids=torch.tensor([0, 1, 2])
-        )
+        robot.actuators.write_actuator_stiffness_to_sim(stiffness=values, env_ids=env_ids, joint_ids=joint_ids)
 
     assert caught == []
+    assert robot.actuators["hip"].stiffness.device.type == torch.device(device).type
     torch.testing.assert_close(robot.actuators["hip"].stiffness[:1], values[:, :2])
     torch.testing.assert_close(robot.actuators["ankle"].stiffness[:1], values[:, 2:])
 
 
-def test_deprecated_gain_writer_skips_neural_capability_sidecars() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_deprecated_gain_writer_skips_neural_capability_sidecars(device: str) -> None:
     """A neural-style exact type is skipped without materializing meaningless gains."""
-    robot = make_finalized_robot(groups={"hip": _ideal_cfg(["hip"]), "neural": _neural_like_cfg(["knee", "ankle"])})
+    robot = make_finalized_robot(
+        groups={"hip": _ideal_cfg(["hip"]), "neural": _neural_like_cfg(["knee", "ankle"])}, device=device
+    )
 
     with pytest.warns(DeprecationWarning, match="set_parameter_index"):
         robot.actuators.write_actuator_stiffness_to_sim(
-            stiffness=torch.tensor([[11.0, 13.0, 17.0]]),
-            env_ids=torch.tensor([0]),
-            joint_ids=torch.tensor([0, 1, 2]),
+            stiffness=torch.tensor([[11.0, 13.0, 17.0]], device=device),
+            env_ids=torch.tensor([0], device=device),
+            joint_ids=torch.tensor([0, 1, 2], device=device),
         )
 
     assert robot.actuators["neural"]._deprecated_sidecars == {}
     assert "stiffness" not in robot.actuators.by_type[_NeuralLikeDC].parameter_names
 
 
-def test_neural_gain_sidecar_uses_the_facade_warning_registry() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_neural_gain_sidecar_uses_the_facade_warning_registry(device: str) -> None:
     """Neural gain compatibility warns once per published articulation facade."""
-    robot = make_finalized_robot(groups={"neural": _neural_like_cfg(["hip", "knee", "ankle"])})
+    robot = make_finalized_robot(groups={"neural": _neural_like_cfg(["hip", "knee", "ankle"])}, device=device)
 
     with pytest.warns(DeprecationWarning, match="neural-actuator compatibility sidecar"):
         sidecar = robot.actuators["neural"].stiffness
@@ -249,32 +266,38 @@ def test_neural_gain_sidecar_uses_the_facade_warning_registry() -> None:
         assert robot.actuators["neural"].stiffness.data_ptr() == sidecar.data_ptr()
 
     assert caught == []
+    assert sidecar.device.type == torch.device(device).type
 
 
-def test_solver_sidecar_refresh_updates_only_an_already_materialized_field() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_solver_sidecar_refresh_updates_only_an_already_materialized_field(device: str) -> None:
     """Solver writer hooks can refresh held sidecars without allocating untouched fields."""
-    robot = make_finalized_robot()
+    robot = make_finalized_robot(device=device)
     hip = robot.actuators["hip"]
     armature = hip.armature
     solver_sidecars = hip._solver_compatibility_sidecars
     assert set(solver_sidecars) == {"armature"}
 
-    values = torch.full((2, 3), 8.0)
+    values = torch.full((2, 3), 8.0, device=device)
     hip._refresh_solver_compatibility_sidecar("armature", values)
     hip._refresh_solver_compatibility_sidecar("friction", values)
 
+    assert armature.device.type == torch.device(device).type
     torch.testing.assert_close(armature, torch.full_like(armature, 8.0))
     assert set(solver_sidecars) == {"armature"}
 
 
-def test_compatibility_projections_use_legacy_fills_and_refresh_held_values_at_compute() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_compatibility_projections_use_legacy_fills_and_refresh_held_values_at_compute(device: str) -> None:
     """Unsupported joints retain fills while direct parameter mutation waits for compute."""
-    robot = make_finalized_robot(groups={"hip": _ideal_cfg(["hip", "knee"]), "ankle": _custom_cfg(["ankle"])})
+    robot = make_finalized_robot(
+        groups={"hip": _ideal_cfg(["hip", "knee"]), "ankle": _custom_cfg(["ankle"])}, device=device
+    )
 
     assert robot.actuators._compatibility_allocations == {}
     velocity_limits = robot.actuators._get_compatibility_projection("soft_joint_vel_limits")
     gear_ratio = robot.actuators._get_compatibility_projection("gear_ratio")
-    torch.testing.assert_close(velocity_limits.torch, torch.tensor([[4.0, 4.0, 0.0], [4.0, 4.0, 0.0]]))
+    torch.testing.assert_close(velocity_limits.torch, torch.tensor([[4.0, 4.0, 0.0], [4.0, 4.0, 0.0]], device=device))
     torch.testing.assert_close(gear_ratio.torch, torch.ones_like(gear_ratio.torch))
 
     robot.actuators["hip"].velocity_limit.fill_(12.0)
@@ -286,12 +309,15 @@ def test_compatibility_projections_use_legacy_fills_and_refresh_held_values_at_c
         velocity_limits.torch.data_ptr()
         == robot.actuators._get_compatibility_projection("soft_joint_vel_limits").torch.data_ptr()
     )
-    torch.testing.assert_close(velocity_limits.torch, torch.tensor([[12.0, 12.0, 0.0], [12.0, 12.0, 0.0]]))
+    torch.testing.assert_close(
+        velocity_limits.torch, torch.tensor([[12.0, 12.0, 0.0], [12.0, 12.0, 0.0]], device=device)
+    )
 
 
-def test_compatibility_projection_fails_through_a_stale_facade() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_compatibility_projection_fails_through_a_stale_facade(device: str) -> None:
     """A retained facade cannot allocate or refresh compatibility storage after STOP."""
-    robot = make_finalized_robot()
+    robot = make_finalized_robot(device=device)
     robot.actuators._get_compatibility_projection("soft_joint_vel_limits")
 
     robot.collection.clear_generation()
@@ -300,9 +326,10 @@ def test_compatibility_projection_fails_through_a_stale_facade() -> None:
         robot.actuators._get_compatibility_projection("soft_joint_vel_limits")
 
 
-def test_base_data_compatibility_projection_helper_is_warning_free() -> None:
+@pytest.mark.parametrize("device", _available_devices())
+def test_base_data_compatibility_projection_helper_is_warning_free(device: str) -> None:
     """First-party consumers can retain dense compatibility reads without deprecation warnings."""
-    robot = make_finalized_robot()
+    robot = make_finalized_robot(device=device)
     data = SimpleNamespace(_actuator_view=robot.actuators)
 
     with warnings.catch_warnings(record=True) as caught:
@@ -314,6 +341,7 @@ def test_base_data_compatibility_projection_helper_is_warning_free() -> None:
         projection.torch.data_ptr()
         == robot.actuators._get_compatibility_projection("soft_joint_vel_limits").torch.data_ptr()
     )
+    assert projection.torch.device.type == torch.device(device).type
 
 
 def test_facade_preserves_mapping_and_exact_group_classes() -> None:
@@ -950,10 +978,6 @@ def test_every_facade_read_and_snapshot_route_checks_generation(read) -> None:
 
     with pytest.raises(RuntimeError, match="stale actuator view"):
         read(facade)
-
-
-def _available_devices() -> tuple[str, ...]:
-    return ("cpu", "cuda") if torch.cuda.is_available() else ("cpu",)
 
 
 @pytest.mark.parametrize("device", _available_devices())
