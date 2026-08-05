@@ -2018,6 +2018,75 @@ def test_clear_generation_invalidates_old_facade_before_next_generation() -> Non
     assert replacement.generation == old_generation + 1
 
 
+def test_clear_generation_releases_every_resource_after_invalidation_failures(monkeypatch) -> None:
+    """STOP must leave no live registration when invalidation reports failures."""
+    collection = ActuatorCollection(_Simulation())
+    first_error = _StructuredError(17, "first invalidation")
+    later_error = RuntimeError("second view invalidation")
+    first_control = _Control(invalidate_error=first_error)
+    second_control = _Control()
+    first_view = _register(collection, "first", first_control)
+    second_view = _register(collection, "second", second_control)
+    collection.finalize()
+    active = collection._active_generation
+    assert active is not None
+    old_next_generation = collection._next_generation
+    closed_candidates = []
+    original_close = active.close
+    original_invalidate = second_view._invalidate
+
+    def record_close() -> None:
+        closed_candidates.append(active)
+        original_close()
+
+    def invalidate_then_fail(failure: str) -> None:
+        original_invalidate(failure)
+        raise later_error
+
+    monkeypatch.setattr(active, "close", record_close)
+    monkeypatch.setattr(second_view, "_invalidate", invalidate_then_fail)
+
+    with pytest.raises(_StructuredError) as caught:
+        collection.clear_generation()
+
+    assert caught.value is first_error
+    assert caught.value.code == 17
+    assert any("second view invalidation" in note for note in caught.value.__notes__)
+    assert first_control.invalidate_count == second_control.invalidate_count == 1
+    with pytest.raises(RuntimeError, match="stale actuator view"):
+        _ = first_view.command
+    with pytest.raises(RuntimeError, match="stale actuator view"):
+        _ = second_view.command
+    assert closed_candidates == [active]
+    assert active.selector_states == active.stores == active.groups == {}
+    assert collection.generation is None
+    assert collection._next_generation == old_next_generation + 1
+    assert not collection._registrations and not collection._views
+
+    replacement = _register(collection, "first", _Control())
+    collection.finalize()
+    assert replacement.is_ready
+
+
+def test_close_marks_collection_closed_after_invalidation_failure() -> None:
+    """Closing must reject later registration even when its cleanup reports an error."""
+    collection = ActuatorCollection(_Simulation())
+    error = _StructuredError(23, "close invalidation")
+    view = _register(collection, "first", _Control(invalidate_error=error))
+    collection.finalize()
+
+    with pytest.raises(_StructuredError) as caught:
+        collection.close()
+
+    assert caught.value is error
+    assert collection._closed
+    assert not collection._registrations and not collection._views
+    with pytest.raises(RuntimeError, match="closed"):
+        _ = view.command
+    with pytest.raises(RuntimeError, match="closed"):
+        _register(collection, "second", _Control())
+
+
 def test_stop_replay_invalidates_old_facade_and_builds_new_generation() -> None:
     collection = ActuatorCollection(_Simulation())
     old = _register(collection, "first", _Control())

@@ -2814,22 +2814,45 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
         self._active_generation = None
         self._dirty = False
         self._finalizing = False
-        for registration in self._registrations:
-            registration.control.invalidate_actuator_view()
-            self._views[registration.key]._invalidate("stale actuator view")
-        if active is not None:
-            active.close()
-        self._next_generation += 1
-        self._registrations.clear()
-        self._views.clear()
+        failures: list[Exception] = []
+        try:
+            for registration in self._registrations:
+                try:
+                    registration.control.invalidate_actuator_view()
+                except Exception as error:
+                    error.add_note(f"Failed to invalidate backend control for {registration.key!r}.")
+                    failures.append(error)
+                try:
+                    self._views[registration.key]._invalidate("stale actuator view")
+                except Exception as error:
+                    error.add_note(f"Failed to invalidate actuator view for {registration.key!r}.")
+                    failures.append(error)
+        finally:
+            try:
+                if active is not None:
+                    active.close()
+            except Exception as error:
+                error.add_note("Failed to close the active actuator generation.")
+                failures.append(error)
+            finally:
+                self._next_generation += 1
+                self._registrations.clear()
+                self._views.clear()
+        if failures:
+            first, *remaining = failures
+            for error in remaining:
+                first.add_note(f"Additional actuator cleanup failure: {error}")
+            raise first
 
     def close(self) -> None:
         """Permanently close this manager and reject later registration."""
         if self._closed:
             return
-        self.clear_generation()
-        self._deprecated_staged_topology_overrides.clear()
-        self._closed = True
+        try:
+            self.clear_generation()
+        finally:
+            self._deprecated_staged_topology_overrides.clear()
+            self._closed = True
 
     @dataclass
     class _ExecutionBatch:
