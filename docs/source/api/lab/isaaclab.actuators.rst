@@ -45,6 +45,21 @@ Actuator Collection
 .. autoclass:: ActuatorCollection
   :members:
   :inherited-members:
+  :exclude-members: ArticulationView, TypeView
+
+.. autoclass:: isaaclab.actuators.ActuatorCollection.ArticulationView
+  :members:
+  :inherited-members:
+  :exclude-members: Command, JointCommand
+
+.. autoclass:: isaaclab.actuators.ActuatorCollection.ArticulationView.Command
+  :members:
+
+.. autoclass:: isaaclab.actuators.ActuatorCollection.ArticulationView.JointCommand
+  :members:
+
+.. autoclass:: isaaclab.actuators.ActuatorCollection.TypeView
+  :members:
 
 Actuator Control
 ----------------

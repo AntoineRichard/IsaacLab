@@ -1153,23 +1153,23 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
     """Simulation-scoped actuator registration manager.
 
     ``ActuatorCollection(sim_context)`` creates the lifecycle manager used by
-    :class:`~isaaclab.sim.SimulationContext`.  The legacy two-argument
-    constructor remains temporarily available for develop compatibility while
-    backend integration is completed in a later task.
+    :class:`~isaaclab.sim.SimulationContext`. It registers every articulation in
+    a generation and returns an :class:`ArticulationView` for each one. The
+    articulation view is the public actuator facade: it exposes logical groups,
+    raw and processed command buffers, telemetry, and exact-concrete-class
+    :class:`TypeView` parameter views.
 
-    The collection owns actuator command buffers, processed joint command buffers,
-    actuator telemetry, and actuator-resolved gain/state buffers. Named mapping
-    entries are stable logical configuration and access groups, and membership is
-    fixed after construction. Compatible groups whose concrete type is the same
-    supported stateless actuator class may share a private execution actuator while
-    retaining their separate per-joint parameters and group-shaped public values.
-    Execution batches are an implementation detail, and users must not depend on
-    their count.
-
-    The collection owns lifecycle execution for its managed groups. Calling
+    The manager aggregates compatible registrations internally. Its execution
+    batches and storage layout are implementation details; users should use the
+    articulation facade rather than infer sharing from them. Calling
     :meth:`~isaaclab.actuators.ActuatorBase.compute` or
-    :meth:`~isaaclab.actuators.ActuatorBase.reset` directly on a mapping value is
+    :meth:`~isaaclab.actuators.ActuatorBase.reset` directly on a logical group is
     unsupported.
+
+    The two-argument ``ActuatorCollection(actuator_cfgs, control)`` constructor
+    is deprecated compatibility API. It retains the former standalone mapping
+    behavior while callers migrate to the simulation-scoped manager and its
+    returned articulation views.
     """
 
     class _GuardedMapping(Mapping[Any, Any]):

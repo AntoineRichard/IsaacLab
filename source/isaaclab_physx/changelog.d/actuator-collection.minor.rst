@@ -8,6 +8,7 @@ Changed
 ^^^^^^^
 
 * Routed PhysX articulation actuator setup, compute, reset, and command
-  submission through :class:`~isaaclab.actuators.ActuatorCollection`.
+  submission through the scoped
+  :class:`~isaaclab.actuators.ActuatorCollection.ArticulationView`.
 * Prevented stateful Newton actuators from running inside caller-owned CUDA
   graph captures; let the PhysX adapter manage their alternating graphs.

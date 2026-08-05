@@ -89,8 +89,8 @@ In this tutorial, we control the articulation using joint effort commands. For t
 articulation's stiffness and damping parameters to zero. This is done a-priori inside the cart-pole's pre-defined
 configuration object.
 
-At every step, we randomly sample joint efforts and set them on the articulation's actuator collection
-by calling the :meth:`ActuatorCollection.Command.set_effort_index` method. After setting the commands,
+At every step, we randomly sample joint efforts and set them on the articulation's scoped actuator view
+by calling the :meth:`~isaaclab.actuators.ActuatorCollection.ArticulationView.Command.set_effort_index` method. After setting the commands,
 we call the :meth:`Articulation.write_data_to_sim` method to write the data to the simulation buffers.
 Finally, we step the simulation.
 

@@ -18,10 +18,13 @@ Isaac Lab exposes two ways to reproduce that behavior in simulation:
   motor's capabilities, and submit only the resulting effort. This trades some cost for the ability
   to model saturation, delay, gearing, or a learned drive.
 
-Every actuator group -- implicit or explicit -- is owned by the runtime
-:class:`~isaaclab.actuators.ActuatorCollection` on :attr:`~isaaclab.assets.Articulation.actuators`.
-You configure the groups on :attr:`~isaaclab.assets.ArticulationCfg.actuators` and drive them at
-runtime through that collection.
+Each simulation owns one canonical actuator store through the internal
+:class:`~isaaclab.actuators.ActuatorCollection` manager. Users access that
+storage only through the articulation-scoped
+:class:`~isaaclab.actuators.ActuatorCollection.ArticulationView` at
+:attr:`~isaaclab.assets.Articulation.actuators`. You configure logical groups
+on :attr:`~isaaclab.assets.ArticulationCfg.actuators` and drive them at runtime
+through this scoped view.
 
 .. contents:: On this page
     :local:
@@ -51,9 +54,10 @@ by regular expression and picks a model:
         },
     )
 
-At runtime, send commands through :attr:`~isaaclab.actuators.ActuatorCollection.command`. Position
-and velocity commands are expressed in joint-side coordinates, and every command buffer is indexed
-by articulation joint. The setters are keyword-only and default to all environments and all joints:
+At runtime, send commands through ``robot.actuators.command``. Position and
+velocity commands are expressed in joint-side coordinates, and every command
+buffer is indexed by articulation joint. The setters are keyword-only and
+default to all environments and all joints:
 
 .. code-block:: python
 
@@ -79,8 +83,9 @@ stages:
 
 #. **Actuator command** -- ``actuators.command.set_*_index`` / ``_mask`` write the desired
    position, velocity, and effort into buffers expressed in joint-side coordinates.
-#. **ActuatorCollection** -- groups articulation joints by actuator model and owns command,
-   processed joint-command, telemetry, and resolved-gain buffers.
+#. **Actuator store** -- the simulation-scoped collection owns canonical command,
+   processed joint-command, telemetry, and parameter buffers. Each articulation
+   exposes only its scoped facade.
 #. **Actuator model** -- an *explicit* model turns the actuator command into a joint effort and
    clips it; an *implicit* model passes its command to the simulator drive.
 #. **Joint command** -- ``actuators.joint_command`` exposes the processed position, velocity, and
@@ -465,9 +470,11 @@ Group access
 ^^^^^^^^^^^^
 
 :attr:`~isaaclab.assets.Articulation.actuators` is an
-:class:`~isaaclab.actuators.ActuatorCollection`, a read-only ``Mapping`` from group name to actuator
-model. Membership is fixed after construction, so you can look up and iterate groups but not add or
-replace them:
+:class:`~isaaclab.actuators.ActuatorCollection.ArticulationView`: a scoped
+``dict[str, ActuatorBase]`` facade over one articulation's portion of the
+simulation-global canonical store. It deliberately does not expose a
+scene-wide parameter API. Named entries remain the configured concrete actuator
+objects, so existing group lookup and iteration remain valid:
 
 .. code-block:: python
 
@@ -475,30 +482,62 @@ replace them:
     for name, actuator in robot.actuators.items():
         print(name, type(actuator).__name__)
 
-Logical groups and execution batches
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Logical groups and exact actuator types
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Named entries such as ``hips`` and ``knees`` remain separate configuration and
-access groups. Isaac Lab may execute disjoint groups of the same supported
-stateless actuator class through one private actuator instance. Per-joint gains
-and limits may differ; aggregation does not merge their public configuration or
-change the shapes returned by ``robot.actuators["hips"]``.
+access groups. Their direct attributes and ``parameters`` mapping are
+group-shaped writable views. When compatible groups share a concrete actuator
+type, a group view can be regularly strided and is not guaranteed contiguous.
+This does not change the group's configuration, class, joint names, or shape.
 
-Execution batching is an implementation detail. Do not call
+Exact actuator classes provide compact type-scoped parameter access. Use the
+class itself as the key; type access intentionally has no string aliases and
+does not produce articulation-dense copies:
+
+.. code-block:: python
+
+    from isaaclab.actuators import IdealPDActuator
+
+    pd = robot.actuators.by_type[IdealPDActuator]
+    stiffness = pd.parameters["stiffness"]
+    print(pd.joint_names, pd.joint_indices, pd.group_slices)
+
+The type view's parameter arrays are compact and contiguous. Its joint names
+and indices are in group/configuration order, so overlapping same-type groups
+can retain duplicate joint slots. ``group_slices`` identifies each logical
+group's compact columns.
+
+Parameter setters use articulation coordinates. Explicit ``joint_ids`` select
+articulation joints and, for a type view, fan a value out to every matching
+compact slot. With ``joint_ids=None``, a type view instead selects its compact
+slots directly in stable order. ``env_ids`` and masks always address the
+articulation's environments:
+
+.. code-block:: python
+
+    pd.set_parameter_index(
+        "stiffness", values, env_ids=env_ids, joint_ids=joint_ids
+    )
+    pd.set_parameter_mask(
+        "stiffness", values, env_mask=env_mask, joint_mask=joint_mask
+    )
+
+In normal mode, out-of-range or out-of-scope index values are ignored without a
+device synchronization and duplicate indices use the last supplied value.
+Enable articulation actuator debug validation when bounds, ownership, and
+duplicate diagnostics must raise instead. Mask setters accept full
+articulation-shaped boolean masks; an all-false device mask can execute a
+masked no-op to avoid synchronizing. Same-device Torch and Warp selector/value
+arrays avoid compatibility conversion. Python sequences remain accepted for
+compatibility but can allocate and transfer once per call.
+
+Aggregation, recorded launches, and CUDA graphs are implementation details.
+Do not call
 :meth:`~isaaclab.actuators.ActuatorBase.compute` or
 :meth:`~isaaclab.actuators.ActuatorBase.reset` directly on an actuator obtained
-from the collection, and do not rely on the number of execution batches. Set
-commands and perform lifecycle operations through the articulation and its
-:class:`~isaaclab.actuators.ActuatorCollection`.
-
-The execution path avoids rebuilding those batches every step. Exact
-:class:`~isaaclab.actuators.ImplicitActuator` batches compute and publish their
-commands and telemetry in one Warp launch. Aggregated
-:class:`~isaaclab.actuators.IdealPDActuator` and
-:class:`~isaaclab.actuators.DCMotor` batches keep fixed-size input and output
-buffers, and reuse recorded Warp launches to gather articulation data and
-scatter the processed targets and telemetry. Stateful and neural-network
-actuators retain their model-specific execution paths.
+from the facade, and do not rely on the number or scheduling of execution
+ranges. Set commands and perform lifecycle operations through the articulation.
 
 Commands, telemetry, and lifecycle
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -537,9 +576,9 @@ arrays through ``.torch`` (or ``.warp``):
 and :attr:`~isaaclab.actuators.ActuatorCollection.ArticulationView.applied_effort` is the value after clipping (for
 implicit actuators these are the approximate torques the model records for reward/telemetry use).
 
-**Randomizing gains.** To change actuator stiffness or damping at runtime -- for example in a domain
-randomization event -- check that the optional parameter is available, then update its compact group
-array:
+**Randomizing gains.** To change actuator stiffness or damping at runtime --
+for example in a domain randomization event -- check that the optional
+parameter is available, then update its compact group array:
 
 .. code-block:: python
 
@@ -553,6 +592,46 @@ array:
 runs, in order, ``actuators.reset()`` on env resets and ``actuators.compute()`` followed by
 ``actuators.submit_commands()`` inside :meth:`~isaaclab.assets.Articulation.write_data_to_sim`, once
 per physics step. Your job is to set actuator commands before the step.
+
+Solver properties and compatibility views
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Actuator gains are not the same as solver properties.
+:attr:`~isaaclab.assets.ArticulationData.joint_stiffness` and
+:attr:`~isaaclab.assets.ArticulationData.joint_damping` remain solver drive
+properties, and the ``write_joint_stiffness_to_sim*`` and
+``write_joint_damping_to_sim*`` APIs remain unchanged. An explicit actuator can
+therefore have zero solver gains while its model uses group/type ``stiffness``
+and ``damping`` parameters.
+
+The deprecated :attr:`~isaaclab.assets.ArticulationData.soft_joint_vel_limits`
+and :attr:`~isaaclab.assets.ArticulationData.gear_ratio` values are lazy
+articulation-order compatibility projections. Compatible ``velocity_limit``
+and ``gear_ratio`` parameters fill their covered columns; uncovered columns use
+zero and one respectively. New code should use capability-aware group or type
+parameter mappings instead of treating either projection as a new dense API.
+
+Neural actuators retain deprecated ``stiffness`` and ``damping`` compatibility
+sidecars because removing inherited fields would be breaking. Accessing those
+fields emits a once-only warning and has no effect on neural execution; do not
+use the sidecars for gain randomization.
+
+Topology changes and retained views
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The scoped facade is a ``dict`` subclass during the transition. Consequently,
+``isinstance(robot.actuators, dict)`` remains true; iteration, equality,
+``copy()``, ``fromkeys()``, ``|``, and reverse-``|`` produce the expected
+dictionary behavior and snapshots. Exact identity changes:
+``type(robot.actuators) is dict`` is false because the value is the nested
+facade subclass.
+
+Mapping mutators also remain temporarily compatible, but each emits a
+deprecation warning, marks actuator topology dirty, and prevents execution
+until a STOP-to-PHYSICS_READY rebuild publishes the next generation. The rebuild
+invalidates prior facade, group, type, parameter, and data wrappers; reacquire
+them after restart. A raw retained Torch or Warp tensor cannot be guarded, so
+it must also be reacquired after a topology rebuild.
 
 .. rubric:: Migrating from the deprecated setters
 

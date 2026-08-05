@@ -1,0 +1,2 @@
+Internal-only change: migrated first-party task actuator consumers to the
+scoped actuator facade. User-facing task behavior is unchanged.

@@ -18,9 +18,11 @@ There are two main categories of actuator models that are supported:
   - **Neural Network-based**: Learned motor models from actuator data.
 
 Every actuator model inherits from the :class:`isaaclab.actuators.ActuatorBase` class,
-which defines the common interface for all actuator models. Runtime actuator groups,
-commands, and telemetry are handled by :class:`isaaclab.actuators.ActuatorCollection`,
-which is exposed through :attr:`isaaclab.assets.Articulation.actuators`.
+which defines the common interface for all actuator models. A simulation-scoped
+:class:`isaaclab.actuators.ActuatorCollection` manages canonical actuator storage and
+lifecycle. Users access its articulation-scoped
+:class:`isaaclab.actuators.ActuatorCollection.ArticulationView` through
+:attr:`isaaclab.assets.Articulation.actuators`.
 """
 
 from isaaclab.utils.module import lazy_export

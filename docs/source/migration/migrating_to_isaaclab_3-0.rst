@@ -980,34 +980,40 @@ Here's a complete example showing how to update your code:
 Actuator API Moves to ``ActuatorCollection``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In Isaac Lab 3.x, actuator ownership moves from :class:`~isaaclab.assets.Articulation` to a
-backend-neutral :class:`~isaaclab.actuators.ActuatorCollection`, available as
-:attr:`~isaaclab.assets.Articulation.actuators`. Actuator command setters, compact actuator parameter
-setters, and per-joint actuator telemetry now live on the collection, so the same code path drives every
-physics backend. The collection setters are keyword-only.
+In Isaac Lab 3.x, canonical actuator storage is managed by a simulation-scoped,
+backend-neutral :class:`~isaaclab.actuators.ActuatorCollection`. Users access
+only its articulation-scoped
+:class:`~isaaclab.actuators.ActuatorCollection.ArticulationView` at
+:attr:`~isaaclab.assets.Articulation.actuators`. Actuator command setters,
+compact actuator parameter setters, and per-joint actuator telemetry live on
+this facade, so the same code path drives every physics backend. Command
+setters are keyword-only.
 
 
 Method Relocations
 ------------------
 
-The following methods on :class:`~isaaclab.assets.Articulation` move to the actuator collection.
-The old methods are deprecated and will be removed in a future release:
+The following methods on :class:`~isaaclab.assets.Articulation` are deprecated
+compatibility forwarders. They remain callable during the deprecation period:
 
 .. list-table::
    :header-rows: 1
 
    * - Deprecated
      - New
-   * - ``set_joint_position_target``
-     - ``actuators.command.set_position_index``
-   * - ``set_joint_velocity_target``
-     - ``actuators.command.set_velocity_index``
-   * - ``set_joint_effort_target``
-     - ``actuators.command.set_effort_index``
-   * - ``set_joint_{position,velocity,effort}_target_index/_mask``
-     - ``actuators.command.set_{position,velocity,effort}_index/_mask``
-   * - ``write_actuator_stiffness_to_sim`` / ``write_actuator_damping_to_sim``
-     - Compact group/type parameter setter
+   * - ``set_joint_position_target*``
+     - ``actuators.command.set_position_index`` or
+       ``actuators.command.set_position_mask``
+   * - ``set_joint_velocity_target*``
+     - ``actuators.command.set_velocity_index`` or
+       ``actuators.command.set_velocity_mask``
+   * - ``set_joint_effort_target*``
+     - ``actuators.command.set_effort_index`` or
+       ``actuators.command.set_effort_mask``
+   * - ``write_actuator_stiffness_to_sim``
+     - A capable group/type ``set_parameter_index("stiffness", ...)`` call.
+   * - ``write_actuator_damping_to_sim``
+     - A capable group/type ``set_parameter_index("damping", ...)`` call.
 
 Use compact group/type parameter setters for runtime gain changes:
 
@@ -1023,9 +1029,10 @@ Use compact group/type parameter setters for runtime gain changes:
 Property Relocations (Data Class)
 ---------------------------------
 
-The following properties on :class:`~isaaclab.assets.ArticulationData` move to actuator collection
-command aliases, collection-level telemetry, or compact group/type parameters. The old properties
-are deprecated and will be removed in a future release:
+The following properties on :class:`~isaaclab.assets.ArticulationData` are
+deprecated compatibility aliases. The three target properties remain live
+aliases for canonical command storage; telemetry and parameter replacements are
+available from the scoped actuator facade:
 
 .. list-table::
    :header-rows: 1
@@ -1043,9 +1050,11 @@ are deprecated and will be removed in a future release:
    * - ``data.applied_torque``
      - ``actuators.applied_effort``
    * - ``data.soft_joint_vel_limits``
-     - Compact ``velocity_limit`` parameter; no public dense replacement.
+     - A capable group/type ``parameters["velocity_limit"]`` mapping; no
+       public dense replacement.
    * - ``data.gear_ratio``
-     - Compact ``gear_ratio`` parameter; no public dense replacement.
+     - A capable group/type ``parameters["gear_ratio"]`` mapping; no public
+       dense replacement.
 
 .. note::
 
@@ -1053,12 +1062,43 @@ are deprecated and will be removed in a future release:
    when used. Your existing code will continue to work, but you should migrate to the new API to
    avoid issues in future releases.
 
-   Dense compatibility projections remain internal; migrate user code to the compact group/type
-   parameter arrays.
+   Dense compatibility projections remain internal; migrate user code to the
+   compact group/type parameter arrays.
 
 For example, use ``actuators["<group>"].parameters["velocity_limit"]`` or
 ``actuators.by_type[ActuatorType].parameters["velocity_limit"]``; use the corresponding
 ``"gear_ratio"`` parameter mapping when it is declared.
+
+Solver properties are unchanged
+-------------------------------
+
+The solver APIs ``write_joint_stiffness_to_sim*`` and
+``write_joint_damping_to_sim*`` remain public and are not redirected to
+actuator parameter setters. Likewise, :attr:`~isaaclab.assets.ArticulationData.joint_stiffness`
+and :attr:`~isaaclab.assets.ArticulationData.joint_damping` remain solver
+joint-drive properties. Explicit actuator models can use compact actuator gains
+while their corresponding solver gains are zero.
+
+The exported
+:func:`~isaaclab_newton.actuators.build_newton_actuator_defaults` helper also
+remains callable, but is deprecated. Collection-managed integrations bind
+canonical controller storage directly; use the articulation-scoped actuator
+facade instead of creating a separate Newton gain snapshot.
+
+Dictionary transition and topology rebuilds
+-------------------------------------------
+
+``articulation.actuators`` is now a nested ``dict`` subclass rather than a
+built-in dictionary. ``isinstance(articulation.actuators, dict)`` remains true,
+and lookup, iteration, snapshots, and dictionary union operations remain
+compatible. ``type(articulation.actuators) is dict`` is no longer true.
+
+Mapping mutation is temporarily retained for compatibility. It emits a
+:class:`DeprecationWarning`, makes the actuator topology dirty, and requires a
+STOP-to-PHYSICS_READY rebuild before execution resumes. A rebuild advances the
+facade generation and invalidates retained facade/group/type/proxy wrappers.
+Raw retained Torch or Warp tensors cannot be guarded and must be reacquired
+after the rebuild.
 
 
 Migration Example
