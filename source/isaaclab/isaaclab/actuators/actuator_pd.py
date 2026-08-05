@@ -211,7 +211,8 @@ class IdealPDActuator(ActuatorBase):
     def compute(
         self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
     ) -> ArticulationActions:
-        self._compute_execution(control_action, joint_pos, joint_vel)
+        self._compute_pd_effort(control_action, joint_pos, joint_vel)
+        self.applied_effort.copy_(self._clip_effort(self.computed_effort))
         # Preserve the public action mutation contract.
         control_action.joint_efforts = self.applied_effort
         control_action.joint_positions = None
@@ -222,6 +223,14 @@ class IdealPDActuator(ActuatorBase):
         self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
     ) -> ArticulationActions:
         """Compute explicit PD efforts without replacing control-action tensor fields."""
+        self._compute_pd_effort(control_action, joint_pos, joint_vel)
+        self._clip_effort_into(self.computed_effort, self.applied_effort)
+        return control_action
+
+    def _compute_pd_effort(
+        self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
+    ) -> None:
+        """Compute raw PD effort in the established floating-point operation order."""
         # compute errors
         torch.sub(control_action.joint_positions, joint_pos, out=self.computed_effort)
         torch.sub(control_action.joint_velocities, joint_vel, out=self.applied_effort)
@@ -229,9 +238,6 @@ class IdealPDActuator(ActuatorBase):
         self.computed_effort.mul_(self.stiffness)
         self.computed_effort.addcmul_(self.damping, self.applied_effort)
         self.computed_effort.add_(control_action.joint_efforts)
-        # clip the torques based on the motor limits
-        self._clip_effort_into(self.computed_effort, self.applied_effort)
-        return control_action
 
     def _clip_effort_into(self, effort: torch.Tensor, out: torch.Tensor) -> None:
         """Clip efforts into a preallocated output tensor."""
@@ -334,6 +340,7 @@ class DCMotor(IdealPDActuator):
     def compute(
         self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
     ) -> ArticulationActions:
+        self._joint_vel.copy_(joint_vel)
         return super().compute(control_action, joint_pos, joint_vel)
 
     def _compute_execution(

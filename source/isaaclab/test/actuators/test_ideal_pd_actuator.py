@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from isaaclab.actuators import IdealPDActuatorCfg
+from isaaclab.actuators import IdealPDActuator, IdealPDActuatorCfg
 from isaaclab.utils.types import ArticulationActions
 
 pytestmark = pytest.mark.integration
@@ -15,6 +15,13 @@ _EXECUTION_DEVICES = [
     "cpu",
     pytest.param("cuda:0", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")),
 ]
+
+
+class _ZeroClipIdealPDActuator(IdealPDActuator):
+    """Ideal PD test actuator whose protected clip seam suppresses all effort."""
+
+    def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
+        return torch.zeros_like(effort)
 
 
 def _tensor_fingerprint(
@@ -89,6 +96,33 @@ def _ideal_pd_execution_tensors(actuator, action: ArticulationActions) -> tuple[
         actuator.effort_limit,
         actuator._effort_limit_lower,
     )
+
+
+def _literal_ideal_pd_reference(
+    action: ArticulationActions,
+    joint_pos: torch.Tensor,
+    joint_vel: torch.Tensor,
+    stiffness: torch.Tensor,
+    damping: torch.Tensor,
+    effort_limit: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Evaluate the pre-change IdealPD equations in their original operation order."""
+    computed_effort = torch.empty_like(joint_pos)
+    velocity_error = torch.empty_like(joint_vel)
+    torch.sub(action.joint_positions, joint_pos, out=computed_effort)
+    torch.sub(action.joint_velocities, joint_vel, out=velocity_error)
+    computed_effort.mul_(stiffness)
+    computed_effort.addcmul_(damping, velocity_error)
+    computed_effort.add_(action.joint_efforts)
+    applied_effort = torch.clip(computed_effort, min=-effort_limit, max=effort_limit)
+    return computed_effort, applied_effort
+
+
+def _assert_tensor_exact(actual: torch.Tensor, expected: torch.Tensor) -> None:
+    """Assert zero-tolerance equality, including the sign of zero values."""
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0, equal_nan=True)
+    zero_mask = (actual == 0.0) & (expected == 0.0)
+    assert torch.equal(torch.signbit(actual[zero_mask]), torch.signbit(expected[zero_mask]))
 
 
 @pytest.mark.parametrize("num_envs", [1, 2])
@@ -339,6 +373,34 @@ def test_ideal_pd_compute(num_envs, num_joints, device, effort_lim):
     )
 
 
+def test_ideal_pd_public_compute_honors_custom_clip_override():
+    """Public compute dispatches through the established protected clipping seam."""
+    cfg = IdealPDActuatorCfg(
+        joint_names_expr=["joint_0"],
+        stiffness=1.0,
+        damping=0.0,
+        effort_limit=10.0,
+    )
+    actuator = _ZeroClipIdealPDActuator(
+        cfg,
+        joint_names=["joint_0"],
+        joint_ids=[0],
+        num_envs=1,
+        device="cpu",
+    )
+    action = ArticulationActions(
+        joint_positions=torch.ones(1, 1),
+        joint_velocities=torch.zeros(1, 1),
+        joint_efforts=torch.zeros(1, 1),
+    )
+
+    returned = actuator.compute(action, torch.zeros(1, 1), torch.zeros(1, 1))
+
+    torch.testing.assert_close(actuator.computed_effort, torch.ones(1, 1))
+    torch.testing.assert_close(actuator.applied_effort, torch.zeros(1, 1))
+    assert returned.joint_efforts is actuator.applied_effort
+
+
 @pytest.mark.parametrize("device", _EXECUTION_DEVICES)
 def test_ideal_pd_private_execution_preserves_fixed_tensor_views(device: str):
     """Private execution writes every result into finalized action, output, and scratch tensors."""
@@ -383,7 +445,7 @@ def test_ideal_pd_private_execution_has_no_new_tensor_storage(device: str):
 
 @pytest.mark.parametrize("device", _EXECUTION_DEVICES)
 def test_ideal_pd_private_execution_matches_public_compute_exactly(device: str):
-    """Private execution preserves the public model's float32 arithmetic and mutation contract."""
+    """Public and private execution match independent pre-change equations exactly."""
     actuator, private_action, joint_pos, joint_vel = _make_ideal_pd_execution_fixture(device)
     generator = torch.Generator(device=device).manual_seed(17)
 
@@ -399,9 +461,19 @@ def test_ideal_pd_private_execution_matches_public_compute_exactly(device: str):
         private_action.joint_efforts.copy_(command_effort)
         private_fields = (private_action.joint_positions, private_action.joint_velocities, private_action.joint_efforts)
 
+        reference_action = ArticulationActions(command_pos, command_vel, command_effort)
+        expected_computed, expected_applied = _literal_ideal_pd_reference(
+            reference_action,
+            joint_pos,
+            joint_vel,
+            actuator.stiffness,
+            actuator.damping,
+            actuator.effort_limit,
+        )
+
         returned = actuator.compute(public_action, joint_pos, joint_vel)
-        expected_computed = actuator.computed_effort.clone()
-        expected_applied = actuator.applied_effort.clone()
+        _assert_tensor_exact(actuator.computed_effort, expected_computed)
+        _assert_tensor_exact(actuator.applied_effort, expected_applied)
         actuator._compute_execution(private_action, joint_pos, joint_vel)
 
         assert returned is public_action
@@ -416,8 +488,8 @@ def test_ideal_pd_private_execution_matches_public_compute_exactly(device: str):
                 strict=True,
             )
         )
-        torch.testing.assert_close(actuator.computed_effort, expected_computed, rtol=0.0, atol=0.0)
-        torch.testing.assert_close(actuator.applied_effort, expected_applied, rtol=0.0, atol=0.0)
+        _assert_tensor_exact(actuator.computed_effort, expected_computed)
+        _assert_tensor_exact(actuator.applied_effort, expected_applied)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from isaaclab.actuators import DCMotorCfg
+from isaaclab.actuators import DCMotor, DCMotorCfg
 from isaaclab.utils.types import ArticulationActions
 
 pytestmark = pytest.mark.integration
@@ -15,6 +15,13 @@ _EXECUTION_DEVICES = [
     "cpu",
     pytest.param("cuda:0", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")),
 ]
+
+
+class _JointVelocityClipDCMotor(DCMotor):
+    """DC motor test actuator whose protected clip seam returns saved velocity."""
+
+    def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
+        return self._joint_vel.clone()
 
 
 def _tensor_fingerprint(
@@ -99,6 +106,42 @@ def _dc_execution_tensors(actuator, action: ArticulationActions) -> tuple[torch.
         actuator._max_effort,
         actuator._min_effort,
     )
+
+
+def _literal_dc_motor_reference(
+    action: ArticulationActions,
+    joint_pos: torch.Tensor,
+    joint_vel: torch.Tensor,
+    stiffness: torch.Tensor,
+    damping: torch.Tensor,
+    effort_limit: torch.Tensor,
+    velocity_limit: torch.Tensor,
+    saturation_effort: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Evaluate the pre-change DC motor equations in their original operation order."""
+    computed_effort = torch.empty_like(joint_pos)
+    velocity_error = torch.empty_like(joint_vel)
+    torch.sub(action.joint_positions, joint_pos, out=computed_effort)
+    torch.sub(action.joint_velocities, joint_vel, out=velocity_error)
+    computed_effort.mul_(stiffness)
+    computed_effort.addcmul_(damping, velocity_error)
+    computed_effort.add_(action.joint_efforts)
+
+    velocity_at_effort_limit = velocity_limit * (1 + effort_limit / saturation_effort)
+    clipped_joint_velocity = torch.clip(joint_vel, min=-velocity_at_effort_limit, max=velocity_at_effort_limit)
+    torque_speed_top = saturation_effort * (1.0 - clipped_joint_velocity / velocity_limit)
+    torque_speed_bottom = saturation_effort * (-1.0 - clipped_joint_velocity / velocity_limit)
+    max_effort = torch.clip(torque_speed_top, max=effort_limit)
+    min_effort = torch.clip(torque_speed_bottom, min=-effort_limit)
+    applied_effort = torch.clip(computed_effort, min=min_effort, max=max_effort)
+    return computed_effort, applied_effort
+
+
+def _assert_tensor_exact(actual: torch.Tensor, expected: torch.Tensor) -> None:
+    """Assert zero-tolerance equality, including the sign of zero values."""
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0, equal_nan=True)
+    zero_mask = (actual == 0.0) & (expected == 0.0)
+    assert torch.equal(torch.signbit(actual[zero_mask]), torch.signbit(expected[zero_mask]))
 
 
 @pytest.mark.parametrize("num_envs", [1, 2])
@@ -275,6 +318,37 @@ def test_dc_motor_clip(num_envs, num_joints, device, test_point):
     )
 
 
+def test_dc_motor_public_compute_honors_custom_clip_override_with_saved_velocity():
+    """Public DC compute saves velocity before dispatching the protected clipping seam."""
+    cfg = DCMotorCfg(
+        joint_names_expr=["joint_0"],
+        stiffness=1.0,
+        damping=0.0,
+        effort_limit=60.0,
+        saturation_effort=100.0,
+        velocity_limit=50.0,
+    )
+    actuator = _JointVelocityClipDCMotor(
+        cfg,
+        joint_names=["joint_0"],
+        joint_ids=[0],
+        num_envs=1,
+        device="cpu",
+    )
+    action = ArticulationActions(
+        joint_positions=torch.ones(1, 1),
+        joint_velocities=torch.zeros(1, 1),
+        joint_efforts=torch.zeros(1, 1),
+    )
+    joint_velocity = torch.tensor([[7.0]])
+
+    returned = actuator.compute(action, torch.zeros(1, 1), joint_velocity)
+
+    torch.testing.assert_close(actuator.computed_effort, torch.ones(1, 1))
+    torch.testing.assert_close(actuator.applied_effort, joint_velocity)
+    assert returned.joint_efforts is actuator.applied_effort
+
+
 @pytest.mark.parametrize("device", _EXECUTION_DEVICES)
 def test_dc_motor_private_execution_preserves_fixed_tensor_views(device: str):
     """Private execution writes every DC result into finalized action, output, and scratch tensors."""
@@ -319,7 +393,7 @@ def test_dc_motor_private_execution_has_no_new_tensor_storage(device: str):
 
 @pytest.mark.parametrize("device", _EXECUTION_DEVICES)
 def test_dc_motor_private_execution_matches_public_compute_exactly(device: str):
-    """Private DC execution preserves public float32 arithmetic at random and corner velocities."""
+    """Public and private DC execution match independent pre-change equations exactly."""
     actuator, private_action, joint_pos, joint_vel = _make_dc_execution_fixture(device)
     generator = torch.Generator(device=device).manual_seed(29)
     corner_velocity = 80.0
@@ -344,9 +418,21 @@ def test_dc_motor_private_execution_matches_public_compute_exactly(device: str):
         private_action.joint_efforts.copy_(command_effort)
         private_fields = (private_action.joint_positions, private_action.joint_velocities, private_action.joint_efforts)
 
+        reference_action = ArticulationActions(command_pos, command_vel, command_effort)
+        expected_computed, expected_applied = _literal_dc_motor_reference(
+            reference_action,
+            joint_pos,
+            joint_vel,
+            actuator.stiffness,
+            actuator.damping,
+            actuator.effort_limit,
+            actuator.velocity_limit,
+            actuator.saturation_effort,
+        )
+
         returned = actuator.compute(public_action, joint_pos, joint_vel)
-        expected_computed = actuator.computed_effort.clone()
-        expected_applied = actuator.applied_effort.clone()
+        _assert_tensor_exact(actuator.computed_effort, expected_computed)
+        _assert_tensor_exact(actuator.applied_effort, expected_applied)
         actuator._compute_execution(private_action, joint_pos, joint_vel)
 
         assert returned is public_action
@@ -361,5 +447,89 @@ def test_dc_motor_private_execution_matches_public_compute_exactly(device: str):
                 strict=True,
             )
         )
-        torch.testing.assert_close(actuator.computed_effort, expected_computed, rtol=0.0, atol=0.0)
-        torch.testing.assert_close(actuator.applied_effort, expected_applied, rtol=0.0, atol=0.0)
+        _assert_tensor_exact(actuator.computed_effort, expected_computed)
+        _assert_tensor_exact(actuator.applied_effort, expected_applied)
+
+
+@pytest.mark.parametrize("device", _EXECUTION_DEVICES)
+def test_dc_motor_public_and_private_execution_match_literal_exceptional_values(device: str):
+    """DC execution matches literal math at boundaries and exceptional float values."""
+    actuator, private_action, joint_pos, joint_vel = _make_dc_execution_fixture(device)
+    subnormal = torch.finfo(torch.float32).tiny / 2.0
+    corner_velocity = 80.0
+    effort_limit = 60.0
+    action_position = torch.zeros((3, 4), device=device)
+    joint_pos.zero_()
+    joint_vel.copy_(
+        torch.tensor(
+            [
+                [-corner_velocity - 0.001, -corner_velocity, -corner_velocity + 0.001, corner_velocity - 0.001],
+                [corner_velocity, corner_velocity + 0.001, -0.0, 0.0],
+                [torch.inf, -torch.inf, subnormal, torch.nan],
+            ],
+            device=device,
+        )
+    )
+    action_velocity = joint_vel.clone()
+    action_effort = torch.tensor(
+        [
+            [-effort_limit - 0.001, -effort_limit, -effort_limit + 0.001, effort_limit - 0.001],
+            [effort_limit, effort_limit + 0.001, -0.0, 0.0],
+            [torch.inf, -torch.inf, subnormal, torch.nan],
+        ],
+        device=device,
+    )
+    actuator.effort_limit.copy_(
+        torch.tensor(
+            [[60.0, 60.0, 60.0, 60.0], [60.0, 60.0, 60.0, 60.0], [torch.inf, 60.0, 60.0, 60.0]],
+            device=device,
+        )
+    )
+    actuator.velocity_limit.copy_(
+        torch.tensor(
+            [[50.0, 50.0, 50.0, 50.0], [50.0, 50.0, 0.0, 50.0], [50.0, torch.inf, 50.0, 50.0]],
+            device=device,
+        )
+    )
+    actuator.saturation_effort.copy_(
+        torch.tensor(
+            [[100.0, 100.0, 100.0, 100.0], [100.0, 100.0, 100.0, 0.0], [100.0, 100.0, subnormal, torch.nan]],
+            device=device,
+        )
+    )
+    reference_action = ArticulationActions(action_position, action_velocity, action_effort)
+    expected_computed, expected_applied = _literal_dc_motor_reference(
+        reference_action,
+        joint_pos,
+        joint_vel,
+        actuator.stiffness,
+        actuator.damping,
+        actuator.effort_limit,
+        actuator.velocity_limit,
+        actuator.saturation_effort,
+    )
+    public_action = ArticulationActions(action_position.clone(), action_velocity.clone(), action_effort.clone())
+    private_action.joint_positions.copy_(action_position)
+    private_action.joint_velocities.copy_(action_velocity)
+    private_action.joint_efforts.copy_(action_effort)
+    private_fields = (private_action.joint_positions, private_action.joint_velocities, private_action.joint_efforts)
+
+    returned = actuator.compute(public_action, joint_pos, joint_vel)
+    _assert_tensor_exact(actuator.computed_effort, expected_computed)
+    _assert_tensor_exact(actuator.applied_effort, expected_applied)
+    actuator._compute_execution(private_action, joint_pos, joint_vel)
+
+    assert returned is public_action
+    assert public_action.joint_efforts is actuator.applied_effort
+    assert public_action.joint_positions is None
+    assert public_action.joint_velocities is None
+    assert all(
+        actual is expected
+        for actual, expected in zip(
+            (private_action.joint_positions, private_action.joint_velocities, private_action.joint_efforts),
+            private_fields,
+            strict=True,
+        )
+    )
+    _assert_tensor_exact(actuator.computed_effort, expected_computed)
+    _assert_tensor_exact(actuator.applied_effort, expected_applied)
