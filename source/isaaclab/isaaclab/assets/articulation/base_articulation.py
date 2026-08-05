@@ -112,7 +112,7 @@ class BaseArticulation(AssetBase):
 
     The collection is mapping-like for named actuator group lookup and owns actuator
     commands, actuator telemetry, and actuator-resolved gains. Prefer
-    :meth:`articulation.actuators.command.set_position_index` over
+    :meth:`~isaaclab.actuators.ActuatorCollection.ArticulationView.Command.set_position_index` over
     articulation-level actuator command setters.
     """
 
