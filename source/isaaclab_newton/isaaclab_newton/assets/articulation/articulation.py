@@ -22,7 +22,6 @@ from prettytable import PrettyTable
 
 from pxr import UsdPhysics
 
-from isaaclab.actuators import ActuatorCollection
 from isaaclab.assets.articulation import ordering_kernels
 from isaaclab.assets.articulation.base_articulation import BaseArticulation
 from isaaclab.physics import PhysicsEvent
@@ -3373,14 +3372,9 @@ class Articulation(BaseArticulation):
         self._process_cfg()
         self._process_actuators_cfg()
         self._process_tendons()
-        # validate configuration
-        self._validate_cfg()
-        # update the robot data
-        self.update(0.0)
-        # log joint information
-        self._log_articulation_info()
-        # Let the articulation data know that it is fully instantiated and ready to use.
-        self.data.is_primed = True
+        # Actuator validation, first data update, logging, and ready-state
+        # publication are deferred until the simulation-scoped collection has
+        # transactionally published every articulation binding.
 
     def _clear_callbacks(self) -> None:
         """Clears all registered callbacks, including the physics-ready rebind handle."""
@@ -3391,6 +3385,9 @@ class Articulation(BaseArticulation):
         if hasattr(self, "_physics_ready_handle") and self._physics_ready_handle is not None:
             self._physics_ready_handle.deregister()
             self._physics_ready_handle = None
+        actuator_control = getattr(self, "_actuator_control", None)
+        if actuator_control is not None:
+            actuator_control.invalidate_actuator_view()
         # Remove the post-step republish hook registered in ``_create_buffers`` so the
         # bound method does not linger on ``NewtonManager._post_step_callbacks`` after
         # this articulation is gone (registered only for non-identity ordering).
@@ -3441,11 +3438,6 @@ class Articulation(BaseArticulation):
             self._post_step_callback = self._data._refresh_user_order_state
             SimulationManager.register_post_step_callback(self._post_step_callback)
         # tendon names are set in _process_tendons function
-
-        # -- joint commands (sent to the simulation after actuator processing)
-        self._joint_pos_target_sim = wp.zeros_like(self.data.joint_pos_target.warp, device=self.device)
-        self._joint_vel_target_sim = wp.zeros_like(self.data.joint_pos_target.warp, device=self.device)
-        self._joint_effort_target_sim = wp.zeros_like(self.data.joint_pos_target.warp, device=self.device)
 
         # soft joint position limits (recommended not to be too close to limits).
         wp.launch(
@@ -3517,15 +3509,7 @@ class Articulation(BaseArticulation):
 
     def _process_actuators_cfg(self):
         """Process actuator configs through :class:`ActuatorCollection`."""
-        self._actuator_control = NewtonActuatorControl(self)
-        self.actuators = ActuatorCollection(
-            self.cfg.actuators,
-            self._actuator_control,
-            debug_value_resolution=self.cfg.actuator_value_resolution_debug_print,
-        )
-        self._has_implicit_actuators = self.actuators.has_implicit_actuators
-        self._has_newton_actuators = self._actuator_control.native_active
-        self._data.bind_actuator_collection(self.actuators)
+        self._register_actuator_collection(NewtonActuatorControl(self))
 
     def _process_tendons(self):
         """Process fixed and spatial tendons."""

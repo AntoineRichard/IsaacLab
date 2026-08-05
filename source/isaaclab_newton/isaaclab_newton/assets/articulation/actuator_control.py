@@ -16,12 +16,15 @@ import torch
 import warp as wp
 
 from isaaclab.actuators import ActuatorCollection
-from isaaclab.actuators.actuator_control import ArticulationActuatorControl
+from isaaclab.actuators.actuator_control import ArticulationActuatorControl, _ActuatorParameterWrite
 from isaaclab.assets.articulation import ordering_kernels
 
 from isaaclab_newton.physics import NewtonManager as SimulationManager
 
 if TYPE_CHECKING:
+    from isaaclab.actuators.actuator_base_cfg import ActuatorBaseCfg
+    from isaaclab.actuators.actuator_collection import _ArticulationBinding
+
     from .articulation import Articulation
 
 _HAS_NEWTON_ACTUATORS = importlib.util.find_spec("isaaclab_newton.actuators") is not None
@@ -40,8 +43,10 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         """
         super().__init__(articulation)
         self._native_active = False
+        self._post_actuator_callback = None
 
-    def prepare_native_actuators(self, collection: ActuatorCollection, actuator_cfgs: dict) -> set[str]:
+    def discover_native_actuators(self, cfgs: dict[str, ActuatorBaseCfg]) -> set[str]:
+        """Discover native groups and synchronously prepare solver drive ownership."""
         articulation = self._articulation
         articulation._has_newton_actuators = False
         articulation._implicit_dof_mask = None
@@ -66,7 +71,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
 
         native_group_names: set[str] = set()
         explicit_joint_ids: list[int] = []
-        for actuator_name, actuator_cfg in actuator_cfgs.items():
+        for actuator_name, actuator_cfg in cfgs.items():
             if self._is_implicit_cfg(actuator_cfg):
                 continue
             native_group_names.add(actuator_name)
@@ -84,7 +89,10 @@ class NewtonActuatorControl(ArticulationActuatorControl):
 
         return native_group_names
 
-    def finalize_native_actuators(self, collection: ActuatorCollection) -> None:
+    def prepare_actuator_binding(self, binding: _ArticulationBinding) -> None:
+        """Prepare native adapter state from the private candidate binding."""
+        self._unregister_post_actuator_callback()
+        super().prepare_actuator_binding(binding)
         if not self._native_active:
             return
 
@@ -94,6 +102,13 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         from isaaclab_newton.actuators import kernels as actuator_kernels  # noqa: PLC0415
 
         articulation = self._articulation
+        if (
+            binding.groups is None
+            or binding.command is None
+            or binding.computed_effort is None
+            or binding.applied_effort is None
+        ):
+            raise RuntimeError("Newton actuator preparation requires a complete private articulation binding.")
         adapter = SimulationManager._adapter
         if adapter is not None:
             dof_layout = articulation._root_view.frequency_layouts[NewtonModel.AttributeFrequency.JOINT_DOF]
@@ -104,8 +119,8 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             else:
                 arti_start = 0
             joint_ordering = articulation.data.joint_ordering
-            binding = adapter.bind_articulation(
-                lab_actuators=dict(collection.items()),
+            native_binding = adapter.bind_articulation(
+                lab_actuators=dict(binding.groups),
                 dof_offset=arti_start,
                 num_joints=self.num_joints,
                 joint_user_to_backend_indices=(
@@ -113,24 +128,18 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 ),
             )
             articulation.newton_actuator_adapter = adapter
-            articulation.newton_default_stiffness = binding.stiffness
-            articulation.newton_default_damping = binding.damping
-            articulation.newton_managed_local_joints = binding.joint_indices
-            articulation._implicit_dof_mask = binding.implicit_dof_mask
-            articulation._implicit_dof_mask_owner = binding.implicit_dof_mask_owner
-            articulation._data._sim_bind_joint_computed_effort = binding.computed_effort_view
-            wp.copy(collection._actuator_stiffness, wp.from_torch(articulation.newton_default_stiffness))
-            wp.copy(collection._actuator_damping, wp.from_torch(articulation.newton_default_damping))
+            articulation.newton_default_stiffness = native_binding.stiffness
+            articulation.newton_default_damping = native_binding.damping
+            articulation.newton_managed_local_joints = native_binding.joint_indices
+            articulation._implicit_dof_mask = native_binding.implicit_dof_mask
+            articulation._implicit_dof_mask_owner = native_binding.implicit_dof_mask_owner
+            articulation._data._sim_bind_joint_computed_effort = native_binding.computed_effort_view
         else:
             articulation._implicit_dof_mask, articulation._implicit_dof_mask_owner = build_implicit_dof_mask(
-                dict(collection.items()),
-                self.num_joints,
-                self.device,
+                dict(binding.groups), self.num_joints, self.device
             )
             articulation._data._sim_bind_joint_computed_effort = wp.zeros(
-                (self.num_instances, self.num_joints),
-                dtype=wp.float32,
-                device=self.device,
+                (self.num_instances, self.num_joints), dtype=wp.float32, device=self.device
             )
 
         def _post_actuator() -> None:
@@ -140,8 +149,8 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 inputs=[
                     articulation._data._sim_bind_joint_pos,
                     articulation._data._sim_bind_joint_vel,
-                    collection._joint_pos_target,
-                    collection._joint_vel_target,
+                    binding.command.position.warp,
+                    binding.command.velocity.warp,
                     articulation._data.joint_stiffness.warp,
                     articulation._data.joint_damping.warp,
                     articulation._data.joint_effort_limits.warp,
@@ -152,18 +161,44 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                     articulation.data.has_joint_ordering,
                 ],
                 outputs=[
-                    collection._computed_torque,
-                    collection._applied_torque,
+                    binding.computed_effort.warp,
+                    binding.applied_effort.warp,
                 ],
                 device=self.device,
             )
 
-        SimulationManager.register_post_actuator_callback(_post_actuator)
+        self._post_actuator_callback = _post_actuator
+        try:
+            SimulationManager.register_post_actuator_callback(_post_actuator)
+        except Exception:
+            self._unregister_post_actuator_callback()
+            raise
 
-    def compute_native_actuators(self, collection: ActuatorCollection, dt: float) -> bool:
-        return self._native_active
+    def invalidate_actuator_view(self) -> None:
+        """Deregister candidate telemetry before releasing its private binding."""
+        self._unregister_post_actuator_callback()
+        super().invalidate_actuator_view()
 
-    def submit_commands(self, collection: ActuatorCollection) -> None:
+    def _unregister_post_actuator_callback(self) -> None:
+        """Remove this control's exact telemetry callback, if still registered."""
+        callback = self._post_actuator_callback
+        if callback is not None:
+            SimulationManager.unregister_post_actuator_callback(callback)
+            self._post_actuator_callback = None
+
+    def write_actuator_parameter(self, name: str, write: _ActuatorParameterWrite) -> None:
+        """Defer native controller parameter side effects until canonical pointer binding.
+
+        The current Newton adapter owns copied gain/output snapshots.  Routing a
+        canonical typed-storage update through it would require compacting the
+        scoped selector, copying the selected values, and potentially syncing.
+        Task 11 replaces those snapshots with direct candidate-store pointers;
+        only then can this hook update native parameters allocation- and
+        synchronization-free.
+        """
+        del name, write
+
+    def submit_commands(self, collection: ActuatorCollection | ActuatorCollection.ArticulationView) -> None:
         articulation = self._articulation
         if self._native_active:
             # Raw targets go directly to Newton's control object. Newton PD
@@ -174,18 +209,18 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             # targets directly, while non-identity ordering gathers all four
             # targets in one launch.
             if not articulation.data.has_joint_ordering:
-                articulation.data._sim_bind_joint_position_target.assign(collection._joint_pos_target)
-                articulation.data._sim_bind_joint_velocity_target.assign(collection._joint_vel_target)
-                articulation.data._sim_bind_joint_act.assign(collection._joint_effort_target)
-                articulation.data._sim_bind_joint_effort.assign(collection._joint_effort_target)
+                articulation.data._sim_bind_joint_position_target.assign(collection.command.position.warp)
+                articulation.data._sim_bind_joint_velocity_target.assign(collection.command.velocity.warp)
+                articulation.data._sim_bind_joint_act.assign(collection.command.effort.warp)
+                articulation.data._sim_bind_joint_effort.assign(collection.command.effort.warp)
             else:
                 wp.launch(
                     ordering_kernels.reorder_joint_targets_user_to_backend,
                     dim=(self.num_instances, self.num_joints),
                     inputs=[
-                        collection._joint_effort_target,
-                        collection._joint_pos_target,
-                        collection._joint_vel_target,
+                        collection.command.effort.warp,
+                        collection.command.position.warp,
+                        collection.command.velocity.warp,
                         articulation._joint_backend_to_user_map(),
                         True,
                         True,
@@ -205,18 +240,18 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         # Standard Lab actuator path. Identity ordering copies processed
         # targets directly; non-identity ordering gathers them in one launch.
         if not articulation.data.has_joint_ordering:
-            articulation.data._sim_bind_joint_effort.assign(collection._joint_effort_target_sim)
+            articulation.data._sim_bind_joint_effort.assign(collection.joint_command.effort.warp)
             if collection.has_implicit_actuators:
-                articulation.data._sim_bind_joint_position_target.assign(collection._joint_pos_target_sim)
-                articulation.data._sim_bind_joint_velocity_target.assign(collection._joint_vel_target_sim)
+                articulation.data._sim_bind_joint_position_target.assign(collection.joint_command.position.warp)
+                articulation.data._sim_bind_joint_velocity_target.assign(collection.joint_command.velocity.warp)
         else:
             wp.launch(
                 ordering_kernels.reorder_joint_targets_user_to_backend,
                 dim=(self.num_instances, self.num_joints),
                 inputs=[
-                    collection._joint_effort_target_sim,
-                    collection._joint_pos_target_sim,
-                    collection._joint_vel_target_sim,
+                    collection.joint_command.effort.warp,
+                    collection.joint_command.position.warp,
+                    collection.joint_command.velocity.warp,
                     articulation._joint_backend_to_user_map(),
                     True,
                     collection.has_implicit_actuators,

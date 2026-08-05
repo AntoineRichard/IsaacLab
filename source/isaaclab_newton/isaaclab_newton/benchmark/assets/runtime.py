@@ -16,6 +16,36 @@ from isaaclab.benchmark.asset_suites.types import AssetBenchmarkTargets
 args = SimpleNamespace(no_shape_checks=False)
 
 
+class _MockJointCommand:
+    """Minimal nested scoped command used by articulation micro-benchmarks."""
+
+    def __init__(self, position, velocity, effort) -> None:
+        self.position = position
+        self.velocity = velocity
+        self.effort = effort
+
+    def set_position_index(self, *, value, joint_ids=None, env_ids=None) -> None:
+        self._set_index(self.position, value, joint_ids, env_ids)
+
+    def set_velocity_index(self, *, value, joint_ids=None, env_ids=None) -> None:
+        self._set_index(self.velocity, value, joint_ids, env_ids)
+
+    def set_effort_index(self, *, value, joint_ids=None, env_ids=None) -> None:
+        self._set_index(self.effort, value, joint_ids, env_ids)
+
+    @staticmethod
+    def _set_index(target, value, joint_ids, env_ids) -> None:
+        target.torch[env_ids, joint_ids] = value
+
+
+class _MockActuatorView:
+    """Nested scoped command facade without legacy dense actuator projections."""
+
+    def __init__(self, command: _MockJointCommand, joint_command: _MockJointCommand) -> None:
+        self.command = command
+        self.joint_command = joint_command
+
+
 def _initialize_mock_asset(asset) -> None:
     for name in ("_initialize_handle", "_invalidate_initialize_handle", "_prim_deletion_handle", "_debug_vis_handle"):
         object.__setattr__(asset, name, None)
@@ -114,24 +144,19 @@ def create_test_articulation(
     object.__setattr__(articulation, "_ALL_SPATIAL_TENDON_INDICES", wp.array([], dtype=wp.int32, device=device))
     object.__setattr__(articulation, "_ALL_SPATIAL_TENDON_MASK", wp.zeros((0,), dtype=wp.bool, device=device))
 
-    object.__setattr__(
-        articulation, "_joint_pos_target_sim", wp.zeros((num_instances, num_joints), dtype=wp.float32, device=device)
-    )
-    object.__setattr__(
-        articulation, "_joint_vel_target_sim", wp.zeros((num_instances, num_joints), dtype=wp.float32, device=device)
-    )
-    object.__setattr__(
-        articulation,
-        "_joint_effort_target_sim",
-        wp.zeros((num_instances, num_joints), dtype=wp.float32, device=device),
-    )
+    from isaaclab.utils.warp import ProxyArray
 
-    from isaaclab.actuators import ActuatorCollection
-
-    from isaaclab_newton.assets.articulation.actuator_control import NewtonActuatorControl
-
-    control = NewtonActuatorControl(articulation)
-    object.__setattr__(articulation, "actuators", ActuatorCollection({}, control))
+    command = _MockJointCommand(
+        ProxyArray(data._joint_pos_target),
+        ProxyArray(data._joint_vel_target),
+        ProxyArray(data._joint_effort_target),
+    )
+    joint_command = _MockJointCommand(
+        ProxyArray(wp.zeros((num_instances, num_joints), dtype=wp.float32, device=device)),
+        ProxyArray(wp.zeros((num_instances, num_joints), dtype=wp.float32, device=device)),
+        ProxyArray(wp.zeros((num_instances, num_joints), dtype=wp.float32, device=device)),
+    )
+    object.__setattr__(articulation, "actuators", _MockActuatorView(command, joint_command))
     data.bind_actuator_collection(articulation.actuators)
 
     return articulation, mock_view

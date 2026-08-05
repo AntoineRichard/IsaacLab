@@ -118,6 +118,59 @@ SOLVER_MATRIX = [
 ]
 
 
+def test_unregister_post_actuator_callback_removes_exact_callback_idempotently(monkeypatch) -> None:
+    """Removing a rolled-back telemetry callback preserves equal registrations."""
+    callbacks: list[object] = []
+    monkeypatch.setattr(NewtonManager, "_post_actuator_callbacks", callbacks)
+
+    class _EqualCallback:
+        def __call__(self) -> None:
+            pass
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, _EqualCallback)
+
+    first = _EqualCallback()
+    equal_but_distinct = _EqualCallback()
+    NewtonManager.register_post_actuator_callback(first)
+    NewtonManager.register_post_actuator_callback(equal_but_distinct)
+
+    NewtonManager.unregister_post_actuator_callback(first)
+    NewtonManager.unregister_post_actuator_callback(first)
+
+    assert len(callbacks) == 1
+    assert callbacks[0] is equal_but_distinct
+
+
+def test_control_invalidation_deregisters_telemetry_before_releasing_candidate(monkeypatch) -> None:
+    """A rollback cannot leave telemetry able to touch candidate-owned state."""
+    from isaaclab_newton.assets.articulation.actuator_control import NewtonActuatorControl
+
+    from isaaclab.actuators.actuator_control import ArticulationActuatorControl
+
+    callbacks: list[object] = []
+    monkeypatch.setattr(NewtonManager, "_post_actuator_callbacks", callbacks)
+    candidate = {"open": True}
+
+    def _telemetry() -> None:
+        if not candidate["open"]:
+            raise RuntimeError("telemetry touched a closed candidate")
+
+    control = object.__new__(NewtonActuatorControl)
+    control._post_actuator_callback = _telemetry
+    callbacks.append(_telemetry)
+
+    def _release_binding(self) -> None:
+        assert _telemetry not in callbacks
+        candidate["open"] = False
+
+    monkeypatch.setattr(ArticulationActuatorControl, "invalidate_actuator_view", _release_binding)
+    control.invalidate_actuator_view()
+
+    assert callbacks == []
+    assert not candidate["open"]
+
+
 # ---------------------------------------------------------------------------
 # class_type wiring (no SimulationContext required)
 # ---------------------------------------------------------------------------

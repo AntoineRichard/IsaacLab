@@ -3061,6 +3061,20 @@ class NewtonManager(PhysicsManager):
         cls._post_actuator_callbacks.append(callback)
 
     @classmethod
+    def unregister_post_actuator_callback(cls, callback: Callable[[], None]) -> None:
+        """Remove an exact post-actuator callback if it is still registered.
+
+        Callback closures capture candidate-generation arrays.  Cleanup must
+        therefore use identity rather than equality so a distinct callable with
+        custom equality semantics remains registered.  Repeated cleanup is a
+        safe no-op.
+        """
+        for index, registered_callback in enumerate(cls._post_actuator_callbacks):
+            if registered_callback is callback:
+                del cls._post_actuator_callbacks[index]
+                break
+
+    @classmethod
     def register_post_step_callback(cls, callback: Callable[[], None]) -> None:
         """Append a hook to the list invoked after the last solver substep on every step.
 
