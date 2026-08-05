@@ -1039,3 +1039,47 @@ def test_warmed_stateless_cuda_plan_constructs_no_plan_boundary_arrays_or_synchr
 
     view.compute()
     view.compute()
+
+
+def test_cpu_plan_preserves_eager_stateless_routing_without_graph_objects() -> None:
+    """Catch CPU graph creation or routing that differs from the eager execution plan."""
+    groups = {
+        "implicit": _implicit_cfg(["hip"]),
+        "ideal": _ideal_cfg(["knee"]),
+        "dc": _dc_cfg(["ankle"]),
+    }
+    _, eager_view, eager_control = _make_plan(groups)
+    _set_literal_inputs(eager_view, eager_control)
+    eager_view.compute()
+    expected = tuple(
+        value.torch.clone()
+        for value in (
+            eager_view.joint_command.position,
+            eager_view.joint_command.velocity,
+            eager_view.joint_command.effort,
+            eager_view.computed_effort,
+            eager_view.applied_effort,
+        )
+    )
+
+    _, graph_view, graph_control = _make_plan(groups)
+    _set_literal_inputs(graph_view, graph_control)
+    plan = graph_view._execution_plan
+    plan.warmup_and_capture()
+    graph_view.compute()
+
+    assert plan._full_graph is None
+    assert plan._prefix_graph is None
+    assert plan._post_graph_projection_launches == ()
+    for actual, expected_value in zip(
+        (
+            graph_view.joint_command.position.torch,
+            graph_view.joint_command.velocity.torch,
+            graph_view.joint_command.effort.torch,
+            graph_view.computed_effort.torch,
+            graph_view.applied_effort.torch,
+        ),
+        expected,
+        strict=True,
+    ):
+        torch.testing.assert_close(actual, expected_value, rtol=0.0, atol=0.0)

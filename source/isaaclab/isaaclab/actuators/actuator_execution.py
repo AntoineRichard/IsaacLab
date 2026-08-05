@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import copy
+import warnings
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -18,7 +20,7 @@ import warp as wp
 
 from isaaclab.utils.types import ArticulationActions
 from isaaclab.utils.warp import ProxyArray
-from isaaclab.utils.warp.launch_cache import _WarpLaunchCache
+from isaaclab.utils.warp.launch_cache import _CapturedGraphLease, _WarpLaunchCache
 
 from . import actuator_kernels
 from .actuator_base import ActuatorBase
@@ -105,6 +107,17 @@ class _ArticulationExecutionPlan:
         self.static_scatter_epochs = static_scatter_epochs
         self._schedule = schedule
         self._launch_cache = _WarpLaunchCache(control.device)
+        self._full_graph: wp.Graph | None = None
+        self._prefix_graph: wp.Graph | None = None
+        self._full_graph_lease: _CapturedGraphLease | None = None
+        self._prefix_graph_lease: _CapturedGraphLease | None = None
+        self._retired_graph_leases: list[_CapturedGraphLease] = []
+        self._graph_stream: wp.Stream | None = None
+        self._graph_torch_stream: torch.cuda.Stream | None = None
+        self._graph_capture_failed = False
+        self._compatibility_projection_refreshes: dict[str, Callable[[], None]] = {}
+        self._post_graph_projection_names: tuple[str, ...] = ()
+        self._post_graph_projection_launches: tuple[Callable[[], None], ...] = ()
         self._valid = True
         self._validate_execution: Callable[[], None] | None = None
         self._native_compute: Callable[[float], None] | None = None
@@ -591,14 +604,184 @@ class _ArticulationExecutionPlan:
         self._validate_execution = validate_execution
         self._native_compute = native_compute
 
+    @property
+    def handles_compatibility_projections(self) -> bool:
+        """Whether a complete graph owns compatibility-projection refreshes."""
+        return self._full_graph is not None and not self._graph_capture_failed
+
+    def register_compatibility_projection(self, name: str, refresh: Callable[[], None]) -> None:
+        """Register an already allocated lazy compatibility projection refresh.
+
+        A projection allocated before graph capture is included in the full graph.
+        A projection allocated later retains that graph and is refreshed by its
+        stable post-graph epilogue instead.
+        """
+        if not self._valid:
+            raise RuntimeError("stale actuator execution plan")
+        self._compatibility_projection_refreshes[name] = refresh
+        if self._full_graph is not None and name not in self._post_graph_projection_names:
+            self._post_graph_projection_names = (*self._post_graph_projection_names, name)
+            self._post_graph_projection_launches = tuple(
+                self._compatibility_projection_refreshes[projection_name]
+                for projection_name in self._post_graph_projection_names
+            )
+
+    def warmup_and_capture(self) -> None:
+        """Warm fixed launches and capture the graphable part of this generation."""
+        if not self._valid:
+            raise RuntimeError("stale actuator execution plan")
+        if self._full_graph is not None or self._prefix_graph is not None or self._graph_capture_failed:
+            return
+        control = self._control
+        if control is None:
+            raise RuntimeError("stale actuator execution plan")
+        if not self._launch_cache.is_cuda or not self.stateless_ranges or self._native_compute is not None:
+            return
+        current_torch_stream = torch.cuda.current_stream(torch.device(control.device))
+        current_graph_stream = wp.stream_from_torch(current_torch_stream)
+        if current_graph_stream.is_capturing or wp.get_device(control.device).is_capturing:
+            return
+        graph_torch_stream = (
+            torch.cuda.Stream(device=control.device) if current_torch_stream.cuda_stream == 0 else current_torch_stream
+        )
+        if graph_torch_stream.cuda_stream != current_torch_stream.cuda_stream:
+            graph_torch_stream.wait_stream(current_torch_stream)
+        graph_stream = wp.stream_from_torch(graph_torch_stream)
+
+        # Every command, output, and compatibility allocation must exist before
+        # warming modules and recording a graph with their stable pointers.
+        self._warmup_graphable_prefix()
+        capture_started = False
+        try:
+            with torch.cuda.stream(graph_torch_stream):
+                with wp.ScopedStream(graph_stream, sync_enter=False):
+                    wp.capture_begin(stream=graph_stream)
+                    capture_started = True
+                    for execution_range in self.stateless_ranges:
+                        self._run_range(execution_range)
+                    if not self.eager_segments:
+                        for entry in self._schedule:
+                            if isinstance(entry, _StaticScatterEpoch):
+                                self._scatter_static_epoch(entry)
+                            else:
+                                self._run_eager(entry)
+                        for refresh in self._compatibility_projection_refreshes.values():
+                            refresh()
+                        graph = wp.capture_end(stream=graph_stream)
+                        self._full_graph = graph
+                        self._full_graph_lease = _CapturedGraphLease(graph, retained=self)
+                    else:
+                        graph = wp.capture_end(stream=graph_stream)
+                        self._prefix_graph = graph
+                        self._prefix_graph_lease = _CapturedGraphLease(graph, retained=self)
+                    self._graph_stream = graph_stream
+                    self._graph_torch_stream = graph_torch_stream
+                    capture_started = False
+        except Exception as error:
+            if capture_started:
+                with suppress(Exception):
+                    wp.capture_end(stream=graph_stream)
+            self.clear_graph()
+            self._graph_capture_failed = True
+            warnings.warn(
+                f"Actuator graph capture failed; using cached eager execution for this generation: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    def clear_graph(self) -> None:
+        """Release complete/prefix graph state and post-graph launch records."""
+        self._full_graph = None
+        self._prefix_graph = None
+        self._graph_stream = None
+        self._graph_torch_stream = None
+        self._post_graph_projection_names: tuple[str, ...] = ()
+        self._post_graph_projection_launches = ()
+        leases = (
+            self._full_graph_lease,
+            self._prefix_graph_lease,
+            *self._retired_graph_leases,
+        )
+        self._full_graph_lease = None
+        self._prefix_graph_lease = None
+        self._retired_graph_leases = []
+        failures: list[BaseException] = []
+        for lease in leases:
+            if lease is None:
+                continue
+            try:
+                lease.revoke()
+            except BaseException as error:
+                self._retired_graph_leases.append(lease)
+                failures.append(error)
+        if failures:
+            raise failures[0]
+
     def compute(self, dt: float = 0.0) -> None:
         """Execute fixed stateless ranges and ordered eager scatter epochs."""
         if not self._valid:
             raise RuntimeError("stale actuator execution plan")
         if self._validate_execution is not None:
             self._validate_execution()
+        if self._is_outer_capture():
+            self._run_eager_sequence(dt)
+            return
+        if self._full_graph is not None:
+            self._launch_graph(self._full_graph_lease)
+            for refresh in self._post_graph_projection_launches:
+                refresh()
+            return
+        if self._prefix_graph is not None:
+            self._launch_graph(self._prefix_graph_lease)
+            self._run_schedule(dt)
+            return
+        self._run_eager_sequence(dt)
+
+    def _is_outer_capture(self) -> bool:
+        """Return whether an enclosing CUDA graph currently owns this stream."""
+        control = self._control
+        if control is None or not self._launch_cache.is_cuda:
+            return False
+        device = wp.get_device(control.device)
+        return bool(device.captures) or device.is_capturing
+
+    def _launch_graph(self, lease: _CapturedGraphLease | None) -> None:
+        """Replay a live graph on the current Torch stream used for capture."""
+        control = self._control
+        if control is None or lease is None:
+            raise RuntimeError("stale actuator execution plan")
+        graph_stream = self._graph_stream
+        graph_torch_stream = self._graph_torch_stream
+        if graph_stream is None or graph_torch_stream is None:
+            raise RuntimeError("actuator graph stream is unavailable")
+        current_torch_stream = torch.cuda.current_stream(torch.device(control.device))
+        if graph_torch_stream.cuda_stream != current_torch_stream.cuda_stream:
+            graph_torch_stream.wait_stream(current_torch_stream)
+        with torch.cuda.stream(graph_torch_stream):
+            with wp.ScopedStream(graph_stream, sync_enter=False):
+                lease.launch(graph_stream)
+        if graph_torch_stream.cuda_stream != current_torch_stream.cuda_stream:
+            current_torch_stream.wait_stream(graph_torch_stream)
+
+    def _warmup_graphable_prefix(self) -> None:
+        """Compile only fixed graphable launches before capture.
+
+        Stateful and custom eager segments can advance hidden history or retain
+        runtime output pointers, so mixed-plan warm-up never executes them.
+        """
         for execution_range in self.stateless_ranges:
             self._run_range(execution_range)
+        if not self.eager_segments:
+            self._run_schedule()
+
+    def _run_eager_sequence(self, dt: float = 0.0) -> None:
+        """Run the complete cached eager sequence for this fixed generation."""
+        for execution_range in self.stateless_ranges:
+            self._run_range(execution_range)
+        self._run_schedule(dt)
+
+    def _run_schedule(self, dt: float = 0.0) -> None:
+        """Run ordered static-scatter and eager barriers after stateless work."""
         for entry in self._schedule:
             if isinstance(entry, _StaticScatterEpoch):
                 self._scatter_static_epoch(entry)
@@ -728,8 +911,10 @@ class _ArticulationExecutionPlan:
         """Release cached launches and candidate-owned execution aliases."""
         if not self._valid:
             return
+        self.clear_graph()
         self._valid = False
         self._launch_cache.clear()
+        self._compatibility_projection_refreshes.clear()
         self._validate_execution = None
         self._native_compute = None
         self.stateless_ranges = ()

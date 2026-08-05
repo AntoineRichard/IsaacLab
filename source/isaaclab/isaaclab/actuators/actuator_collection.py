@@ -1772,6 +1772,12 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
                     )
                 projection = generation.joint_store.compatibility_projection(name, layout)
                 self._compatibility_allocations[name] = projection
+                execution_plan = self._execution_plan
+                if execution_plan is None:
+                    raise RuntimeError(self._failure)
+                execution_plan.register_compatibility_projection(
+                    name, lambda: self._refresh_compatibility_projection(name)
+                )
             self._refresh_compatibility_projection(name)
             return projection
 
@@ -1918,7 +1924,8 @@ class ActuatorCollection(Mapping[str, ActuatorBase]):
             if execution_plan is None:
                 raise RuntimeError(self._failure)
             execution_plan.compute(dt)
-            self._refresh_compatibility_projections()
+            if not execution_plan.handles_compatibility_projections:
+                self._refresh_compatibility_projections()
 
         def submit_commands(self) -> None:
             """Submit processed command buffers through the backend control."""
