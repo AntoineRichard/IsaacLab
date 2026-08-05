@@ -269,7 +269,7 @@ class _ArticulationExecutionPlan:
         executor.__dict__["_joint_names"] = [name for group in group_layouts for name in group.joint_names]
         executor.__dict__.pop("_facade_view", None)
         executor.__dict__.pop("_facade_token", None)
-        if actuator_type is DCMotor:
+        if type(executor) is IdealPDActuator or type(executor) is DCMotor:
             executor._rebuild_managed_runtime_state()
 
         gather_inputs = (
@@ -638,8 +638,12 @@ class _ArticulationExecutionPlan:
         action.joint_positions = staging["position"].torch
         action.joint_velocities = staging["velocity"].torch
         action.joint_efforts = staging["effort"].torch
+        executor = execution_range.executor
+        if type(executor) is IdealPDActuator or type(executor) is DCMotor:
+            executor._compute_execution(action, staging["joint_position"].torch, staging["joint_velocity"].torch)
+            return
         try:
-            execution_range.executor.compute(action, staging["joint_position"].torch, staging["joint_velocity"].torch)
+            executor.compute(action, staging["joint_position"].torch, staging["joint_velocity"].torch)
         finally:
             action.joint_positions = staging["position"].torch
             action.joint_velocities = staging["velocity"].torch

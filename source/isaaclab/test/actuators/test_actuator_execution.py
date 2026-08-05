@@ -15,6 +15,7 @@ from collections.abc import Mapping
 import pytest
 import torch
 import warp as wp
+from torch.utils._python_dispatch import TorchDispatchMode
 
 from isaaclab.actuators import ActuatorCollection
 from isaaclab.actuators.actuator_control import ActuatorJointProperties
@@ -187,6 +188,10 @@ class _PartialNativeControl(_Control):
 
 class _OpaqueIdealPD(IdealPDActuator):
     """Opaque subclass which must remain an eager barrier."""
+
+
+class _OpaqueDCMotor(DCMotor):
+    """Opaque DC subclass which must remain an eager barrier."""
 
 
 class _EffortOnlyOpaque(IdealPDActuator):
@@ -717,6 +722,157 @@ def _storage_metadata(value: object) -> object:
             str(tensor.device),
         )
     return value
+
+
+class _NoNewTensorStorage(TorchDispatchMode):
+    """Reject dispatcher results whose storage was not finalized before execution."""
+
+    def __init__(self, tensors: tuple[torch.Tensor, ...]):
+        super().__init__()
+        self._storage_pointers = {tensor.untyped_storage().data_ptr() for tensor in tensors}
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        result = func(*args, **({} if kwargs is None else kwargs))
+        leaves, _ = torch.utils._pytree.tree_flatten(result)
+        for tensor in leaves:
+            if isinstance(tensor, torch.Tensor):
+                assert tensor.untyped_storage().data_ptr() in self._storage_pointers, func
+        return result
+
+
+def _explicit_range_tensors(execution_range) -> tuple[torch.Tensor, ...]:
+    """Return every exact built-in action, output, and execution-scratch tensor."""
+    action = execution_range.action
+    assert action is not None
+    executor = execution_range.executor
+    binding = executor.__dict__["_parameter_binding"]
+    tensors = (
+        action.joint_positions,
+        action.joint_velocities,
+        action.joint_efforts,
+        action.joint_indices,
+        execution_range.staging["joint_position"].torch,
+        execution_range.staging["joint_velocity"].torch,
+        executor.computed_effort,
+        executor.applied_effort,
+        executor._effort_limit_lower,
+        *(array.torch for array in binding.arrays.values()),
+    )
+    if type(executor) is DCMotor:
+        tensors += (
+            executor._vel_at_effort_lim,
+            executor._joint_vel,
+            executor._torque_speed_top,
+            executor._torque_speed_bottom,
+            executor._max_effort,
+            executor._min_effort,
+        )
+    return tensors
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize(
+    ("actuator_type", "cfg_factory"),
+    [(IdealPDActuator, _ideal_cfg), (DCMotor, _dc_cfg)],
+)
+def test_aggregated_exact_explicit_range_rebuilds_final_shape_scratch_and_keeps_fixed_views(
+    actuator_type, cfg_factory, device: str
+) -> None:
+    """Catch an aggregated executor retaining one source group's scratch shape or replacing fixed views."""
+    groups = {
+        "first": cfg_factory(["hip"]),
+        "second": cfg_factory(["knee"]),
+    }
+    _, view, control = _make_plan(groups, device=device)
+    _set_literal_inputs(view, control)
+    execution_range = next(
+        item for item in view._execution_plan.stateless_ranges if item.actuator_type is actuator_type
+    )
+    tensors = _explicit_range_tensors(execution_range)
+    expected_shape = (control.num_instances, 2)
+
+    assert all(
+        tensor.shape == expected_shape for tensor in tensors if tensor is not execution_range.action.joint_indices
+    )
+    fingerprints = tuple(_storage_metadata(tensor) for tensor in tensors)
+    view.compute()
+    view.compute()
+
+    assert tuple(_storage_metadata(tensor) for tensor in tensors) == fingerprints
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize(
+    ("actuator_type", "cfg_factory"),
+    [(IdealPDActuator, _ideal_cfg), (DCMotor, _dc_cfg)],
+)
+def test_warmed_aggregated_exact_explicit_range_allocates_no_tensor_storage(
+    actuator_type, cfg_factory, device: str
+) -> None:
+    """Catch the aggregated hot path calling allocation-producing public explicit compute."""
+    groups = {
+        "first": cfg_factory(["hip"]),
+        "second": cfg_factory(["knee"]),
+    }
+    _, view, control = _make_plan(groups, device=device)
+    _set_literal_inputs(view, control)
+    execution_range = next(
+        item for item in view._execution_plan.stateless_ranges if item.actuator_type is actuator_type
+    )
+    tensors = _explicit_range_tensors(execution_range)
+    view.compute()
+
+    with _NoNewTensorStorage(tensors):
+        view.compute()
+
+
+@pytest.mark.parametrize("device", _available_devices())
+@pytest.mark.parametrize(
+    ("actuator_type", "exact_cfg", "subclass_cfg", "subclass_type"),
+    [
+        (IdealPDActuator, _ideal_cfg, _ideal_cfg, _OpaqueIdealPD),
+        (DCMotor, _dc_cfg, _dc_cfg, _OpaqueDCMotor),
+    ],
+)
+def test_exact_explicit_ranges_use_private_execution_while_subclasses_use_public_compute(
+    monkeypatch, actuator_type, exact_cfg, subclass_cfg, subclass_type, device: str
+) -> None:
+    """Catch private execution leaking to subclasses or exact built-ins falling back to public compute."""
+    opaque = subclass_cfg(["knee"])
+    opaque.class_type = subclass_type
+    _, view, control = _make_plan({"exact": exact_cfg(["hip"]), "opaque": opaque}, device=device)
+    _set_literal_inputs(view, control)
+    execution_range = next(
+        item for item in view._execution_plan.stateless_ranges if item.actuator_type is actuator_type
+    )
+    eager_segment = view._execution_plan.eager_segments[0]
+    private_calls = 0
+    public_calls = 0
+    exact_private = execution_range.executor._compute_execution
+    subclass_public = eager_segment.actuator.compute
+
+    def record_private(*args, **kwargs):
+        nonlocal private_calls
+        private_calls += 1
+        return exact_private(*args, **kwargs)
+
+    def record_public(*args, **kwargs):
+        nonlocal public_calls
+        public_calls += 1
+        return subclass_public(*args, **kwargs)
+
+    def reject_wrong_path(*_args, **_kwargs):
+        raise AssertionError("executor used the wrong public/private compute seam")
+
+    monkeypatch.setattr(execution_range.executor, "_compute_execution", record_private)
+    monkeypatch.setattr(execution_range.executor, "compute", reject_wrong_path)
+    monkeypatch.setattr(eager_segment.actuator, "compute", record_public)
+    monkeypatch.setattr(eager_segment.actuator, "_compute_execution", reject_wrong_path)
+
+    view.compute()
+
+    assert private_calls == 1
+    assert public_calls == 1
 
 
 def _plan_state_fingerprint(plan, view) -> tuple[tuple[str, object], ...]:
