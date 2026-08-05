@@ -714,7 +714,6 @@ class _ArticulationExecutionPlan:
         self._graph_to_caller_event = None
         self._post_graph_projection_names: tuple[str, ...] = ()
         self._post_graph_projection_launches = ()
-        self._all_compatibility_projection_launches = ()
         leases = (
             self._full_graph_lease,
             self._prefix_graph_lease,

@@ -278,6 +278,26 @@ def test_capture_failure_falls_back_for_the_generation(monkeypatch, tmp_path) ->
     assert eager_steps == 2
 
 
+def test_capture_failure_eager_fallback_refreshes_registered_projection(monkeypatch, tmp_path) -> None:
+    """Catch graph teardown that drops a registered projection's eager refresh route."""
+    plan = _make_cuda_plan(actuator_types=(DCMotor,), tmp_path=tmp_path)
+    held = plan.articulation._get_compatibility_projection("soft_joint_vel_limits").torch
+
+    def _fail_capture_begin(*args, **kwargs) -> None:
+        raise RuntimeError("test capture failure")
+
+    monkeypatch.setattr(wp, "capture_begin", _fail_capture_begin)
+    with pytest.warns(RuntimeWarning, match="cached eager execution"):
+        plan.warmup_and_capture()
+    with torch.cuda.stream(plan.stream):
+        plan.articulation["group_0"].velocity_limit.fill_(7.0)
+    plan.compute()
+    torch.cuda.current_stream().wait_stream(plan.stream)
+    expected = torch.zeros_like(held)
+    expected[:, 2].fill_(7.0)
+    torch.testing.assert_close(held, expected, rtol=0.0, atol=0.0)
+
+
 def test_projection_activated_after_capture_refreshes_outside_graph(tmp_path) -> None:
     """Catch a late compatibility view that invalidates or leaves a full graph stale."""
     plan = _make_cuda_plan(actuator_types=(DCMotor,), tmp_path=tmp_path)
