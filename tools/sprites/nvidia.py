@@ -22,6 +22,7 @@ from pathlib import Path
 from PIL import Image
 
 from .canvas import Canvas
+from .isaac import EDGE, FACE, FACE_GLYPHS, row
 
 LOGO = Path(__file__).resolve().parents[2] / "docs" / "source" / "_static" / "NVIDIA-logo-black.png"
 """The NVIDIA logo vendored in the repository; the eye mark is cropped out of it."""
@@ -29,11 +30,30 @@ LOGO = Path(__file__).resolve().parents[2] / "docs" / "source" / "_static" / "NV
 GREEN = (118, 185, 0)
 """NVIDIA green."""
 
+GAP = 3
+"""Cells between the mark and the lockup."""
+
+
+def _letter(glyph: str, _index: int) -> tuple[int, int, int]:
+    """Face green for the solid blocks, a darker shade for the box-drawing edges."""
+    return FACE if glyph in FACE_GLYPHS else EDGE
+
+
 SLOGAN = "The way it's meant to be trained"
 """Shown with the mark: beside it where there is room, stacked under it where there is not."""
 
 SLOGAN_STACKED = ("The way it's meant", "to be trained")
 """The slogan split for a narrow slot, where one line would not fit."""
+
+IL3 = (
+    "██╗██╗     ██████╗",
+    "██║██║     ╚════██╗",
+    "██║██║      █████╔╝",
+    "██║██║      ╚═══██╗",
+    "██║███████╗██████╔╝",
+    "╚═╝╚══════╝╚═════╝",
+)
+"""Isaac Lab 3, short. Same block letters as the wordmark, so the two read as one family."""
 
 SLOGAN_COLOUR = (150, 154, 160)
 """Slogan grey. Quieter than the mark, which should stay the thing the eye lands on."""
@@ -92,8 +112,8 @@ def _draw(canvas: Canvas, span: int) -> None:
 
     Shape, fit and alpha threshold all come from :func:`mask`.
     """
-    for y, row in enumerate(mask(span, canvas.height)):
-        for x, ink in enumerate(row):
+    for y, line in enumerate(mask(span, canvas.height)):
+        for x, ink in enumerate(line):
             if ink:
                 canvas.set(x, y, GREEN)
 
@@ -117,27 +137,42 @@ def frames(cols: int, rows: int) -> list[str]:
 
     Returns a single frame: this greeting is still.
 
-    The slogan sits beside the mark where a line of it fits, and stacked underneath where it
-    does not. Composing each frame from pieces of known width keeps every line exactly *cols*
-    cells wide, which the loading screen needs if the greeting is not to wrap.
+    Wide enough, and the mark is paired with the :data:`IL3` lockup and captioned underneath.
+    Too narrow for the pair, and the mark stands alone over the slogan split across two lines.
+    Composing each frame from pieces of known width keeps every line exactly *cols* cells wide,
+    which the loading screen needs if the greeting is not to wrap.
     """
-    gap = 2
-    beside = cols >= (rows * 2) + gap + len(SLOGAN)
+    paired = cols >= ((rows - 2) * 2) + GAP + max(len(part) for part in IL3)
 
-    if beside:
-        art_cols = rows * 2
-        canvas = Canvas(art_cols, rows)
+    if paired:
+        # the mark takes the upper rows, the lockup sits beside it, the slogan spans the whole
+        # width below. Three pieces of known width, so every line lands at exactly *cols*
+        art_rows = rows - 2
+        mark_cols = art_rows * 2
+        canvas = Canvas(mark_cols, art_rows)
         _draw(canvas, canvas.width)
         art = canvas.render().splitlines()
-        middle = rows // 2
+        lockup_width = max(len(part) for part in IL3)
+        block = mark_cols + GAP + lockup_width
+        left = max((cols - block) // 2, 0)
+        top = (art_rows - len(IL3)) // 2
+
         lines = []
-        for row, line in enumerate(art):
-            tail = SLOGAN if row == middle else ""
+        for index, line in enumerate(art):
+            part = IL3[index - top] if 0 <= index - top < len(IL3) else ""
             lines.append(
-                line + _centre(tail, cols - art_cols, SLOGAN_COLOUR)
-                if tail
-                else line + "\x1b[0m" + " " * (cols - art_cols)
+                "\x1b[0m"
+                + " " * left
+                + line
+                + "\x1b[0m"
+                + " " * GAP
+                + row(part, lockup_width, 0, _letter)
+                + "\x1b[0m"
+                + " " * max(cols - left - block, 0)
             )
+        lines.append("\x1b[0m" + " " * cols)
+        lines.append(_centre(SLOGAN, cols, SLOGAN_COLOUR))
+        lines += ["\x1b[0m" + " " * cols] * (rows - len(lines))
         return ["\n".join(lines)]
 
     # stacked: the mark takes the rows the slogan does not need
