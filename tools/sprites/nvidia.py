@@ -33,6 +33,14 @@ GREEN = (118, 185, 0)
 GAP = 3
 """Cells between the mark and the lockup."""
 
+MARK_CELLS = 24
+"""Cells the mark is drawn across, the same as the narrow slot is wide.
+
+:func:`mask` fits the mark by width, since it is half again as wide as it is tall, so the
+canvas width alone decides how much detail survives. Drawing it narrower here than in the
+narrow slot would render the wide greeting's mark at lower resolution than the small one's.
+"""
+
 
 def _letter(glyph: str, _index: int) -> tuple[int, int, int]:
     """Face green for the solid blocks, a darker shade for the box-drawing edges."""
@@ -142,13 +150,13 @@ def frames(cols: int, rows: int) -> list[str]:
     Composing each frame from pieces of known width keeps every line exactly *cols* cells wide,
     which the loading screen needs if the greeting is not to wrap.
     """
-    paired = cols >= ((rows - 2) * 2) + GAP + max(len(part) for part in IL3)
+    paired = cols >= MARK_CELLS + GAP + max(len(part) for part in IL3)
 
     if paired:
         # the mark takes the upper rows, the lockup sits beside it, the slogan spans the whole
         # width below. Three pieces of known width, so every line lands at exactly *cols*
         art_rows = rows - 2
-        mark_cols = art_rows * 2
+        mark_cols = MARK_CELLS
         canvas = Canvas(mark_cols, art_rows)
         _draw(canvas, canvas.width)
         art = canvas.render().splitlines()
