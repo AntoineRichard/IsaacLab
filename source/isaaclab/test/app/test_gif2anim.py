@@ -60,10 +60,12 @@ def png(tmp_path):
     return make
 
 
-def test_sizes_match_the_loading_screen_slots():
+def test_every_loading_screen_slot_has_a_name_on_the_command_line():
     from isaaclab.app import anims
 
-    assert set(gif2anim.SIZES.values()) == set(anims.SLOTS)
+    # SIZES takes its geometry from SLOTS, so what can still go wrong is a slot being added
+    # to the runtime with no way to ask the converter for it
+    assert sorted(gif2anim.SIZES.values()) == sorted(anims.SLOTS)
 
 
 @pytest.mark.parametrize("size", sorted(gif2anim.SIZES))
@@ -128,16 +130,9 @@ def test_from_module_rejects_a_module_outside_the_sprite_package():
         gif2anim.from_module("os.path", "wide", name="nope")
 
 
-def test_a_narrow_source_is_padded_not_stretched(png):
-    # a square source in the wide slot must keep its shape and gain transparent sides
-    cols, rows = gif2anim.SIZES["wide"]
-    animation = gif2anim.convert(png(64, 64), "wide", name="square")
-    widest = max(ink_width(row) for row in animation.frames[0].splitlines())
-    assert widest < cols, "the source filled the slot, so it was stretched rather than padded"
-
-
 def test_padding_keeps_the_source_aspect(png):
-    # a square mark is as wide as it is tall; the slot is rows*2 units tall in display terms
+    # a square mark is as wide as it is tall; the slot is rows*2 units tall in display terms.
+    # Landing near rows*2 rather than at cols is also what says it was padded, not stretched
     cols, rows = gif2anim.SIZES["wide"]
     animation = gif2anim.convert(png(64, 64), "wide", name="square")
     widest = max(ink_width(row) for row in animation.frames[0].splitlines())

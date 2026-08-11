@@ -5,6 +5,7 @@
 
 """Tests for the responsive console loading screen."""
 
+import zlib
 from io import StringIO
 from unittest.mock import Mock
 
@@ -17,6 +18,13 @@ from isaaclab.app import anims, loading_screen
 _SUMMARY_WIDTH = 50
 """The width the summary box is locked to; anything beyond it on a box row is the greeting."""
 
+_COLUMN_GAP = 6
+"""Columns between the summary box and the greeting.
+
+Restated here rather than imported so the layout the screen promises is pinned by the test
+instead of read back out of the code it is checking.
+"""
+
 _ALT_SCREEN_ON = "\x1b[?1049h"
 _ALT_SCREEN_OFF = "\x1b[?1049l"
 
@@ -27,19 +35,35 @@ def _render(display: RenderableType, width: int) -> str:
     return stream.getvalue()
 
 
+def _pin_greetings(monkeypatch) -> None:
+    """Replace the random pick with one solid block per slot.
+
+    Layout tests must not depend on which art was drawn. Real greetings carry their shape in
+    colour, and these render without it, so a greeting whose cells are all background collapses
+    to spaces that the console then strips -- making the measured width depend on the draw.
+    """
+    pinned = tuple(
+        anims.Animation(f"pinned-{cols}", cols, rows, ("\n".join(["█" * cols] * rows),)) for cols, rows in anims.SLOTS
+    )
+    monkeypatch.setattr(anims, "choose", lambda *a, **k: pinned)
+
+
 @pytest.mark.parametrize(
-    ("terminal_width", "display_width", "greeted"),
+    ("terminal_width", "display_width", "greeting_cols"),
     [
-        (4, 4, False),
-        (5, 5, False),
-        (79, 79, False),
-        (80, 80, True),
-        (119, 80, True),
-        (120, 120, True),
-        (140, 120, True),
+        (4, 4, None),
+        (5, 5, None),
+        (79, 79, None),
+        (80, 80, 24),
+        (119, 80, 24),
+        (120, 120, 64),
+        (140, 120, 64),
     ],
 )
-def test_display_reflows_at_responsive_boundaries(terminal_width: int, display_width: int, greeted: bool):
+def test_display_reflows_at_responsive_boundaries(
+    monkeypatch, terminal_width: int, display_width: int, greeting_cols: int | None
+):
+    _pin_greetings(monkeypatch)
     screen = loading_screen.LoadingScreen(2, enabled=True)
     screen.summary("Run", {"Task": "Cartpole", "Description": "A long description that wraps cleanly."})
     screen.stage("Loading task")
@@ -49,11 +73,13 @@ def test_display_reflows_at_responsive_boundaries(terminal_width: int, display_w
 
     assert max(map(cell_len, lines)) <= display_width
     assert cell_len(lines[-1]) == display_width
-    # the greeting is data now, so this asserts that one is shown at all rather than which
-    # art it is: a box row wider than the box itself means something sits beside it
-    box_rows = [line for line in lines if line.startswith("╭")]
-    assert bool(box_rows) is True
-    assert (cell_len(box_rows[0]) > _SUMMARY_WIDTH) is greeted
+    # measures how many columns the greeting took beside the box. Picking the wide art for the
+    # narrow slot is the failure this guards, and it shows up here as the wrong count.
+    box_row = next(line for line in lines if line.startswith("╭"))
+    if greeting_cols is None:
+        assert cell_len(box_row) == min(_SUMMARY_WIDTH, display_width)
+    else:
+        assert cell_len(box_row) - _SUMMARY_WIDTH - _COLUMN_GAP == greeting_cols
     if terminal_width >= 79:
         assert "Loading task" in lines[-1]
         assert "cleanly." in output
@@ -177,4 +203,12 @@ def test_an_unknown_name_falls_back_rather_than_raising(monkeypatch):
 
 def test_unreadable_greetings_fall_back_to_the_builtin_logos(monkeypatch):
     monkeypatch.setattr(anims, "choose", lambda *a, **k: (_ for _ in ()).throw(LookupError("boom")))
+    assert loading_screen.LoadingScreen(1, enabled=False)._logos == (loading_screen.LOGO, loading_screen.LOGO_WIDE)
+
+
+@pytest.mark.parametrize("error", [zlib.error("invalid block type"), EOFError("ended before end-of-stream")])
+def test_a_damaged_container_costs_the_greeting_not_the_launch(monkeypatch, error):
+    # what a half-written or truncated container raises out of gzip. Neither descends from
+    # OSError or ValueError, so listing those two let a bad file abort startup outright
+    monkeypatch.setattr(anims, "choose", lambda *a, **k: (_ for _ in ()).throw(error))
     assert loading_screen.LoadingScreen(1, enabled=False)._logos == (loading_screen.LOGO, loading_screen.LOGO_WIDE)

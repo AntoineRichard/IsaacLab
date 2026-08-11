@@ -158,9 +158,9 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 def _block_width(block: str) -> int:
     """Return the width of the widest line in a multiline text block.
 
-    Escapes are stripped first. A greeting carries its colour inline, and counting those
-    sequences as printable made a 24-column greeting measure 111 -- wide enough to be judged
-    unfittable at every terminal size, so it would silently never be shown.
+    Escapes are stripped first: a greeting carries its colour inline, and those sequences
+    occupy no terminal columns. Measuring them as if they did inflates a greeting's width
+    several times over, and it is then judged too wide to fit at any terminal size.
     """
     return max((cell_len(_ANSI.sub("", line)) for line in block.splitlines()), default=0)
 

@@ -1,8 +1,8 @@
 # Rendering images as terminal art
 
-Notes on how `img2quad.py`, `img2half.py` and the animation sprites work, and the traps that
-cost the most time. The short version: **a terminal cell is not a pixel**, and almost every
-bad-looking conversion comes from pretending it is.
+How `anim_encode.py` turns pixels into terminal frames, what `gif2anim.py` does with it, and
+the constraints that decide whether a conversion looks right. The short version: **a terminal
+cell is not a pixel**, and almost every bad-looking conversion comes from pretending it is.
 
 ## 1. What a terminal cell actually is
 
@@ -52,7 +52,7 @@ quadrant subpixel   : cell_w/2 x cell_h/2 -> 1:2, twice as tall as wide
 
 So with quadrant encoding, **a square source image rendered at N x N subpixels comes out
 stretched 2x vertically**. Either author pre-squashed (in Aseprite: `Sprite > Properties >
-Pixel Aspect Ratio = 1:2`), or resample with the correction built in, as `img2quad.load()`
+Pixel Aspect Ratio = 1:2`), or resample with the correction built in, as `gif2anim._sample()`
 does:
 
 ```python
@@ -83,7 +83,7 @@ for mask in range(16):
 ```
 
 A block containing **at most two distinct colours reproduces exactly**, whatever the shape of
-the boundary between them. Measured on the walking sprite across 24 frames:
+the boundary between them. Measured across one 24-frame sprite:
 
 | | one colour per cell | two colours per cell |
 |---|---|---|
@@ -109,17 +109,20 @@ if any(p is None for p in quad):
 return f"\x1b[38;2;{fg}m\x1b[48;2;{bg}m{glyph}"  # two colours, opaque
 ```
 
-## 6. Gotchas that cost real time
+## 6. Performance and fidelity constraints
 
-**Gradients are expensive.** Flat-colour art compresses ~7x better than gradients: the walking
-robot is 4.5 KB gzipped, a logo with a smooth sheen is 21.8 KB. More colours per cell also
-means more blocks needing three or four, which the two-colour encoder can only approximate —
-adding shading took our exact-reproduction rate from 95.8% down to 90.2%.
+**Gradients are expensive.** Flat-colour art compresses ~7x better than gradients: a
+flat-shaded 24-frame sprite is 4.5 KB gzipped, a logo with a smooth sheen is 21.8 KB. More
+colours per cell also means more blocks needing three or four, which the two-colour encoder can
+only approximate — adding shading takes the exact-reproduction rate from 95.8% to 90.2%.
+
+Quantise a gradient to a couple of dozen steps and most of that cost goes away: the banding is
+invisible against the block glyphs, but the frames compress like flat colour again.
 
 **Monochrome fallback is nearly useless.** Strip colour from a two-colour render and every
 fully-covered cell collapses to `█`, because the glyph was carrying *colour* boundaries, not
 coverage. Do not judge a render from a colour-stripped dump — it will look broken when it
-is not. (I did this repeatedly and misdiagnosed working output as buggy.)
+is not.
 
 **Escapes dominate the byte count.** Emitting colour for every cell regardless of whether it
 changed took a 24-frame cycle to 182 KB raw; suppressing repeats cut it to 114 KB, and gzip
@@ -153,12 +156,17 @@ frame 0.
 |---|---|
 | `gif2anim.py` | GIF, image, or procedural sprite to a shipped greeting |
 | `anim_view.py` | look at a greeting, on its own or beside a mock run summary |
-| `sprites/` | procedural greetings; `canvas.py` holds the drawing surface and encoder |
+| `anim_encode.py` | the drawing surface and the two-colour encoder |
+| `sprites/` | procedural greetings; `probe.py` is the worked example |
 
 Greetings live in `source/isaaclab/isaaclab/app/anims/` and are declared as package data, so a
 new one is picked up by dropping the `.anim` file there -- no code change. The loading screen
 chooses one per display width at random each run; `ISAACLAB_LOADING_ANIM=<name>` pins one and
 `=none` silences it.
+
+The rendered `.anim` files are the artefact; the sprites that drew the shipped ones are not
+kept in the tree, since they would be a second copy of the same art to keep in step. They are
+on the `antoiner/loading-screen-sprites` branch if a greeting ever needs redrawing.
 
 Build one, then look at it:
 
@@ -167,8 +175,8 @@ Build one, then look at it:
 uv run python tools/gif2anim.py logo.png --size wide --name my-wide --out /tmp/out
 
 # from a procedural sprite, which already draws at the target grid
-uv run python tools/gif2anim.py --from-module tools.sprites.walker --size wide \
-    --name walker-wide --out /tmp/out
+uv run python tools/gif2anim.py --from-module tools.sprites.probe --size wide \
+    --name my-sprite-wide --out /tmp/out
 
 uv run python tools/anim_view.py /tmp/out/my-wide.anim          # play it
 uv run python tools/anim_view.py my-wide --beside               # as the screen shows it
@@ -178,19 +186,17 @@ uv run python tools/anim_view.py --all                          # compare everyt
 `--beside` is the view worth trusting: a greeting can look fine alone and wrong in place --
 too tall for the summary box, or so narrow the gap swallows it.
 
-## 9. Things that bit us
+## 9. Non-obvious rules
 
-Recorded because each cost real time and none is obvious.
+Each of these has a correct form that is not the one you reach for first.
 
 **Measure ink by colour, not by glyph.** A uniform block encodes as a *space with a background
 colour*, because the tie-break prefers the fewest foreground pixels. Any check that counts
-non-space characters reads a fully filled row as empty. This caused three separate false
-diagnoses.
+non-space characters reads a fully filled row as empty.
 
 **Centre a block, not its rows.** Centring each row on its own length gives rows of different
 length different offsets, which shifts them relative to each other and destroys any alignment
-the art was drawn with. The original greeting's antenna sits over the centre of its face;
-per-row centring moved it a column off.
+the art was drawn with, such as an antenna meant to sit over the centre of a face.
 
 **Colour existing characters rather than redrawing them.** Wordmarks and line art are already
 glyphs. Tinting them keeps the terminal font's own crispness; resampling them into a pixel
@@ -211,5 +217,6 @@ should close does not. Take ``phase %= 1.0`` at the top of every frame function.
 ``mtime=0`` is passed, which turns every regeneration into a spurious diff on a binary file
 nobody can review.
 
-Feed the converter a PNG with a real alpha channel. GIF's 1-bit transparency gives hard edges,
-and a baked-in background leaves a dark fringe on every anti-aliased pixel.
+**Feed the converter a PNG, not a GIF, for anything with transparency.** GIF's 1-bit
+transparency gives hard edges, and a baked-in background leaves a dark fringe on every
+anti-aliased pixel.

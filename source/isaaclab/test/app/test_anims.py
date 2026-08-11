@@ -15,24 +15,20 @@ from isaaclab.app import anims
 
 pytestmark = pytest.mark.unit
 
-SLOTS = {(24, 12), (64, 12)}
-"""The two greeting sizes the loading screen has room for."""
 
-
-def test_round_trip_preserves_frames():
-    original = anims.Animation("demo", 4, 2, ("ab\ncd", "ef\ngh"))
+@pytest.mark.parametrize(
+    "original",
+    [
+        anims.Animation("demo", 4, 2, ("ab\ncd", "ef\ngh")),
+        # one frame: no separator is written at all, which is its own path through pack
+        anims.Animation("static", 2, 1, ("ab",)),
+        # frames are pre-rendered terminal output, so the escapes must survive untouched
+        anims.Animation("colour", 1, 1, ("\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m▀\x1b[0m",)),
+    ],
+    ids=["many-frames", "one-frame", "colour-escapes"],
+)
+def test_round_trip_preserves_the_greeting(original):
     assert anims.unpack(anims.pack(original)) == original
-
-
-def test_round_trip_preserves_colour_escapes():
-    # frames are pre-rendered terminal output; the container must not touch the escapes
-    frame = "\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m▀\x1b[0m"
-    assert anims.unpack(anims.pack(anims.Animation("colour", 1, 1, (frame,)))).frames == (frame,)
-
-
-def test_round_trip_preserves_a_single_frame():
-    original = anims.Animation("static", 2, 1, ("ab",))
-    assert anims.unpack(anims.pack(original)).frames == ("ab",)
 
 
 def test_pack_is_deterministic():
@@ -65,22 +61,23 @@ def test_unpack_rejects_a_frame_count_that_disagrees_with_the_header():
 
 def test_every_shipped_animation_loads_and_matches_its_header():
     names = anims.available()
-    assert names, "no animations are shipped"
-    for name in names:
-        animation = anims.load(name)
-        assert animation.frames, name
-        for frame in animation.frames:
-            assert len(frame.splitlines()) == animation.rows, name
-
-
-def test_shipped_animations_use_a_known_slot_size():
-    names = anims.available()
     # without this the loop body never runs when nothing is shipped, and the test passes
     # while checking nothing at all
     assert names, "no animations are shipped"
     for name in names:
         animation = anims.load(name)
-        assert (animation.cols, animation.rows) in SLOTS, name
+        assert animation.frames, name
+        assert (animation.cols, animation.rows) in set(anims.SLOTS), name
+        for frame in animation.frames:
+            assert len(frame.splitlines()) == animation.rows, name
+
+
+def test_unpack_rejects_a_truncated_container():
+    # what an interrupted copy leaves behind. EOFError descends from neither OSError nor
+    # ValueError, which is why the loading screen's fallback cannot enumerate its way to safety
+    blob = anims.pack(anims.Animation("demo", 1, 1, ("x",)))
+    with pytest.raises(EOFError):
+        anims.unpack(blob[:-5])
 
 
 def test_choose_returns_one_animation_per_slot():

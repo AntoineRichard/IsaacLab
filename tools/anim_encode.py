@@ -3,7 +3,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Drawing surface and encoder shared by the sprites and the image converter.
+"""Drawing surface and encoder for loading screen greetings.
+
+:func:`encode` and :func:`render` turn a pixel grid into terminal frames; ``tools/gif2anim.py``
+uses them for images, and :class:`Canvas` is the surface a procedural sprite draws on.
 
 A greeting is a grid of quadrant subpixels: two across and two down per character cell, so a
 ``cols`` x ``rows`` greeting is drawn on a ``cols * 2`` x ``rows * 2`` pixel buffer.
@@ -93,7 +96,7 @@ def render(pixels: list[list[RGB | None]], cols: int, rows: int) -> str:
     """Pack a subpixel grid into styled quadrant rows.
 
     A colour is emitted only when it differs from the previous cell's; repeating it for every
-    cell roughly doubles the byte count, which matters when the frames ship in the wheel.
+    cell grows the raw frame by about half, which matters when the frames ship in the wheel.
 
     Args:
         pixels: ``rows * 2`` rows of ``cols * 2`` colours, None where transparent.

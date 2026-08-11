@@ -3,7 +3,11 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""A trivial sprite: a bar sweeping left to right. Exists to exercise the tooling."""
+"""A bar sweeping left to right: the smallest complete example of a procedural sprite.
+
+Shows the whole contract -- ``frames(cols, rows)`` returning rendered terminal frames at
+exactly that size -- in a form short enough to read at a glance and copy.
+"""
 
 from __future__ import annotations
 

@@ -6,11 +6,11 @@
 """Look at loading screen greetings without starting a simulator.
 
     uv run python tools/anim_view.py                    # list what is shipped
-    uv run python tools/anim_view.py walker-wide        # play it
-    uv run python tools/anim_view.py walker-wide --frame 6
+    uv run python tools/anim_view.py sunset-wide        # play it
+    uv run python tools/anim_view.py sunset-wide --frame 6
     uv run python tools/anim_view.py out/new.anim       # a file that is not installed yet
     uv run python tools/anim_view.py --all              # one frame of each, side by side
-    uv run python tools/anim_view.py walker-wide --beside   # as the loading screen shows it
+    uv run python tools/anim_view.py sunset-wide --beside   # as the loading screen shows it
 
 Playback runs on the alternate screen buffer and draws every line at an absolute position.
 Both matter: the terminal's scrollback is left untouched, and a resize mid-playback needs no
@@ -42,7 +42,18 @@ def _plain(text: str) -> str:
 
 
 def resolve(target: str) -> Animation:
-    """Load a greeting by shipped name or by path to a container file."""
+    """Load a greeting by shipped name or by path to a container file.
+
+    Args:
+        target: A name from :func:`~isaaclab.app.anims.available`, or a path to a ``.anim``
+            file that is not installed yet.
+
+    Returns:
+        The greeting.
+
+    Raises:
+        KeyError: If *target* is neither a readable file nor a shipped name.
+    """
     path = Path(target)
     if path.is_file():
         return unpack(path.read_bytes())
@@ -50,7 +61,11 @@ def resolve(target: str) -> Animation:
 
 
 def summarise() -> int:
-    """List the shipped greetings with their size and frame count."""
+    """List the shipped greetings with their size and frame count.
+
+    Returns:
+        A process exit code: non-zero if nothing is shipped to list.
+    """
     names = available()
     if not names:
         print("no greetings are shipped yet")
@@ -66,7 +81,11 @@ def summarise() -> int:
 
 
 def contact_sheet() -> int:
-    """Print one frame of every greeting, labelled, so they can be compared at a glance."""
+    """Print one frame of every greeting, labelled, so they can be compared at a glance.
+
+    Returns:
+        A process exit code.
+    """
     for name in available():
         animation = load(name)
         print(f"\x1b[1m{name}\x1b[0m  {animation.cols}x{animation.rows}, {len(animation.frames)} frame(s)")
@@ -104,7 +123,16 @@ def beside_summary(animation: Animation, frame: str) -> str:
 
 
 def play(animation: Animation, fps: float, beside: bool) -> int:
-    """Loop a greeting on the alternate screen until interrupted."""
+    """Loop a greeting on the alternate screen until interrupted.
+
+    Args:
+        animation: The greeting to play.
+        fps: Frames drawn per second.
+        beside: Whether to lay each frame out beside a mock run summary.
+
+    Returns:
+        A process exit code, once Ctrl-C stops playback.
+    """
     write = sys.stdout.write
     write("\x1b[?1049h\x1b[?25l")
     try:

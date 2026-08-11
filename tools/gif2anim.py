@@ -23,8 +23,8 @@ cell carries a foreground and a background, and the glyph is chosen to split the
 least error. See that document before changing anything here.
 
     uv run python tools/gif2anim.py logo.png --size wide --name nvidia-wide --out DIR
-    uv run python tools/gif2anim.py --from-module tools.sprites.walker --size small \\
-        --name walker-small --out DIR
+    uv run python tools/gif2anim.py --from-module tools.sprites.probe --size small \\
+        --name probe-small --out DIR
 """
 
 from __future__ import annotations
@@ -41,12 +41,16 @@ _ROOT = Path(__file__).resolve().parents[1]
 # not importable when this script is run by path rather than as a module
 sys.path[:0] = [str(_ROOT), str(_ROOT / "source" / "isaaclab")]
 
-from isaaclab.app.anims import Animation, pack  # noqa: E402
+from isaaclab.app.anims import SLOTS, Animation, pack  # noqa: E402
 
-from tools.sprites.canvas import render  # noqa: E402
+from tools.anim_encode import render  # noqa: E402
 
-SIZES = {"small": (24, 12), "wide": (64, 12)}
-"""Target sizes in character cells, keyed by the loading screen slot they fill."""
+SIZES = dict(zip(("small", "wide"), SLOTS))
+"""Target sizes in character cells, keyed by the loading screen slot they fill.
+
+The geometry comes from :data:`~isaaclab.app.anims.SLOTS` rather than being repeated here, so
+a slot that changes shape cannot leave the converter writing greetings the runtime rejects.
+"""
 
 SPRITE_PACKAGE = "tools.sprites"
 """Procedural sprites must live here, so ``--from-module`` cannot import arbitrary code."""
@@ -62,7 +66,7 @@ def _sample(
 
     A quadrant subpixel is half a cell wide but a whole cell tall, so it displays twice as
     tall as it is wide. Any sizing has to account for that or the result comes out stretched
-    vertically -- the single most common way terminal art goes wrong.
+    vertically.
 
     Args:
         image: Source frame.
