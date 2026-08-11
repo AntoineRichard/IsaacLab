@@ -93,7 +93,6 @@ def test_choose_is_deterministic_for_a_seeded_generator():
     assert anims.choose(random.Random(7)) == anims.choose(random.Random(7))
 
 
-@pytest.mark.xfail(strict=True, reason="only one greeting per slot so far; passes once the set is complete")
 def test_choose_varies_across_seeds():
     picks = {anims.choose(random.Random(seed))[1].name for seed in range(20)}
     assert len(picks) > 1, "every seed picked the same wide greeting"

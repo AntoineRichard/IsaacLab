@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from isaaclab.app import anims  # noqa: E402
+
 from tools import anim_view  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -45,7 +46,9 @@ def test_beside_summary_keeps_the_box_square():
     animation = anims.load(anims.available()[0])
     laid_out = anim_view.beside_summary(animation, animation.frames[0])
     # every box line must be the same width, or the border visibly steps in and out
-    widths = {len(plain(line)[:50].rstrip()) for line in laid_out.splitlines() if plain(line).startswith(("╭", "│", "╰"))}
+    widths = {
+        len(plain(line)[:50].rstrip()) for line in laid_out.splitlines() if plain(line).startswith(("╭", "│", "╰"))
+    }
     assert widths == {50}
 
 
