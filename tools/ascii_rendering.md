@@ -155,6 +155,11 @@ frame 0.
 | `anim_view.py` | look at a greeting, on its own or beside a mock run summary |
 | `sprites/` | procedural greetings; `canvas.py` holds the drawing surface and encoder |
 
+Greetings live in `source/isaaclab/isaaclab/app/anims/` and are declared as package data, so a
+new one is picked up by dropping the `.anim` file there -- no code change. The loading screen
+chooses one per display width at random each run; `ISAACLAB_LOADING_ANIM=<name>` pins one and
+`=none` silences it.
+
 Build one, then look at it:
 
 ```bash
@@ -172,6 +177,39 @@ uv run python tools/anim_view.py --all                          # compare everyt
 
 `--beside` is the view worth trusting: a greeting can look fine alone and wrong in place --
 too tall for the summary box, or so narrow the gap swallows it.
+
+## 9. Things that bit us
+
+Recorded because each cost real time and none is obvious.
+
+**Measure ink by colour, not by glyph.** A uniform block encodes as a *space with a background
+colour*, because the tie-break prefers the fewest foreground pixels. Any check that counts
+non-space characters reads a fully filled row as empty. This caused three separate false
+diagnoses.
+
+**Centre a block, not its rows.** Centring each row on its own length gives rows of different
+length different offsets, which shifts them relative to each other and destroys any alignment
+the art was drawn with. The original greeting's antenna sits over the centre of its face;
+per-row centring moved it a column off.
+
+**Colour existing characters rather than redrawing them.** Wordmarks and line art are already
+glyphs. Tinting them keeps the terminal font's own crispness; resampling them into a pixel
+grid can only soften them. Text drawn as quadrant blocks at these sizes is unreadable, while
+the same text emitted as characters is perfectly legible -- and a frame is just lines of
+terminal output, so the two mix freely.
+
+**Symmetric motion wastes frames.** A sine swing puts phase *p* and *0.5 - p* in the same
+place, so half the frames render identically. Giving a trailing part a small phase lag -- a
+wrist behind an arm, a tail behind a body -- makes the return stroke differ from the outward
+one and is truer to how things move anyway.
+
+**Normalise phase before drawing.** ``sin(-1.2*pi)`` and ``sin(6.8*pi)`` are equal in maths and
+not in floating point, and the difference is enough to flip a rounded pixel -- so a cycle that
+should close does not. Take ``phase %= 1.0`` at the top of every frame function.
+
+**Gzip stamps a timestamp.** Packing unchanged art twice produces different bytes unless
+``mtime=0`` is passed, which turns every regeneration into a spurious diff on a binary file
+nobody can review.
 
 Feed the converter a PNG with a real alpha channel. GIF's 1-bit transparency gives hard edges,
 and a baked-in background leaves a dark fringe on every anti-aliased pixel.

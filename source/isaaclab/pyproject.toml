@@ -39,4 +39,6 @@ where = ["."]
 include = ["isaaclab", "isaaclab.*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.pyi"]
+# app/anims holds the loading screen greetings: pre-rendered terminal frames, not code, so
+# they need declaring here or the wheel installs a package that greets with nothing
+"*" = ["*.pyi", "app/anims/*.anim"]
