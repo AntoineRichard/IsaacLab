@@ -30,7 +30,6 @@ least error. See that document before changing anything here.
 from __future__ import annotations
 
 import argparse
-import functools
 import importlib
 import sys
 from pathlib import Path
@@ -44,6 +43,8 @@ sys.path[:0] = [str(_ROOT), str(_ROOT / "source" / "isaaclab")]
 
 from isaaclab.app.anims import Animation, pack  # noqa: E402
 
+from tools.sprites.canvas import render  # noqa: E402
+
 SIZES = {"small": (24, 12), "wide": (64, 12)}
 """Target sizes in character cells, keyed by the loading screen slot they fill."""
 
@@ -52,99 +53,6 @@ SPRITE_PACKAGE = "tools.sprites"
 
 MAX_FRAMES = 24
 """Frames kept from a source unless ``--frames`` says otherwise."""
-
-QUAD = {
-    0b0000: " ",
-    0b0001: "▘",
-    0b0010: "▝",
-    0b0011: "▀",
-    0b0100: "▖",
-    0b0101: "▌",
-    0b0110: "▞",
-    0b0111: "▛",
-    0b1000: "▗",
-    0b1001: "▚",
-    0b1010: "▐",
-    0b1011: "▜",
-    0b1100: "▄",
-    0b1101: "▙",
-    0b1110: "▟",
-    0b1111: "█",
-}
-"""Quadrant blocks indexed by a 2x2 occupancy mask, bit 0 top-left through bit 3 bottom-right."""
-
-
-def _mean(colours):
-    """Average of a non-empty list of colours."""
-    n = len(colours)
-    return tuple(sum(c[i] for c in colours) // n for i in range(3))
-
-
-def _error(quad, mask, fg, bg) -> int:
-    """Squared RGB error of reproducing *quad* with *mask* split into *fg* and *bg*."""
-    return sum(sum((a - b) ** 2 for a, b in zip(px, fg if mask >> i & 1 else bg)) for i, px in enumerate(quad))
-
-
-@functools.cache
-def _encode(quad) -> tuple[str, tuple | None, tuple | None]:
-    """Choose the glyph and colours that best reproduce one 2x2 block.
-
-    Returns:
-        The glyph, its foreground colour, and its background colour. The background is None
-        where the block is partly transparent, so the greeting composites over the terminal
-        instead of painting a box around itself.
-    """
-    if all(p is None for p in quad):
-        return " ", None, None
-    if any(p is None for p in quad):
-        inked = [p for p in quad if p is not None]
-        mask = sum(1 << i for i, p in enumerate(quad) if p is not None)
-        return QUAD[mask], _mean(inked), None
-    best = None
-    for mask in range(16):
-        front = [p for i, p in enumerate(quad) if mask >> i & 1]
-        back = [p for i, p in enumerate(quad) if not mask >> i & 1]
-        fg = _mean(front) if front else _mean(back)
-        bg = _mean(back) if back else _mean(front)
-        score = (_error(quad, mask, fg, bg), len(front), mask)
-        if best is None or score < best[0]:
-            best = (score, mask, fg, bg)
-    _, mask, fg, bg = best
-    return QUAD[mask], fg, bg
-
-
-def render(pixels: list[list[tuple | None]], cols: int, rows: int) -> str:
-    """Pack a subpixel grid into styled quadrant rows.
-
-    A colour is emitted only when it differs from the previous cell's. Repeating it for every
-    cell roughly doubles the byte count and buys nothing, which matters when the frames ship
-    in the wheel.
-
-    Args:
-        pixels: ``rows * 2`` rows of ``cols * 2`` RGB tuples, None where transparent.
-        cols: Output width in cells.
-        rows: Output height in cells.
-
-    Returns:
-        The frame, without a trailing newline.
-    """
-    lines = []
-    for row in range(rows):
-        line, current = "", None
-        for col in range(cols):
-            quad = tuple(pixels[row * 2 + dy][col * 2 + dx] for dy in (0, 1) for dx in (0, 1))
-            glyph, fg, bg = _encode(quad)
-            style = (fg, bg)
-            if style != current:
-                line += "\x1b[0m"
-                if fg is not None:
-                    line += f"\x1b[38;2;{fg[0]};{fg[1]};{fg[2]}m"
-                if bg is not None:
-                    line += f"\x1b[48;2;{bg[0]};{bg[1]};{bg[2]}m"
-                current = style
-            line += glyph
-        lines.append(line + "\x1b[0m")
-    return "\n".join(lines)
 
 
 def _sample(

@@ -67,7 +67,10 @@ def pack(animation: Animation) -> bytes:
         "version": VERSION,
     }
     body = _SEPARATOR.join(frame.encode() for frame in animation.frames)
-    return gzip.compress(json.dumps(header, separators=(",", ":")).encode() + b"\n" + body, 9)
+    # mtime=0 keeps this deterministic: gzip stamps the current time into its header by
+    # default, so packing unchanged art would produce different bytes every time and show up
+    # as a spurious diff on every regeneration
+    return gzip.compress(json.dumps(header, separators=(",", ":")).encode() + b"\n" + body, 9, mtime=0)
 
 
 def unpack(blob: bytes) -> Animation:

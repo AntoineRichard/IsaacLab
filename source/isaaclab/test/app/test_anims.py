@@ -35,6 +35,12 @@ def test_round_trip_preserves_a_single_frame():
     assert anims.unpack(anims.pack(original)).frames == ("ab",)
 
 
+def test_pack_is_deterministic():
+    # gzip stamps a timestamp unless told not to, which would make every regeneration a diff
+    animation = anims.Animation("demo", 2, 1, ("ab", "cd"))
+    assert anims.pack(animation) == anims.pack(animation)
+
+
 def test_pack_compresses():
     repetitive = anims.Animation("big", 8, 4, ("x" * 4000,) * 8)
     assert len(anims.pack(repetitive)) < 4000
@@ -57,7 +63,6 @@ def test_unpack_rejects_a_frame_count_that_disagrees_with_the_header():
         anims.unpack(gzip.compress(json.dumps(meta).encode() + b"\n" + body))
 
 
-@pytest.mark.xfail(strict=True, reason="no greetings are shipped until Task 3 adds them")
 def test_every_shipped_animation_loads_and_matches_its_header():
     names = anims.available()
     assert names, "no animations are shipped"
@@ -68,7 +73,6 @@ def test_every_shipped_animation_loads_and_matches_its_header():
             assert len(frame.splitlines()) == animation.rows, name
 
 
-@pytest.mark.xfail(strict=True, reason="no greetings are shipped until Task 3 adds them")
 def test_shipped_animations_use_a_known_slot_size():
     names = anims.available()
     # without this the loop body never runs when nothing is shipped, and the test passes
@@ -79,19 +83,17 @@ def test_shipped_animations_use_a_known_slot_size():
         assert (animation.cols, animation.rows) in SLOTS, name
 
 
-@pytest.mark.xfail(strict=True, reason="no greetings are shipped until Task 3 adds them")
 def test_choose_returns_one_animation_per_slot():
     small, wide = anims.choose(random.Random(0))
     assert (small.cols, small.rows) == (24, 12)
     assert (wide.cols, wide.rows) == (64, 12)
 
 
-@pytest.mark.xfail(strict=True, reason="no greetings are shipped until Task 3 adds them")
 def test_choose_is_deterministic_for_a_seeded_generator():
     assert anims.choose(random.Random(7)) == anims.choose(random.Random(7))
 
 
-@pytest.mark.xfail(strict=True, reason="no greetings are shipped until Task 3 adds them")
+@pytest.mark.xfail(strict=True, reason="only one greeting per slot so far; passes once the set is complete")
 def test_choose_varies_across_seeds():
     picks = {anims.choose(random.Random(seed))[1].name for seed in range(20)}
     assert len(picks) > 1, "every seed picked the same wide greeting"
@@ -102,7 +104,6 @@ def test_load_rejects_an_unknown_name():
         anims.load("no-such-greeting")
 
 
-@pytest.mark.xfail(strict=True, reason="no greetings are shipped until Task 3 adds them")
 def test_load_is_cached():
     name = anims.available()[0]
     assert anims.load(name) is anims.load(name)
