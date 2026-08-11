@@ -69,8 +69,7 @@ WRIST_LAG = 0.07
 
 Without it the wave is perfectly symmetric -- the hand retraces its own path, so the outward
 and return strokes render identically and half the frames are duplicates. A lag makes the
-return differ from the outward swing, which is both truer to how a hand moves and what earns
-the frames their bytes.
+return differ from the outward swing, and is truer to how a hand moves.
 """
 
 FRAMES = 24

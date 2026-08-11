@@ -3,11 +3,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""The original Isaac Lab greeting face, tinted, with its caption set below.
+"""The Isaac Lab greeting face, tinted by role, with its caption below.
 
-This is the drawing that shipped with the loading screen, kept rather than replaced. It only
-moves the caption from above the face to below it, so it sits where every other greeting puts
-its text, and colours the glyphs by role.
+Antenna arms take NVIDIA green, the eyes and antenna tip cyan, the panel cream. The caption
+sits under the face, where every other greeting puts its text.
 
 Like the wordmark, the art is left as characters and tinted in place. Redrawing five rows of
 line art into a pixel grid would only soften edges the terminal font already renders crisply.
@@ -24,10 +23,10 @@ FACE = (
     r" |   _   |",
     r" '-------'",
 )
-"""The face as shipped in :mod:`~isaaclab.app.loading_screen`, without its caption."""
+"""The face, without its caption."""
 
 CAPTION = "Welcome to Isaac Lab!"
-"""Moved below the face, matching the other greetings."""
+"""Set below the face, matching the caption position of the other greetings."""
 
 SHELL = (232, 228, 214)
 """Cream, for the panel the face is drawn on."""

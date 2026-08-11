@@ -101,6 +101,9 @@ def available() -> tuple[str, ...]:
 
     Sorted rather than left in directory order, so a run's choice depends only on its random
     seed and not on the filesystem it happens to be installed on.
+
+    Returns:
+        Every shipped greeting name, without the ``.anim`` suffix.
     """
     directory = resources.files(__package__) / "anims"
     if not directory.is_dir():
@@ -112,8 +115,8 @@ def available() -> tuple[str, ...]:
 def load(name: str) -> Animation:
     """Read a shipped greeting by name.
 
-    Cached, since a run uses at most one greeting per size and the loading screen asks for
-    the current frame on every refresh.
+    Cached because :func:`choose` reads every shipped greeting to sort them by size, and a
+    caller that then pins one asks for it a second time.
 
     Args:
         name: A name from :func:`available`.
@@ -134,8 +137,8 @@ def choose(rng: random.Random | None = None) -> tuple[Animation, ...]:
     """Pick one greeting for each size.
 
     Args:
-        rng: Generator to draw with, so callers can pin the choice. Defaults to the module
-            level generator, which gives a different greeting each run.
+        rng: Generator to draw with, so callers can pin the choice. Defaults to a freshly
+            seeded generator, which gives a different greeting each run.
 
     Returns:
         One greeting per entry in :data:`SLOTS`, narrowest first, ready to hand to the

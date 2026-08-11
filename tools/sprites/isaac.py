@@ -81,8 +81,14 @@ def block_left(body: list[str], cols: int) -> int:
 
     Centring each row on its own length looks equivalent and is not: rows of different length
     get different offsets, which shifts them relative to each other and breaks any alignment
-    the art was drawn with. The original greeting's antenna sits exactly over the centre of
-    its face; centring per row moved it a column off.
+    the art was drawn with, such as an antenna meant to sit over the centre of a face.
+
+    Args:
+        body: The rows the block is made of.
+        cols: Width of the slot the block is centred in.
+
+    Returns:
+        The starting column, clamped to zero for a block wider than the slot.
     """
     return max((cols - max((len(line) for line in body), default=0)) // 2, 0)
 

@@ -24,7 +24,7 @@ from PIL import Image
 from .canvas import Canvas
 
 LOGO = Path(__file__).resolve().parents[2] / "docs" / "source" / "_static" / "NVIDIA-logo-black.png"
-"""The mark already shipped in the repository, so no new asset is vendored for this."""
+"""The NVIDIA logo vendored in the repository; the eye mark is cropped out of it."""
 
 GREEN = (118, 185, 0)
 """NVIDIA green."""
@@ -87,20 +87,11 @@ def mask(width: int, height: int) -> list[list[bool]]:
     return grid
 
 
-def _draw(canvas: Canvas, mark: Image.Image, span: int) -> None:
-    """Fit the mark into the leftmost *span* subpixels, keeping its proportions.
+def _draw(canvas: Canvas, span: int) -> None:
+    """Paint the mark in green across the leftmost *span* subpixels of *canvas*.
 
-    The alpha threshold is deliberately low. The eye is built from thin strokes, and at this
-    size a strict threshold drops the pixels where a stroke only partly covers its cell --
-    which breaks the shape into fragments rather than thinning it.
+    Shape, fit and alpha threshold all come from :func:`mask`.
     """
-    height = canvas.height
-    # a subpixel displays twice as tall as it is wide, so a mark of aspect w:h wants
-    # 2 * h_px * w / h subpixels across
-    width = round(2 * height * mark.width / mark.height)
-    if width > span:
-        width = span
-        height = round(width * mark.height / (2 * mark.width))
     for y, row in enumerate(mask(span, canvas.height)):
         for x, ink in enumerate(row):
             if ink:
@@ -127,18 +118,16 @@ def frames(cols: int, rows: int) -> list[str]:
     Returns a single frame: this greeting is still.
 
     The slogan sits beside the mark where a line of it fits, and stacked underneath where it
-    does not. Composing the frame from pieces of known width -- rather than appending text to
-    a finished row -- is what keeps every line exactly *cols* cells wide; appending overran
-    the slot and would have wrapped in the loading screen.
+    does not. Composing each frame from pieces of known width keeps every line exactly *cols*
+    cells wide, which the loading screen needs if the greeting is not to wrap.
     """
-    mark = _eye()
     gap = 2
     beside = cols >= (rows * 2) + gap + len(SLOGAN)
 
     if beside:
         art_cols = rows * 2
         canvas = Canvas(art_cols, rows)
-        _draw(canvas, mark, canvas.width)
+        _draw(canvas, canvas.width)
         art = canvas.render().splitlines()
         middle = rows // 2
         lines = []
@@ -154,7 +143,7 @@ def frames(cols: int, rows: int) -> list[str]:
     # stacked: the mark takes the rows the slogan does not need
     text_rows = len(SLOGAN_STACKED) + 1
     canvas = Canvas(cols, rows - text_rows)
-    _draw(canvas, mark, canvas.width)
+    _draw(canvas, canvas.width)
     lines = canvas.render().splitlines()
     lines.append("\x1b[0m" + " " * cols)
     lines += [_centre(part, cols, SLOGAN_COLOUR) for part in SLOGAN_STACKED]

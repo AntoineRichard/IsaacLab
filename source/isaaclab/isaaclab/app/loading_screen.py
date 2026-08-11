@@ -321,8 +321,8 @@ class LoadingScreen:
 
         Falls back to the built-in art on any failure. A greeting is decoration, and nothing
         decorative should be able to stop a run from starting: a missing package data
-        directory, or a container written by a newer version, must cost the animation rather
-        than the launch.
+        directory, a container written by a newer version, or a file truncated in transit
+        must cost the animation rather than the launch.
         """
         pinned = os.environ.get(_GREETING_ENV, "").strip()
         try:
@@ -335,7 +335,10 @@ class LoadingScreen:
                     if (wanted.cols, wanted.rows) == slot:
                         chosen[index] = wanted
             return tuple(chosen)
-        except (KeyError, LookupError, OSError, ValueError):
+        # deliberately broad: the decompression and decoding below raise from several
+        # unrelated hierarchies -- zlib.error and EOFError subclass neither OSError nor
+        # ValueError -- and any narrower tuple silently regains the ability to abort a run
+        except Exception:  # noqa: BLE001
             return ()
 
     @property
