@@ -12,7 +12,10 @@ import pytest
 from rich.cells import cell_len
 from rich.console import Console, RenderableType
 
-from isaaclab.app import loading_screen
+from isaaclab.app import anims, loading_screen
+
+_SUMMARY_WIDTH = 50
+"""The width the summary box is locked to; anything beyond it on a box row is the greeting."""
 
 _ALT_SCREEN_ON = "\x1b[?1049h"
 _ALT_SCREEN_OFF = "\x1b[?1049l"
@@ -25,18 +28,18 @@ def _render(display: RenderableType, width: int) -> str:
 
 
 @pytest.mark.parametrize(
-    ("terminal_width", "display_width", "logo"),
+    ("terminal_width", "display_width", "greeted"),
     [
-        (4, 4, None),
-        (5, 5, None),
-        (79, 79, None),
-        (80, 80, ".-------."),
-        (119, 80, ".-------."),
-        (120, 120, "██╗"),
-        (140, 120, "██╗"),
+        (4, 4, False),
+        (5, 5, False),
+        (79, 79, False),
+        (80, 80, True),
+        (119, 80, True),
+        (120, 120, True),
+        (140, 120, True),
     ],
 )
-def test_display_reflows_at_responsive_boundaries(terminal_width: int, display_width: int, logo: str | None):
+def test_display_reflows_at_responsive_boundaries(terminal_width: int, display_width: int, greeted: bool):
     screen = loading_screen.LoadingScreen(2, enabled=True)
     screen.summary("Run", {"Task": "Cartpole", "Description": "A long description that wraps cleanly."})
     screen.stage("Loading task")
@@ -46,15 +49,14 @@ def test_display_reflows_at_responsive_boundaries(terminal_width: int, display_w
 
     assert max(map(cell_len, lines)) <= display_width
     assert cell_len(lines[-1]) == display_width
-    assert ("Welcome to Isaac Lab!" in output) is (logo is not None)
-    assert (".-------." in output) is (logo == ".-------.")
-    assert ("██╗" in output) is (logo == "██╗")
+    # the greeting is data now, so this asserts that one is shown at all rather than which
+    # art it is: a box row wider than the box itself means something sits beside it
+    box_rows = [line for line in lines if line.startswith("╭")]
+    assert bool(box_rows) is True
+    assert (cell_len(box_rows[0]) > _SUMMARY_WIDTH) is greeted
     if terminal_width >= 79:
         assert "Loading task" in lines[-1]
         assert "cleanly." in output
-    if logo is not None:
-        header = next(line for line in lines if line.startswith("╭"))
-        assert header.index("╭") < header.index("Welcome")
 
 
 def test_live_updates_refresh_after_releasing_state_lock():
@@ -132,3 +134,47 @@ def test_shutdown_restores_output_when_live_rendering_fails(monkeypatch: pytest.
         screen.close()
 
     restore.assert_called_once_with()
+
+
+def test_logos_are_empty_when_the_greeting_is_disabled():
+    assert loading_screen.LoadingScreen(1, enabled=False, logo=False)._logos == ()
+
+
+def test_logos_offer_one_greeting_per_slot():
+    screen = loading_screen.LoadingScreen(1, enabled=False)
+    assert len(screen._logos) == len(anims.SLOTS)
+
+
+def test_logos_advance_with_time(monkeypatch):
+    # pin an animated greeting: the pick is random, and a run that happened to draw two still
+    # ones would pass or fail by chance
+    animated = next(n for n in anims.available() if len(anims.load(n).frames) > 1)
+    monkeypatch.setenv("ISAACLAB_LOADING_ANIM", animated)
+    screen = loading_screen.LoadingScreen(1, enabled=False)
+    screen._started = 0.0
+    monkeypatch.setattr(loading_screen.time, "monotonic", lambda: 0.0)
+    first = screen._logos
+    monkeypatch.setattr(loading_screen.time, "monotonic", lambda: 5.0)
+    assert screen._logos != first
+
+
+def test_environment_variable_pins_the_greeting(monkeypatch):
+    monkeypatch.setenv("ISAACLAB_LOADING_ANIM", "hello-small")
+    picked = {loading_screen.LoadingScreen(1, enabled=False)._animations[0].name for _ in range(8)}
+    assert picked == {"hello-small"}
+
+
+def test_environment_variable_can_disable_the_greeting(monkeypatch):
+    monkeypatch.setenv("ISAACLAB_LOADING_ANIM", "none")
+    assert loading_screen.LoadingScreen(1, enabled=False)._logos == ()
+
+
+def test_an_unknown_name_falls_back_rather_than_raising(monkeypatch):
+    monkeypatch.setenv("ISAACLAB_LOADING_ANIM", "no-such-greeting")
+    # a decorative feature must never be able to stop a run from starting
+    assert loading_screen.LoadingScreen(1, enabled=False)._logos
+
+
+def test_unreadable_greetings_fall_back_to_the_builtin_logos(monkeypatch):
+    monkeypatch.setattr(anims, "choose", lambda *a, **k: (_ for _ in ()).throw(LookupError("boom")))
+    assert loading_screen.LoadingScreen(1, enabled=False)._logos == (loading_screen.LOGO, loading_screen.LOGO_WIDE)

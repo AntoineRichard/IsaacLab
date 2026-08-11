@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import os
+import random
+import re
 import shutil
 import sys
 import tempfile
@@ -21,6 +23,8 @@ from rich.constrain import Constrain
 from rich.live import Live
 from rich.text import Text
 
+from . import anims
+
 _LABEL_WIDTH = 14
 _STAGE_WIDTH = 22
 _ACTIVITY_WIDTH = 24
@@ -29,6 +33,11 @@ _SUMMARY_WIDTH = 50
 _STANDARD_WIDTH = 80
 _WIDE_WIDTH = 120
 _COLUMN_GAP = 6
+_TICKS_PER_FRAME = 2
+"""Refreshes per animation frame, so a greeting runs at half the display's refresh rate."""
+
+_GREETING_ENV = "ISAACLAB_LOADING_ANIM"
+"""Names a greeting to show every run, or ``none`` to show none. Chosen at random otherwise."""
 # Reported steps per stage that fill the stage's slice of the bar, and the share
 # of that slice they may fill. Sub-steps are not known in advance, so a stage
 # that reports more than this keeps its progress just short of the next stage;
@@ -142,9 +151,18 @@ def _format_header(
     return summary, display_width
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+"""Colour escapes, which occupy no columns and must not be measured as if they did."""
+
+
 def _block_width(block: str) -> int:
-    """Return the width of the widest line in a multiline text block."""
-    return max((cell_len(line) for line in block.splitlines()), default=0)
+    """Return the width of the widest line in a multiline text block.
+
+    Escapes are stripped first. A greeting carries its colour inline, and counting those
+    sequences as printable made a 24-column greeting measure 111 -- wide enough to be judged
+    unfittable at every terminal size, so it would silently never be shown.
+    """
+    return max((cell_len(_ANSI.sub("", line)) for line in block.splitlines()), default=0)
 
 
 def _join_columns(left: str, right: str, gap: int = _COLUMN_GAP) -> str:
@@ -273,7 +291,11 @@ class LoadingScreen:
                 the run summary. Defaults to True.
         """
         self._num_stages = num_stages
-        self._logos = (LOGO, LOGO_WIDE) if logo else ()
+        # an explicit "none" silences the greeting entirely; a failure to load one falls back
+        # to the built-in art, so the two cases must be distinguished here rather than later
+        silenced = os.environ.get(_GREETING_ENV, "").strip().lower() == "none"
+        self._greeting = logo and not silenced
+        self._animations = self._pick_greetings() if self._greeting else ()
         self._enabled = _console_is_interactive() if enabled is None else enabled
         self._console: IO[str] = sys.stdout
         self._ascii_only = not _supports_box_drawing(self._console)
@@ -283,7 +305,7 @@ class LoadingScreen:
         self._render_lock = threading.RLock()
         self._spool: IO[str] | None = None
         self._saved_fds: tuple[int, int] | None = None
-        self._started = 0.0
+        self._started: float | None = None
         self._index = 0
         self._stage = ""
         self._steps = 0
@@ -292,6 +314,44 @@ class LoadingScreen:
         self._show_progress = False
         self._summary_title: str | None = None
         self._summary_fields: dict[str, str] = {}
+
+    @staticmethod
+    def _pick_greetings() -> tuple[anims.Animation, ...]:
+        """Choose one greeting per display width, honouring the environment override.
+
+        Falls back to the built-in art on any failure. A greeting is decoration, and nothing
+        decorative should be able to stop a run from starting: a missing package data
+        directory, or a container written by a newer version, must cost the animation rather
+        than the launch.
+        """
+        pinned = os.environ.get(_GREETING_ENV, "").strip()
+        try:
+            chosen = list(anims.choose(random.Random()))
+            if pinned:
+                # a pinned greeting replaces whichever width it was drawn for; the other
+                # width keeps its random pick rather than being left empty
+                wanted = anims.load(pinned)
+                for index, slot in enumerate(anims.SLOTS):
+                    if (wanted.cols, wanted.rows) == slot:
+                        chosen[index] = wanted
+            return tuple(chosen)
+        except (KeyError, LookupError, OSError, ValueError):
+            return ()
+
+    @property
+    def _logos(self) -> tuple[str, ...]:
+        """The frame of each chosen greeting to show right now, narrowest first.
+
+        Evaluated on every render, so a multi-frame greeting animates on the display's own
+        refresh without the render path knowing anything about animation.
+        """
+        if not self._greeting:
+            return ()
+        if not self._animations:
+            return (LOGO, LOGO_WIDE)  # nothing loadable; the built-in art still greets
+        elapsed = 0.0 if self._started is None else time.monotonic() - self._started
+        step = int(elapsed * _REFRESH_PER_SECOND / _TICKS_PER_FRAME)
+        return tuple(art.frames[step % len(art.frames)] for art in self._animations)
 
     def __enter__(self) -> LoadingScreen:
         """Take over the console and start spooling startup output."""
@@ -418,7 +478,7 @@ class LoadingScreen:
                     if replay:
                         self._write(hidden)
                     else:
-                        elapsed = time.monotonic() - self._started
+                        elapsed = time.monotonic() - (self._started or time.monotonic())
                         lines = hidden.count("\n")
                         self._write(
                             f"  Ready in {elapsed:.1f}s "
@@ -459,11 +519,13 @@ class LoadingScreen:
                 ascii_only=self._ascii_only,
             )
             if header:
-                renderables.extend((Text(""), Text(header, no_wrap=True, overflow="crop")))
+                # from_ansi so a greeting's colour is interpreted rather than printed as
+                # literal escape text
+                renderables.extend((Text(""), Text.from_ansi(header, no_wrap=True, overflow="crop")))
         if self._show_progress:
             if renderables:
                 renderables.append(Text(""))
-            elapsed = time.monotonic() - self._started if self._started else 0.0
+            elapsed = 0.0 if self._started is None else time.monotonic() - self._started
             activity = self._activities[-1] if self._activities else ""
             progress = _format_progress(
                 self._stage,

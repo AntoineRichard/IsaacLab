@@ -16,7 +16,7 @@ animated wordmark above static text.
 
 from __future__ import annotations
 
-from .isaac import CAPTION, WORDMARK, FACE_GLYPHS, blank, block_left, layout, row
+from .isaac import CAPTION, FACE_GLYPHS, WORDMARK, blank, block_left, layout, row
 from .sunset import ramp
 
 SPREAD = 1.2
@@ -51,7 +51,11 @@ def frame(phase: float, cols: int, rows: int) -> str:
             def colour_of(glyph: str, index: int) -> tuple[int, int, int]:
                 return ramp(index / max(len(CAPTION), 1) * SPREAD - phase + 0.5)
 
-        start = block_left(list(WORDMARK), cols) if offset < len(WORDMARK) and len(body) > 1 else max((cols - len(line)) // 2, 0)
+        start = (
+            block_left(list(WORDMARK), cols)
+            if offset < len(WORDMARK) and len(body) > 1
+            else max((cols - len(line)) // 2, 0)
+        )
         lines.append(row(line, cols, start, colour_of))
 
     lines += [blank(cols)] * (rows - len(lines))
