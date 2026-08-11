@@ -351,6 +351,10 @@ def test_parse_visualizer_csv_accepts_comma_delimited_values():
     assert parsed == ["kit", "newton", "rerun", "viser"]
 
 
+def test_parse_visualizer_csv_accepts_ascii():
+    assert app_launcher_module.AppLauncher._parse_visualizer_csv("ascii") == ["ascii"]
+
+
 def test_parse_visualizer_csv_rejects_spaces_between_entries():
     with pytest.raises(argparse.ArgumentTypeError, match="spaces are not allowed"):
         app_launcher_module.AppLauncher._parse_visualizer_csv("kit, newton")

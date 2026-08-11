@@ -36,8 +36,8 @@ class VisualizerCfg:
 
     Note:
         This is an abstract base class and should not be instantiated directly.
-        Use specific configs from isaaclab_visualizers: KitVisualizerCfg, NewtonGLVisualizerCfg,
-        RerunVisualizerCfg, or ViserVisualizerCfg (from isaaclab_visualizers.kit/.newton/.rerun/.viser).
+        Use specific configs from isaaclab_visualizers: AsciiVisualizerCfg, KitVisualizerCfg,
+        NewtonGLVisualizerCfg, RerunVisualizerCfg, or ViserVisualizerCfg.
     """
 
     # Primary interactive camera settings
@@ -234,13 +234,14 @@ class VisualizerCfg:
             raise ValueError(
                 "Cannot create visualizer from base VisualizerCfg class. "
                 "Use a specific config from isaaclab_visualizers "
-                "(e.g. KitVisualizerCfg, NewtonGLVisualizerCfg, RerunVisualizerCfg, ViserVisualizerCfg)."
+                "(e.g. AsciiVisualizerCfg, KitVisualizerCfg, NewtonGLVisualizerCfg, RerunVisualizerCfg, "
+                "ViserVisualizerCfg)."
             )
 
         try:
             return Visualizer(self)
         except (ValueError, ImportError, ModuleNotFoundError) as exc:
-            if self.visualizer_type in ("newton_gl", "newton_rtx", "rerun", "viser", "kit"):
+            if self.visualizer_type in ("ascii", "newton_gl", "newton_rtx", "rerun", "viser", "kit"):
                 raise ImportError(
                     f"Could not import visualizer '{self.visualizer_type}' from isaaclab_visualizers. "
                     f"{_get_visualizer_install_hint(self.visualizer_type)}\nOriginal error: {exc}"

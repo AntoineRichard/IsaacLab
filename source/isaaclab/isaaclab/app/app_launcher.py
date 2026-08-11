@@ -157,7 +157,7 @@ class AppLauncher:
     def _parse_visualizer_csv(value: str) -> list[str] | None:
         """Parse visualizer list from a single comma-delimited CLI token."""
         _deprecated_aliases = {"newton": "newton_gl"}
-        valid = {"kit", "newton_gl", "newton_rtx", "rerun", "viser", "none"} | set(_deprecated_aliases)
+        valid = {"ascii", "kit", "newton_gl", "newton_rtx", "rerun", "viser", "none"} | set(_deprecated_aliases)
         token = (value or "").strip()
         if not token:
             raise argparse.ArgumentTypeError(
@@ -166,7 +166,7 @@ class AppLauncher:
         if " " in token:
             raise argparse.ArgumentTypeError(
                 "Invalid --visualizer value: spaces are not allowed. "
-                "Use a comma-separated list without spaces, e.g. --viz kit,newton_gl,rerun,viser."
+                "Use a comma-separated list without spaces, e.g. --viz ascii,kit,newton_gl,rerun,viser."
             )
 
         names = [item.strip().lower() for item in token.split(",")]
@@ -501,6 +501,7 @@ class AppLauncher:
         * ``visualizer`` (str): Visualizer backends to enable.
           Valid options are:
 
+          - ``ascii``: Use the terminal ASCII visualizer.
           - ``rerun``: Use Rerun visualizer.
           - ``newton_gl``: Use Newton GL visualizer.
           - ``newton_rtx``: Use Newton RTX path-tracer visualizer (experimental).
@@ -588,7 +589,7 @@ class AppLauncher:
             type=AppLauncher._parse_visualizer_csv,
             action=ExplicitAction,
             default=None,
-            help="Visualizer backends to enable as CSV (e.g., kit,newton,rerun,viser).",
+            help="Visualizer backends to enable as CSV (e.g., ascii,kit,newton_gl,rerun,viser).",
         )
         # Add the deprecated cpu flag to raise an error if it is used
         arg_group.add_argument("--cpu", action="store_true", help=argparse.SUPPRESS)
@@ -969,7 +970,7 @@ class AppLauncher:
             raise ValueError("Invalid '--visualizer' value: 'none' cannot be combined with other visualizer types.")
 
         _deprecated_viz_aliases = {"newton": "newton_gl"}
-        valid_visualizer_types = {"kit", "newton_gl", "newton_rtx", "rerun", "viser", "none"} | set(
+        valid_visualizer_types = {"ascii", "kit", "newton_gl", "newton_rtx", "rerun", "viser", "none"} | set(
             _deprecated_viz_aliases
         )
         # Secondary validation for the list path (kwargs); the string path is already validated by
@@ -977,7 +978,7 @@ class AppLauncher:
         if invalid_visualizers:
             raise ValueError(
                 f"Invalid value(s) for '--visualizer': {invalid_visualizers}. "
-                "Expected one or more of: ['kit', 'newton_gl', 'newton_rtx', 'rerun', 'viser', 'none']."
+                "Expected one or more of: ['ascii', 'kit', 'newton_gl', 'newton_rtx', 'rerun', 'viser', 'none']."
             )
         # Resolve deprecated aliases, emitting a DeprecationWarning for each one found.
         resolved = []

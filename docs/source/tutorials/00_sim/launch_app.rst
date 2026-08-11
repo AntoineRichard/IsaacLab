@@ -95,7 +95,7 @@ custom arguments and the non-deprecated options from :class:`~app.AppLauncher`.
                                Force enable livestreaming. Mapping corresponds to that for the "LIVESTREAM" environment variable.
             Enable cameras when running without a GUI.
          --visualizer VISUALIZER, --viz VISUALIZER
-                              Visualizer backends as CSV (e.g., kit,newton,rerun,viser) or none.
+                              Visualizer backends as CSV (e.g., ascii,kit,newton_gl,rerun,viser) or none.
          --verbose             Enable verbose terminal logging from the SimulationApp.
          --experience EXPERIENCE
                                The experience file to load when launching the SimulationApp.
@@ -129,7 +129,7 @@ custom arguments and the non-deprecated options from :class:`~app.AppLauncher`.
                                Force enable livestreaming. Mapping corresponds to that for the "LIVESTREAM" environment variable.
             Enable cameras when running without a GUI.
          --visualizer VISUALIZER, --viz VISUALIZER
-                              Visualizer backends as CSV (e.g., kit,newton,rerun,viser) or none.
+                              Visualizer backends as CSV (e.g., ascii,kit,newton_gl,rerun,viser) or none.
          --verbose             Enable verbose terminal logging from the SimulationApp.
          --experience EXPERIENCE
                                The experience file to load when launching the SimulationApp.

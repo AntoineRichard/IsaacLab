@@ -230,6 +230,32 @@ def test_failed_rsl_training_restores_torch_backend_state(monkeypatch) -> None:
     assert _torch_backend_state() == caller_state
 
 
+def test_rsl_training_routes_output_through_visualizer_console() -> None:
+    """RSL-RL enters a compatible visualizer's capture context around training."""
+    from isaaclab_rl.entrypoints.backends import train_rsl_rl
+
+    events: list[str] = []
+
+    class _Capture:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            events.append("exit")
+
+    class _Visualizer:
+        def capture_console_output(self, title: str):
+            events.append(title)
+            return _Capture()
+
+    env = types.SimpleNamespace(unwrapped=types.SimpleNamespace(sim=types.SimpleNamespace(visualizers=[_Visualizer()])))
+
+    with train_rsl_rl._capture_visualizer_console_output(env):
+        events.append("learn")
+
+    assert events == ["RSL-RL", "enter", "learn", "exit"]
+
+
 def test_skrl_training_restores_jax_backend(monkeypatch) -> None:
     """SKRL training removes the JAX backend setting it created after an exception."""
     skrl = pytest.importorskip("skrl")

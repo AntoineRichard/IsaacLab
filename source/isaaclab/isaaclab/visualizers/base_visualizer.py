@@ -240,6 +240,15 @@ class BaseVisualizer(ABC):
         """
         return False
 
+    def requires_simulation_rendering(self) -> bool:
+        """Whether this visualizer must run from the simulation render loop.
+
+        Returns:
+            ``True`` by default. Visualizers driven by an external completed-step
+            callback may return ``False`` to avoid unnecessary render-loop work.
+        """
+        return True
+
     def get_visualized_env_ids(self) -> list[int] | None:
         """Return env IDs this visualizer is displaying, if any.
 

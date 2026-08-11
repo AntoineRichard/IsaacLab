@@ -11,14 +11,14 @@ Most visualizers can be combined with any physics engine or rendering backend.
 The exception is the Kit visualizer with kit-less OV backends:
 ``--visualizer kit`` cannot be used with ``presets=ovphysx`` or
 ``ovrtx`` in the same process. Use ``--visualizer newton_gl``,
-``--visualizer rerun``, ``--visualizer viser``, or omit ``--visualizer``
+``--visualizer ascii``, ``--visualizer rerun``, ``--visualizer viser``, or omit ``--visualizer``
 for headless execution.
 
 
 Overview
 --------
 
-Isaac Lab supports four visualizer backends, each optimized for different use cases:
+Isaac Lab supports several visualizer backends, each optimized for different use cases:
 
 .. list-table:: Visualizer Comparison
    :widths: 15 35 50
@@ -30,6 +30,9 @@ Isaac Lab supports four visualizer backends, each optimized for different use ca
    * - **Omniverse**
      - High-fidelity, Isaac Sim integration
      - USD, visualization markers, live plots, tiled camera panel
+   * - **ASCII**
+     - Terminal-only training feedback
+     - Depth-buffered USD geometry, automatic framing, side-by-side RSL-RL metrics, configurable environment and refresh rate
    * - **Newton GL**
      - Fast iteration
      - Low overhead, visualization markers, streaming camera panel
@@ -88,6 +91,13 @@ Launch visualizers from the command line with ``--visualizer`` (or ``--viz`` ali
           # Launch the Viser web-based visualizer
           uv run isaaclab train --rl_library rsl_rl --task Isaac-Cartpole --viz viser
 
+          # Render one environment directly in the terminal
+          uv run isaaclab train --rl_library rsl_rl --task Isaac-Cartpole --viz ascii
+
+          # The same geometry renderer supports articulated locomotion and manipulation tasks
+          uv run isaaclab train --rl_library rsl_rl --task Isaac-Velocity-Flat-AnymalD --viz ascii
+          uv run isaaclab train --rl_library rsl_rl --task Isaac-Lift-KukaAllegro --viz ascii
+
 
    .. tab-item:: isaaclab.sh / isaaclab.bat
 
@@ -104,6 +114,9 @@ Launch visualizers from the command line with ``--visualizer`` (or ``--viz`` ali
 
           # Launch the Viser web-based visualizer
           ./isaaclab.sh train --rl_library rsl_rl --task Isaac-Cartpole --viz viser
+
+          # Render one environment directly in the terminal
+          ./isaaclab.sh train --rl_library rsl_rl --task Isaac-Cartpole --viz ascii
 
 
 To run in headless mode, omit the ``--viz`` argument:
@@ -127,13 +140,14 @@ To run in headless mode, omit the ``--viz`` argument:
 Configuration
 ~~~~~~~~~~~~~
 
-Launching visualizers with the command line will use default visualizer configurations. Visualizer backends live in the ``isaaclab_visualizers`` package (e.g. ``source/isaaclab_visualizers/isaaclab_visualizers/kit``, ``newton``, ``rerun``, ``viser``).
+Launching visualizers with the command line will use default visualizer configurations. Visualizer backends live in the ``isaaclab_visualizers`` package (e.g. ``source/isaaclab_visualizers/isaaclab_visualizers/ascii``, ``kit``, ``newton``, ``rerun``, ``viser``).
 
 You can also configure custom visualizers in the code by defining ``VisualizerCfg`` instances for the ``SimulationCfg``, for example:
 
 .. code-block:: python
 
     from isaaclab.sim import SimulationCfg
+    from isaaclab_visualizers.ascii import AsciiVisualizerCfg
     from isaaclab_visualizers.kit import KitVisualizerCfg
     from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
     from isaaclab_visualizers.rerun import RerunVisualizerCfg
@@ -141,6 +155,13 @@ You can also configure custom visualizers in the code by defining ``VisualizerCf
 
     sim_cfg = SimulationCfg(
         visualizer_cfgs=[
+            AsciiVisualizerCfg(
+                env_index=0,
+                auto_fit=True,
+                auto_fit_margin=1.4,
+                max_faces_per_body=96,
+                max_fps=12.0,
+            ),
             KitVisualizerCfg(
                 # Omit create_viewport (default False) to use the active viewport; set
                 # create_viewport=True and optionally viewport_name to add a dedicated window.
@@ -238,7 +259,7 @@ Camera Modes
 ~~~~~~~~~~~~
 
 The default visualizer camera mode is interactive, with ``eye`` and ``lookat`` specifying the initial pose.
-All visualizer backends also support a **streaming camera view** that composites per-environment
+The graphical visualizer backends also support a **streaming camera view** that composites per-environment
 ground-truth frames into a single image panel updated every step.
 
 .. note::
@@ -253,7 +274,7 @@ Streaming Camera View
 ~~~~~~~~~~~~~~~~~~~~~
 
 The streaming view replaces the legacy ``tiled_cam_*`` fields with a unified API that works across
-all four visualizer backends. When ``streaming_view=True``, the visualizer captures pixels from a
+the graphical visualizer backends. When ``streaming_view=True``, the visualizer captures pixels from a
 camera sensor each step, composites them into a single image tiled by environment and GT type, and
 displays or streams the result.
 

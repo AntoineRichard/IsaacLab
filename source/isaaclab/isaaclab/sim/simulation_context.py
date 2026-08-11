@@ -45,7 +45,7 @@ from .spawners import DomeLightCfg, GroundPlaneCfg
 logger = logging.getLogger(__name__)
 
 # Visualizer type names (CLI and config). App launcher parses CSV and stores as a space-separated setting.
-_VISUALIZER_TYPES = ("newton_gl", "newton_rtx", "rerun", "viser", "kit")
+_VISUALIZER_TYPES = ("ascii", "newton_gl", "newton_rtx", "rerun", "viser", "kit")
 # Deprecated aliases mapped to their canonical names.
 _VISUALIZER_ALIASES = {"newton": "newton_gl"}
 
@@ -341,10 +341,14 @@ class SimulationContext:
         demand when a frame is actually requested (via :meth:`render`), not on every step; see
         :meth:`has_offscreen_render` and :meth:`can_render_rgb_array` for the capability checks.
         """
+        if self._visualizers:
+            has_continuous_visualizer = any(viz.requires_simulation_rendering() for viz in self._visualizers)
+        else:
+            has_continuous_visualizer = bool(self.resolve_visualizer_types())
         return (
             self._has_gui
             or self.get_setting("/isaaclab/render/rtx_sensors")
-            or bool(self.resolve_visualizer_types())
+            or has_continuous_visualizer
             or self._xr_enabled
         )
 
@@ -376,6 +380,7 @@ class SimulationContext:
 
         default_configs = []
         cfg_class_names = {
+            "ascii": "AsciiVisualizerCfg",
             "kit": "KitVisualizerCfg",
             "newton_gl": "NewtonGLVisualizerCfg",
             "newton_rtx": "NewtonRTXVisualizerCfg",
@@ -1074,8 +1079,8 @@ def build_simulation_context(
         add_ground_plane: Whether to add a ground plane. Defaults to False.
         add_lighting: Whether to add a dome light. Defaults to False.
         auto_add_lighting: Whether to auto-add lighting if GUI present. Defaults to False.
-        visualizers: List of visualizer backend keys to enable (e.g. ``["kit", "newton_gl", "rerun"]``).
-            Valid types: ``"kit"``, ``"newton_gl"``, ``"newton_rtx"``, ``"rerun"``, ``"viser"``.
+        visualizers: List of visualizer backend keys to enable (e.g. ``["ascii", "newton_gl", "rerun"]``).
+            Valid types: ``"ascii"``, ``"kit"``, ``"newton_gl"``, ``"newton_rtx"``, ``"rerun"``, ``"viser"``.
             ``"newton"`` is a deprecated alias for ``"newton_gl"``.
             When provided, sets the ``/isaaclab/visualizer/types`` setting so the
             existing visualizer resolution machinery picks them up. Defaults to None.

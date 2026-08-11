@@ -179,6 +179,7 @@ class RslRlVecEnvWrapper(VecEnv):
             actions = torch.clamp(actions, -self.clip_actions, self.clip_actions)
         # record step information
         obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
+        self._refresh_visualizer_scene_state()
         # compute dones for compatibility with RSL-RL
         dones = (terminated | truncated).to(dtype=torch.long)
         # move time out information to the extras dict
@@ -194,6 +195,18 @@ class RslRlVecEnvWrapper(VecEnv):
     """
     Helper functions
     """
+
+    def _get_visualizers(self) -> list[object]:
+        """Return visualizers owned by the unwrapped simulation."""
+        simulation = getattr(self.unwrapped, "sim", None)
+        return list(getattr(simulation, "visualizers", None) or [])
+
+    def _refresh_visualizer_scene_state(self) -> None:
+        """Refresh compatible visualizers after all environment state is coherent."""
+        for visualizer in self._get_visualizers():
+            refresh_scene_state = getattr(visualizer, "refresh_scene_state", None)
+            if callable(refresh_scene_state):
+                refresh_scene_state(float(getattr(self.unwrapped, "step_dt", 0.0)))
 
     def _modify_action_space(self):
         """Modifies the action space to the clip range."""

@@ -159,6 +159,22 @@ can switch between different render modes in the ``"Isaac Lab"`` window that is 
 corner of the screen. To learn more about these render modes, please check the
 :class:`sim.SimulationContext.RenderMode` class.
 
+For lightweight terminal feedback during RSL-RL training, select the ASCII visualizer instead. It extracts
+USD geometry once, then depth-rasterizes shaded articulation links and rigid objects using their live poses.
+Dense CAD bodies are reduced to a small terminal mesh and the selected environment is framed automatically.
+RSL-RL's live metrics appear in a separate pane on the right, or below the scene in a narrow terminal, so its
+console output does not overwrite the visualization. Pose sampling occurs after complete environment steps,
+which keeps contact-sensor CUDA graphs isolated from terminal readback.
+
+.. code-block:: bash
+
+   uv run isaaclab train --rl_library rsl_rl --task Isaac-Cartpole --viz ascii
+   uv run isaaclab train --rl_library rsl_rl --task Isaac-Velocity-Flat-AnymalD --viz ascii
+   uv run isaaclab train --rl_library rsl_rl --task Isaac-Lift-KukaAllegro --viz ascii
+
+The completed-step integration is currently provided for RSL-RL training. Other RL libraries continue to use
+their existing visualizer workflows.
+
 Viewing the logs
 ~~~~~~~~~~~~~~~~
 

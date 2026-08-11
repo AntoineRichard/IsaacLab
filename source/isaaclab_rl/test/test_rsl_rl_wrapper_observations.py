@@ -11,6 +11,7 @@ regression is caught before the Kit-dependent wrapper tests run.
 """
 
 import inspect
+from types import SimpleNamespace
 
 import torch
 from tensordict import TensorDict
@@ -26,6 +27,16 @@ class _FakeEnv:
     def __init__(self):
         self.unwrapped = self
         self.obs_buf = {"policy": torch.tensor([[1.0, 2.0], [3.0, 4.0]])}
+
+
+class _FakeVisualizer:
+    """Record completed-step scene refresh callbacks."""
+
+    def __init__(self, events: list[str]):
+        self.events = events
+
+    def refresh_scene_state(self, dt: float = 0.0) -> None:
+        self.events.append("refresh")
 
 
 def _make_wrapper(env: _FakeEnv, num_envs: int = 2) -> RslRlVecEnvWrapper:
@@ -68,6 +79,28 @@ def test_get_observations_does_not_use_private_environment_methods():
     wrapper = _make_wrapper(env)
 
     wrapper.get_observations()
+
+
+def test_step_refreshes_compatible_visualizers_after_environment_step():
+    """Visualizer host readback occurs only after the task has completed its step."""
+    events: list[str] = []
+    env = _FakeEnv()
+    env.cfg = SimpleNamespace(is_finite_horizon=True)
+    env.sim = SimpleNamespace(visualizers=[_FakeVisualizer(events)])
+
+    def _step(actions: torch.Tensor):
+        events.append("environment")
+        zeros = torch.zeros(2)
+        flags = torch.zeros(2, dtype=torch.bool)
+        return env.obs_buf, zeros, flags, flags, {}
+
+    env.step = _step
+    wrapper = _make_wrapper(env)
+    wrapper.clip_actions = None
+
+    wrapper.step(torch.zeros((2, 1)))
+
+    assert events == ["environment", "refresh"]
 
 
 def test_direct_rl_env_stores_the_observation_buffer():

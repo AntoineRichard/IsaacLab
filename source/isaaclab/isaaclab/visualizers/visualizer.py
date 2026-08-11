@@ -12,7 +12,7 @@ from isaaclab.utils.backend_utils import FactoryBase
 from .base_visualizer import BaseVisualizer
 
 # Visualizer types; each loads from isaaclab_visualizers.<type> for minimal deps.
-_VISUALIZER_TYPES = ("kit", "newton_gl", "newton_rtx", "rerun", "viser")
+_VISUALIZER_TYPES = ("ascii", "kit", "newton_gl", "newton_rtx", "rerun", "viser")
 
 # newton_gl and newton_rtx both live in isaaclab_visualizers.newton (no newton_gl package).
 _VISUALIZER_MODULE_OVERRIDES = {
@@ -25,6 +25,7 @@ class Visualizer(FactoryBase, BaseVisualizer):
     """Factory for creating visualizer instances."""
 
     _backend_class_names = {
+        "ascii": "AsciiVisualizer",
         "kit": "KitVisualizer",
         "newton_gl": "NewtonGLVisualizer",
         "newton_rtx": "NewtonRTXVisualizer",

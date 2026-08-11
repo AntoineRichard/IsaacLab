@@ -14,6 +14,7 @@ import logging
 import os
 import platform
 import time
+from collections.abc import Iterator
 from datetime import datetime
 
 from packaging import version
@@ -110,6 +111,21 @@ def run(argv: list[str]) -> None:
         cudnn_benchmark=False,
     ):
         _run(args_cli)
+
+
+@contextlib.contextmanager
+def _capture_visualizer_console_output(env: object) -> Iterator[None]:
+    """Route training output to a visualizer that supports a console pane."""
+    unwrapped_env = getattr(env, "unwrapped", env)
+    simulation = getattr(unwrapped_env, "sim", None)
+    visualizers = getattr(simulation, "visualizers", None) or []
+    for visualizer in visualizers:
+        capture_console_output = getattr(visualizer, "capture_console_output", None)
+        if callable(capture_console_output):
+            with capture_console_output(title="RSL-RL"):
+                yield
+            return
+    yield
 
 
 def _run(args_cli: argparse.Namespace) -> None:
@@ -220,11 +236,12 @@ def _run(args_cli: argparse.Namespace) -> None:
 
             screen.close()
             try:
-                runner.learn(
-                    num_learning_iterations=agent_cfg.max_iterations,
-                    init_at_random_ep_len=agent_cfg.init_at_random_ep_len,
-                )
-                print(f"Training time: {round(time.time() - start_time, 2)} seconds")
+                with _capture_visualizer_console_output(env):
+                    runner.learn(
+                        num_learning_iterations=agent_cfg.max_iterations,
+                        init_at_random_ep_len=agent_cfg.init_at_random_ep_len,
+                    )
+                    print(f"Training time: {round(time.time() - start_time, 2)} seconds")
                 env.close()
             except KeyboardInterrupt:
                 pass

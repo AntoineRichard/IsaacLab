@@ -853,6 +853,32 @@ def test_is_rendering_true_when_only_cfg_visualizer_is_set():
     assert ctx.is_rendering is True
 
 
+def test_is_rendering_false_when_active_visualizer_uses_external_updates():
+    """An externally updated visualizer does not force rendering between physics steps."""
+    settings = {
+        "/isaaclab/render/rtx_sensors": False,
+        "/isaaclab/visualizer/types": "ascii",
+    }
+    ctx = _make_context_with_settings(settings)
+    ctx._visualizers = [type("ExternalVisualizer", (), {"requires_simulation_rendering": lambda self: False})()]
+
+    assert ctx.is_rendering is False
+
+
+def test_is_rendering_true_when_any_active_visualizer_requires_updates():
+    """One continuous visualizer keeps rendering active beside an external visualizer."""
+    settings = {
+        "/isaaclab/render/rtx_sensors": False,
+        "/isaaclab/visualizer/types": "ascii newton_gl",
+    }
+    external = type("ExternalVisualizer", (), {"requires_simulation_rendering": lambda self: False})()
+    continuous = type("ContinuousVisualizer", (), {"requires_simulation_rendering": lambda self: True})()
+    ctx = _make_context_with_settings(settings)
+    ctx._visualizers = [external, continuous]
+
+    assert ctx.is_rendering is True
+
+
 def test_is_rendering_false_when_cli_disable_all_even_with_cfg_visualizer():
     cfg_visualizer = type("CfgVisualizer", (), {"visualizer_type": "newton_gl"})()
     settings = {
