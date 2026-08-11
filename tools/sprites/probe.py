@@ -18,9 +18,7 @@ def frames(cols: int, rows: int) -> list[str]:
         head = round(step * cols / FRAMES)
         lines = []
         for _ in range(rows):
-            line = "".join(
-                f"\x1b[38;2;118;185;0m█" if col == head else "\x1b[0m " for col in range(cols)
-            )
+            line = "".join("\x1b[38;2;118;185;0m█" if col == head else "\x1b[0m " for col in range(cols))
             lines.append(line + "\x1b[0m")
         out.append("\n".join(lines))
     return out

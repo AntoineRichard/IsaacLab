@@ -19,6 +19,34 @@ from tools import gif2anim  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
+def inked(row: str) -> list[bool]:
+    """Which cells of a rendered row carry ink.
+
+    Measured by colour, not by glyph: a uniform block encodes as a space with a background
+    colour, which fills the cell. Counting non-space characters would read it as empty.
+    """
+    import re
+
+    cells = []
+    for match in re.finditer(r"((?:\x1b\[[0-9;]*m)*)(.)", row):
+        style, glyph = match.group(1), match.group(2)
+        if "38;2;" in style or "48;2;" in style:
+            cells.append(True)
+        elif glyph == " " and "\x1b[0m" in style:
+            cells.append(False)
+        elif cells:
+            cells.append(cells[-1])  # style unchanged, so ink state carries over
+    return cells
+
+
+def ink_width(row: str) -> int:
+    """Number of cells from the first inked one to the last."""
+    cells = inked(row)
+    if not any(cells):
+        return 0
+    return len(cells) - cells[::-1].index(True) - cells.index(True)
+
+
 @pytest.fixture
 def png(tmp_path):
     """A factory for small opaque test images."""
@@ -98,6 +126,35 @@ def test_from_module_packs_a_procedural_sprite():
 def test_from_module_rejects_a_module_outside_the_sprite_package():
     with pytest.raises(ValueError, match="tools.sprites"):
         gif2anim.from_module("os.path", "wide", name="nope")
+
+
+def test_a_narrow_source_is_padded_not_stretched(png):
+    # a square source in the wide slot must keep its shape and gain transparent sides
+    cols, rows = gif2anim.SIZES["wide"]
+    animation = gif2anim.convert(png(64, 64), "wide", name="square")
+    widest = max(ink_width(row) for row in animation.frames[0].splitlines())
+    assert widest < cols, "the source filled the slot, so it was stretched rather than padded"
+
+
+def test_padding_keeps_the_source_aspect(png):
+    # a square mark is as wide as it is tall; the slot is rows*2 units tall in display terms
+    cols, rows = gif2anim.SIZES["wide"]
+    animation = gif2anim.convert(png(64, 64), "wide", name="square")
+    widest = max(ink_width(row) for row in animation.frames[0].splitlines())
+    assert abs(widest - rows * 2) <= 2, f"square source drew {widest} cells wide, expected about {rows * 2}"
+
+
+def test_a_matching_aspect_fills_the_grid(png):
+    cols, rows = gif2anim.SIZES["wide"]
+    # the grid displays cols across and rows*2 down, so a source of that shape should fill it
+    animation = gif2anim.convert(png(cols * 8, rows * 2 * 8), "wide", name="fits")
+    assert max(ink_width(row) for row in animation.frames[0].splitlines()) >= cols - 1
+
+
+def test_stretch_fills_the_grid_regardless_of_aspect(png):
+    cols, _ = gif2anim.SIZES["wide"]
+    animation = gif2anim.convert(png(64, 64), "wide", name="square", fit=False)
+    assert max(ink_width(row) for row in animation.frames[0].splitlines()) >= cols - 1
 
 
 def test_repeated_colours_are_suppressed(png):

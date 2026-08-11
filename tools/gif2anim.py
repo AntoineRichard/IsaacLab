@@ -54,9 +54,22 @@ MAX_FRAMES = 24
 """Frames kept from a source unless ``--frames`` says otherwise."""
 
 QUAD = {
-    0b0000: " ", 0b0001: "▘", 0b0010: "▝", 0b0011: "▀", 0b0100: "▖", 0b0101: "▌",
-    0b0110: "▞", 0b0111: "▛", 0b1000: "▗", 0b1001: "▚", 0b1010: "▐", 0b1011: "▜",
-    0b1100: "▄", 0b1101: "▙", 0b1110: "▟", 0b1111: "█",
+    0b0000: " ",
+    0b0001: "▘",
+    0b0010: "▝",
+    0b0011: "▀",
+    0b0100: "▖",
+    0b0101: "▌",
+    0b0110: "▞",
+    0b0111: "▛",
+    0b1000: "▗",
+    0b1001: "▚",
+    0b1010: "▐",
+    0b1011: "▜",
+    0b1100: "▄",
+    0b1101: "▙",
+    0b1110: "▟",
+    0b1111: "█",
 }
 """Quadrant blocks indexed by a 2x2 occupancy mask, bit 0 top-left through bit 3 bottom-right."""
 
@@ -69,9 +82,7 @@ def _mean(colours):
 
 def _error(quad, mask, fg, bg) -> int:
     """Squared RGB error of reproducing *quad* with *mask* split into *fg* and *bg*."""
-    return sum(
-        sum((a - b) ** 2 for a, b in zip(px, fg if mask >> i & 1 else bg)) for i, px in enumerate(quad)
-    )
+    return sum(sum((a - b) ** 2 for a, b in zip(px, fg if mask >> i & 1 else bg)) for i, px in enumerate(quad))
 
 
 @functools.cache
@@ -136,21 +147,47 @@ def render(pixels: list[list[tuple | None]], cols: int, rows: int) -> str:
     return "\n".join(lines)
 
 
-def _sample(image: Image.Image, cols: int, rows: int, alpha_threshold: int) -> list[list[tuple | None]]:
+def _sample(
+    image: Image.Image, cols: int, rows: int, alpha_threshold: int, *, fit: bool = True
+) -> list[list[tuple | None]]:
     """Resample one image onto the subpixel grid.
 
-    A quadrant subpixel is half a cell wide but a whole cell tall, so the grid is twice as
-    wide as it is tall for a given area. Feeding a square source straight in would stretch it
-    vertically; the caller is expected to have shaped the source, and this only fills the grid.
+    A quadrant subpixel is half a cell wide but a whole cell tall, so it displays twice as
+    tall as it is wide. Any sizing has to account for that or the result comes out stretched
+    vertically -- the single most common way terminal art goes wrong.
+
+    Args:
+        image: Source frame.
+        cols: Output width in cells.
+        rows: Output height in cells.
+        alpha_threshold: Alpha below this counts as transparent.
+        fit: Scale to fit and pad the remainder with transparency, keeping the source's
+            proportions. When False the source is stretched to fill the grid instead.
+
+    Returns:
+        ``rows * 2`` rows of ``cols * 2`` RGB tuples, None where transparent.
     """
-    resized = image.convert("RGBA").resize((cols * 2, rows * 2), Image.LANCZOS)
-    grid = []
-    for y in range(rows * 2):
-        line = []
-        for x in range(cols * 2):
+    source = image.convert("RGBA")
+    width, height = cols * 2, rows * 2
+    left = top = 0
+    if fit:
+        # the grid displays `width` units across and `height * 2` down, so a source of aspect
+        # w:h wants `2 * sh * w / h` subpixels across for `sh` down
+        drawn_h = height
+        drawn_w = round(2 * drawn_h * source.width / source.height)
+        if drawn_w > width:
+            drawn_w = width
+            drawn_h = round(drawn_w * source.height / (2 * source.width))
+        left, top = (width - drawn_w) // 2, (height - drawn_h) // 2
+        width, height = max(drawn_w, 1), max(drawn_h, 1)
+
+    resized = source.resize((width, height), Image.LANCZOS)
+    grid = [[None] * (cols * 2) for _ in range(rows * 2)]
+    for y in range(height):
+        for x in range(width):
             r, g, b, a = resized.getpixel((x, y))
-            line.append(None if a < alpha_threshold else (r, g, b))
-        grid.append(line)
+            if a >= alpha_threshold:
+                grid[top + y][left + x] = (r, g, b)
     return grid
 
 
@@ -161,7 +198,15 @@ def _resample(items: list, count: int) -> list:
     return [items[round(i * len(items) / count)] for i in range(count)]
 
 
-def convert(source: Path, size: str, *, name: str, frames: int | None = None, alpha_threshold: int = 128) -> Animation:
+def convert(
+    source: Path,
+    size: str,
+    *,
+    name: str,
+    frames: int | None = None,
+    alpha_threshold: int = 128,
+    fit: bool = True,
+) -> Animation:
     """Build a greeting from an image or GIF.
 
     Args:
@@ -171,6 +216,9 @@ def convert(source: Path, size: str, *, name: str, frames: int | None = None, al
         frames: Keep this many frames, evenly spaced. Defaults to the source's own count,
             capped at :data:`MAX_FRAMES`.
         alpha_threshold: Alpha below this counts as transparent.
+        fit: Keep the source's proportions and pad the remainder with transparency. The slots
+            are much wider than most logos, so stretching to fill distorts them badly; padding
+            costs nothing because the padded columns are transparent and composite away.
 
     Returns:
         The greeting.
@@ -178,16 +226,13 @@ def convert(source: Path, size: str, *, name: str, frames: int | None = None, al
     cols, rows = SIZES[size]
     with Image.open(source) as image:
         sources = [frame.copy() for frame in ImageSequence.Iterator(image)]
-        wanted = image.width / image.height
-    target = (cols * 2) / (rows * 2) / 2  # subpixels are 1:2, so the grid's visual aspect halves
-    if abs(wanted - target) / target > 0.10:
-        print(
-            f"warning: {source.name} is {wanted:.2f}:1 but the {size} slot is {target:.2f}:1;"
-            " the result will be distorted. Reshape the source rather than the output.",
-            file=sys.stderr,
-        )
     kept = _resample(sources, frames or min(len(sources), MAX_FRAMES))
-    return Animation(name, cols, rows, tuple(render(_sample(f, cols, rows, alpha_threshold), cols, rows) for f in kept))
+    return Animation(
+        name,
+        cols,
+        rows,
+        tuple(render(_sample(f, cols, rows, alpha_threshold, fit=fit), cols, rows) for f in kept),
+    )
 
 
 def from_module(dotted: str, size: str, *, name: str, frames: int | None = None) -> Animation:
@@ -227,6 +272,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="directory to write <name>.anim into")
     parser.add_argument("--frames", type=int, help="keep this many frames, evenly spaced")
     parser.add_argument("--alpha-threshold", type=int, default=128)
+    parser.add_argument(
+        "--stretch",
+        action="store_true",
+        help="fill the grid instead of padding, distorting the source to match the slot",
+    )
     args = parser.parse_args(argv)
 
     if bool(args.source) == bool(args.module):
@@ -235,13 +285,21 @@ def main(argv: list[str] | None = None) -> int:
         animation = from_module(args.module, args.size, name=args.name, frames=args.frames)
     else:
         animation = convert(
-            args.source, args.size, name=args.name, frames=args.frames, alpha_threshold=args.alpha_threshold
+            args.source,
+            args.size,
+            name=args.name,
+            frames=args.frames,
+            alpha_threshold=args.alpha_threshold,
+            fit=not args.stretch,
         )
 
     args.out.mkdir(parents=True, exist_ok=True)
     destination = args.out / f"{args.name}.anim"
     destination.write_bytes(pack(animation))
-    print(f"{destination}: {len(animation.frames)} frame(s), {animation.cols}x{animation.rows}, {destination.stat().st_size} bytes")
+    print(
+        f"{destination}: {len(animation.frames)} frame(s), "
+        f"{animation.cols}x{animation.rows}, {destination.stat().st_size} bytes"
+    )
     return 0
 
 
