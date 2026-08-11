@@ -21,7 +21,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .canvas import Canvas, render
+from .canvas import Canvas
 
 LOGO = Path(__file__).resolve().parents[2] / "docs" / "source" / "_static" / "NVIDIA-logo-black.png"
 """The mark already shipped in the repository, so no new asset is vendored for this."""
@@ -144,7 +144,11 @@ def frames(cols: int, rows: int) -> list[str]:
         lines = []
         for row, line in enumerate(art):
             tail = SLOGAN if row == middle else ""
-            lines.append(line + _centre(tail, cols - art_cols, SLOGAN_COLOUR) if tail else line + "\x1b[0m" + " " * (cols - art_cols))
+            lines.append(
+                line + _centre(tail, cols - art_cols, SLOGAN_COLOUR)
+                if tail
+                else line + "\x1b[0m" + " " * (cols - art_cols)
+            )
         return ["\n".join(lines)]
 
     # stacked: the mark takes the rows the slogan does not need

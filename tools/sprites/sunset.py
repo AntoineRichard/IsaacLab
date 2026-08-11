@@ -28,6 +28,14 @@ PALETTE = (
 )
 """Sunset ramp, light to dark. Interpolated cyclically, so the end meets the beginning."""
 
+STEPS = 24
+"""Distinct colours the ramp is quantised to.
+
+A continuous ramp gives almost every cell its own colour, which leaves gzip nothing to repeat
+and triples the stored size. At this many steps the banding is invisible against the block
+glyphs but the frames compress like flat colour.
+"""
+
 SPREAD = 1.4
 """Palette turns visible across the mark at once. Above one, more than a full ramp shows."""
 
@@ -44,7 +52,7 @@ def ramp(t: float) -> tuple[int, int, int]:
     Returns:
         The interpolated colour.
     """
-    t = t % 1.0 * len(PALETTE)
+    t = round(t % 1.0 * STEPS) / STEPS * len(PALETTE)
     first = PALETTE[int(t) % len(PALETTE)]
     second = PALETTE[(int(t) + 1) % len(PALETTE)]
     blend = t - int(t)
@@ -53,6 +61,7 @@ def ramp(t: float) -> tuple[int, int, int]:
 
 def frame(phase: float, cols: int, rows: int) -> str:
     """Draw the mark at *phase* of the sweep."""
+    phase %= 1.0  # so frame(1.0) is bit-identical to frame(0.0) and the loop closes
     text_rows = len(SLOGAN_STACKED) + 1
     canvas = Canvas(cols, rows - text_rows)
     for y, row in enumerate(mask(canvas.width, canvas.height)):

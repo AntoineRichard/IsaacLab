@@ -114,7 +114,11 @@ def play(animation: Animation, fps: float, beside: bool) -> int:
             body = beside_summary(animation, frame) if beside else frame
             size = shutil.get_terminal_size((80, 24))
             lines = body.splitlines()
-            header = f"{animation.name}  {animation.cols}x{animation.rows}  frame {index % len(animation.frames) + 1}/{len(animation.frames)}  (Ctrl-C to stop)"
+            shown = index % len(animation.frames) + 1
+            header = (
+                f"{animation.name}  {animation.cols}x{animation.rows}  "
+                f"frame {shown}/{len(animation.frames)}  (Ctrl-C to stop)"
+            )
             out = ["\x1b[H\x1b[J", f"\x1b[1;1H\x1b[2K{header[: size.columns]}"]
             for row, line in enumerate(lines[: size.lines - 2], start=3):
                 out.append(f"\x1b[{row};1H\x1b[2K{line}")
