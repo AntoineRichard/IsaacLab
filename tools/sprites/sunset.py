@@ -17,7 +17,8 @@ kind of seam that makes a short loop look broken.
 from __future__ import annotations
 
 from .canvas import Canvas
-from .nvidia import SLOGAN_STACKED, _centre, mask
+from .isaac import FACE_GLYPHS, row
+from .nvidia import GAP, IL3, MARK_CELLS, SLOGAN, SLOGAN_STACKED, _centre, mask
 
 PALETTE = (
     (238, 175, 97),
@@ -38,6 +39,9 @@ glyphs but the frames compress like flat colour.
 
 SPREAD = 1.4
 """Palette turns visible across the mark at once. Above one, more than a full ramp shows."""
+
+EDGE_SHADE = 0.34
+"""How much of the lit colour a lockup edge keeps, so shading travels with the light."""
 
 FRAMES = 24
 """Frames in one sweep."""
@@ -60,19 +64,63 @@ def ramp(t: float) -> tuple[int, int, int]:
 
 
 def frame(phase: float, cols: int, rows: int) -> str:
-    """Draw the mark at *phase* of the sweep."""
+    """Draw the mark at *phase* of the sweep.
+
+    Every piece takes the colour arriving at its own column of the whole greeting, not of the
+    piece it sits in, so the ramp crosses the mark, the lockup and the slogan as one motion.
+    """
     phase %= 1.0  # so frame(1.0) is bit-identical to frame(0.0) and the loop closes
-    text_rows = len(SLOGAN_STACKED) + 1
-    canvas = Canvas(cols, rows - text_rows)
-    for y, row in enumerate(mask(canvas.width, canvas.height)):
-        for x, ink in enumerate(row):
+
+    def lit(cell: float) -> tuple[int, int, int]:
+        """Colour arriving at *cell*, measured in cells from the greeting's left edge."""
+        return ramp(cell / cols * SPREAD - phase)
+
+    if cols < MARK_CELLS + GAP + max(len(part) for part in IL3):
+        # narrow: the mark alone, over the slogan split across two lines
+        text_rows = len(SLOGAN_STACKED) + 1
+        canvas = Canvas(cols, rows - text_rows)
+        for y, line in enumerate(mask(canvas.width, canvas.height)):
+            for x, ink in enumerate(line):
+                if ink:
+                    canvas.set(x, y, lit(x / 2))
+        lines = canvas.render().splitlines()
+        lines.append("\x1b[0m" + " " * cols)
+        lines += [_centre(part, cols, lit(cols / 2)) for part in SLOGAN_STACKED]
+        return "\n".join(lines)
+
+    art_rows = rows - 2
+    lockup_width = max(len(part) for part in IL3)
+    block = MARK_CELLS + GAP + lockup_width
+    left = max((cols - block) // 2, 0)
+    top = (art_rows - len(IL3)) // 2
+
+    canvas = Canvas(MARK_CELLS, art_rows)
+    for y, line in enumerate(mask(canvas.width, canvas.height)):
+        for x, ink in enumerate(line):
             if ink:
-                canvas.set(x, y, ramp(x / canvas.width * SPREAD - phase))
-    lines = canvas.render().splitlines()
+                canvas.set(x, y, lit(left + x / 2))
+
+    def letter(glyph: str, index: int) -> tuple[int, int, int]:
+        colour = lit(left + MARK_CELLS + GAP + index)
+        return colour if glyph in FACE_GLYPHS else tuple(round(c * EDGE_SHADE) for c in colour)
+
+    lines = []
+    for index, line in enumerate(canvas.render().splitlines()):
+        part = IL3[index - top] if 0 <= index - top < len(IL3) else ""
+        lines.append(
+            "\x1b[0m"
+            + " " * left
+            + line
+            + "\x1b[0m"
+            + " " * GAP
+            + row(part, lockup_width, 0, letter)
+            + "\x1b[0m"
+            + " " * max(cols - left - block, 0)
+        )
     lines.append("\x1b[0m" + " " * cols)
-    # the slogan takes the colour arriving at its own column, so the sweep reads as one motion
-    # across the whole greeting rather than the mark animating above static text
-    lines += [_centre(part, cols, ramp(-phase + 0.5)) for part in SLOGAN_STACKED]
+    pad = max((cols - len(SLOGAN)) // 2, 0)
+    lines.append(row(SLOGAN, cols, pad, lambda g, i: lit(pad + i)))
+    lines += ["\x1b[0m" + " " * cols] * (rows - len(lines))
     return "\n".join(lines)
 
 
