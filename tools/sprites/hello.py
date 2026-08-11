@@ -25,7 +25,7 @@ FACE = (
 )
 """The face, without its caption."""
 
-CAPTION = "Welcome to Isaac Lab!"
+CAPTION = "Welcome to Isaac Lab 3!"
 """Set below the face, matching the caption position of the other greetings."""
 
 SHELL = (232, 228, 214)

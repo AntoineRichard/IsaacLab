@@ -40,7 +40,7 @@ JOINT = (118, 185, 0)
 CYAN = (77, 217, 232)
 CAPTION_COLOUR = (150, 154, 160)
 
-CAPTION = "Welcome to Isaac Lab!"
+CAPTION = "Welcome to Isaac Lab 3!"
 """Set under the arm. Twenty-one columns, so it fits the narrow slot with room to spare."""
 
 BASE_Y = 19

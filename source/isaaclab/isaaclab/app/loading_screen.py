@@ -48,7 +48,7 @@ _BOX = ("╭", "╮", "╰", "╯", "─", "│")
 _ASCII_BOX = ("+", "+", "+", "+", "-", "|")
 _WRAP_CONSOLE = Console(color_system=None, force_terminal=False, width=120)
 
-LOGO = r"""Welcome to Isaac Lab!
+LOGO = r"""Welcome to Isaac Lab 3!
 
        \   /
      .-------.
@@ -65,7 +65,7 @@ LOGO_WIDE = r"""Welcome to Isaac Lab 3!
 ██║╚════██║██╔══██║██╔══██║██║        ██║     ██╔══██║██╔══██╗   ╚═══██╗
 ██║███████║██║  ██║██║  ██║╚██████╗   ███████╗██║  ██║██████╔╝  ██████╔╝
 ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝   ╚══════╝╚═╝  ╚═╝╚═════╝   ╚═════╝"""
-"""Wide greeting used when a 120-column display is available."""
+"""Wide greeting used when a 130-column display is available."""
 
 _active_screen: LoadingScreen | None = None
 
