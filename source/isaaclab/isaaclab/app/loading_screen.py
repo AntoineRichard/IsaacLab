@@ -31,7 +31,7 @@ _ACTIVITY_WIDTH = 24
 _REFRESH_PER_SECOND = 10
 _SUMMARY_WIDTH = 50
 _STANDARD_WIDTH = 80
-_WIDE_WIDTH = 120
+_WIDE_WIDTH = 130
 _COLUMN_GAP = 6
 _TICKS_PER_FRAME = 2
 """Refreshes per animation frame, so a greeting runs at half the display's refresh rate."""
@@ -57,14 +57,14 @@ LOGO = r"""Welcome to Isaac Lab!
      '-------'"""
 """Greeting drawn beside the run summary. Kept short enough to fit alongside it."""
 
-LOGO_WIDE = r"""Welcome to Isaac Lab!
+LOGO_WIDE = r"""Welcome to Isaac Lab 3!
 
-██╗███████╗ █████╗  █████╗  ██████╗   ██╗      █████╗ ██████╗
-██║██╔════╝██╔══██╗██╔══██╗██╔════╝   ██║     ██╔══██╗██╔══██╗
-██║███████╗███████║███████║██║        ██║     ███████║██████╔╝
-██║╚════██║██╔══██║██╔══██║██║        ██║     ██╔══██║██╔══██╗
-██║███████║██║  ██║██║  ██║╚██████╗   ███████╗██║  ██║██████╔╝
-╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝   ╚══════╝╚═╝  ╚═╝╚═════╝"""
+██╗███████╗ █████╗  █████╗  ██████╗   ██╗      █████╗ ██████╗   ██████╗
+██║██╔════╝██╔══██╗██╔══██╗██╔════╝   ██║     ██╔══██╗██╔══██╗  ╚════██╗
+██║███████╗███████║███████║██║        ██║     ███████║██████╔╝   █████╔╝
+██║╚════██║██╔══██║██╔══██║██║        ██║     ██╔══██║██╔══██╗   ╚═══██╗
+██║███████║██║  ██║██║  ██║╚██████╗   ███████╗██║  ██║██████╔╝  ██████╔╝
+╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝   ╚══════╝╚═╝  ╚═╝╚═════╝   ╚═════╝"""
 """Wide greeting used when a 120-column display is available."""
 
 _active_screen: LoadingScreen | None = None

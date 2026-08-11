@@ -30,7 +30,7 @@ from typing import NamedTuple
 VERSION = 1
 """Container format version. :func:`unpack` refuses anything newer than it understands."""
 
-SLOTS = ((24, 12), (64, 12))
+SLOTS = ((24, 12), (74, 12))
 """Greeting sizes in character cells, narrow first.
 
 The widths are what the loading screen leaves beside the summary box at its two display

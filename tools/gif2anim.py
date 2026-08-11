@@ -41,11 +41,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 # not importable when this script is run by path rather than as a module
 sys.path[:0] = [str(_ROOT), str(_ROOT / "source" / "isaaclab")]
 
-from isaaclab.app.anims import Animation, pack  # noqa: E402
+from isaaclab.app.anims import SLOTS, Animation, pack  # noqa: E402
 
 from tools.sprites.canvas import render  # noqa: E402
 
-SIZES = {"small": (24, 12), "wide": (64, 12)}
+SIZES = dict(zip(("small", "wide"), SLOTS))
 """Target sizes in character cells, keyed by the loading screen slot they fill."""
 
 SPRITE_PACKAGE = "tools.sprites"
