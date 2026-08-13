@@ -61,6 +61,8 @@ class AsciiVisualizer(BaseVisualizer):
         self._renderer = AsciiRenderer()
         self._geometry: dict[tuple[str, str], AsciiMesh] = {}
         self._auto_fit_exclusions: set[tuple[str, str]] = set()
+        # color per body, kept across frames so a body does not change color as the scene grows
+        self._body_colors: dict[tuple[str, str], tuple[int, int, int]] = {}
         self._body_groups: list[_BodyGroup] = []
 
     def initialize(self, scene_data_provider: SceneDataProvider) -> None:
@@ -241,8 +243,9 @@ class AsciiVisualizer(BaseVisualizer):
         groups = self._body_groups
         body_count = sum(len(poses) for _, poses, _ in groups)
         instances = self._create_render_instances(groups)
-        if instances:
-            canvas = self._renderer.render(
+        if instances and self.cfg.color:
+            # already-joined rows, carrying their own color escapes
+            rows = self._renderer.render_color(
                 instances,
                 plot_width,
                 plot_height,
@@ -252,8 +255,22 @@ class AsciiVisualizer(BaseVisualizer):
                 self.cfg.auto_fit,
                 self.cfg.auto_fit_margin,
             )
+        elif instances:
+            rows = [
+                "".join(row)
+                for row in self._renderer.render(
+                    instances,
+                    plot_width,
+                    plot_height,
+                    self._eye,
+                    self._lookat,
+                    self.cfg.view_span,
+                    self.cfg.auto_fit,
+                    self.cfg.auto_fit_margin,
+                )
+            ]
         else:
-            canvas = self._render_pose_fallback(groups, plot_width, plot_height)
+            rows = ["".join(row) for row in self._render_pose_fallback(groups, plot_width, plot_height)]
 
         title = self._fit_text(" ISAAC LAB ASCII VISUALIZER ", width - 2, fill="-")
         names = ", ".join(name for name, _, _ in groups) or "waiting for dynamic scene data"
@@ -265,7 +282,7 @@ class AsciiVisualizer(BaseVisualizer):
         )
         status = f" env {self.cfg.env_index} | t={self._sim_time:.2f}s | {geometry_status} | {names} "
         status = self._fit_text(status, width - 2, fill="-")
-        return [f"+{title}+", *(f"|{''.join(row)}|" for row in canvas), f"+{status}+"]
+        return [f"+{title}+", *(f"|{row}|" for row in rows), f"+{status}+"]
 
     def _create_render_instances(self, groups: list[_BodyGroup]) -> list[AsciiRenderInstance]:
         """Pair cached geometry with live body poses."""
@@ -282,9 +299,23 @@ class AsciiVisualizer(BaseVisualizer):
                             position,
                             orientation,
                             include_in_auto_fit=geometry_key not in self._auto_fit_exclusions,
+                            color=self._body_color(geometry_key) if self.cfg.color else None,
                         )
                     )
         return instances
+
+    def _body_color(self, geometry_key: tuple[str, str]) -> tuple[int, int, int]:
+        """Color for one body, assigned on first sight and kept for the run.
+
+        Cycling the palette by insertion order rather than hashing the name keeps neighbouring
+        bodies apart, and caching it means a body does not change color when another appears.
+        """
+        color = self._body_colors.get(geometry_key)
+        if color is None:
+            palette = self.cfg.body_palette
+            color = palette[len(self._body_colors) % len(palette)]
+            self._body_colors[geometry_key] = color
+        return color
 
     def _render_pose_fallback(self, groups: list[_BodyGroup], width: int, height: int) -> list[list[str]]:
         """Render orientation glyphs when no USD geometry is available."""
@@ -549,9 +580,7 @@ class AsciiVisualizer(BaseVisualizer):
         unit_dot_unit = AsciiVisualizer._dot(unit, unit)
         cross = AsciiVisualizer._cross(unit, vector)
         return tuple(
-            2.0 * unit_dot_vector * unit[index]
-            + (w * w - unit_dot_unit) * vector[index]
-            + 2.0 * w * cross[index]
+            2.0 * unit_dot_vector * unit[index] + (w * w - unit_dot_unit) * vector[index] + 2.0 * w * cross[index]
             for index in range(3)
         )
 

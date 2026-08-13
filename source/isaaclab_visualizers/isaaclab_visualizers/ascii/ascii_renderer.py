@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from .quadrant import render as encode_quadrants
 
 _Vector3 = tuple[float, float, float]
 _Quaternion = tuple[float, float, float, float]
@@ -34,6 +35,8 @@ class AsciiRenderInstance:
     position: _Vector3
     orientation: _Quaternion
     include_in_auto_fit: bool = True
+    color: tuple[int, int, int] | None = None
+    """Body color for :meth:`AsciiRenderer.render_color`. Ignored by :meth:`render`."""
 
 
 class AsciiRenderer:
@@ -74,36 +77,10 @@ class AsciiRenderer:
         if not instances or width <= 0 or height <= 0:
             return canvas
 
-        forward, right, up = self._camera_basis(eye, lookat)
-        world_meshes = [
-            ([self._transform_vertex(vertex, instance) for vertex in instance.mesh.vertices], instance.mesh)
-            for instance in instances
-        ]
-        camera_vertices = [
-            [self._to_camera(vertex, eye, forward, right, up) for vertex in vertices]
-            for vertices, _ in world_meshes
-        ]
-        framing_vertices = [
-            vertices
-            for vertices, instance in zip(camera_vertices, instances)
-            if instance.include_in_auto_fit
-        ]
-        center, horizontal_span = self._resolve_frame(
-            framing_vertices or camera_vertices,
-            width,
-            height,
-            view_span,
-            auto_fit,
-            auto_fit_margin,
+        forward, world_meshes, projected_meshes = self._project_scene(
+            instances, width, height, eye, lookat, view_span, auto_fit, auto_fit_margin
         )
-        vertical_span = horizontal_span * max(height, 1) * 2.0 / max(width, 1)
-        projected_meshes = [
-            [
-                self._project_vertex(vertex, center, horizontal_span, vertical_span, width, height)
-                for vertex in vertices
-            ]
-            for vertices in camera_vertices
-        ]
+        horizontal_span = self._frame_span if self._frame_span is not None else view_span
 
         depth_buffer = [[math.inf for _ in range(width)] for _ in range(height)]
         face_orientations: list[list[float]] = []
@@ -147,6 +124,107 @@ class AsciiRenderer:
                     depth_tolerance,
                 )
         return canvas
+
+    def render_color(
+        self,
+        instances: list[AsciiRenderInstance],
+        width: int,
+        height: int,
+        eye: _Vector3,
+        lookat: _Vector3,
+        view_span: float,
+        auto_fit: bool,
+        auto_fit_margin: float,
+        fallback_color: tuple[int, int, int] = (150, 154, 160),
+    ) -> list[str]:
+        """Rasterize posed meshes into colored terminal rows, one color per body.
+
+        Draws onto a grid of quadrant subpixels, two across and two down per character cell,
+        and lets :mod:`.quadrant` choose the glyph and the two colors that best reproduce each
+        cell. That is four times the spatial resolution of :meth:`render`, and it carries each
+        body's own color rather than a shading character.
+
+        A subpixel keeps the cell's proportions, so the framing maths is the one :meth:`render`
+        uses, applied at twice the resolution in each axis.
+
+        Args:
+            instances: Meshes and their world poses. Each may carry a color.
+            width: Canvas width in character cells.
+            height: Canvas height in character cells.
+            eye: Camera eye position.
+            lookat: Camera look-at position.
+            view_span: Manual horizontal span in meters.
+            auto_fit: Whether to derive framing from the current geometry.
+            auto_fit_margin: Multiplicative margin around auto-fitted geometry.
+            fallback_color: Color for an instance that carries none.
+
+        Returns:
+            One string per row, carrying its own color escapes. Rows are exactly *width*
+            cells wide; the escapes occupy no columns, so anything measuring these strings
+            must strip them first.
+        """
+        if not instances or width <= 0 or height <= 0:
+            return [""] * max(height, 0)
+
+        pixel_width, pixel_height = width * 2, height * 2
+        canvas: list[list[tuple[int, int, int] | None]] = [
+            [None for _ in range(pixel_width)] for _ in range(pixel_height)
+        ]
+        _, world_meshes, projected_meshes = self._project_scene(
+            instances, pixel_width, pixel_height, eye, lookat, view_span, auto_fit, auto_fit_margin
+        )
+
+        depth_buffer = [[math.inf for _ in range(pixel_width)] for _ in range(pixel_height)]
+        light_direction = self._normalize((0.35, -0.45, 0.82))
+        for (world_vertices, mesh), projected_vertices, instance in zip(world_meshes, projected_meshes, instances):
+            color = instance.color or fallback_color
+            for face in mesh.faces:
+                first, second, third = (world_vertices[index] for index in face)
+                normal = self._normalize(self._cross(self._subtract(second, first), self._subtract(third, first)))
+                # the same Lambert term the character path uses, applied to the body's color
+                # rather than used to pick a glyph from a ramp
+                intensity = 0.30 + 0.70 * abs(self._dot(normal, light_direction))
+                shaded = tuple(min(255, round(channel * intensity)) for channel in color)
+                self._rasterize_triangle(canvas, depth_buffer, *(projected_vertices[index] for index in face), shaded)
+
+        return encode_quadrants(canvas, width, height).split("\n")
+
+    def _project_scene(
+        self,
+        instances: list[AsciiRenderInstance],
+        width: int,
+        height: int,
+        eye: _Vector3,
+        lookat: _Vector3,
+        view_span: float,
+        auto_fit: bool,
+        auto_fit_margin: float,
+    ):
+        """Frame the scene and project every vertex, shared by both rasterizing paths.
+
+        Returns:
+            The camera forward vector, the world-space meshes, and the projected vertices.
+        """
+        forward, right, up = self._camera_basis(eye, lookat)
+        world_meshes = [
+            ([self._transform_vertex(vertex, instance) for vertex in instance.mesh.vertices], instance.mesh)
+            for instance in instances
+        ]
+        camera_vertices = [
+            [self._to_camera(vertex, eye, forward, right, up) for vertex in vertices] for vertices, _ in world_meshes
+        ]
+        framing_vertices = [
+            vertices for vertices, instance in zip(camera_vertices, instances) if instance.include_in_auto_fit
+        ]
+        center, horizontal_span = self._resolve_frame(
+            framing_vertices or camera_vertices, width, height, view_span, auto_fit, auto_fit_margin
+        )
+        vertical_span = horizontal_span * max(height, 1) * 2.0 / max(width, 1)
+        projected_meshes = [
+            [self._project_vertex(vertex, center, horizontal_span, vertical_span, width, height) for vertex in vertices]
+            for vertices in camera_vertices
+        ]
+        return forward, world_meshes, projected_meshes
 
     def _resolve_frame(
         self,
@@ -306,9 +384,7 @@ class AsciiRenderer:
         unit_dot_unit = AsciiRenderer._dot(unit, unit)
         cross = AsciiRenderer._cross(unit, vector)
         return tuple(
-            2.0 * unit_dot_vector * unit[index]
-            + (w * w - unit_dot_unit) * vector[index]
-            + 2.0 * w * cross[index]
+            2.0 * unit_dot_vector * unit[index] + (w * w - unit_dot_unit) * vector[index] + 2.0 * w * cross[index]
             for index in range(3)
         )
 

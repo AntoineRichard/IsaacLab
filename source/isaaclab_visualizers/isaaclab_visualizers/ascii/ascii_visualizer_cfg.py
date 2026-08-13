@@ -39,6 +39,25 @@ class AsciiVisualizerCfg(VisualizerCfg):
     auto_fit_margin: float = 1.4
     """Multiplicative margin around automatically framed geometry."""
 
+    color: bool = True
+    """Draw in color, one color per body, instead of shading characters.
+
+    Color uses quadrant block characters, which carry two colors and 2x2 subpixels per cell:
+    four times the spatial resolution, and each body distinguishable. It needs a terminal with
+    24-bit color. Without one the output degrades badly, because the glyph carries a color
+    boundary rather than coverage, so the character path remains the default.
+    """
+
+    body_palette: tuple[tuple[int, int, int], ...] = (
+        (118, 185, 0),
+        (77, 217, 232),
+        (238, 175, 97),
+        (238, 93, 108),
+        (206, 73, 147),
+        (232, 228, 214),
+    )
+    """Colors cycled over the bodies, in the order geometry is first seen for them."""
+
     max_faces_per_body: int = 96
     """Maximum triangle count retained for each body's terminal-rendering mesh."""
 
@@ -63,5 +82,7 @@ class AsciiVisualizerCfg(VisualizerCfg):
             raise ValueError(
                 f"AsciiVisualizerCfg.max_faces_per_body must be at least 12, got {self.max_faces_per_body}."
             )
+        if self.color and not self.body_palette:
+            raise ValueError("AsciiVisualizerCfg.body_palette must not be empty when color is enabled.")
         if self.body_axis_length <= 0.0:
             raise ValueError(f"AsciiVisualizerCfg.body_axis_length must be positive, got {self.body_axis_length}.")

@@ -8,19 +8,19 @@
 from __future__ import annotations
 
 import io
+import re
 import sys
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import torch
-
-from pxr import Usd, UsdGeom
-
 from isaaclab_visualizers.ascii import AsciiVisualizer, AsciiVisualizerCfg
 from isaaclab_visualizers.ascii import ascii_visualizer as ascii_visualizer_module
 from isaaclab_visualizers.ascii.ascii_renderer import AsciiMesh, AsciiRenderer, AsciiRenderInstance
 from isaaclab_visualizers.ascii.usd_geometry import _build_edge_adjacency, extract_scene_geometry
+
+from pxr import Usd, UsdGeom
 
 
 class _TerminalBuffer(io.StringIO):
@@ -141,6 +141,142 @@ def test_ascii_renderer_ignores_fixed_rail_when_auto_framing() -> None:
     assert len(occupied_rows) >= 12
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_CELL = re.compile(r"((?:\x1b\[[0-9;]*m)*)(.)")
+
+
+def _covered_cells(row: str) -> int:
+    """Cells of *row* carrying any color.
+
+    Measured by color rather than by glyph on purpose. A fully covered cell encodes as a
+    *space with a background color*, because the encoder prefers the fewest foreground
+    subpixels when two splits tie, so counting non-space characters reads solid geometry as
+    empty.
+    """
+    covered = lit = 0
+    for style, _ in _CELL.findall(row):
+        if style:
+            lit = "38;2;" in style or "48;2;" in style
+        covered += bool(lit)
+    return covered
+
+
+def _color_scene() -> list[AsciiRenderInstance]:
+    """Two bodies of different colors, far enough apart to occupy different cells."""
+    return [
+        AsciiRenderInstance(
+            _make_box_mesh((0.8, 0.4, 0.3)), (0.0, 0.0, 0.2), (0.0, 0.0, 0.0, 1.0), True, (118, 185, 0)
+        ),
+        AsciiRenderInstance(
+            _make_box_mesh((0.3, 0.3, 0.9)), (0.9, 0.0, 0.6), (0.0, 0.0, 0.0, 1.0), True, (77, 217, 232)
+        ),
+    ]
+
+
+def test_color_rows_are_exactly_the_requested_size() -> None:
+    """Escapes occupy no columns, so a row must measure its cell width once they are stripped.
+
+    The panel draws a border either side of every row. A row that measures wrong because its
+    color was counted as printable would push that border out of alignment.
+    """
+    rows = AsciiRenderer().render_color(
+        _color_scene(),
+        width=60,
+        height=24,
+        eye=(4.0, -4.0, 3.0),
+        lookat=(0.0, 0.0, 0.5),
+        view_span=6.0,
+        auto_fit=True,
+        auto_fit_margin=1.2,
+    )
+
+    assert len(rows) == 24
+    assert {len(ANSI.sub("", row)) for row in rows} == {60}
+
+
+def test_color_carries_each_body_separately() -> None:
+    """Both body colors reach the output, rather than one overdrawing the other."""
+    rows = AsciiRenderer().render_color(
+        _color_scene(),
+        width=60,
+        height=24,
+        eye=(4.0, -4.0, 3.0),
+        lookat=(0.0, 0.0, 0.5),
+        view_span=6.0,
+        auto_fit=True,
+        auto_fit_margin=1.2,
+    )
+    frame = "".join(rows)
+
+    # shaded, so the exact triple varies by face; the hue each body is drawn in does not
+    greens = sum(1 for match in re.finditer(r"2;(\d+);(\d+);(\d+)m", frame) if _is_green(match))
+    cyans = sum(1 for match in re.finditer(r"2;(\d+);(\d+);(\d+)m", frame) if _is_cyan(match))
+    assert greens > 0, "the green body did not reach the output"
+    assert cyans > 0, "the cyan body did not reach the output"
+
+
+def _is_green(match: re.Match[str]) -> bool:
+    red, green, blue = (int(value) for value in match.groups())
+    return green > red and green > blue
+
+
+def _is_cyan(match: re.Match[str]) -> bool:
+    red, green, blue = (int(value) for value in match.groups())
+    return blue > red and green > red
+
+
+def test_color_resolves_finer_detail_than_characters() -> None:
+    """Quadrant subpixels resolve geometry that one character per cell cannot.
+
+    The color path samples four times per cell, so a thin body that falls between character
+    centres still lands on a subpixel. This is the whole reason for the second path.
+    """
+    thin = [
+        AsciiRenderInstance(
+            _make_box_mesh((0.02, 0.6, 0.6)), (0.0, 0.0, 0.3), (0.0, 0.0, 0.0, 1.0), True, (118, 185, 0)
+        )
+    ]
+    arguments = dict(
+        width=40,
+        height=16,
+        eye=(3.0, -3.0, 2.0),
+        lookat=(0.0, 0.0, 0.3),
+        view_span=6.0,
+        auto_fit=True,
+        auto_fit_margin=1.2,
+    )
+
+    characters = AsciiRenderer().render(thin, **arguments)
+    rows = AsciiRenderer().render_color(thin, **arguments)
+
+    character_cells = sum(character != " " for row in characters for character in row)
+    color_cells = sum(_covered_cells(row) for row in rows)
+    assert color_cells >= character_cells
+
+
+def test_color_renders_nothing_for_an_empty_scene() -> None:
+    """No geometry yields blank rows rather than a short frame the panel cannot border."""
+    rows = AsciiRenderer().render_color(
+        [],
+        width=30,
+        height=10,
+        eye=(1.0, 0.0, 0.0),
+        lookat=(0.0, 0.0, 0.0),
+        view_span=2.0,
+        auto_fit=True,
+        auto_fit_margin=1.2,
+    )
+    assert rows == [""] * 10
+
+
+def test_body_colors_are_stable_as_the_scene_grows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A body keeps its color when another body appears, so nothing changes hue mid-run."""
+    visualizer = AsciiVisualizer(AsciiVisualizerCfg(color=True))
+    first = visualizer._body_color(("robot", "base"))
+    visualizer._body_color(("robot", "thigh"))
+    assert visualizer._body_color(("robot", "base")) == first
+
+
 def test_ascii_geometry_extractor_preserves_body_dimensions() -> None:
     """USD primitive transforms are cached in their owning body frames."""
     stage = Usd.Stage.CreateInMemory()
@@ -159,9 +295,7 @@ def test_ascii_geometry_extractor_preserves_body_dimensions() -> None:
     articulation = SimpleNamespace(
         body_names=["cart", "pole"],
         backend_body_names=["cart", "pole"],
-        root_view=SimpleNamespace(
-            link_paths=[["/World/envs/env_0/Robot/cart", "/World/envs/env_0/Robot/pole"]]
-        ),
+        root_view=SimpleNamespace(link_paths=[["/World/envs/env_0/Robot/cart", "/World/envs/env_0/Robot/pole"]]),
     )
     scene = SimpleNamespace(articulations={"robot": articulation}, rigid_objects={})
 
@@ -169,8 +303,12 @@ def test_ascii_geometry_extractor_preserves_body_dimensions() -> None:
 
     cart_vertices = torch.tensor(geometry[("robot", "cart")].vertices)
     pole_vertices = torch.tensor(geometry[("robot", "pole")].vertices)
-    torch.testing.assert_close(cart_vertices.max(dim=0).values - cart_vertices.min(dim=0).values, torch.tensor([0.8, 0.4, 0.3]))
-    torch.testing.assert_close(pole_vertices.max(dim=0).values - pole_vertices.min(dim=0).values, torch.tensor([0.08, 0.08, 1.8]))
+    torch.testing.assert_close(
+        cart_vertices.max(dim=0).values - cart_vertices.min(dim=0).values, torch.tensor([0.8, 0.4, 0.3])
+    )
+    torch.testing.assert_close(
+        pole_vertices.max(dim=0).values - pole_vertices.min(dim=0).values, torch.tensor([0.08, 0.08, 1.8])
+    )
 
 
 def test_ascii_visualizer_renders_dynamic_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
