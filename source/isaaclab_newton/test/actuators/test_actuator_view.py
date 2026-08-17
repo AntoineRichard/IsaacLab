@@ -5,13 +5,13 @@
 
 """Tests for the standalone Newton actuator parameter view."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import warp as wp
-from newton.actuators import Actuator, ClampingMaxEffort, ControllerPD, Delay
-from types import SimpleNamespace
-
 from isaaclab_newton.actuators.actuator_view import ActuatorView
+from newton.actuators import Actuator, ClampingMaxEffort, ControllerPD, Delay
 
 
 def _make_pd_actuator(
