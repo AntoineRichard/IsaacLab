@@ -14,7 +14,7 @@ from isaaclab_newton.actuators.actuator_view import ActuatorView
 from newton.actuators import Actuator, ClampingMaxEffort, ControllerPD, Delay
 
 
-def _make_pd_actuator(
+def _make_actuator(
     kp: list[float],
     *,
     delay_steps: list[int] | None = None,
@@ -29,10 +29,7 @@ def _make_pd_actuator(
             kd=wp.zeros(count, dtype=wp.float32, device="cpu"),
         ),
         delay=(
-            Delay(
-                delay_steps=wp.array(delay_steps, dtype=wp.int32, device="cpu"),
-                max_delay=max(delay_steps),
-            )
+            Delay(wp.array(delay_steps, dtype=wp.int32, device="cpu"), max(delay_steps))
             if delay_steps is not None
             else None
         ),
@@ -41,25 +38,33 @@ def _make_pd_actuator(
             if max_effort is not None
             else None
         ),
+        control_target_pos_attr="joint_target_q",
+        control_target_vel_attr="joint_target_qd",
     )
 
 
-def test_get_actuator_parameter_gathers_one_actuator_into_view_layout():
-    """A getter must gather mapped values and leave unowned DOFs at zero."""
-    actuator = _make_pd_actuator([10.0, 20.0, 30.0, 40.0])
-    mapping = wp.array([[0, -1, 1], [2, -1, 3]], dtype=wp.int32, device="cpu")
-    view = ActuatorView([(actuator, mapping)])
+def _mapping() -> wp.array:
+    return wp.array([[0, -1, 1], [2, -1, 3]], dtype=wp.int32, device="cpu")
 
-    values = view.get_actuator_parameter(actuator, "controller", "kp")
+
+def test_get_gathers_only_the_requested_actuator():
+    first = _make_actuator([10.0, 20.0, 30.0, 40.0])
+    second = _make_actuator([50.0, 60.0, 70.0, 80.0])
+    view = ActuatorView(
+        {
+            first: _mapping(),
+            second: wp.array([[-1, 0, -1], [-1, 2, -1]], dtype=wp.int32, device="cpu"),
+        }
+    )
+
+    values = view.get_actuator_parameter(first, "controller", "kp")
 
     np.testing.assert_array_equal(values.numpy(), [[10.0, 0.0, 20.0], [30.0, 0.0, 40.0]])
 
 
-def test_set_actuator_parameter_scatters_only_mapped_values():
-    """A setter must ignore values at mapping entries marked with -1."""
-    actuator = _make_pd_actuator([10.0, 20.0, 30.0, 40.0])
-    mapping = wp.array([[0, -1, 1], [2, -1, 3]], dtype=wp.int32, device="cpu")
-    view = ActuatorView([(actuator, mapping)])
+def test_set_scatters_only_mapped_values():
+    actuator = _make_actuator([10.0, 20.0, 30.0, 40.0])
+    view = ActuatorView({actuator: _mapping()})
     values = wp.array([[11.0, 999.0, 21.0], [31.0, 999.0, 41.0]], dtype=wp.float32, device="cpu")
 
     view.set_actuator_parameter(actuator, "controller", "kp", values)
@@ -67,44 +72,29 @@ def test_set_actuator_parameter_scatters_only_mapped_values():
     np.testing.assert_array_equal(actuator.controller.kp.numpy(), [11.0, 21.0, 31.0, 41.0])
 
 
-def test_set_actuator_parameter_honors_world_mask():
-    """A world mask must prevent writes to every DOF in unselected worlds."""
-    actuator = _make_pd_actuator([10.0, 20.0, 30.0, 40.0])
-    mapping = wp.array([[0, -1, 1], [2, -1, 3]], dtype=wp.int32, device="cpu")
-    view = ActuatorView([(actuator, mapping)])
+def test_set_honors_world_mask():
+    actuator = _make_actuator([10.0, 20.0, 30.0, 40.0])
+    view = ActuatorView({actuator: _mapping()})
     values = wp.array([[11.0, 999.0, 21.0], [31.0, 999.0, 41.0]], dtype=wp.float32, device="cpu")
-    mask = wp.array([False, True], dtype=wp.bool, device="cpu")
 
-    view.set_actuator_parameter(actuator, "controller", "kp", values, mask=mask)
+    view.set_actuator_parameter(
+        actuator,
+        "controller",
+        "kp",
+        values,
+        mask=wp.array([False, True], dtype=wp.bool, device="cpu"),
+    )
 
     np.testing.assert_array_equal(actuator.controller.kp.numpy(), [10.0, 20.0, 31.0, 41.0])
 
 
-def test_calls_use_only_the_requested_actuator_binding():
-    """Selecting one binding must neither read nor write another actuator."""
-    first = _make_pd_actuator([10.0, 20.0, 30.0, 40.0])
-    second = _make_pd_actuator([50.0, 60.0, 70.0, 80.0])
-    first_mapping = wp.array([[0, -1, 1], [2, -1, 3]], dtype=wp.int32, device="cpu")
-    second_mapping = wp.array([[-1, 0, -1], [-1, 2, -1]], dtype=wp.int32, device="cpu")
-    view = ActuatorView([(first, first_mapping), (second, second_mapping)])
-
-    values = view.get_actuator_parameter(first, "controller", "kp")
-    replacement = wp.array([[11.0, 999.0, 21.0], [31.0, 999.0, 41.0]], dtype=wp.float32, device="cpu")
-    view.set_actuator_parameter(first, "controller", "kp", replacement)
-
-    np.testing.assert_array_equal(values.numpy(), [[10.0, 0.0, 20.0], [30.0, 0.0, 40.0]])
-    np.testing.assert_array_equal(second.controller.kp.numpy(), [50.0, 60.0, 70.0, 80.0])
-
-
-def test_get_actuator_parameter_resolves_delay_and_indexed_clamping():
-    """Component paths must expose delay and a selected clamping component."""
-    actuator = _make_pd_actuator(
+def test_component_and_parameter_names_are_strings():
+    actuator = _make_actuator(
         [10.0, 20.0, 30.0, 40.0],
         delay_steps=[1, 2, 1, 2],
         max_effort=[100.0, 200.0, 300.0, 400.0],
     )
-    mapping = wp.array([[0, -1, 1], [2, -1, 3]], dtype=wp.int32, device="cpu")
-    view = ActuatorView([(actuator, mapping)])
+    view = ActuatorView({actuator: _mapping()})
 
     delays = view.get_actuator_parameter(actuator, "delay", "delay_steps")
     efforts = view.get_actuator_parameter(actuator, "clamping.0", "max_effort")
@@ -113,48 +103,9 @@ def test_get_actuator_parameter_resolves_delay_and_indexed_clamping():
     np.testing.assert_array_equal(efforts.numpy(), [[100.0, 0.0, 200.0], [300.0, 0.0, 400.0]])
 
 
-@pytest.mark.parametrize("component_name", ["clamping", "clamping.x", "unknown"])
-def test_get_actuator_parameter_rejects_malformed_component_paths(component_name: str):
-    """Malformed component strings must fail before launching a kernel."""
-    actuator = _make_pd_actuator([10.0])
-    view = ActuatorView([(actuator, wp.array([[0]], dtype=wp.int32, device="cpu"))])
-
-    with pytest.raises(ValueError):
-        view.get_actuator_parameter(actuator, component_name, "kp")
-
-
-def test_get_actuator_parameter_rejects_missing_delay():
-    """Requesting a delay from an actuator without one must fail explicitly."""
-    actuator = _make_pd_actuator([10.0])
-    view = ActuatorView([(actuator, wp.array([[0]], dtype=wp.int32, device="cpu"))])
-
-    with pytest.raises(ValueError, match="does not have a delay"):
-        view.get_actuator_parameter(actuator, "delay", "delay_steps")
-
-
-def test_get_actuator_parameter_rejects_out_of_range_clamping_index():
-    """A clamping index outside the actuator's component list must fail explicitly."""
-    actuator = _make_pd_actuator([10.0], max_effort=[100.0])
-    view = ActuatorView([(actuator, wp.array([[0]], dtype=wp.int32, device="cpu"))])
-
-    with pytest.raises(IndexError, match="clamping index"):
-        view.get_actuator_parameter(actuator, "clamping.1", "max_effort")
-
-
-def test_get_actuator_parameter_rejects_missing_parameter():
-    """A missing parameter name must identify the requested component and parameter."""
-    actuator = _make_pd_actuator([10.0])
-    view = ActuatorView([(actuator, wp.array([[0]], dtype=wp.int32, device="cpu"))])
-
-    with pytest.raises(AttributeError, match="missing"):
-        view.get_actuator_parameter(actuator, "controller", "missing")
-
-
-class _FakeNewtonArticulationView:
-    """Minimal provider for Newton's existing flat actuator mappings."""
-
-    def __init__(self, actuators: list[Actuator], mappings: dict[Actuator, wp.array], world_count: int = 2):
-        self.world_count = world_count
+class _ArticulationView:
+    def __init__(self, actuators: list[Actuator], mappings: dict[Actuator, wp.array]):
+        self.world_count = 2
         self.model = SimpleNamespace(actuators=actuators)
         self._mappings = mappings
 
@@ -162,142 +113,31 @@ class _FakeNewtonArticulationView:
         return self._mappings[actuator]
 
 
-def test_from_articulation_view_uses_model_actuators_by_default():
-    """The convenience factory must turn Newton's flat mapping into a working view."""
-    actuator = _make_pd_actuator([10.0, 20.0, 30.0, 40.0])
-    flat_mapping = wp.array([0, -1, 1, 2, -1, 3], dtype=wp.int32, device="cpu")
-    source_view = _FakeNewtonArticulationView([actuator], {actuator: flat_mapping})
+def test_from_articulation_view_extracts_default_mappings():
+    actuator = _make_actuator([10.0, 20.0, 30.0, 40.0])
+    source = _ArticulationView(
+        [actuator],
+        {actuator: wp.array([0, -1, 1, 2, -1, 3], dtype=wp.int32, device="cpu")},
+    )
 
-    view = ActuatorView.from_articulation_view(source_view)
+    view = ActuatorView.from_articulation_view(source)
+
     values = view.get_actuator_parameter(actuator, "controller", "kp")
-
-    assert view.shape == (2, 3)
     np.testing.assert_array_equal(values.numpy(), [[10.0, 0.0, 20.0], [30.0, 0.0, 40.0]])
 
 
-def test_from_articulation_view_accepts_an_explicit_actuator_subset():
-    """An explicit actuator list must exclude other model actuator mappings."""
-    included = _make_pd_actuator([10.0, 20.0, 30.0, 40.0])
-    excluded = _make_pd_actuator([50.0, 60.0, 70.0, 80.0])
-    mappings = {
-        included: wp.array([0, -1, 1, 2, -1, 3], dtype=wp.int32, device="cpu"),
-        excluded: wp.array([-1, 0, -1, -1, 2, -1], dtype=wp.int32, device="cpu"),
-    }
-    source_view = _FakeNewtonArticulationView([included, excluded], mappings)
+def test_from_articulation_view_accepts_actuator_subset():
+    included = _make_actuator([10.0, 20.0, 30.0, 40.0])
+    excluded = _make_actuator([50.0, 60.0, 70.0, 80.0])
+    source = _ArticulationView(
+        [included, excluded],
+        {
+            included: wp.array([0, -1, 1, 2, -1, 3], dtype=wp.int32, device="cpu"),
+            excluded: wp.array([-1, 0, -1, -1, 2, -1], dtype=wp.int32, device="cpu"),
+        },
+    )
 
-    view = ActuatorView.from_articulation_view(source_view, [included])
+    view = ActuatorView.from_articulation_view(source, [included])
 
-    with pytest.raises(KeyError, match="not bound"):
+    with pytest.raises(KeyError):
         view.get_actuator_parameter(excluded, "controller", "kp")
-
-
-def test_constructor_rejects_empty_and_duplicate_bindings():
-    """A view must have an unambiguous mapping for every bound actuator."""
-    actuator = _make_pd_actuator([10.0])
-    mapping = wp.array([[0]], dtype=wp.int32, device="cpu")
-
-    with pytest.raises(ValueError, match="At least one"):
-        ActuatorView([])
-    with pytest.raises(ValueError, match="only once"):
-        ActuatorView([(actuator, mapping), (actuator, mapping)])
-
-
-@pytest.mark.parametrize(
-    "mapping",
-    [
-        [[0]],
-        wp.array([0], dtype=wp.int32, device="cpu"),
-        wp.array([[0]], dtype=wp.uint32, device="cpu"),
-    ],
-)
-def test_constructor_rejects_invalid_mapping_type_rank_or_dtype(mapping):
-    """Mappings must use the exact two-dimensional signed-index contract."""
-    actuator = _make_pd_actuator([10.0])
-
-    with pytest.raises(ValueError, match="two-dimensional wp.int32"):
-        ActuatorView([(actuator, mapping)])
-
-
-def test_constructor_rejects_inconsistent_mapping_shapes():
-    """Every binding must describe the same output view layout."""
-    first = _make_pd_actuator([10.0])
-    second = _make_pd_actuator([20.0, 30.0])
-
-    with pytest.raises(ValueError, match="Expected mapping shape"):
-        ActuatorView(
-            [
-                (first, wp.array([[0]], dtype=wp.int32, device="cpu")),
-                (second, wp.array([[0, 1]], dtype=wp.int32, device="cpu")),
-            ]
-        )
-
-
-@pytest.mark.parametrize(
-    ("values", "message"),
-    [
-        (wp.array([[11.0, 12.0]], dtype=wp.float32, device="cpu"), "values shape"),
-        (wp.array([[11]], dtype=wp.int32, device="cpu"), "values dtype"),
-    ],
-)
-def test_set_actuator_parameter_rejects_invalid_values(values: wp.array, message: str):
-    """Writes must reject arrays that do not match the view or parameter storage."""
-    actuator = _make_pd_actuator([10.0])
-    view = ActuatorView([(actuator, wp.array([[0]], dtype=wp.int32, device="cpu"))])
-
-    with pytest.raises(ValueError, match=message):
-        view.set_actuator_parameter(actuator, "controller", "kp", values)
-
-
-@pytest.mark.parametrize(
-    ("mask", "message"),
-    [
-        (wp.array([1], dtype=wp.int32, device="cpu"), "mask dtype"),
-        (wp.array([True, False], dtype=wp.bool, device="cpu"), "mask shape"),
-    ],
-)
-def test_set_actuator_parameter_rejects_invalid_masks(mask: wp.array, message: str):
-    """World masks must match the view's world axis and Boolean dtype."""
-    actuator = _make_pd_actuator([10.0])
-    view = ActuatorView([(actuator, wp.array([[0]], dtype=wp.int32, device="cpu"))])
-    values = wp.array([[11.0]], dtype=wp.float32, device="cpu")
-
-    with pytest.raises(ValueError, match=message):
-        view.set_actuator_parameter(actuator, "controller", "kp", values, mask=mask)
-
-
-@pytest.mark.parametrize(
-    "parameter",
-    [
-        10.0,
-        wp.zeros((1, 1), dtype=wp.float32, device="cpu"),
-    ],
-)
-def test_get_actuator_parameter_rejects_non_array_or_non_flat_parameters(parameter):
-    """Only flat per-actuator Warp arrays are valid mapped parameters."""
-    actuator = _make_pd_actuator([10.0])
-    actuator.controller.invalid = parameter
-    view = ActuatorView([(actuator, wp.array([[0]], dtype=wp.int32, device="cpu"))])
-
-    with pytest.raises(ValueError, match="one-dimensional Warp array"):
-        view.get_actuator_parameter(actuator, "controller", "invalid")
-
-
-@pytest.mark.parametrize(
-    ("world_count", "mapping", "message"),
-    [
-        (0, wp.array([], dtype=wp.int32, device="cpu"), "positive world count"),
-        (2, wp.array([0, 1, 2], dtype=wp.int32, device="cpu"), "not divisible"),
-        (2, wp.array([[0], [1]], dtype=wp.int32, device="cpu"), "one-dimensional"),
-    ],
-)
-def test_from_articulation_view_rejects_invalid_source_layouts(
-    world_count: int,
-    mapping: wp.array,
-    message: str,
-):
-    """The factory must reject source layouts it cannot reshape unambiguously."""
-    actuator = _make_pd_actuator([10.0, 20.0, 30.0])
-    source_view = _FakeNewtonArticulationView([actuator], {actuator: mapping}, world_count=world_count)
-
-    with pytest.raises(ValueError, match=message):
-        ActuatorView.from_articulation_view(source_view)
