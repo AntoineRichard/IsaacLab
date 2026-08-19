@@ -205,6 +205,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
                 inputs=[
                     composer.out_force_b,
                     composer.out_torque_b,
+                    self._data.body_link_pose_w.warp,
                     self._wrench_buffer,
                     self._ALL_ENV_MASK,
                     self._ALL_BODY_MASK,
@@ -882,15 +883,21 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.assert_shape_and_dtype(masses, (env_ids.shape[0], body_ids.shape[0]), wp.float32, "masses")
         # Write to consolidated buffer
         wp.launch(
-            shared_kernels.write_2d_data_to_buffer_with_indices_kernel(env_ids, body_ids),
+            shared_kernels.write_body_mass_and_inverse_index_kernel(env_ids, body_ids),
             dim=(env_ids.shape[0], body_ids.shape[0]),
             inputs=[
                 masses,
                 env_ids,
                 body_ids,
+                self._ALL_BODY_INDICES,
+                False,
+                self.data._body_inertia,
             ],
             outputs=[
                 self.data._sim_bind_body_mass,
+                self.data._sim_bind_body_mass,
+                self.data._sim_bind_body_inv_mass,
+                self.data._sim_bind_body_inv_inertia,
             ],
             device=self.device,
         )
@@ -926,15 +933,21 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             body_mask = self._ALL_BODY_MASK
         self.assert_shape_and_dtype_mask(masses, (env_mask, body_mask), wp.float32, "masses")
         wp.launch(
-            shared_kernels.write_2d_data_to_buffer_with_mask,
+            shared_kernels.write_body_mass_and_inverse_mask,
             dim=(env_mask.shape[0], body_mask.shape[0]),
             inputs=[
                 masses,
                 env_mask,
                 body_mask,
+                self._ALL_BODY_INDICES,
+                False,
+                self.data._body_inertia,
             ],
             outputs=[
                 self.data._sim_bind_body_mass,
+                self.data._sim_bind_body_mass,
+                self.data._sim_bind_body_inv_mass,
+                self.data._sim_bind_body_inv_inertia,
             ],
             device=self.device,
         )
@@ -1066,15 +1079,21 @@ class RigidObjectCollection(BaseRigidObjectCollection):
         self.assert_shape_and_dtype(inertias, (env_ids.shape[0], body_ids.shape[0], 9), wp.float32, "inertias")
         # Write to consolidated buffer
         wp.launch(
-            shared_kernels.write_body_inertia_to_buffer_index_kernel(env_ids, body_ids),
+            shared_kernels.write_body_inertia_and_inverse_index_kernel(env_ids, body_ids),
             dim=(env_ids.shape[0], body_ids.shape[0]),
             inputs=[
                 inertias,
                 env_ids,
                 body_ids,
+                self._ALL_BODY_INDICES,
+                False,
+                self.data._sim_bind_body_mass,
             ],
             outputs=[
                 self.data._body_inertia,
+                self.data._body_inertia,
+                self.data._sim_bind_body_inv_mass,
+                self.data._sim_bind_body_inv_inertia,
             ],
             device=self.device,
         )
@@ -1110,15 +1129,21 @@ class RigidObjectCollection(BaseRigidObjectCollection):
             body_mask = self._ALL_BODY_MASK
         self.assert_shape_and_dtype_mask(inertias, (env_mask, body_mask), wp.float32, "inertias", trailing_dims=(9,))
         wp.launch(
-            shared_kernels.write_body_inertia_to_buffer_mask,
+            shared_kernels.write_body_inertia_and_inverse_mask,
             dim=(env_mask.shape[0], body_mask.shape[0]),
             inputs=[
                 inertias,
                 env_mask,
                 body_mask,
+                self._ALL_BODY_INDICES,
+                False,
+                self.data._sim_bind_body_mass,
             ],
             outputs=[
                 self.data._body_inertia,
+                self.data._body_inertia,
+                self.data._sim_bind_body_inv_mass,
+                self.data._sim_bind_body_inv_inertia,
             ],
             device=self.device,
         )
@@ -1175,7 +1200,7 @@ class RigidObjectCollection(BaseRigidObjectCollection):
 
         for name, obj_cfg in self.cfg.rigid_objects.items():
             _, root_expr = sim_utils.resolve_matching_prims_from_source(obj_cfg.prim_path, **resolve_kwargs)[0]
-            root_prim_path_exprs.append(root_expr.replace(".*", "*"))
+            root_prim_path_exprs.append(sim_utils.path_expr_to_glob(root_expr))
             self._body_names_list.append(name)
 
         # Build a single pattern that matches ALL body types by wildcarding the differing path segment.

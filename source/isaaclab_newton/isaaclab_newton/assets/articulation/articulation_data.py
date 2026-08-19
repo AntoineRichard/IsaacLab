@@ -80,7 +80,10 @@ class ArticulationData(BaseArticulationData):
 
         # Bind ``GRAVITY_VEC_W`` to Newton's per-env ``model.gravity`` (m/s^2) so
         # per-env gravity randomization stays live; consumers normalize on read.
-        self.GRAVITY_VEC_W = ProxyArray(SimulationManager.get_model().gravity)
+        # The final entry is reserved for Newton's global world and is not an
+        # Isaac Lab environment.
+        model = SimulationManager.get_model()
+        self.GRAVITY_VEC_W = ProxyArray(model.gravity[: model.world_count])
         forward_vec = np.full((self._root_view.count, 3), (1.0, 0.0, 0.0), dtype=np.float32)
         self.FORWARD_VEC_B = ProxyArray(wp.array(forward_vec, dtype=wp.vec3f, device=self.device))
 
@@ -368,73 +371,6 @@ class ArticulationData(BaseArticulationData):
         self._default_joint_vel.assign(value)
 
     """
-    Joint commands -- Set into simulation.
-    """
-
-    @property
-    def joint_pos_target(self) -> ProxyArray:
-        """Joint position targets commanded by the user.
-
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        For an implicit actuator model, the targets are directly set into the simulation.
-        For an explicit actuator model, the targets are used to compute the joint torques (see :attr:`applied_torque`),
-        which are then set into the simulation.
-        """
-        return self._joint_pos_target_ta
-
-    @property
-    def joint_vel_target(self) -> ProxyArray:
-        """Joint velocity targets commanded by the user.
-
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        For an implicit actuator model, the targets are directly set into the simulation.
-        For an explicit actuator model, the targets are used to compute the joint torques (see :attr:`applied_torque`),
-        which are then set into the simulation.
-        """
-        return self._joint_vel_target_ta
-
-    @property
-    def joint_effort_target(self) -> ProxyArray:
-        """Joint effort targets commanded by the user.
-
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        For an implicit actuator model, the targets are directly set into the simulation.
-        For an explicit actuator model, the targets are used to compute the joint torques (see :attr:`applied_torque`),
-        which are then set into the simulation.
-        """
-        return self._joint_effort_target_ta
-
-    """
-    Joint commands -- Explicit actuators.
-    """
-
-    @property
-    def computed_torque(self) -> ProxyArray:
-        """Joint torques computed from the actuator model (before clipping).
-
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        This quantity is the raw torque output from the actuator mode, before any clipping is applied.
-        It is exposed for users who want to inspect the computations inside the actuator model.
-        For instance, to penalize the learning agent for a difference between the computed and applied torques.
-        """
-        return self._computed_torque_ta
-
-    @property
-    def applied_torque(self) -> ProxyArray:
-        """Joint torques applied from the actuator model (after clipping).
-
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        These torques are set into the simulation, after clipping the :attr:`computed_torque` based on the
-        actuator model.
-        """
-        return self._applied_torque_ta
-
-    """
     Joint properties
     """
 
@@ -480,6 +416,15 @@ class ArticulationData(BaseArticulationData):
         Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
         """
         return self._joint_friction_coeff_ta
+
+    @property
+    def joint_viscous_friction_coeff(self) -> ProxyArray:
+        """Newton passive joint damping [N·s/m or N·m·s/rad, depending on joint type].
+
+        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to
+        (num_instances, num_joints).
+        """
+        return self._joint_viscous_friction_coeff_ta
 
     @property
     def joint_pos_limits_lower(self) -> ProxyArray:
@@ -570,25 +515,6 @@ class ArticulationData(BaseArticulationData):
         simulation, but is useful for learning agents to prevent the joint positions from violating the limits.
         """
         return self._soft_joint_pos_limits_ta
-
-    @property
-    def soft_joint_vel_limits(self) -> ProxyArray:
-        """Soft joint velocity limits for all joints.
-
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-
-        These are obtained from the actuator model. It may differ from :attr:`joint_vel_limits` if the actuator model
-        has a variable velocity limit model. For instance, in a variable gear ratio actuator model.
-        """
-        return self._soft_joint_vel_limits_ta
-
-    @property
-    def gear_ratio(self) -> ProxyArray:
-        """Gear ratio for relating motor torques to applied Joint torques.
-
-        Shape is (num_instances, num_joints), dtype = wp.float32. In torch this resolves to (num_instances, num_joints).
-        """
-        return self._gear_ratio_ta
 
     """
     Fixed tendon properties.
@@ -1607,6 +1533,12 @@ class ArticulationData(BaseArticulationData):
         if body_com_vel_w is not None:
             self._sim_bind_body_com_vel_w = body_com_vel_w[:, 0]
         self._sim_bind_body_mass = self._root_view.get_attribute("body_mass", SimulationManager.get_model())[:, 0]
+        self._sim_bind_body_inv_mass = self._root_view.get_attribute("body_inv_mass", SimulationManager.get_model())[
+            :, 0
+        ]
+        self._sim_bind_body_inv_inertia = self._root_view.get_attribute(
+            "body_inv_inertia", SimulationManager.get_model()
+        )[:, 0]
         # Newton stores body_inertia as (N, 1, B) mat33f — the [:, 0] removes the padding dim
         # giving (N, B) mat33f. Reinterpret as (N, B, 9) float32 via pointer aliasing.
         # Each mat33f element is 9 contiguous float32 values (36 bytes), so the inner stride is 4.
@@ -1643,6 +1575,9 @@ class ArticulationData(BaseArticulationData):
             self._sim_bind_joint_damping_sim = self._root_view.get_attribute(
                 "joint_target_kd", SimulationManager.get_model()
             )[:, 0]
+            self._sim_bind_joint_viscous_friction_coeff = self._root_view.get_attribute(
+                "joint_damping", SimulationManager.get_model()
+            )[:, 0]
             self._sim_bind_joint_armature = self._root_view.get_attribute(
                 "joint_armature", SimulationManager.get_model()
             )[:, 0]
@@ -1664,10 +1599,10 @@ class ArticulationData(BaseArticulationData):
             ]
             self._sim_bind_joint_act = self._root_view.get_attribute("joint_act", SimulationManager.get_control())[:, 0]
             self._sim_bind_joint_position_target = self._root_view.get_attribute(
-                "joint_target_pos", SimulationManager.get_control()
+                "joint_target_q", SimulationManager.get_control()
             )[:, 0]
             self._sim_bind_joint_velocity_target = self._root_view.get_attribute(
-                "joint_target_vel", SimulationManager.get_control()
+                "joint_target_qd", SimulationManager.get_control()
             )[:, 0]
         else:
             # No joints (e.g., free-floating rigid body) - set bindings to empty arrays
@@ -1681,6 +1616,9 @@ class ArticulationData(BaseArticulationData):
                 (self._num_instances, 0), dtype=wp.float32, device=self.device
             )
             self._sim_bind_joint_damping_sim = wp.zeros((self._num_instances, 0), dtype=wp.float32, device=self.device)
+            self._sim_bind_joint_viscous_friction_coeff = wp.zeros(
+                (self._num_instances, 0), dtype=wp.float32, device=self.device
+            )
             self._sim_bind_joint_armature = wp.zeros((self._num_instances, 0), dtype=wp.float32, device=self.device)
             self._sim_bind_joint_friction_coeff = wp.zeros(
                 (self._num_instances, 0), dtype=wp.float32, device=self.device
@@ -1735,6 +1673,8 @@ class ArticulationData(BaseArticulationData):
                 self._previous_joint_vel.assign(self._sim_bind_joint_vel)
             self._previous_body_com_vel.assign(self._sim_bind_body_com_vel_w)
             reset_timestamps([self._joint_acc, self._body_com_acc_w])
+            if self._actuator_collection is not None:
+                self._actuator_collection._rebind_state_inputs()
 
     def _create_buffers(self) -> None:
         """Create buffers for the root data."""
@@ -1769,12 +1709,6 @@ class ArticulationData(BaseArticulationData):
         self._default_joint_vel = wp.zeros(
             (self._num_instances, self._num_joints), dtype=wp.float32, device=self.device
         )
-        # -- joint commands (sent to the actuator from the user)
-        self._joint_pos_target = wp.zeros((self._num_instances, self._num_joints), dtype=wp.float32, device=self.device)
-        self._joint_vel_target = wp.zeros((self._num_instances, self._num_joints), dtype=wp.float32, device=self.device)
-        self._joint_effort_target = wp.zeros(
-            (self._num_instances, self._num_joints), dtype=wp.float32, device=self.device
-        )
         # -- computed joint efforts from the actuator models
         self._computed_torque = wp.zeros((self._num_instances, self._num_joints), dtype=wp.float32, device=self.device)
         self._applied_torque = wp.zeros((self._num_instances, self._num_joints), dtype=wp.float32, device=self.device)
@@ -1789,13 +1723,10 @@ class ArticulationData(BaseArticulationData):
         self._joint_dynamic_friction = wp.zeros(
             (self._num_instances, self._num_joints), dtype=wp.float32, device=self.device
         )
-        self._joint_viscous_friction = wp.zeros(
-            (self._num_instances, self._num_joints), dtype=wp.float32, device=self.device
-        )
+        # Newton stores passive damping in the live ``joint_damping`` model field.
         self._soft_joint_vel_limits = wp.zeros(
             (self._num_instances, self._num_joints), dtype=wp.float32, device=self.device
         )
-        self._gear_ratio = wp.ones((self._num_instances, self._num_joints), dtype=wp.float32, device=self.device)
         # -- update the soft joint position limits
         self._soft_joint_pos_limits = wp.zeros(
             (self._num_instances, self._num_joints), dtype=wp.vec2f, device=self.device
@@ -1865,6 +1796,7 @@ class ArticulationData(BaseArticulationData):
         self._joint_damping_user: wp.array | None = None
         self._joint_armature_user: wp.array | None = None
         self._joint_friction_coeff_user: wp.array | None = None
+        self._joint_viscous_friction_user: wp.array | None = None
         self._joint_pos_limits_lower_user: wp.array | None = None
         self._joint_pos_limits_upper_user: wp.array | None = None
         self._joint_vel_limits_user: wp.array | None = None
@@ -1995,6 +1927,7 @@ class ArticulationData(BaseArticulationData):
             "_joint_damping_user",
             "_joint_armature_user",
             "_joint_friction_coeff_user",
+            "_joint_viscous_friction_user",
             "_joint_pos_limits_lower_user",
             "_joint_pos_limits_upper_user",
             "_joint_vel_limits_user",
@@ -2037,6 +1970,7 @@ class ArticulationData(BaseArticulationData):
                 "_joint_damping_user",
                 "_joint_armature_user",
                 "_joint_friction_coeff_user",
+                "_joint_viscous_friction_user",
                 "_joint_pos_limits_lower_user",
                 "_joint_pos_limits_upper_user",
                 "_joint_vel_limits_user",
@@ -2076,6 +2010,7 @@ class ArticulationData(BaseArticulationData):
             self._joint_damping_user = None
             self._joint_armature_user = None
             self._joint_friction_coeff_user = None
+            self._joint_viscous_friction_user = None
             self._joint_pos_limits_lower_user = None
             self._joint_pos_limits_upper_user = None
             self._joint_vel_limits_user = None
@@ -2248,6 +2183,7 @@ class ArticulationData(BaseArticulationData):
             (self._sim_bind_joint_damping_sim, self._joint_damping_user),
             (self._sim_bind_joint_armature, self._joint_armature_user),
             (self._sim_bind_joint_friction_coeff, self._joint_friction_coeff_user),
+            (self._sim_bind_joint_viscous_friction_coeff, self._joint_viscous_friction_user),
             (self._sim_bind_joint_pos_limits_lower, self._joint_pos_limits_lower_user),
             (self._sim_bind_joint_pos_limits_upper, self._joint_pos_limits_upper_user),
             (self._sim_bind_joint_vel_limits_sim, self._joint_vel_limits_user),
@@ -2323,6 +2259,11 @@ class ArticulationData(BaseArticulationData):
         joint_friction_coeff = (
             self._joint_friction_coeff_user if self.has_joint_ordering else self._sim_bind_joint_friction_coeff
         )
+        joint_viscous_friction_coeff = (
+            self._joint_viscous_friction_user
+            if self.has_joint_ordering
+            else self._sim_bind_joint_viscous_friction_coeff
+        )
         joint_pos_limits_lower = (
             self._joint_pos_limits_lower_user if self.has_joint_ordering else self._sim_bind_joint_pos_limits_lower
         )
@@ -2354,6 +2295,7 @@ class ArticulationData(BaseArticulationData):
             self._joint_damping_ta = ProxyArray(joint_damping)
             self._joint_armature_ta = ProxyArray(joint_armature)
             self._joint_friction_coeff_ta = ProxyArray(joint_friction_coeff)
+            self._joint_viscous_friction_coeff_ta = ProxyArray(joint_viscous_friction_coeff)
             self._joint_pos_limits_lower_ta = ProxyArray(joint_pos_limits_lower)
             self._joint_pos_limits_upper_ta = ProxyArray(joint_pos_limits_upper)
             self._joint_vel_limits_ta = ProxyArray(joint_vel_limits)
@@ -2385,22 +2327,22 @@ class ArticulationData(BaseArticulationData):
             self._default_root_vel_ta = ProxyArray(self._default_root_vel)
             self._default_joint_pos_ta = ProxyArray(self._default_joint_pos)
             self._default_joint_vel_ta = ProxyArray(self._default_joint_vel)
-            self._joint_pos_target_ta = ProxyArray(self._joint_pos_target)
-            self._joint_vel_target_ta = ProxyArray(self._joint_vel_target)
-            self._joint_effort_target_ta = ProxyArray(self._joint_effort_target)
+            self._joint_pos_target_ta = None
+            self._joint_vel_target_ta = None
+            self._joint_effort_target_ta = None
             self._computed_torque_ta = ProxyArray(self._computed_torque)
             self._applied_torque_ta = ProxyArray(self._applied_torque)
             self._joint_stiffness_ta = ProxyArray(joint_stiffness)
             self._joint_damping_ta = ProxyArray(joint_damping)
             self._joint_armature_ta = ProxyArray(joint_armature)
             self._joint_friction_coeff_ta = ProxyArray(joint_friction_coeff)
+            self._joint_viscous_friction_coeff_ta = ProxyArray(joint_viscous_friction_coeff)
             self._joint_pos_limits_lower_ta = ProxyArray(joint_pos_limits_lower)
             self._joint_pos_limits_upper_ta = ProxyArray(joint_pos_limits_upper)
             self._joint_vel_limits_ta = ProxyArray(joint_vel_limits)
             self._joint_effort_limits_ta = ProxyArray(joint_effort_limits)
             self._soft_joint_pos_limits_ta = ProxyArray(self._soft_joint_pos_limits)
             self._soft_joint_vel_limits_ta = ProxyArray(self._soft_joint_vel_limits)
-            self._gear_ratio_ta = ProxyArray(self._gear_ratio)
             body_mass = self._body_mass_user if self.has_body_ordering else self._sim_bind_body_mass
             body_inertia = self._body_inertia_user if self.has_body_ordering else self._sim_bind_body_inertia
             body_com_pos_b = self._body_com_pos_b_user if self.has_body_ordering else self._sim_bind_body_com_pos_b

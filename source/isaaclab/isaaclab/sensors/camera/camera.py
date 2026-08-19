@@ -17,6 +17,7 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 import isaaclab.sim as sim_utils
 import isaaclab.utils.sensors as sensor_utils
+from isaaclab.app.logging_utils import force_log_level
 from isaaclab.cloner import queue_replication
 from isaaclab.renderers import BaseRenderer, CameraRenderSpec
 from isaaclab.sim.views import FrameView
@@ -173,6 +174,13 @@ class Camera(SensorBase):
                 raise RuntimeError(f"Could not find prim with path {spawn_target!r}.")
         queue_replication(self._source_cfg)
 
+        # Every renderer backend draws the visual-only geometry, so it must survive cloning even
+        # when the run is otherwise headless. This has to happen before the replication queue is
+        # drained, which is why it is here rather than in ``_initialize_impl``.
+        sim_ctx = sim_utils.SimulationContext.instance()
+        if sim_ctx is not None:
+            sim_ctx.require_visual_shapes()
+
         # An ISP (any ``isp_cfg`` other than ``None``) requires the HDR AOV;
         # an explicit ``"rgb_hdr"`` in ``data_types`` also requires the
         # HDR-routing flag flipped on the RTX-bearing backends.
@@ -208,11 +216,17 @@ class Camera(SensorBase):
         # Renderer and render data — assigned in _initialize_impl.
         self._renderer: BaseRenderer | None = None
         self._render_data = None
+        # Frame view — assigned in _initialize_impl.
+        self._view: FrameView | None = None
 
     def __del__(self):
         """Unsubscribes from callbacks and cleans up renderer resources."""
         # unsubscribe callbacks
         super().__del__()
+        # release the frame view's backend state
+        if self._view is not None:
+            self._view.close()
+            self._view = None
         # cleanup render resources (renderer may be None if never initialized)
         if self._renderer is not None:
             self._renderer.cleanup(self._render_data)
@@ -505,7 +519,8 @@ class Camera(SensorBase):
         if sim_ctx is None:
             raise RuntimeError("SimulationContext is not initialized.")
         self._renderer = sim_ctx.render_context.get_renderer(self.cfg.renderer_cfg)
-        logger.info("Using renderer: %s", type(self._renderer).__name__)
+        with force_log_level(logging.INFO):
+            logger.info("Using renderer: %s", type(self._renderer).__name__)
 
         # Build the render spec early — both the wrapper ISP (which delegates
         # any renderer-side per-camera setup) and ``create_render_data`` consume
@@ -892,5 +907,7 @@ class Camera(SensorBase):
         self._renderer = None
         # call parent
         super()._invalidate_initialize_callback(event)
-        # set all existing views to None to invalidate them
-        self._view = None
+        # release backend state deterministically, then invalidate the view
+        if self._view is not None:
+            self._view.close()
+            self._view = None

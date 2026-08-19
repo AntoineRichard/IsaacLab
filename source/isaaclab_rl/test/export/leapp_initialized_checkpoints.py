@@ -299,7 +299,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         python leapp_initialized_checkpoints.py --checkpoint_root /tmp/ckpt \\
             --preset newton_mjwarp \\
             --spec rsl_rl Isaac-Cartpole \\
-            --spec rsl_rl Isaac-Lift-Cube-Franka _
+            --spec rsl_rl IsaacContrib-Lift-Cube-Franka _
     """
     import argparse
     import os
@@ -344,7 +344,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     from isaaclab.app import AppLauncher
 
-    app_launcher = AppLauncher(headless=True)
+    # TODO: Remove once usd-core>=26.5 is the minimum. Earlier OpenUSD releases
+    # can corrupt the heap while parsing the Newton Franka payload concurrently.
+    app_launcher = AppLauncher(headless=True, limit_cpu_threads=1)
     simulation_app = app_launcher.app
 
     from isaaclab.app.settings_manager import get_settings_manager

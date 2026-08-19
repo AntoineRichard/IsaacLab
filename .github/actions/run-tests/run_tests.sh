@@ -36,6 +36,7 @@ run_tests() {
   local standalone_script_visualizer="${23}"
   local standalone_script_runtime_group="${24}"
   local warp_cache_host_dir="${25}"
+  local extra_uv_packages="${26}"
   local logs_pid=""
   local wait_pid=""
   local docker_wait_file="/tmp/.docker_exit_${container_name}"
@@ -61,6 +62,9 @@ run_tests() {
   fi
   if [ -n "$extra_pip_packages" ]; then
     echo "With extra pip packages: $extra_pip_packages"
+  fi
+  if [ -n "$extra_uv_packages" ]; then
+    echo "With extra uv packages: $extra_uv_packages"
   fi
   if [ -n "$wheelhouse_host_dir" ]; then
     echo "With wheelhouse host directory: $wheelhouse_host_dir"
@@ -177,6 +181,10 @@ run_tests() {
   if [ -n "$extra_pip_packages" ]; then
     export TEST_EXTRA_PIP_PACKAGES="$extra_pip_packages"
     docker_env_vars="$docker_env_vars -e TEST_EXTRA_PIP_PACKAGES"
+  fi
+  if [ -n "$extra_uv_packages" ]; then
+    export TEST_EXTRA_UV_PACKAGES="$extra_uv_packages"
+    docker_env_vars="$docker_env_vars -e TEST_EXTRA_UV_PACKAGES"
   fi
 
   if [ -n "$test_k_expr" ]; then
@@ -297,6 +305,7 @@ run_tests() {
   docker run -d --name $container_name \
     --init --stop-timeout 5 \
     --entrypoint bash --gpus all --network=host \
+    -v "$PWD/.github/actions/_lib/with-python-package-retries.sh:/with-python-package-retries.sh:ro" \
     --security-opt=no-new-privileges:true \
     --memory=$(echo "$(free -m | awk '/^Mem:/{print $2}') * 0.9 / 1" | bc)m \
     --cpus=$(echo "$(nproc) * 0.9" | bc) \
@@ -313,11 +322,7 @@ run_tests() {
       mkdir -p tests
       rm _isaac_sim || true
       ln -s /isaac-sim _isaac_sim
-      # Allow OmniHub to start in the test container. Some base images
-      # set this detect-only flag, which makes cold asset downloads
-      # fall back to slow repeated retries.
-      unset HUB__ARGS__DETECT_ONLY
-      ./isaaclab.sh -p -m pip install pytest pytest-mock junitparser flaky \"coverage>=7.6.1\"
+      bash /with-python-package-retries.sh ./isaaclab.sh -p -m pip install pytest pytest-mock junitparser flaky \"coverage>=7.6.1\"
       if [ -n \"\${WARP_CACHE_PATH:-}\" ]; then
         ./isaaclab.sh -p tools/verify_warp_cache.py
       fi
@@ -343,13 +348,31 @@ run_tests() {
       fi
       if [ -n \"\${TEST_EXTRA_PIP_PACKAGES:-}\" ]; then
         echo \"Installing extra pip packages: \${TEST_EXTRA_PIP_PACKAGES}\"
-        ./isaaclab.sh -p -m pip install \${TEST_EXTRA_PIP_PACKAGES}
+        bash /with-python-package-retries.sh ./isaaclab.sh -p -m pip install \${TEST_EXTRA_PIP_PACKAGES}
         case \" \${TEST_EXTRA_PIP_PACKAGES} \" in
           *\" leapp\"*)
             echo \"Resolved LEAPP package:\"
             ./isaaclab.sh -p -m pip show leapp || true
             ;;
         esac
+      fi
+      if [ -n \"\${TEST_EXTRA_UV_PACKAGES:-}\" ]; then
+        echo \"Installing extra packages with uv: \${TEST_EXTRA_UV_PACKAGES}\"
+        # isaaclab.sh prints an informational line before command output, and pip
+        # installs scripts into the user base when Isaac Sim site-packages is read-only.
+        isaac_python=\"\$(./isaaclab.sh -p -c 'import sys; print(sys.executable)' | tail -n 1)\"
+        isaac_user_site=\"\$(./isaaclab.sh -p -c 'import site; print(site.getusersitepackages())' | tail -n 1)\"
+        uv_executable=\"\$(./isaaclab.sh -p -c 'import pathlib, site; print(pathlib.Path(site.getuserbase()) / \"bin\" / \"uv\")' | tail -n 1)\"
+        if [ ! -x \"\${uv_executable}\" ]; then
+          bash /with-python-package-retries.sh ./isaaclab.sh -p -m pip install uv
+        fi
+        bash /with-python-package-retries.sh \"\${uv_executable}\" pip install --python \"\${isaac_python}\" --target \"\${isaac_user_site}\" \${TEST_EXTRA_UV_PACKAGES}
+        # Isaac Sim puts bundled packages ahead of the user site. Overlay only
+        # the explicitly requested packages so compatible direct pins win
+        # without shadowing bundled transitive dependencies such as NumPy.
+        isaac_uv_overlay=\"\$(mktemp -d)\"
+        bash /with-python-package-retries.sh \"\${uv_executable}\" pip install --python \"\${isaac_python}\" --target \"\${isaac_uv_overlay}\" --no-deps \${TEST_EXTRA_UV_PACKAGES}
+        export PYTHONPATH=\"\${isaac_uv_overlay}\${PYTHONPATH:+:\${PYTHONPATH}}\"
       fi
       echo 'Starting pytest with path: $test_path'
       ./isaaclab.sh -p -m pytest --ignore=tools/conftest.py $test_path $pytest_options -v --junitxml=tests/$result_file

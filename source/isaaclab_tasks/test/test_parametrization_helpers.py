@@ -11,14 +11,49 @@ from unittest.mock import Mock
 import pytest
 import rendering_test_utils
 from rendering_test_utils import (
+    KITLESS_PHYSICS_RENDERER_AOV_COMBINATIONS,
     attach_comparison_properties,
     generate_html_report,
     make_kitless_rendering_params,
-    make_kitless_rendering_params_dexsuite,
     make_kitless_rendering_params_franka,
+    make_kitless_rendering_params_lift,
     make_skip_rendering_params,
     make_xfail_rendering_params,
 )
+
+
+@pytest.mark.parametrize(
+    ("env_name", "renderer", "data_type", "expected"),
+    [
+        ("franka_soft", "ovrtx_renderer", "albedo", 3.0),
+        ("franka_soft", "isaacsim_rtx_renderer", "albedo", 8.0),
+        ("cartpole", "ovrtx_renderer", "rgb", 1.5),
+        ("shadow_hand", "ovrtx_renderer", "depth", 5.0),
+    ],
+)
+def test_ovrtx_image_difference_threshold_is_capped(
+    env_name: str, renderer: str, data_type: str, expected: float
+) -> None:
+    """OVRTX should use a tighter cap without loosening stricter environment thresholds."""
+    assert rendering_test_utils._max_different_pixels_percentage(env_name, renderer, data_type) == expected
+
+
+@pytest.mark.parametrize(
+    ("renderer", "expected_steps"),
+    [
+        ("ovrtx_renderer", 3),
+        ("isaacsim_rtx_renderer", 2),
+    ],
+)
+def test_motion_history_steps(renderer: str, expected_steps: int) -> None:
+    """OVRTX should receive one extra motion-history step."""
+    env = Mock()
+    env.action_space.shape = (1,)
+    env.device = "cpu"
+
+    rendering_test_utils.maybe_step_env_for_motion(env, renderer, "motion_vectors")
+
+    assert env.step.call_count == expected_steps
 
 
 def test_make_kitless_rendering_params_expands_only_ovrtx() -> None:
@@ -94,34 +129,40 @@ def test_make_skip_rendering_params_overrides_xfail_and_flaky_marks() -> None:
     assert marked[0].marks[0].kwargs["reason"] == "Native renderer crash."
 
 
-def test_dexsuite_factory_applies_shared_native_crash_policy() -> None:
-    """Both stage variants should share the ticketed Dexsuite MDL skips."""
-    params = {param.id: param for param in make_kitless_rendering_params_dexsuite()}
+def test_kitless_matrix_has_no_ovrtx_041_xfails() -> None:
+    """OVRTX 0.4.1 textured and motion AOVs should run without release xfails."""
+    params = {param.id: param for param in KITLESS_PHYSICS_RENDERER_AOV_COMBINATIONS}
+
+    for data_type in ("albedo", "simple_shading_diffuse_mdl", "simple_shading_full_mdl"):
+        for physics_backend in ("newton", "ovphysx"):
+            param = params[f"{physics_backend}-ovrtx-{data_type}"]
+            assert "xfail" not in [mark.name for mark in param.marks]
+
+    expanded = {param.id: param for param in make_kitless_rendering_params(list(params.values()))}
+    assert "xfail" not in [mark.name for mark in expanded["ovstage-ovphysx-ovrtx-motion_vectors"].marks]
+
+
+def test_lift_factory_retains_retries_without_native_crash_skips() -> None:
+    """Lift OVRTX MDL cases should run with the shared retry policy."""
+    params = {param.id: param for param in make_kitless_rendering_params_lift()}
 
     for variant in ("legacy", "ovstage"):
-        for data_type in ("simple_shading_diffuse_mdl", "simple_shading_full_mdl"):
-            param = params[f"{variant}-newton-ovrtx-{data_type}"]
-            assert [mark.name for mark in param.marks] == ["skip"]
-            assert "NVBUG#6524987" in param.marks[0].kwargs["reason"]
+        for physics_backend in ("newton", "ovphysx"):
+            for data_type in ("simple_shading_diffuse_mdl", "simple_shading_full_mdl"):
+                param = params[f"{variant}-{physics_backend}-ovrtx-{data_type}"]
+                assert [mark.name for mark in param.marks] == ["flaky"]
+
+    # Lift OVPhysX albedo passes, so it must not inherit an unrelated exemption.
+    assert "xfail" not in [mark.name for mark in params["legacy-ovphysx-ovrtx-albedo"].marks]
 
 
-def test_franka_factory_adds_cloth_only_motion_policy() -> None:
-    """Franka suites should share table xfails while cloth adds motion-vector xfails."""
-    soft_params = {param.id: param for param in make_kitless_rendering_params_franka()}
-    cloth_params = {
-        param.id: param for param in make_kitless_rendering_params_franka(include_cloth_motion_vectors=True)
-    }
-
-    table_id = "legacy-newton-newton_warp-rgb"
-    assert [mark.name for mark in soft_params[table_id].marks] == ["xfail"]
-    assert [mark.name for mark in cloth_params[table_id].marks] == ["xfail"]
-    assert "OMPE-103086" in soft_params[table_id].marks[0].kwargs["reason"]
+def test_franka_factory_has_no_cloth_motion_xfail() -> None:
+    """OVRTX 0.4.1 cloth motion vectors should run without an xfail."""
+    params = {param.id: param for param in make_kitless_rendering_params_franka()}
 
     for variant in ("legacy", "ovstage"):
         motion_id = f"{variant}-newton-ovrtx-motion_vectors"
-        assert "xfail" not in [mark.name for mark in soft_params[motion_id].marks]
-        assert [mark.name for mark in cloth_params[motion_id].marks] == ["xfail"]
-        assert "NVBUG#6489754" in cloth_params[motion_id].marks[0].kwargs["reason"]
+        assert "xfail" not in [mark.name for mark in params[motion_id].marks]
 
 
 def test_html_report_labels_xfail_and_xpass_outcomes(monkeypatch, tmp_path: Path) -> None:

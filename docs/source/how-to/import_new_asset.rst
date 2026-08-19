@@ -25,9 +25,9 @@ use the Omniverse Kit to edit the asset and export it to other file formats. Isa
 these importers by default. They can also be enabled manually in Omniverse Kit.
 
 Isaac Lab's URDF and MJCF converter utilities first use the importer APIs from
-Isaac Sim when the full runtime is installed. In kit-less environments, install
-the standalone importer wheel as described in
-:ref:`Standalone URDF/MJCF importers <installation-standalone-importers>`.
+Isaac Sim when the full runtime is installed. In kit-less environments they fall back
+to the standalone importers described in
+:ref:`installation-standalone-importers` below.
 The Kit visualizer and GUI import dialogs still require an Omniverse Kit runtime.
 
 
@@ -36,6 +36,29 @@ are in `instanceable`_ format. This allows the asset to be efficiently loaded
 into memory and used multiple times in a scene. Otherwise, the asset will be
 loaded into memory multiple times, which can cause performance issues.
 For more details on instanceable assets, please check the Isaac Sim `documentation`_.
+
+
+.. _installation-standalone-importers:
+
+Standalone URDF/MJCF importers
+------------------------------
+
+The URDF and MJCF converter scripts run without Isaac Sim. The standalone
+``isaacsim-asset-isolated`` wheel is a base dependency, so no extra install step is needed.
+Optionally pass ``--viz newton`` (or ``rerun`` / ``viser``) to preview the converted asset in a
+kit-less Isaac Lab visualizer:
+
+.. code-block:: bash
+
+   uv run python scripts/tools/convert_urdf.py \
+     path/to/robot.urdf path/to/output_dir --merge_joints
+
+   uv run python scripts/tools/convert_mjcf.py \
+     path/to/model.xml path/to/output.usd --merge_mesh
+
+If Isaac Sim is installed in the same environment, Isaac Lab uses the Isaac Sim importer
+extensions first. The standalone wheel is used only when the full Isaac Sim runtime is not
+available.
 
 
 Using URDF Importer
@@ -202,10 +225,9 @@ is derived automatically from the robot name in the URDF):
    want them to accumulate on disk.
 
 The examples above pass ``--viz kit`` to open the converted asset in the Isaac Sim viewport, which
-requires a full Isaac Sim installation. Pass ``--viz`` on its own to let the converter pick the
-backend that fits the runtime: the Kit viewport with Isaac Sim installed, otherwise the kitless
-Newton viewer (``rerun`` and ``viser`` can be named explicitly). Omit ``--viz`` to exit after the
-conversion completes.
+requires a full Isaac Sim installation. Name a kitless backend instead -- ``--viz newton``,
+``--viz rerun``, or ``--viz viser`` -- to preview the asset without Kit. Omit ``--viz`` to exit
+after the conversion completes.
 
 In Isaac Sim, you can press play on the opened window to see the asset in the scene. The asset should fall under gravity. If it blows up, then it might be that you have self-collisions present in the URDF.
 
@@ -352,10 +374,9 @@ Executing the above script will create the USD file inside the
    want them to accumulate on disk.
 
 The examples above pass ``--viz kit`` to open the converted asset in the Isaac Sim viewport, which
-requires a full Isaac Sim installation. Pass ``--viz`` on its own to let the converter pick the
-backend that fits the runtime: the Kit viewport with Isaac Sim installed, otherwise the kitless
-Newton viewer (``rerun`` and ``viser`` can be named explicitly). Omit ``--viz`` to exit after the
-conversion completes.
+requires a full Isaac Sim installation. Name a kitless backend instead -- ``--viz newton``,
+``--viz rerun``, or ``--viz viser`` -- to preview the asset without Kit. Omit ``--viz`` to exit
+after the conversion completes.
 
 .. figure:: ../_static/tutorials/tutorial_convert_mjcf.jpg
     :align: center
@@ -368,54 +389,24 @@ conversion completes.
 Ensuring joint drives exist on every joint
 ------------------------------------------
 
-A common pitfall when porting a freshly-imported asset across physics backends
-is that joints which actuate fine in PhysX silently do nothing in a
-Newton-based backend (MuJoCo Warp, XPBD, Featherstone, Semi-implicit).
+When an articulation uses an Isaac Lab actuator configuration, Newton resolves
+each configured joint's target mode before constructing the solver. For an
+:class:`~isaaclab.actuators.ImplicitActuatorCfg`, stiffness-only, damping-only,
+both-gain, and zero-gain configurations select position, velocity, combined
+position/velocity, and effort modes respectively. A gain set to ``None`` keeps
+the corresponding imported USD value. An explicit actuator configuration uses
+effort mode because Isaac Lab computes its effort directly.
 
-The URDF and MJCF importers both write a ``PhysicsDriveAPI`` to every
-articulated joint, but the stiffness and damping on that drive are often left
-at ``0`` — the assumption being that the actuator gains are authored at runtime
-by an :class:`~isaaclab.actuators.ImplicitActuatorCfg` or
-:class:`~isaaclab.actuators.IdealPDActuatorCfg`. This is the recommended way to
-keep gains tunable per task without re-importing the USD.
+Joints without an Isaac Lab actuator configuration retain their imported USD
+target modes. Consequently, an asset with zero-gain USD drives no longer needs
+:attr:`~isaaclab.sim.schemas.JointDrivePropertiesCfg.ensure_drives_exist` solely
+to make configured joints actuate in Newton.
 
-PhysX creates a solver actuator for every joint regardless of the authored
-gains, so the runtime writes from ``ImplicitActuatorCfg.stiffness`` /
-``damping`` always take effect. Newton's USD importer, by contrast, only
-materialises a solver actuator when the authored drive reports a non-zero
-stiffness or damping — a joint whose authored gains are both zero is treated
-as passive and is dropped from the actuator set, so subsequent runtime writes
-have nothing to attach to.
-
-The recommended fix is to opt the spawn config into the cross-backend bridge by
-setting :attr:`~isaaclab.sim.schemas.JointDrivePropertiesCfg.ensure_drives_exist`
-to ``True``:
-
-.. code:: python
-
-   spawn=sim_utils.UsdFileCfg(
-       usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Agility/Cassie/cassie.usd",
-       joint_drive_props=sim_utils.JointDrivePropertiesCfg(ensure_drives_exist=True),
-       ...
-   )
-
-When ``ensure_drives_exist=True``, every drive whose authored stiffness *and*
-damping are both zero is updated with a minimal placeholder stiffness
-(``1e-3``) before the simulation starts. This is enough for Newton's importer
-to create the actuator; the actual gains are then overwritten by the actuator
-model at runtime, so the placeholder has no effect on the simulated dynamics.
-Drives whose authored gains are non-zero are left untouched.
-
-This is how ``isaaclab_assets.CASSIE_CFG`` keeps Cassie working across both
-PhysX and Newton — the asset ships with zero-gain drives because it relies on
-``ImplicitActuatorCfg`` for the legs, and the spawn config enables
-:attr:`~isaaclab.sim.schemas.JointDrivePropertiesCfg.ensure_drives_exist` so
-that both backends see the same actuator set.
-
-You can leave the flag at its default ``False`` for assets that author non-zero
-drive gains in the USD itself, or for assets driven by an
-:class:`~isaaclab.actuators.IdealPDActuatorCfg` that explicitly zeroes the
-solver drive and applies torque externally.
+The ``ensure_drives_exist`` option remains useful when a workflow needs to
+author placeholder drives independently of an Isaac Lab actuator configuration.
+When enabled, it assigns a minimal placeholder stiffness (``1e-3``) to zero-gain
+drives before simulation startup so that every drive exists in the imported
+model.
 
 
 Using Mesh Importer

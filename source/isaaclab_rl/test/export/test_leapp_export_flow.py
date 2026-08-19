@@ -27,6 +27,9 @@ _CHECKPOINT_SCRIPT = Path(__file__).resolve().parent / "leapp_initialized_checkp
 _SUBPROCESS_TIMEOUT = 600
 _CHECKPOINT_BATCH_TIMEOUT = 1200
 _OUTPUT_TAIL_CHARS = 5000
+# TODO: Remove once usd-core>=26.5 is the minimum. Earlier OpenUSD releases
+# can corrupt the heap while parsing the Newton Franka payload concurrently.
+_LEAPP_TEST_CPU_THREAD_LIMIT = 1
 
 
 @dataclass(frozen=True)
@@ -68,7 +71,7 @@ _EXPORT_BACKENDS = (
             # binary gripper + cabinet articulation
             "Isaac-Open-Drawer-Franka",
             # classic lift: object_position_in_robot_root_frame + quat math
-            "Isaac-Lift-Cube-Franka",
+            "IsaacContrib-Lift-Cube-Franka",
             # history buffers + Object-cloud / contact observations
             "Isaac-Lift-KukaAllegro",
             # manager-based locomotion with contact-rich body observations
@@ -105,7 +108,7 @@ _EXPORT_BACKENDS = (
 _SIM_PRESET = "newton_mjwarp"
 
 # These tasks reject any preset token; export uses their authored default backend.
-_TASKS_WITHOUT_PRESET = frozenset({"Isaac-Lift-Cube-Franka"})
+_TASKS_WITHOUT_PRESET = frozenset({"IsaacContrib-Lift-Cube-Franka"})
 
 
 def _ensure_text(output: str | bytes | None) -> str:
@@ -207,6 +210,8 @@ def _run_export(backend: ExportFlowBackend, task_name: str, checkpoint_path: Pat
         "--export_save_path",
         str(export_root),
         "--disable_graph_visualization",
+        "--limit_cpu_threads",
+        str(_LEAPP_TEST_CPU_THREAD_LIMIT),
     ]
     preset = _preset_for_task(task_name)
     if preset is not None:

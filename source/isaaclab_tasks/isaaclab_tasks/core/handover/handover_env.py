@@ -21,7 +21,11 @@ from isaaclab.utils.math import quat_conjugate, quat_mul, sample_uniform, satura
 from isaaclab_tasks.core.handover.handover_common import GOAL_POSITION_OFFSET
 from isaaclab_tasks.core.handover.handover_env_cfg import HandoverEnvCfg
 from isaaclab_tasks.core.handover.mdp.rewards import evaluate_handover_success, handover_reward
-from isaaclab_tasks.core.utils import EpisodeErrorRecorder, randomize_rotation, sample_joint_positions_within_limits
+from isaaclab_tasks.core.utils import (
+    EpisodeErrorRecorder,
+    randomize_rotation,
+    sample_joint_positions_within_limits,
+)
 
 
 class HandoverEnv(DirectMARLEnv):
@@ -96,6 +100,9 @@ class HandoverEnv(DirectMARLEnv):
         pos = cloner.grid_transforms(self.scene.num_envs, self.scene.cfg.env_spacing, device=self.device)[0]
         plan = cloner.clone_plan_from_env_0(src, dest, self.scene.num_envs, self.device, pos)
         cloner.replicate(plan, stage=self.scene.stage)
+        # PhysX replication requires explicit collision filtering between environments.
+        if "physx" in self.scene.physics_backend:
+            self.scene.filter_collisions(global_prim_paths=["/World/ground"])
         # add articulation to scene - we must register to scene to randomize with EventManager
         self.scene.articulations["right_robot"] = self.right_hand
         self.scene.articulations["left_robot"] = self.left_hand

@@ -154,11 +154,16 @@ For example, for the configuration of the Cartpole camera environment:
     :end-at: observation_space = [3, 96, 96]
     :emphasize-lines: 12, 43
 
-The configuration declares the single-frame shape. At environment initialization, the default
-``frame_stack=2`` expands it to an effective policy observation shape of ``[6,96,96]``.
-If the user were to modify the width of the camera, i.e. ``env.tiled_camera.width=128``, then the
-single-frame parameter ``env.observation_space=[3,96,128]`` must be updated and given as input as
-well, producing an effective stacked shape of ``[6,96,128]``.
+The configuration declares the single-frame channel count and a default spatial size.
+At environment initialization, ``CartpoleCameraEnv`` rebuilds ``observation_space`` from
+the resolved camera: the default ``frame_stack=2`` expands channels, and height/width are
+taken from ``tiled_camera``. So ``env.tiled_camera.width=128 env.tiled_camera.height=128``
+alone yields an effective stacked shape of ``[6,128,128]`` without also overriding
+``env.observation_space``. The channel entry in ``observation_space`` must still match the
+camera data type (for example ``[1, ...]`` with ``presets=depth``); presets already set this.
+
+Class-body references such as ``observation_space = [3, tiled_camera.height, tiled_camera.width]``
+are evaluated once at import time and do **not** track later Hydra overrides of the camera.
 
 Similarly, the ``__post_init__`` method is not updated with the command line inputs. In the ``LocomotionVelocityRoughEnvCfg``, for example,
 the post init update is as follows:
@@ -214,6 +219,10 @@ combinations early with clear error messages.
 Preset System
 -------------
 
+For a user-focused introduction to choosing physics, rendering, and task
+variants, start with :doc:`/source/concepts/backends_and_presets`. This section
+covers the complete preset definition and resolution behavior.
+
 The preset system lets you swap out entire config sections -- or individual scalar
 values -- with a single command line argument. Instead of overriding individual
 fields, you select a named preset that **completely replaces** the config section
@@ -252,7 +261,7 @@ override is given:
     class PhysicsCfg(PresetCfg):
         isaacsim_physx: PhysxCfg = PhysxCfg()
         physx: PhysxAutoCfg = PhysxAutoCfg(isaacsim_physx=isaacsim_physx)
-        default: PhysxAutoCfg = physx
+        default: PhysxCfg = isaacsim_physx
         newton_mjwarp: NewtonCfg = NewtonCfg()
 
     @configclass
@@ -264,11 +273,13 @@ override is given:
     # Use Newton physics backend
     python train.py --task=Isaac-Reach-Franka env.physics=newton_mjwarp
 
-For tasks that expose automatic PhysX-family selection, ``physics=physx`` is
-resolved at launch time: Isaac Sim PhysX is used when a Kit renderer or Kit viewer
-is requested. For fully kit-less runs, OvPhysX is used when the task configures
-an OvPhysX alternative; otherwise selection falls back to Isaac Sim PhysX and
-requires Kit. Use ``physics=isaacsim_physx`` to force Isaac Sim PhysX.
+The concrete ``isaacsim_physx`` variant is the default in this example. Select
+``physics=physx`` to enable automatic PhysX-family selection at launch time:
+Isaac Sim PhysX is used when a Kit renderer or Kit viewer is requested. For fully
+kit-less runs, OvPhysX is used when the task configures an OvPhysX alternative;
+otherwise selection falls back to Isaac Sim PhysX and requires Kit. This matches
+renderer selection, where ``isaacsim_rtx`` is the concrete default and
+``renderer=rtx`` is automatic.
 
 The ``default`` field can be set to ``None`` to make an optional feature that is
 disabled unless explicitly selected:
@@ -304,8 +315,8 @@ Physics backend selection uses the same preset system. A task can define a
 
 .. code-block:: python
 
-    from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg
-    from isaaclab_ovphysx.physics import OvPhysxCfg
+    from isaaclab_newton.physics import KaminoPADMMSolverCfg, MJWarpSolverCfg, NewtonCfg
+    from isaaclab_ov.physics import OvPhysxCfg
     from isaaclab_physx.physics import PhysxCfg
 
     from isaaclab.physics import PhysxAutoCfg
@@ -321,17 +332,16 @@ Physics backend selection uses the same preset system. A task can define a
             isaacsim_physx=isaacsim_physx,
             ovphysx=ovphysx,
         )
-        default = physx
+        default: PhysxCfg = isaacsim_physx
         newton_mjwarp: NewtonCfg = NewtonCfg(
             solver_cfg=MJWarpSolverCfg(njmax=5, nconmax=3),
             num_substeps=1,
         )
         newton_kamino: NewtonCfg = NewtonCfg(
-            solver_cfg=KaminoSolverCfg(
+            solver_cfg=KaminoPADMMSolverCfg(
                 integrator="moreau",
                 use_collision_detector=True,
                 sparse_jacobian=True,
-                padmm_max_iterations=100,
             ),
             num_substeps=1,
             debug_mode=False,
@@ -342,7 +352,7 @@ The ``newton_mjwarp`` and ``newton_kamino`` entries both select the Newton physi
 both entries are :class:`~isaaclab_newton.physics.NewtonCfg` objects. The difference
 is the solver configuration: ``newton_mjwarp`` uses
 :class:`~isaaclab_newton.physics.MJWarpSolverCfg`, while ``newton_kamino`` uses
-:class:`~isaaclab_newton.physics.KaminoSolverCfg`.
+:class:`~isaaclab_newton.physics.KaminoPADMMSolverCfg`.
 
 Kamino is therefore a solver preset, not a separate Isaac Lab backend. The same
 Newton assets, sensors, renderers, and visualizers are used after the preset is

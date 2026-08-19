@@ -89,7 +89,7 @@ class FactoryEnv(DirectRLEnv):
         # spawn a usd file of a table into the scene
         cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
         cfg.func(
-            "/World/envs/env_.*/Table", cfg, translation=(0.55, 0.0, 0.0), orientation=(0.0, 0.0, 0.70711, 0.70711)
+            "/World/envs/env_[^/]+/Table", cfg, translation=(0.55, 0.0, 0.0), orientation=(0.0, 0.0, 0.70711, 0.70711)
         )
 
         self._robot = Articulation(self.cfg.robot)
@@ -103,8 +103,8 @@ class FactoryEnv(DirectRLEnv):
         plan = cloner.clone_plan_from_env_0(src, dest, self.scene.num_envs, self.device, pos)
         cloner.replicate(plan, stage=self.scene.stage)
 
-        if self.device == "cpu":
-            # we need to explicitly filter collisions for CPU simulation
+        # PhysX replication requires explicit collision filtering between environments.
+        if "physx" in self.scene.physics_backend:
             self.scene.filter_collisions()
 
         self.scene.articulations["robot"] = self._robot

@@ -81,7 +81,10 @@ class RigidObjectData(BaseRigidObjectData):
 
         # Bind ``GRAVITY_VEC_W`` to Newton's per-env ``model.gravity`` (m/s^2) so
         # per-env gravity randomization stays live; consumers normalize on read.
-        self.GRAVITY_VEC_W = ProxyArray(SimulationManager.get_model().gravity)
+        # The final entry is reserved for Newton's global world and is not an
+        # Isaac Lab environment.
+        model = SimulationManager.get_model()
+        self.GRAVITY_VEC_W = ProxyArray(model.gravity[: model.world_count])
         forward_vec = np.full((self._root_view.count, 3), (1.0, 0.0, 0.0), dtype=np.float32)
         self.FORWARD_VEC_B = ProxyArray(wp.array(forward_vec, dtype=wp.vec3f, device=self.device))
 
@@ -925,6 +928,12 @@ class RigidObjectData(BaseRigidObjectData):
         self._sim_bind_body_link_pose_w = self._root_view.get_link_transforms(SimulationManager.get_state_0())[:, 0]
         self._sim_bind_body_com_vel_w = self._root_view.get_link_velocities(SimulationManager.get_state_0())[:, 0]
         self._sim_bind_body_mass = self._root_view.get_attribute("body_mass", SimulationManager.get_model())[:, 0]
+        self._sim_bind_body_inv_mass = self._root_view.get_attribute("body_inv_mass", SimulationManager.get_model())[
+            :, 0
+        ]
+        self._sim_bind_body_inv_inertia = self._root_view.get_attribute(
+            "body_inv_inertia", SimulationManager.get_model()
+        )[:, 0]
         # Newton stores body_inertia as (N, 1, 1) mat33f — the [:, 0] removes the padding dim
         # giving (N, 1) mat33f. Reinterpret as (N, 1, 9) float32 via pointer aliasing.
         # Each mat33f element is 9 contiguous float32 values (36 bytes), so the inner stride is 4.

@@ -73,7 +73,10 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
 
         # Bind ``GRAVITY_VEC_W`` to Newton's per-env ``model.gravity`` (m/s^2); the
         # projected_gravity_b kernel broadcasts each env's vector across its bodies.
-        self.GRAVITY_VEC_W = ProxyArray(SimulationManager.get_model().gravity)
+        # The final entry is reserved for Newton's global world and is not an
+        # Isaac Lab environment.
+        model = SimulationManager.get_model()
+        self.GRAVITY_VEC_W = ProxyArray(model.gravity[: model.world_count])
         forward_vec = np.full((self.num_instances, self.num_bodies, 3), (1.0, 0.0, 0.0), dtype=np.float32)
         self.FORWARD_VEC_B = ProxyArray(wp.array(forward_vec, dtype=wp.vec3f, device=self.device))
 
@@ -726,6 +729,8 @@ class RigidObjectCollectionData(BaseRigidObjectCollectionData):
         self._sim_bind_body_external_wrench = self._root_view.get_attribute("body_f", state_0)[:, :, 0]
         # -- Body mass: (num_envs, num_bodies, 1) float32 → squeeze to (num_envs, num_bodies)
         self._sim_bind_body_mass = self._root_view.get_attribute("body_mass", model)[:, :, 0]
+        self._sim_bind_body_inv_mass = self._root_view.get_attribute("body_inv_mass", model)[:, :, 0]
+        self._sim_bind_body_inv_inertia = self._root_view.get_attribute("body_inv_inertia", model)[:, :, 0]
         # -- Body inertia: (num_envs, num_bodies, 1) mat33f → squeeze, reinterpret as (N, B, 9) float32.
         # Each mat33f element is 9 contiguous float32 values (36 bytes), so the inner stride is 4.
         # The slice may be non-contiguous in the outer dims, so we preserve those strides.
