@@ -108,7 +108,7 @@ workflow:
             PLAY_STATUS="skipped_no_checkpoint"
           else
             echo "=== odin: play from $CKPT ==="
-            uv run --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video isaaclab benchmark play --rl_library rsl_rl --task Isaac-Ant --seed 42 --checkpoint "$CKPT" --output_path "$OUT" --benchmark_formatter schema --video --video_length 120 physics=physx
+            uv run --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video isaaclab benchmark play --rl_library rsl_rl --task Isaac-Ant --seed 42 --checkpoint "$CKPT" --output_path "$OUT" --benchmark_formatter schema physics=physx
 
             PLAY_RC=$?
             PLAY_STATUS="ran"
