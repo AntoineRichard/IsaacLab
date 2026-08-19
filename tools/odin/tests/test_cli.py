@@ -17,6 +17,25 @@ from tools.odin.cli import main
 _ODIN_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _fake_task(task_id: str, scope: str, physics: str | None):
+    """One discovered task with a single mode, for CLI wiring tests.
+
+    ``declared``, ``default`` and ``resolved`` record how discovery reached its
+    answer; the CLI only reads ``modes`` and ``rl_libraries``.
+    """
+    from tools.odin.discover import DiscoveredTask
+
+    return DiscoveredTask(
+        task_id=task_id,
+        scope=scope,
+        rl_libraries=("rsl_rl",),
+        declared=None,
+        modes=(DiscoveredTask.Mode(physics, None, None),),
+        default=None,
+        resolved=True,
+    )
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     shutil.copy(_ODIN_ROOT / "config" / "odin.yaml", tmp_path / "odin.yaml")
@@ -267,14 +286,13 @@ def test_harvest_writes_metadata_from_bundles(workspace: Path, tmp_path: Path) -
 def test_discover_writes_a_planner_ready_task_list(workspace: Path, tmp_path: Path, monkeypatch) -> None:
     # The registry walk needs Isaac Lab; the CLI wiring around it does not.
     from tools.odin import cli as cli_module
-    from tools.odin.discover import DiscoveredTask
 
     monkeypatch.setattr(
         cli_module,
         "discover_tasks",
         lambda: [
-            DiscoveredTask("Isaac-Ant", "core", ("rsl_rl",), (DiscoveredTask.Mode("newton_mjwarp", None, None),)),
-            DiscoveredTask("IsaacContrib-Walk", "contrib", ("rsl_rl",), (DiscoveredTask.Mode("ovphysx", None, None),)),
+            _fake_task("Isaac-Ant", "core", "newton_mjwarp"),
+            _fake_task("IsaacContrib-Walk", "contrib", "ovphysx"),
         ],
     )
     out = tmp_path / "tasks.yaml"
@@ -288,13 +306,8 @@ def test_discover_writes_a_planner_ready_task_list(workspace: Path, tmp_path: Pa
 
 def test_discover_scope_filter_can_empty_the_list(tmp_path: Path, monkeypatch) -> None:
     from tools.odin import cli as cli_module
-    from tools.odin.discover import DiscoveredTask
 
-    monkeypatch.setattr(
-        cli_module,
-        "discover_tasks",
-        lambda: [DiscoveredTask("Isaac-Ant", "core", ("rsl_rl",), (DiscoveredTask.Mode(None, None, None),))],
-    )
+    monkeypatch.setattr(cli_module, "discover_tasks", lambda: [_fake_task("Isaac-Ant", "core", None)])
     assert main(["discover", "--scope", "contrib", "--output", str(tmp_path / "t.yaml")]) != 0
 
 

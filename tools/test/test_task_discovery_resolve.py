@@ -139,3 +139,36 @@ def test_an_unloadable_config_reports_unknown_and_no_modes(monkeypatch) -> None:
     assert task.declared is None
     assert task.modes == ()
     assert task.default is None
+
+
+def test_broken_validators_are_not_mistaken_for_rejected_presets() -> None:
+    """A validator that cannot run must not read as "every combination is illegal".
+
+    Swallowing these to ``False`` marks every mode undispatchable, which surfaces
+    as a smaller matrix rather than as a failure -- the caller then blames their
+    own filters. ``TypeError`` is in the set because calling the validator with the
+    wrong argument type once dropped every OvPhysX mode silently.
+    """
+    assert ImportError in task_discovery._INFRASTRUCTURE_ERRORS
+    assert AttributeError in task_discovery._INFRASTRUCTURE_ERRORS
+    assert TypeError in task_discovery._INFRASTRUCTURE_ERRORS
+    # A genuinely rejected combination raises these; they must stay swallowed.
+    assert ValueError not in task_discovery._INFRASTRUCTURE_ERRORS
+    assert RuntimeError not in task_discovery._INFRASTRUCTURE_ERRORS
+
+
+def test_runtime_validation_receives_kit_sources_not_parsed_args() -> None:
+    """``_validate_runtime`` takes resolved Kit sources, not the parsed args.
+
+    Its second parameter is treated as "Kit is in this process", so passing the
+    argparse namespace -- always truthy -- makes every OvPhysX combination look
+    like the illegal OvPhysX+Kit pairing and disappear from the matrix.
+    """
+    import inspect
+
+    from isaaclab.app.sim_launcher import _validate_runtime
+
+    assert list(inspect.signature(_validate_runtime).parameters)[1] == "kit_sources"
+    source = inspect.getsource(task_discovery._mode_resolves)
+    assert "_get_kit_runtime_sources(" in source
+    assert "_validate_runtime(scan(" not in source

@@ -7,8 +7,12 @@
 
 Discovery is the default row source; a hand-written list remains possible as an
 override via ``--tasks_yaml``. Expansion is total and filtering is the only way
-to narrow, so there is one vocabulary rather than two. The registry walk lives in :func:`discover_tasks`
-and needs Isaac Lab importable; everything else is pure and testable offline.
+to narrow, so there is one vocabulary rather than two.
+
+The registry walk and preset resolution live in :mod:`tools.task_discovery`, which
+Isaac Lab also uses to generate its environment tables. This module only applies
+Odin's dispatch policy on top and reshapes the result into rows; everything here
+is pure and testable offline.
 
 The emitted file is the same shape :func:`~tools.odin.plan.load_task_rows`
 already consumes, so nothing downstream of ``PlannedRow`` changes.
@@ -20,12 +24,15 @@ from a real run.
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from tools.task_discovery import DiscoveredTask, DiscoveryError
+from tools.task_discovery import discover_tasks as _discover_all_tasks
 
 __all__ = [
     "RL_LIBRARY_PRIORITY",
@@ -43,85 +50,6 @@ RL_LIBRARY_PRIORITY: tuple[str, ...] = ("rsl_rl", "rl_games", "skrl", "sb3")
 # Physics presets never dispatched. ``newton_mjwarp_vbd_proxy`` is a proxy
 # variant rather than a backend under test.
 _SKIP_PHYSICS = frozenset({"newton_mjwarp_vbd_proxy"})
-
-# Backend names that also appear under ``PresetTarget.DOMAIN`` on some tasks.
-# They are selected with ``physics=`` / ``renderer=``, so emitting them as a
-# ``presets=`` token would be a duplicate at best and wrong at worst. A per-task
-# check is not enough: a task can list ``newton_mjwarp`` under DOMAIN without
-# declaring it under PHYSICS. Mirrors the same guard in tools/environ_docs.py.
-_BACKEND_MIRROR_NAMES = frozenset(
-    {
-        "newton_kamino",
-        "newton_mjwarp",
-        "newton_mjwarp_vbd",
-        "newton_mjwarp_vbd_proxy",
-        "ovphysx",
-        "physx",
-        "isaacsim_physx",
-        "newton",
-        "kamino",
-        "isaacsim_rtx",
-        "isaacsim_rtx_renderer",
-        "newton_renderer",
-        "ovrtx",
-        "ovrtx_renderer",
-        "rtx",
-    }
-)
-
-
-class DiscoveryError(RuntimeError):
-    """Raised when the registry cannot be walked."""
-
-
-@dataclass(frozen=True)
-class DiscoveredTask:
-    """One registered training task, as discovered from the Gym registry.
-
-    Args:
-        task_id: Gym task id.
-        scope: ``core`` or ``contrib``.
-        rl_libraries: Odin-supported RL libraries the task declares, in
-            :data:`RL_LIBRARY_PRIORITY` order.
-        modes: The task's **legal** physics/renderer combinations. Callers never
-            reconstruct the cross product or reason about which pairings are
-            rejected; discovery has already resolved that.
-    """
-
-    @dataclass(frozen=True)
-    class Mode:
-        """One legal way to run a task.
-
-        Args:
-            physics: Physics preset token, or ``None`` for tasks that declare
-                none and reject any ``physics=`` selector.
-            renderer: Renderer preset token, or ``None`` to run headless.
-            presets: Domain preset token passed as ``presets=<value>``, or
-                ``None``. Exactly one at a time: domain presets that target the
-                same field conflict outright, e.g. ``presets=depth,rgb`` is
-                rejected with "Conflicting global presets".
-        """
-
-        physics: str | None
-        renderer: str | None
-        presets: str | None
-
-    task_id: str
-    scope: str
-    rl_libraries: tuple[str, ...]
-    modes: tuple[DiscoveredTask.Mode, ...]
-
-
-def _canonical_physics(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Return the physics presets worth dispatching for one task.
-
-    ``physx`` is dropped when ``ovphysx`` is also declared: headless, ``physx``
-    resolves to OvPhysX on most tasks, so running both is an exact duplicate.
-    """
-    kept = [name for name in names if name not in _SKIP_PHYSICS]
-    if "ovphysx" in kept and "physx" in kept:
-        kept.remove("physx")
-    return tuple(kept)
 
 
 def expand_rows(tasks: list[DiscoveredTask]) -> list[dict[str, Any]]:
@@ -215,173 +143,37 @@ def filter_rows(
 
 
 def discover_tasks() -> list[DiscoveredTask]:
-    """Walk the Gym registry and return every dispatchable training task.
+    """Return every task Odin can dispatch, with its legal modes.
 
-    Imports Isaac Lab, so it needs the project environment. Contrib tasks are
-    included when ``isaaclab_tasks_experimental`` is importable.
+    Thin policy layer over :func:`tools.task_discovery.discover_tasks`, which owns
+    the registry walk and the runtime validation. Two narrowings are applied here
+    because they are dispatch policy rather than facts about a task:
 
-    For tasks that declare renderers, every physics/renderer pairing is checked
-    against the runtime validator and only the legal ones become modes. That
-    matters because the cross product is not all legal: OVRTX is kitless and
-    cannot share a process with Kit physics, so ``isaacsim_physx + ovrtx`` is
-    rejected. Discovering that here costs one config resolution per pairing;
-    discovering it on a GPU costs a whole dispatch.
+    - modes whose physics preset Odin never runs are dropped (see
+      :data:`_SKIP_PHYSICS`);
+    - RL libraries Odin has no benchmark entrypoint for are dropped, so a task
+      carrying only those disappears rather than expanding into rows that cannot run.
+
+    ``collapse`` is left on, so spellings resolving to the same run arrive already
+    reduced -- that is what makes ``physx`` and ``ovphysx`` one row rather than two
+    identical ones.
 
     Returns:
-        Discovered tasks sorted by ``task_id``.
+        Dispatchable tasks sorted by ``task_id``, each with at least one mode and
+        one RL library.
 
     Raises:
-        DiscoveryError: If the task packages cannot be imported.
+        DiscoveryError: If the Isaac Lab task packages cannot be imported.
     """
-    import contextlib
-
-    try:
-        import gymnasium as gym
-
-        import isaaclab_tasks  # noqa: F401
-        from isaaclab_tasks.utils.preset_cli import enumerate_task_presets
-        from isaaclab_tasks.utils.preset_target import PresetTarget
-    except ImportError as exc:
-        raise DiscoveryError(f"could not import the Isaac Lab task packages: {exc}") from exc
-
-    with contextlib.suppress(ImportError):
-        import isaaclab_tasks_experimental  # noqa: F401
-
-    tasks: list[DiscoveredTask] = []
-    for spec in gym.registry.values():
-        if not _is_training_task(spec.id) or spec.kwargs.get("deprecated"):
+    supported = set(RL_LIBRARY_PRIORITY)
+    dispatchable: list[DiscoveredTask] = []
+    for task in _discover_all_tasks(resolve=True, collapse=True):
+        libraries = tuple(lib for lib in task.rl_libraries if lib in supported)
+        modes = tuple(mode for mode in task.modes if mode.physics not in _SKIP_PHYSICS)
+        if not libraries or not modes:
             continue
-        libraries = _rl_libraries_from_kwargs(spec.kwargs)
-        if not libraries:
-            continue
-        preset_map = enumerate_task_presets(spec.id)
-        physics = _canonical_physics(tuple(sorted(preset_map.get(PresetTarget.PHYSICS, [])))) if preset_map else ()
-        renderers = tuple(sorted(preset_map.get(PresetTarget.RENDERER, []))) if preset_map else ()
-        domains = _domain_presets(preset_map.get(PresetTarget.DOMAIN, [])) if preset_map else ()
-        tasks.append(
-            DiscoveredTask(
-                task_id=spec.id,
-                scope="contrib" if spec.id.startswith("IsaacContrib-") else "core",
-                rl_libraries=libraries,
-                modes=_legal_modes(spec.id, physics, renderers, domains),
-            )
-        )
-    tasks.sort(key=lambda task: task.task_id)
-    return tasks
-
-
-def _domain_presets(names: list[str]) -> tuple[str, ...]:
-    """Return the domain presets worth dispatching, dropping backend mirrors."""
-    return tuple(sorted(name for name in names if name not in _BACKEND_MIRROR_NAMES))
-
-
-def _legal_modes(
-    task_id: str,
-    physics: tuple[str, ...],
-    renderers: tuple[str, ...],
-    domains: tuple[str, ...],
-) -> tuple[DiscoveredTask.Mode, ...]:
-    """Return the legal physics/renderer/preset combinations for one task.
-
-    A task declaring renderers is always expanded across them: benchmarking a
-    camera task headless measures everything except the thing under test. Domain
-    presets are expanded one at a time, never combined, because presets
-    targeting the same field conflict outright.
-    """
-    physics_options: tuple[str | None, ...] = physics or (None,)
-    renderer_options: tuple[str | None, ...] = renderers or (None,)
-    # ``None`` keeps the task's own default alongside each explicit preset.
-    domain_options: tuple[str | None, ...] = (None, *domains) if domains else (None,)
-
-    modes: list[DiscoveredTask.Mode] = []
-    for physics_name in physics_options:
-        for renderer in renderer_options:
-            for domain in domain_options:
-                if not _mode_resolves(task_id, physics_name, renderer, domain):
-                    continue
-                modes.append(DiscoveredTask.Mode(physics=physics_name, renderer=renderer, presets=domain))
-    return tuple(modes)
-
-
-# Errors that mean the validator itself could not run, rather than that the
-# combination under test was rejected. Swallowing these marks every mode illegal
-# and leaves the CLI blaming the operator's filters for an empty row set.
-# ``TypeError`` is included because calling the validator with the wrong argument
-# type is indistinguishable from a rejected combination otherwise: it silently
-# dropped every OvPhysX mode from discovery until the signature was checked.
-_INFRASTRUCTURE_ERRORS = (ImportError, AttributeError, NameError, SyntaxError, TypeError)
-
-
-def _mode_resolves(task_id: str, physics: str | None, renderer: str | None, presets: str | None = None) -> bool:
-    """Return whether a physics/renderer pairing resolves and passes validation.
-
-    An unknown preset, an unloadable config, or a rejected backend combination
-    all mean the same thing — the pairing is undispatchable — so they return
-    ``False`` alike.
-
-    Raises:
-        DiscoveryError: If validation could not run at all, e.g. because an
-            Isaac Lab import or API it depends on has changed.
-    """
-    import argparse
-    import sys
-
-    from isaaclab.app.sim_launcher import _get_kit_runtime_sources, _validate_runtime, scan
-
-    from isaaclab_tasks.utils import resolve_task_config, setup_preset_cli
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--task")
-    parser.add_argument("--agent", default=None)
-    argv = ["--task", task_id]
-    if physics is not None:
-        argv.append(f"physics={physics}")
-    if renderer is not None:
-        argv.append(f"renderer={renderer}")
-    if presets is not None:
-        argv.append(f"presets={presets}")
-
-    original_argv = list(sys.argv)
-    try:
-        args, remaining = setup_preset_cli(parser, argv)
-        sys.argv = [sys.argv[0]] + remaining
-        env_cfg, _ = resolve_task_config(args.task, args.agent)
-        # ``_validate_runtime`` takes the resolved Kit sources, not the parsed args.
-        # Passing args made every scan look Kit-backed, so the OvPhysX guard fired
-        # for every OvPhysX mode and marked them all undispatchable.
-        config_scan = scan(env_cfg, args)
-        _validate_runtime(config_scan, _get_kit_runtime_sources(config_scan, args))
-        return True
-    except _INFRASTRUCTURE_ERRORS as exc:
-        raise DiscoveryError(
-            f"preset validation for {task_id!r} could not run: {type(exc).__name__}: {exc}. This is an Isaac Lab "
-            "import or API failure, not a rejected preset combination."
-        ) from exc
-    except Exception:  # noqa: BLE001 - any other failure means undispatchable
-        return False
-    finally:
-        sys.argv = original_argv
-
-
-def _is_training_task(task_id: str) -> bool:
-    """Return whether *task_id* is a trainable Isaac task."""
-    if "Isaac" not in task_id:
-        return False
-    return not task_id.endswith("-Eval") and "-Benchmark-" not in task_id
-
-
-def _rl_libraries_from_kwargs(kwargs: dict[str, Any]) -> tuple[str, ...]:
-    """Return the Odin-supported RL libraries a registration declares."""
-    declared = set()
-    for key in kwargs:
-        if not key.endswith("_cfg_entry_point") or key == "env_cfg_entry_point":
-            continue
-        stem = key[: -len("_cfg_entry_point")]
-        for candidate in RL_LIBRARY_PRIORITY:
-            if stem == candidate or stem.startswith(f"{candidate}_"):
-                declared.add(candidate)
-                break
-    return tuple(name for name in RL_LIBRARY_PRIORITY if name in declared)
+        dispatchable.append(dataclasses.replace(task, rl_libraries=libraries, modes=modes))
+    return dispatchable
 
 
 def write_task_list(path: Path, rows: list[dict[str, Any]], *, meta: dict[str, Any]) -> None:

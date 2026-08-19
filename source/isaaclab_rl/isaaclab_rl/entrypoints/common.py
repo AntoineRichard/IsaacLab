@@ -379,7 +379,19 @@ def add_common_train_args(
         include_distributed: Whether to include the ``--distributed`` argument.
         max_iterations_type: Converter and validator for ``--max_iterations``.
     """
-    add_video_args(parser, include_interval=True)
+    parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
+    parser.add_argument(
+        "--video_length",
+        type=int,
+        default=None,
+        help="Length of each recorded video clip in env steps. Overrides the value in VideoRecorderCfg.",
+    )
+    parser.add_argument(
+        "--video_interval",
+        type=int,
+        default=None,
+        help="Interval between video clips in env steps. Overrides the value in VideoRecorderCfg.",
+    )
     parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
     parser.add_argument("--task", type=str, default=None, help="Name of the task.")
     add_frontend_args(parser)
@@ -801,58 +813,6 @@ def latest_checkpoint_path(log_dir: str) -> str | None:
     if not matches:
         return None
     return os.path.abspath(max(matches, key=os.path.getmtime))
-
-
-def add_video_args(parser: argparse.ArgumentParser, *, include_interval: bool) -> None:
-    """Add the video-recording arguments shared by training and play.
-
-    Args:
-        parser: Parser to extend.
-        include_interval: Whether to add ``--video_interval``. Training records
-            periodically across a long run; a play rollout is a single episode
-            sequence, so an interval has nothing to space out.
-    """
-    parser.add_argument("--video", action="store_true", default=False, help="Record videos during the run.")
-    parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
-    if include_interval:
-        parser.add_argument(
-            "--video_interval", type=int, default=2000, help="Interval between video recordings (in steps)."
-        )
-
-
-def wrap_record_video_play(env, output_dir: str, args_cli: argparse.Namespace):
-    """Wrap an environment with video recording for a play rollout.
-
-    Unlike :func:`wrap_record_video`, recording starts at the first step rather
-    than on a periodic trigger; see :func:`add_video_args`.
-
-    Args:
-        env: Gymnasium environment to wrap.
-        output_dir: Directory to write ``videos/play`` under.
-        args_cli: Parsed command-line arguments.
-
-    Returns:
-        The original environment, or a video-wrapped one when ``--video`` is set.
-    """
-    if not args_cli.video:
-        return env
-
-    video_kwargs = {
-        "video_folder": os.path.join(output_dir, "videos", "play"),
-        "step_trigger": lambda step: step == 0,
-        "video_length": args_cli.video_length,
-        "disable_logger": True,
-    }
-    print("[INFO] Recording video of the play rollout.")
-    print_dict(video_kwargs, nesting=4)
-    return gym.wrappers.RecordVideo(env, **video_kwargs)
-
-
-def play_video_dir(output_dir: str, args_cli: argparse.Namespace) -> str | None:
-    """Return the directory :func:`wrap_record_video_play` writes to, or ``None``."""
-    if not getattr(args_cli, "video", False):
-        return None
-    return os.path.join(output_dir, "videos", "play")
 
 
 def pre_launch_video_config(env_cfg: Any, log_dir: str | None = None, args_cli: Any = None) -> None:

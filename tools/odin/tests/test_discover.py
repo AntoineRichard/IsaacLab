@@ -13,30 +13,40 @@ from pathlib import Path
 
 import yaml
 
-from tools.odin import discover
 from tools.odin.discover import DiscoveredTask, expand_rows, filter_rows, write_task_list
 from tools.odin.plan import load_task_rows, plan_rows
 
 Mode = DiscoveredTask.Mode
 
-_ANT = DiscoveredTask(
+
+def _task(**kwargs) -> DiscoveredTask:
+    """Build a DiscoveredTask with the fields these tests do not exercise defaulted.
+
+    ``declared``, ``default`` and ``resolved`` describe how discovery reached a
+    result; row expansion and filtering only read ``modes`` and ``rl_libraries``.
+    """
+    kwargs.setdefault("declared", None)
+    kwargs.setdefault("default", None)
+    kwargs.setdefault("resolved", True)
+    return DiscoveredTask(**kwargs)
+
+
+_ANT = _task(
     task_id="Isaac-Ant",
     scope="core",
     rl_libraries=("rsl_rl", "rl_games", "skrl"),
     modes=(Mode("newton_kamino", None, None), Mode("newton_mjwarp", None, None), Mode("physx", None, None)),
 )
-_CONTRIB = DiscoveredTask(
+_CONTRIB = _task(
     task_id="IsaacContrib-Walk",
     scope="contrib",
     rl_libraries=("rsl_rl",),
     modes=(Mode("newton_mjwarp", None, None),),
 )
 # Many real tasks declare no physics preset and reject any physics= token.
-_NO_PHYSICS = DiscoveredTask(
-    task_id="Isaac-Intrinsic", scope="core", rl_libraries=("skrl",), modes=(Mode(None, None, None),)
-)
+_NO_PHYSICS = _task(task_id="Isaac-Intrinsic", scope="core", rl_libraries=("skrl",), modes=(Mode(None, None, None),))
 # A camera task: renderers are always expanded, and one pairing is illegal.
-_CAMERA = DiscoveredTask(
+_CAMERA = _task(
     task_id="Isaac-Cartpole-Camera",
     scope="core",
     rl_libraries=("rsl_rl",),
@@ -62,7 +72,7 @@ def test_scope_filter_replaces_a_core_only_selection() -> None:
 
 def test_physics_filter_replaces_a_cross_backend_selection() -> None:
     # Two backends on the same tasks is a filter, not its own vocabulary.
-    task = DiscoveredTask(
+    task = _task(
         task_id="Isaac-X",
         scope="core",
         rl_libraries=("rsl_rl",),
@@ -79,7 +89,7 @@ def test_task_without_physics_gets_exactly_one_row_with_no_token() -> None:
 
 
 def test_task_without_a_supported_library_is_dropped() -> None:
-    task = DiscoveredTask(task_id="Isaac-Rlinf", scope="core", rl_libraries=(), modes=())
+    task = _task(task_id="Isaac-Rlinf", scope="core", rl_libraries=(), modes=())
     assert expand_rows([task]) == []
 
 
@@ -139,32 +149,6 @@ def test_written_list_is_consumable_by_the_planner(tmp_path: Path) -> None:
     planned = plan_rows(task_rows=load_task_rows(out), seeds=[42])
     assert len(planned) == len(rows)
     assert any(row.physics is None for row in planned)
-
-
-def test_broken_imports_are_not_mistaken_for_rejected_presets() -> None:
-    # An import regression that swallows to False marks every mode illegal, and
-    # the CLI then blames the operator's filters for the empty row set.
-    assert ImportError in discover._INFRASTRUCTURE_ERRORS
-    assert AttributeError in discover._INFRASTRUCTURE_ERRORS
-    # Calling the validator with the wrong argument type raises TypeError. That
-    # silently dropped every OvPhysX mode from discovery, which reads as a
-    # smaller matrix rather than as a failure.
-    assert TypeError in discover._INFRASTRUCTURE_ERRORS
-    # A rejected preset combination raises these; they must stay swallowed.
-    assert ValueError not in discover._INFRASTRUCTURE_ERRORS
-    assert RuntimeError not in discover._INFRASTRUCTURE_ERRORS
-
-
-def test_runtime_validation_receives_kit_sources_not_parsed_args() -> None:
-    # _validate_runtime(scan, kit_sources) treats a truthy second argument as
-    # "Kit is in this process", so passing the argparse Namespace made every
-    # OvPhysX mode look like the illegal OvPhysX+Kit pairing and vanish from the
-    # matrix. Asserted on the source because isaaclab is not importable here.
-    import inspect
-
-    source = inspect.getsource(discover._mode_resolves)
-    assert "_get_kit_runtime_sources(config_scan, args)" in source
-    assert "_validate_runtime(scan(env_cfg, args), args)" not in source
 
 
 def test_provenance_header_is_ignored_by_the_planner(tmp_path: Path) -> None:
