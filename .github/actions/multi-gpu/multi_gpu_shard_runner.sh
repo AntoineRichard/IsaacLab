@@ -33,7 +33,7 @@
 
 set +e  # keep going on errors; per-shard exit codes are aggregated at the end
 cd /workspace/isaaclab
-unset HUB__ARGS__DETECT_ONLY DISPLAY  # clear vars that would force Kit into detect-only / headed (X11) mode
+unset DISPLAY  # clear the var that would force Kit into headed (X11) mode
 
 # Container-level HOME + PYTHONUSERBASE for pip --user installs. The image
 # runs as --user $host_uid:$host_gid with no matching /etc/passwd entry, so
@@ -49,7 +49,8 @@ mkdir -p /tmp/mgpu-base-home /tmp/mgpu-pyuserbase
 
 # Pytest deps (same as run-tests action). junitparser is imported at
 # tools/conftest.py load time, so it must be present first.
-./isaaclab.sh -p -m pip install pytest pytest-mock junitparser flaky "coverage>=7.6.1"
+bash .github/actions/_lib/with-python-package-retries.sh \
+  ./isaaclab.sh -p -m pip install pytest pytest-mock junitparser flaky "coverage>=7.6.1"
 
 # Shard count from nvidia-smi -L (truth; torch under-counts MIG).
 MIG_COUNT=$(nvidia-smi -L | grep -c "^  MIG ")  # grep -c = count of matching lines (MIG slices)

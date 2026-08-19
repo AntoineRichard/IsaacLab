@@ -411,13 +411,13 @@ Prerequisites
 
   .. code-block:: bash
 
-     uvx --from lerobot lerobot-find-port
+     uvx --from "lerobot[hardware]" lerobot-find-port
 
   Alternatively, plug in the USB cable and immediately run:
 
   .. code-block:: bash
 
-     dmesg | grep tty | tail -1
+     sudo dmesg | grep tty | tail -1
 
   Because ``tail -1`` shows only the most recent kernel message, the output unambiguously
   names the just-connected device, e.g. ``[12345.6] usb ... ttyACM0``.
@@ -555,6 +555,12 @@ Move the physical SO-101 leader arm and the simulated follower will mirror its j
 time. To record demonstrations from this task, run ``scripts/tools/record_demos.py`` with the same
 ``--task`` and the plugin running in its second terminal -- see `Data Collection in Sim`_ for the
 full recording workflow and runtime troubleshooting.
+
+.. note::
+
+   After stacking the cube, open the gripper **all the way** before ending the episode. The task's
+   success check requires the gripper to be fully open -- a partially open gripper holding position
+   on top of the stack will not register as success, even if the cube is correctly placed.
 
 
 .. _isaac-teleop-retargeting:
@@ -1289,6 +1295,18 @@ environment runs with ``--xr``. PiP is absent unless the task explicitly selects
 the same view shown to the operator. Both reference cameras are parented to a physical robot body
 link, so the recorded view follows robot motion. The NutPour and ExhaustPipe GR1T2 teleoperation
 tasks also present their existing recorded ``robot_pov_cam``:
+
+.. figure:: ../_static/teleop/xr-camera-pip.jpg
+   :width: 80%
+   :alt: XR teleoperation view with the robot point-of-view camera shown in a picture-in-picture panel
+
+   Robot point-of-view camera feedback shown as a picture-in-picture panel during XR teleoperation.
+
+.. warning::
+
+   If a PiP panel enters its source camera's field of view, the camera captures the panel and
+   produces a recursive hall-of-mirrors effect. Move the panel or reorient the camera, for example
+   by changing the robot pose, to keep the panel outside the camera's field of view.
 
 .. code-block:: bash
 
