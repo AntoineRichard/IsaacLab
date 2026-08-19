@@ -154,3 +154,40 @@ def test_every_phase_names_its_producing_workflow(phase: str) -> None:
     # The sample carries workflow_name on each phase; dashboards group on it.
     phases = bundle_to_kpi_phases(_BUNDLE, workflow_name="benchmark_training")
     assert phases[phase]["workflow_name"] == "benchmark_training"
+
+
+def test_run_key_names_the_scope() -> None:
+    # Lets a dashboard separate core from contrib without pattern-matching the task id.
+    from tools.odin.publish import scope_of
+
+    assert scope_of("Isaac-Ant") == "core"
+    assert scope_of("IsaacContrib-Velocity-Flat-Spot") == "contrib"
+    assert "_core_" in run_key_for(_BUNDLE, "training")
+
+
+def test_presets_are_sorted_so_one_config_yields_one_key() -> None:
+    # Discovery emits presets in registry order; without sorting the same run could
+    # produce two keys across releases and silently split one trend line in two.
+    from tools.odin.publish import preset_slug
+
+    a = {"physics_backend": "ovphysx", "rendering_backend": "ovrtx", "presets": ["rgb", "albedo64"]}
+    b = {"physics_backend": "ovphysx", "rendering_backend": "ovrtx", "presets": ["albedo64", "rgb"]}
+    assert preset_slug(a) == preset_slug(b) == "albedo64-ovphysx-ovrtx-rgb"
+
+
+def test_domain_presets_do_not_collide_under_one_key() -> None:
+    # Naming only the backend was enough while every task was state-only; a camera
+    # task varies by domain preset and those rows would overwrite each other.
+    import json
+
+    rgb = json.loads(json.dumps(_BUNDLE))
+    rgb["run"]["task"] = "Isaac-Cartpole-Camera"
+    rgb["run"]["config"] = {
+        "physics_backend": "isaacsim_physx",
+        "rendering_backend": "isaacsim_rtx",
+        "presets": ["rgb"],
+    }
+    depth = json.loads(json.dumps(rgb))
+    depth["run"]["config"]["presets"] = ["depth128"]
+
+    assert run_key_for(rgb, "training") != run_key_for(depth, "training")

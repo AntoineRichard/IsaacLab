@@ -31,7 +31,9 @@ __all__ = [
     "comparison_group_for",
     "collect_rows",
     "insert_rows",
+    "preset_slug",
     "run_key_for",
+    "scope_of",
 ]
 
 TABLE = "omni_runtime_isaac_lab_osmo_v3"
@@ -87,6 +89,33 @@ def _renderer(cfg: dict[str, Any]) -> str | None:
     return value if value not in (None, "", "none") else None
 
 
+def scope_of(task_id: str) -> str:
+    """Return ``core`` or ``contrib`` for a task id.
+
+    Derived from the id rather than carried in the bundle, the same way discovery
+    decides it. Redundant with the ``IsaacContrib-`` prefix, but naming it explicitly
+    lets a dashboard group or filter on maturity without pattern-matching the task.
+    """
+    return "contrib" if str(task_id).startswith("IsaacContrib-") else "core"
+
+
+def preset_slug(cfg: dict[str, Any]) -> str:
+    """Return the run's presets as one sorted, dash-separated token.
+
+    Every axis is a preset -- physics, renderer and domain alike, which is how the
+    existing ``OMNIPERF_ISAACLAB_PRESET`` encoding treats them. Naming only the
+    physics backend was enough while every task was state-only, but a camera task
+    varies by renderer and by domain preset, and those rows would otherwise collide
+    under one key.
+
+    Sorted so a configuration yields the same slug however the tokens were ordered in
+    the row: the key has to be stable for a trend line to stay continuous. Dashes
+    separate presets because the names themselves contain underscores.
+    """
+    tokens = {t for t in (cfg.get("physics_backend"), _renderer(cfg), *(cfg.get("presets") or [])) if t}
+    return "-".join(sorted(tokens)) or "default"
+
+
 def run_key_for(bundle: dict[str, Any], kind: str) -> str:
     """Return the ``kpis`` level-2 key identifying one run.
 
@@ -101,11 +130,8 @@ def run_key_for(bundle: dict[str, Any], kind: str) -> str:
     """
     run = bundle.get("run") or {}
     cfg = run.get("config") or {}
-    parts = [f"benchmark_{kind}", run.get("task", "unknown"), run.get("framework", "unknown")]
-    if cfg.get("physics_backend"):
-        parts.append(cfg["physics_backend"])
-    if _renderer(cfg):
-        parts.append(_renderer(cfg))
+    task = run.get("task", "unknown")
+    parts = [f"benchmark_{kind}", scope_of(task), task, run.get("framework", "unknown"), preset_slug(cfg)]
     if run.get("num_envs") is not None:
         parts.append(f"n{run['num_envs']}")
     return "_".join(str(p) for p in parts)
@@ -121,7 +147,8 @@ def comparison_group_for(bundle: dict[str, Any], kind: str) -> str:
     """
     run = bundle.get("run") or {}
     cfg = run.get("config") or {}
-    parts = ["ISAAC_LAB", "OSMO", kind, str(run.get("task", "UNKNOWN")), str(run.get("framework", "UNKNOWN"))]
+    task = str(run.get("task", "UNKNOWN"))
+    parts = ["ISAAC_LAB", "OSMO", kind, scope_of(task), task, str(run.get("framework", "UNKNOWN"))]
     if cfg.get("physics_backend"):
         parts.append(str(cfg["physics_backend"]))
     if _renderer(cfg):
@@ -327,6 +354,7 @@ def build_row(
         "dispatch_id": dispatch_id,
         "kind": kind,
         "task": run.get("task"),
+        "scope": scope_of(run.get("task", "")),
         "rl_library": run.get("framework"),
         "physics_backend": cfg.get("physics_backend"),
         "rendering_backend": _renderer(cfg),
