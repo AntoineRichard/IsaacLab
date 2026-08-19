@@ -20,6 +20,8 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
+import json
+import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -31,6 +33,7 @@ from tools.odin.harvest import DEFAULT_TIMEOUT_HEADROOM, HarvestError, harvest_d
 from tools.odin.image import DEFAULT_CUDA_IMAGE, ImageBuildError, build_image
 from tools.odin.plan import PlanError, PlannedRow, apply_metadata, chunk_rows, load_task_rows, plan_rows
 from tools.odin.poller import PollError, poll_until_terminal
+from tools.odin.publish import TABLE, PublishError, collect_rows, insert_rows
 from tools.odin.results import dispatch_output_uri, fetch_results, validate_bundle
 from tools.odin.state import (
     SCHEMA_VERSION,
@@ -543,6 +546,100 @@ def command_harvest(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_publish(args: argparse.Namespace) -> int:
+    """Publish a fetched dispatch's bundles to the OSMO results table."""
+    dispatch_dir = args.runs_root / args.dispatch_id
+    if not dispatch_dir.is_dir():
+        print(f"[odin] no dispatch under {dispatch_dir}", file=sys.stderr)
+        return 1
+
+    # Pool and image come from the dispatch record rather than the operator, so a
+    # published row cannot disagree with what actually ran.
+    state_path = dispatch_dir / "dispatch.json"
+    image_ref, workflow_id = args.image, None
+    if state_path.is_file():
+        state = json.loads(state_path.read_text())
+        image_ref = image_ref or next(iter((state.get("images") or {}).values()), None)
+        workflows = state.get("osmo_workflow_ids") or []
+        workflow_id = workflows[0] if len(workflows) == 1 else None
+
+    cfg = load_odin_config(args.config) if args.config else None
+    pool = args.pool or (cfg.pool if cfg else "unknown")
+
+    rows = collect_rows(
+        dispatch_dir,
+        image_ref=image_ref or "unknown",
+        pool=pool,
+        workflow_id=workflow_id,
+        results_uri=cfg.results_uri if cfg else None,
+    )
+    if not rows:
+        print(f"[odin] no readable bundles under {dispatch_dir}", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print(json.dumps(rows[0], indent=2, default=str))
+        print(f"[odin] {len(rows)} row(s) would be published to {args.table}; showed the first")
+        return 0
+
+    dsn = os.environ.get("ODIN_DB_URL") or _read_dsn(args.dsn_file)
+    if not dsn:
+        print(
+            "[odin] no connection string: set ODIN_DB_URL or pass --dsn_file. The table needs corpnet access.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        confirmed = insert_rows(rows, dsn=dsn, table=args.table)
+    except PublishError as exc:
+        print(f"[odin] {exc}", file=sys.stderr)
+        return 1
+    # Reports what the database confirms holding, not what was sent: a partial write
+    # is otherwise indistinguishable from success.
+    print(f"[odin] published {confirmed}/{len(rows)} row(s) to {args.table}")
+    return 0 if confirmed == len(rows) else 1
+
+
+_DSN_KEYWORDS = ("host", "port", "dbname", "user", "password", "sslmode")
+
+
+def _read_dsn(path: Path | None) -> str | None:
+    """Read a libpq connection string from a file.
+
+    Accepts a ready DSN, or the credential note a password manager exports: one
+    ``keyword="value",`` per line, with the real account on separate ``USR:``/``PWD:``
+    lines while the ``user``/``password`` keywords hold placeholders. Values are
+    parsed but never logged.
+    """
+    if path is None or not path.is_file():
+        return None
+    text = path.read_text().strip()
+    if not text:
+        return None
+    if text.startswith(("postgres://", "postgresql://")) or "\n" not in text:
+        return text
+
+    settings: dict[str, str] = {}
+    account: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        label, sep, value = line.partition(":")
+        if sep and label.strip().upper() in ("USR", "PWD"):
+            account[label.strip().upper()] = value.strip().strip(",").strip("\"'")
+            continue
+        key, sep, value = line.partition("=")
+        value = value.strip().strip(",").strip("\"'")
+        if sep and key.strip().lower() in _DSN_KEYWORDS and value:
+            settings[key.strip().lower()] = value
+    # The note's user/password keywords are template placeholders.
+    if "USR" in account:
+        settings["user"] = account["USR"]
+    if "PWD" in account:
+        settings["password"] = account["PWD"]
+    return " ".join(f"{k}={v}" for k, v in settings.items()) or None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="odin", description="Dispatch Isaac Lab benchmarks to OSMO.")
     sub = parser.add_subparsers(dest="command")
@@ -627,6 +724,16 @@ def _build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--scope", choices=["core", "contrib", "all"], default="all")
     discover.add_argument("--max_rows", type=int, default=None, help="Deterministic head of the sorted order.")
 
+    publish = sub.add_parser("publish", help="Publish a fetched dispatch to the OSMO results table.")
+    publish.add_argument("dispatch_id", type=str)
+    publish.add_argument("--runs_root", type=Path, default=Path("./odin_runs"))
+    publish.add_argument("--config", type=Path, default=None, help="odin.yaml, read for the pool name.")
+    publish.add_argument("--image", type=str, default=None, help="Override the image recorded in dispatch.json.")
+    publish.add_argument("--pool", type=str, default=None, help="Override the pool recorded in the config.")
+    publish.add_argument("--table", type=str, default=TABLE)
+    publish.add_argument("--dsn_file", type=Path, default=None, help="File holding the libpq connection string.")
+    publish.add_argument("--dry_run", action="store_true", help="Print the first row instead of inserting.")
+
     harvest = sub.add_parser("harvest", help="Derive per-task metadata from a completed dispatch.")
     harvest.add_argument("dispatch_id", type=str)
     harvest.add_argument("--runs_root", type=Path, default=Path("./odin_runs"))
@@ -652,6 +759,7 @@ _COMMANDS = {
     "fetch": command_fetch,
     "discover": command_discover,
     "harvest": command_harvest,
+    "publish": command_publish,
 }
 
 
@@ -671,7 +779,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return _COMMANDS[args.command](args)
-    except (OdinConfigError, PlanError, ImageBuildError, DiscoveryError, HarvestError, PollError) as exc:
+    except (OdinConfigError, PlanError, ImageBuildError, DiscoveryError, HarvestError, PollError, PublishError) as exc:
         print(f"[odin] {exc}", file=sys.stderr)
         return 1
 
