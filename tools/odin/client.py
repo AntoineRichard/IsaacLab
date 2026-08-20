@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,7 +77,18 @@ def _classify(stderr: str) -> type[OsmoCliError]:
         return OsmoAuthError
     if _TRANSIENT_PATTERN.search(stderr):
         return OsmoTransientError
+    # A non-zero exit that says nothing is a transport failure in practice: the
+    # gateway drops the connection before the CLI has a diagnostic to print. One
+    # such exit aborted a whole dispatch because it fell through to OsmoCliError.
+    if not stderr.strip():
+        return OsmoTransientError
     return OsmoCliError
+
+
+# Backoff between transient retries. Submission is the expensive case: chunks are
+# submitted one at a time and an exception part-way leaves some workflows live and
+# the rest unsent, so it is worth waiting out a gateway blip rather than failing.
+_TRANSIENT_BACKOFF_S: tuple[float, ...] = (2.0, 5.0, 15.0, 30.0)
 
 
 class OsmoClient:
@@ -99,13 +111,26 @@ class OsmoClient:
         return env
 
     def _run(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            cmd,
-            env=self._env(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        """Run an ``osmo`` command, retrying transient failures.
+
+        Retries only what :func:`_classify` calls transient, so an auth failure or
+        a genuine CLI error still surfaces on the first attempt. A retried
+        ``submit`` can in principle double-submit a workflow the server accepted
+        but failed to acknowledge; one surplus workflow is cheaper than a
+        half-submitted dispatch, which is what the un-retried path produced.
+        """
+        for backoff in (*_TRANSIENT_BACKOFF_S, None):
+            cp = subprocess.run(
+                cmd,
+                env=self._env(),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if cp.returncode == 0 or backoff is None or _classify(cp.stderr) is not OsmoTransientError:
+                return cp
+            time.sleep(backoff)
+        return cp
 
     def submit(self, yaml_path: Path, *, pool: str | None = None, priority: str | None = None) -> str:
         """Submit a workflow YAML and return the workflow_id.

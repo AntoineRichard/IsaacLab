@@ -7,6 +7,7 @@
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -188,3 +189,72 @@ def test_write_probe_reports_an_over_quota_bucket(monkeypatch) -> None:
     assert reason is not None
     assert "quota" in reason.lower()
     assert "Retrying" not in reason
+
+
+class _FlakyRun:
+    """Replays a fixed sequence of results, recording how many calls it took."""
+
+    def __init__(self, *results: subprocess.CompletedProcess) -> None:
+        self._results = list(results)
+        self.calls = 0
+
+    def __call__(self, cmd, **kwargs):
+        self.calls += 1
+        return self._results.pop(0) if len(self._results) > 1 else self._results[0]
+
+
+@pytest.fixture
+def _no_sleep(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+
+def test_transient_submit_failure_is_retried(monkeypatch, tmp_path: Path, _no_sleep) -> None:
+    # A 503 part-way through a dispatch used to leave some workflows live and the
+    # rest unsent, because the transient class was raised rather than retried.
+    flaky = _FlakyRun(
+        _cp(returncode=1, stderr="Server responded with status code 503"),
+        _cp(stdout="Workflow ID  - wf-retried\n"),
+    )
+    monkeypatch.setattr(subprocess, "run", flaky)
+
+    assert OsmoClient(profile="default").submit(tmp_path / "w.yaml") == "wf-retried"
+    assert flaky.calls == 2
+
+
+def test_a_silent_non_zero_exit_is_retried(monkeypatch, tmp_path: Path, _no_sleep) -> None:
+    # The gateway can drop the connection before the CLI prints a diagnostic; an
+    # empty stderr is not a reason to treat the failure as permanent.
+    flaky = _FlakyRun(_cp(returncode=1, stderr="   \n"), _cp(stdout="Workflow ID  - wf-ok\n"))
+    monkeypatch.setattr(subprocess, "run", flaky)
+
+    assert OsmoClient(profile="default").submit(tmp_path / "w.yaml") == "wf-ok"
+    assert flaky.calls == 2
+
+
+def test_auth_failure_is_not_retried(monkeypatch, tmp_path: Path, _no_sleep) -> None:
+    # Retrying a 401 just multiplies the wait before the same failure.
+    flaky = _FlakyRun(_cp(returncode=1, stderr="HTTP 401 unauthorized"))
+    monkeypatch.setattr(subprocess, "run", flaky)
+
+    with pytest.raises(OsmoAuthError):
+        OsmoClient(profile="default").submit(tmp_path / "w.yaml")
+    assert flaky.calls == 1
+
+
+def test_a_real_cli_error_is_not_retried(monkeypatch, tmp_path: Path, _no_sleep) -> None:
+    flaky = _FlakyRun(_cp(returncode=1, stderr="validation failed: unknown field 'foo'"))
+    monkeypatch.setattr(subprocess, "run", flaky)
+
+    with pytest.raises(OsmoCliError):
+        OsmoClient(profile="default").submit(tmp_path / "w.yaml")
+    assert flaky.calls == 1
+
+
+def test_retries_are_bounded(monkeypatch, tmp_path: Path, _no_sleep) -> None:
+    # A pool that is down must eventually surface, not spin forever.
+    flaky = _FlakyRun(_cp(returncode=1, stderr="Server responded with status code 503"))
+    monkeypatch.setattr(subprocess, "run", flaky)
+
+    with pytest.raises(OsmoTransientError):
+        OsmoClient(profile="default").submit(tmp_path / "w.yaml")
+    assert flaky.calls == 5
