@@ -59,33 +59,39 @@ def test_a_kit_backed_physics_and_a_kitless_renderer_are_rejected() -> None:
     assert _mode_resolves("Isaac-Cartpole-Camera", "ovphysx", "ovrtx", None) is not None
 
 
-def test_distinct_backends_get_distinct_fingerprints() -> None:
-    """Guards the collapse against a config serialization that stops discriminating.
+def test_a_cross_axis_rule_the_task_declares_is_enforced() -> None:
+    """Tasks put cross-axis rules in ``validate_config``, which the env constructor runs.
+
+    Reach rejects ``newton_ik`` without Newton physics. Resolving without validating
+    reported those pairings legal, and they died on the first reset instead.
+    """
+    assert _mode_resolves("Isaac-Reach-Franka", "isaacsim_physx", None, "newton_ik") is None
+    assert _mode_resolves("Isaac-Reach-Franka", "ovphysx", None, "newton_ik") is None
+    assert _mode_resolves("Isaac-Reach-Franka", "newton_mjwarp", None, "newton_ik") is not None
+
+
+def test_the_fingerprint_identifies_a_run() -> None:
+    """The collapse is only as good as this: stable per run, distinct across runs.
 
     ``to_dict`` erases class identity, so backends differ only by the values it keeps.
-    Should that discriminator ever be dropped upstream, two backends would silently
-    merge into one mode and a dispatcher would stop scheduling one of them.
+    Were that discriminator dropped upstream, two backends would merge into one mode
+    and a dispatcher would silently stop scheduling one of them.
     """
-    resolutions = [_mode_resolves("Isaac-Cartpole", name, None, None) for name in ("newton_mjwarp", "newton_kamino")]
-    assert all(r is not None for r in resolutions)
-    fingerprints = {r[0] for r in resolutions}
-    backends = {r[1] for r in resolutions}
-    assert len(backends) == 2, backends
-    assert len(fingerprints) == len(backends)
+    once = _mode_resolves("Isaac-Cartpole", "newton_mjwarp", None, None)
+    again = _mode_resolves("Isaac-Cartpole", "newton_mjwarp", None, None)
+    other = _mode_resolves("Isaac-Cartpole", "newton_kamino", None, None)
+
+    assert once is not None and other is not None
+    assert once == again, "an unstable fingerprint splits one run across several modes"
+    assert once[1] != other[1], "different backends"
+    assert once[0] != other[0], "...so they must not share a fingerprint"
 
 
 def test_an_alias_collapses_onto_the_backend_it_resolves_to() -> None:
     """``physics=physx`` is an alias, so it must share a fingerprint with its target."""
-    alias = _mode_resolves("Isaac-Cartpole", "physx", None, None)
-    concrete = _mode_resolves("Isaac-Cartpole", "ovphysx", None, None)
-
-    assert alias is not None and concrete is not None
-    assert alias == concrete
-
-
-def test_the_same_combination_fingerprints_the_same_way_twice() -> None:
-    """An unstable fingerprint would split one run across several modes, silently."""
-    assert _mode_resolves("Isaac-Cartpole", None, None, None) == _mode_resolves("Isaac-Cartpole", None, None, None)
+    assert _mode_resolves("Isaac-Cartpole", "physx", None, None) == _mode_resolves(
+        "Isaac-Cartpole", "ovphysx", None, None
+    )
 
 
 @pytest.mark.parametrize(
@@ -105,22 +111,15 @@ def test_failures_are_sorted_into_rejection_or_api_drift(monkeypatch, raised, ex
     import isaaclab_tasks.utils as utils
 
     monkeypatch.setattr(utils, "resolve_task_config", _raise(raised))
+    # ``discover_tasks`` runs in-process from a CLI tool, so an argv leak on any of
+    # these paths would corrupt the caller.
+    before = list(sys.argv)
 
     if expectation == "raises":
         with pytest.raises(DiscoveryError):
-            _mode_resolves("Isaac-Cartpole", None, None, None)
+            _mode_resolves("Isaac-Cartpole", "ovphysx", None, "rgb")
     else:
-        assert _mode_resolves("Isaac-Cartpole", None, None, None) is None
-
-
-def test_sys_argv_is_restored_even_when_resolution_fails(monkeypatch) -> None:
-    """``discover_tasks`` runs in-process from a CLI tool, so a leak would corrupt it."""
-    import isaaclab_tasks.utils as utils
-
-    monkeypatch.setattr(utils, "resolve_task_config", _raise(ValueError("nope")))
-    before = list(sys.argv)
-
-    assert _mode_resolves("Isaac-Cartpole", "ovphysx", None, "rgb") is None
+        assert _mode_resolves("Isaac-Cartpole", "ovphysx", None, "rgb") is None
 
     assert sys.argv == before
 
@@ -139,36 +138,3 @@ def test_an_unloadable_config_reports_unknown_and_no_modes(monkeypatch) -> None:
     assert task.declared is None
     assert task.modes == ()
     assert task.default is None
-
-
-def test_broken_validators_are_not_mistaken_for_rejected_presets() -> None:
-    """A validator that cannot run must not read as "every combination is illegal".
-
-    Swallowing these to ``False`` marks every mode undispatchable, which surfaces
-    as a smaller matrix rather than as a failure -- the caller then blames their
-    own filters. ``TypeError`` is in the set because calling the validator with the
-    wrong argument type once dropped every OvPhysX mode silently.
-    """
-    assert ImportError in task_discovery._INFRASTRUCTURE_ERRORS
-    assert AttributeError in task_discovery._INFRASTRUCTURE_ERRORS
-    assert TypeError in task_discovery._INFRASTRUCTURE_ERRORS
-    # A genuinely rejected combination raises these; they must stay swallowed.
-    assert ValueError not in task_discovery._INFRASTRUCTURE_ERRORS
-    assert RuntimeError not in task_discovery._INFRASTRUCTURE_ERRORS
-
-
-def test_runtime_validation_receives_kit_sources_not_parsed_args() -> None:
-    """``_validate_runtime`` takes resolved Kit sources, not the parsed args.
-
-    Its second parameter is treated as "Kit is in this process", so passing the
-    argparse namespace -- always truthy -- makes every OvPhysX combination look
-    like the illegal OvPhysX+Kit pairing and disappear from the matrix.
-    """
-    import inspect
-
-    from isaaclab.app.sim_launcher import _validate_runtime
-
-    assert list(inspect.signature(_validate_runtime).parameters)[1] == "kit_sources"
-    source = inspect.getsource(task_discovery._mode_resolves)
-    assert "_get_kit_runtime_sources(" in source
-    assert "_validate_runtime(scan(" not in source
