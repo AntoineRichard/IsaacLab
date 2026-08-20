@@ -780,41 +780,6 @@ def wrap_sensor_capture(env: gym.Env, log_dir: str, args_cli: argparse.Namespace
     return CaptureEnvSensors(env, **sensor_capture_kwargs)
 
 
-_CHECKPOINT_PATTERNS = ("*.pt", "*.pth", "*.zip")
-"""Checkpoint filename globs searched under a training log directory.
-
-Deliberately broad: RSL-RL writes ``model_<iter>.pt``, SKRL writes
-``agent_<tag>.pt``, ``best_agent.pt`` and ``<name>_<tag>.pt``, RL-Games writes
-``.pth``, and SB3 writes ``.zip``.
-"""
-
-
-def latest_checkpoint_path(log_dir: str) -> str | None:
-    """Return the newest checkpoint a training run wrote under *log_dir*.
-
-    RL libraries name and place checkpoints differently and none of them return
-    the path, so the training workflows report what actually landed on disk
-    rather than reconstructing a name that may not exist. Every match of
-    :data:`_CHECKPOINT_PATTERNS` is considered and the most recently modified
-    one wins.
-
-    Args:
-        log_dir: Training log directory.
-
-    Returns:
-        Absolute path to the most recently modified match, or ``None`` when the
-        run wrote no checkpoint.
-    """
-    import glob
-
-    matches: list[str] = []
-    for pattern in _CHECKPOINT_PATTERNS:
-        matches.extend(glob.glob(os.path.join(log_dir, "**", pattern), recursive=True))
-    if not matches:
-        return None
-    return os.path.abspath(max(matches, key=os.path.getmtime))
-
-
 def pre_launch_video_config(env_cfg: Any, log_dir: str | None = None, args_cli: Any = None) -> None:
     """Pre-inject a recording visualizer into env_cfg before launch_simulation().
 
