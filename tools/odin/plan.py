@@ -46,8 +46,10 @@ _OVERLAY_FIELDS = ("num_envs", "max_iterations", "timeout_s")
 # teleop, viser, mimic, test and the ``all`` aggregate are excluded because they
 # genuinely cannot co-resolve with isaacsim.
 # ``video`` carries MoviePy, which gymnasium's RecordVideo needs to encode the
-# play rollout. It is an opt-in extra rather than a base dependency, so omitting
-# it fails only at the first recorded frame, after training has already run.
+# play rollout. ``tetrahedralization`` carries pytetwild, which volume deformables
+# tetrahedralize a mesh with at scene build. Both are opt-in extras rather than base
+# dependencies, so omitting either fails late and only on the rows that reach it:
+# the first recorded frame, or the first soft-body scene.
 UV_EXTRAS: tuple[str, ...] = (
     "isaacsim",
     "ovphysx",
@@ -58,6 +60,7 @@ UV_EXTRAS: tuple[str, ...] = (
     "sb3",
     "rerun",
     "video",
+    "tetrahedralization",
 )
 
 # Frames recorded during a chained play rollout.
