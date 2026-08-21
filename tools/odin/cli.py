@@ -33,7 +33,7 @@ from tools.odin.harvest import DEFAULT_TIMEOUT_HEADROOM, HarvestError, harvest_d
 from tools.odin.image import DEFAULT_CUDA_IMAGE, ImageBuildError, build_image
 from tools.odin.plan import PlanError, PlannedRow, apply_metadata, chunk_rows, load_task_rows, plan_rows
 from tools.odin.poller import PollError, poll_until_terminal
-from tools.odin.publish import TABLE, PublishError, collect_rows, insert_rows
+from tools.odin.publish import TABLE, PublishError, collect_rows, insert_rows, split_run_keys
 from tools.odin.results import dispatch_output_uri, fetch_results, validate_bundle
 from tools.odin.state import (
     SCHEMA_VERSION,
@@ -577,6 +577,27 @@ def command_publish(args: argparse.Namespace) -> int:
         print(f"[odin] no readable bundles under {dispatch_dir}", file=sys.stderr)
         return 1
 
+    # A run whose halves disagree lands as two trend lines, one labelled with a
+    # backend that never ran. Refuse rather than corrupt the table quietly.
+    split = split_run_keys(rows)
+    if split and not args.allow_split_keys:
+        runs = len({(row.get("meta") or {}).get("row_key") for row in rows})
+        print(
+            f"[odin] {len(split)} of {runs} run(s) disagree between their training and play"
+            " keys; refusing to publish.",
+            file=sys.stderr,
+        )
+        for row_key, keys in sorted(split.items())[:3]:
+            print(f"    {row_key}", file=sys.stderr)
+            for key in keys:
+                print(f"      {key}", file=sys.stderr)
+        print(
+            "  Isaac Lab #7173 fixes this at the source; re-run on an image that carries"
+            " it, or pass --allow_split_keys to publish anyway.",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.dry_run:
         print(json.dumps(rows[0], indent=2, default=str))
         print(f"[odin] {len(rows)} row(s) would be published to {args.table}; showed the first")
@@ -733,6 +754,11 @@ def _build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--table", type=str, default=TABLE)
     publish.add_argument("--dsn_file", type=Path, default=None, help="File holding the libpq connection string.")
     publish.add_argument("--dry_run", action="store_true", help="Print the first row instead of inserting.")
+    publish.add_argument(
+        "--allow_split_keys",
+        action="store_true",
+        help="Publish even when a run's training and play halves disagree about the run key.",
+    )
 
     harvest = sub.add_parser("harvest", help="Derive per-task metadata from a completed dispatch.")
     harvest.add_argument("dispatch_id", type=str)

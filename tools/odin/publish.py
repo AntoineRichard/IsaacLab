@@ -452,6 +452,36 @@ def collect_rows(
     return rows
 
 
+def split_run_keys(rows: list[dict[str, Any]]) -> dict[str, tuple[str, ...]]:
+    """Return the runs whose training and play halves disagree about the run key.
+
+    One dispatched run emits a training bundle and a play bundle. Both must land on
+    the same key, differing only in the ``benchmark_<kind>_`` prefix, or a dashboard
+    splits one configuration across two trend lines and labels one of them with a
+    backend that never ran.
+
+    This is not hypothetical. Before Isaac Lab #7173 the play adapters inferred the
+    backend from the preset token while the training adapters resolved it from
+    ``env_cfg``, so a run dispatched as ``physics=physx`` on a Newton task was
+    recorded as ``newton_mjwarp`` by training and ``physx`` by play. 214 of 603 runs
+    in dispatch ``20260819-150902`` diverged that way.
+
+    Args:
+        rows: Rows from :func:`collect_rows`.
+
+    Returns:
+        ``row_key`` mapped to the differing keys; empty when every pair agrees.
+    """
+    seen: dict[str, set[str]] = {}
+    for row in rows:
+        meta = row.get("meta") or {}
+        prefix = f"benchmark_{meta.get('kind') or ''}_"
+        for key in (row.get("kpis") or {}).get(_PHASE, {}):
+            stripped = key[len(prefix) :] if key.startswith(prefix) else key
+            seen.setdefault(str(meta.get("row_key")), set()).add(stripped)
+    return {row_key: tuple(sorted(keys)) for row_key, keys in seen.items() if len(keys) > 1}
+
+
 def insert_rows(rows: list[dict[str, Any]], *, dsn: str, table: str = TABLE, verify: bool = True) -> int:
     """Insert rows and return how many the database confirms.
 

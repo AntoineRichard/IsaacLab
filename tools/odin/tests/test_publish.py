@@ -191,3 +191,33 @@ def test_domain_presets_do_not_collide_under_one_key() -> None:
     depth["run"]["config"]["presets"] = ["depth128"]
 
     assert run_key_for(rgb, "training") != run_key_for(depth, "training")
+
+
+def _pair(train_backend: str, play_backend: str) -> list[dict]:
+    rows = []
+    for kind, backend in (("training", train_backend), ("play", play_backend)):
+        bundle = json.loads(json.dumps(_BUNDLE))
+        bundle["run"]["config"]["physics_backend"] = backend
+        bundle["run"]["config"]["presets"] = [backend]
+        rows.append(build_row(bundle, kind=kind, dispatch_id="d", row_key="rk", image_ref="i", pool="p"))
+    return rows
+
+
+def test_a_run_whose_halves_agree_is_not_flagged() -> None:
+    from tools.odin.publish import split_run_keys
+
+    assert split_run_keys(_pair("newton_mjwarp", "newton_mjwarp")) == {}
+
+
+def test_a_run_whose_halves_disagree_is_flagged() -> None:
+    # Before Isaac Lab #7173 training resolved the backend from env_cfg while play
+    # read the preset token, so one run landed on two keys and one of them named a
+    # backend that never ran.
+    from tools.odin.publish import split_run_keys
+
+    split = split_run_keys(_pair("newton_mjwarp", "physx"))
+
+    assert set(split) == {"rk"}
+    assert len(split["rk"]) == 2
+    assert any("newton_mjwarp" in key for key in split["rk"])
+    assert any("physx" in key for key in split["rk"])
