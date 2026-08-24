@@ -412,7 +412,9 @@ def _submit_and_poll(
 
     # Preflight: OSMO uploads results itself via each task's outputs block, so a
     # read-only bucket would not surface until every task had already run.
-    if not args.skip_preflight:
+    # The DSS path never writes to results_uri, so probing it would block every
+    # dispatch on the very quota exhaustion that motivated moving off it.
+    if not args.skip_preflight and not cfg.results_dataset:
         if not client.data_check(cfg.results_uri):
             print(
                 f"[odin] {cfg.results_uri} is not writable; results would be lost. "

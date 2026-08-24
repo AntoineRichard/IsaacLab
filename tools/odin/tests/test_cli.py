@@ -606,3 +606,19 @@ def test_missing_ngc_config_is_not_an_error(tmp_path) -> None:
     from tools.odin.cli import _read_ngc_credentials
 
     assert _read_ngc_credentials(tmp_path / "absent") == (None, None)
+
+
+def test_the_swift_preflight_is_skipped_on_the_dataset_path() -> None:
+    # The probe exists to stop a dispatch whose results would be lost. On the DSS
+    # path results_uri is never written, so probing it blocks every dispatch on
+    # exactly the quota exhaustion that motivated moving off that account.
+    import inspect
+
+    from tools.odin import cli
+
+    source = inspect.getsource(cli.command_dispatch)
+    guard = "if not args.skip_preflight and not cfg.results_dataset:"
+
+    assert guard in source
+    # The write probe must sit inside that guard, not before it.
+    assert source.index(guard) < source.index("data_probe_write")
