@@ -41,6 +41,7 @@ workflow:
         NVIDIA_DRIVER_CAPABILITIES: "compute,utility,graphics"
         ODIN_DISPATCH_ID: "20260728-120000"
         ODIN_ROW_KEY: "rsl_rl_physx_Isaac-Ant_seed42"
+
       command: ["bash"]
       args: ["/tmp/entry.sh"]
       files:
@@ -151,6 +152,7 @@ workflow:
           # pipeline exits 141. Under `set -o pipefail` that would end the
           # script before it could exit with the training verdict.
           find "$OUT" -type f | head -40 || true
+
           # A training failure is the verdict when there is one.
           [ "$rc" -ne 0 ] && exit $rc
           # Play was requested and failed: the row produced no video, so it is
@@ -158,13 +160,15 @@ workflow:
           # "trained fine, no video" from a training crash -- the two triage
           # differently and only the former leaves a usable checkpoint.
           [ "$PLAY_STATUS" = "ran" ] && [ "$PLAY_RC" -ne 0 ] && exit 90
-          exit 0
+          exit $rc
+
       # OSMO uploads {{output}} itself, after exec and regardless of exit
       # code, so a crashed run still returns what it produced and no publishing
       # step can mask the benchmark's verdict. Each task writes into its own
       # {{output}}/<row_key>/, so uploads never collide under this shared prefix.
       outputs:
       - url: swift://h/AUTH_team-isaac/results/20260728-120000/
+
 
       exitActions:
 

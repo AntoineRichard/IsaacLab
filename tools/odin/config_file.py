@@ -108,7 +108,13 @@ class OdinConfig:
             ceiling that catches wedged tasks rather than a per-task budget.
         queue_timeout_s: Workflow queue timeout [s].
         chunk_size: Maximum tasks per submitted OSMO workflow.
-        results_uri: Bucket URI prefix under which results are published.
+        results_uri: Bucket URI prefix under which results are published. Used
+            when ``results_dataset`` is unset.
+        results_dataset: DSS dataset name results are uploaded into instead of
+            ``results_uri``. Set when the Swift account OSMO can reach is out of
+            quota: DSS reaches ``team-isaaclab``, which OSMO has no credential
+            for, so the task uploads with ``nvdataset`` rather than OSMO's
+            declarative ``outputs:`` block.
         retry: OSMO exit-action code ranges.
     """
 
@@ -121,6 +127,7 @@ class OdinConfig:
     queue_timeout_s: int
     chunk_size: int
     results_uri: str
+    results_dataset: str | None
     retry: RetrySpec
 
 
@@ -203,6 +210,7 @@ def load_odin_config(path: Path) -> OdinConfig:
         queue_timeout_s=_require_int(raw, "queue_timeout_s", ""),
         chunk_size=chunk_size,
         results_uri=_require_str(raw, "results_uri", ""),
+        results_dataset=(str(raw["results_dataset"]) if raw.get("results_dataset") else None),
         retry=RetrySpec(
             reschedule_codes=str(retry_raw.get("reschedule_codes") or ""),
             restart_codes=str(retry_raw.get("restart_codes") or ""),

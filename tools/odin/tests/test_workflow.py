@@ -29,6 +29,7 @@ _CFG = OdinConfig(
     queue_timeout_s=172800,
     chunk_size=25,
     results_uri="s3://isaac-odin/results",
+    results_dataset=None,
     retry=RetrySpec(reschedule_codes="3001-3006", restart_codes=""),
 )
 
@@ -198,3 +199,49 @@ def test_entry_script_never_calls_system_python() -> None:
     code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
     assert "python3" not in code
     assert "/workspace/isaaclab/.venv/bin/python" in code
+
+
+def _dss_cfg():
+    return dataclasses.replace(_CFG, results_dataset="odin-results")
+
+
+def test_dataset_path_uploads_with_nvdataset_instead_of_osmo() -> None:
+    # OSMO holds no credential for the account DSS writes to, so the task must
+    # upload itself; leaving `outputs:` in place would also send it to the full
+    # account and mask the failure.
+    text = render_workflow_yaml(
+        dispatch_id="20260101-000000", chunk_index=0, rows=[_ROW], cfg=_dss_cfg(),
+        image_ref="img", output_uri="swift://unused", ngc_api_key="k", ngc_org="org",
+    )
+    assert "nvdataset upload odin-results" in text
+    assert "\n      outputs:" not in text
+
+
+def test_dataset_upload_runs_before_the_training_verdict_exit() -> None:
+    # A crashed row still has artifacts worth keeping, and OSMO's own uploader
+    # ran regardless of exit code. Uploading after the early exit would drop them.
+    text = render_workflow_yaml(
+        dispatch_id="20260101-000000", chunk_index=0, rows=[_ROW], cfg=_dss_cfg(),
+        image_ref="img", output_uri="swift://unused", ngc_api_key="k", ngc_org="org",
+    )
+    assert text.index("nvdataset upload") < text.index('[ "$rc" -ne 0 ] && exit $rc')
+
+
+def test_a_failed_upload_turns_a_green_row_red() -> None:
+    # A silent upload loss is the failure mode that cost this project a whole
+    # dispatch: the run reports success and the results simply are not there.
+    text = render_workflow_yaml(
+        dispatch_id="20260101-000000", chunk_index=0, rows=[_ROW], cfg=_dss_cfg(),
+        image_ref="img", output_uri="swift://unused", ngc_api_key="k", ngc_org="org",
+    )
+    assert 'rc=91' in text
+
+
+def test_the_key_is_absent_when_the_dataset_path_is_off() -> None:
+    text = render_workflow_yaml(
+        dispatch_id="20260101-000000", chunk_index=0, rows=[_ROW], cfg=_CFG,
+        image_ref="img", output_uri="swift://bucket/x", ngc_api_key="super-secret", ngc_org="org",
+    )
+    assert "super-secret" not in text
+    assert "NGC_API_KEY" not in text
+    assert "\n      outputs:" in text

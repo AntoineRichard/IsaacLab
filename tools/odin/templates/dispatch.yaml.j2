@@ -41,6 +41,15 @@ workflow:
         NVIDIA_DRIVER_CAPABILITIES: "compute,utility,graphics"
         ODIN_DISPATCH_ID: "{{ dispatch_id }}"
         ODIN_ROW_KEY: "{{ row.row_key }}"
+{% if cfg.results_dataset and ngc_api_key %}
+        # Read from the operator's NGC config at dispatch and rendered per
+        # task. OSMO has no credential for the account DSS writes to, and a
+        # GENERIC credential is not exposed to the container, so the key has
+        # to travel with the workflow. Rendered YAML stays out of git.
+        NGC_API_KEY: "{{ ngc_api_key }}"
+        NGC_CLI_API_KEY: "{{ ngc_api_key }}"
+        NVDATASET_TENANT_ID: "{{ ngc_org }}"
+{% endif %}
       command: ["bash"]
       args: ["/tmp/entry.sh"]
       files:
@@ -151,6 +160,22 @@ workflow:
           # pipeline exits 141. Under `set -o pipefail` that would end the
           # script before it could exit with the training verdict.
           find "$OUT" -type f | head -40 || true
+{% if cfg.results_dataset %}
+          # DSS upload, not OSMO's declarative `outputs:`. The Swift account OSMO
+          # holds a credential for is out of quota; the account that is not
+          # (team-isaaclab) is reachable only through the datasets API. This runs
+          # before the exit-code checks so a crashed row still ships what it
+          # produced, which is what OSMO's own uploader did.
+          UP_RC=0
+          nvdataset upload {{ cfg.results_dataset }} "$OUT" \
+            --snapshot-name "$ODIN_DISPATCH_ID/$ODIN_ROW_KEY" || UP_RC=$?
+          if [ "$UP_RC" -ne 0 ]; then
+            echo "=== odin: dataset upload FAILED rc=$UP_RC ==="
+            # A silent upload loss is worse than a red row: the run looks
+            # complete and the results are simply absent.
+            [ "$rc" -eq 0 ] && rc=91
+          fi
+{% endif %}
           # A training failure is the verdict when there is one.
           [ "$rc" -ne 0 ] && exit $rc
           # Play was requested and failed: the row produced no video, so it is
@@ -158,13 +183,15 @@ workflow:
           # "trained fine, no video" from a training crash -- the two triage
           # differently and only the former leaves a usable checkpoint.
           [ "$PLAY_STATUS" = "ran" ] && [ "$PLAY_RC" -ne 0 ] && exit 90
-          exit 0
+          exit $rc
+{% if not cfg.results_dataset %}
       # OSMO uploads {{ '{{output}}' }} itself, after exec and regardless of exit
       # code, so a crashed run still returns what it produced and no publishing
       # step can mask the benchmark's verdict. Each task writes into its own
       # {{ '{{output}}' }}/<row_key>/, so uploads never collide under this shared prefix.
       outputs:
       - url: {{ output_uri }}
+{% endif %}
 {% if cfg.retry.reschedule_codes or cfg.retry.restart_codes %}
       exitActions:
 {% if cfg.retry.reschedule_codes %}

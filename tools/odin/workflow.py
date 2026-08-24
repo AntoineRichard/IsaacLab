@@ -67,6 +67,8 @@ def render_workflow_yaml(
     cfg: OdinConfig,
     image_ref: str,
     output_uri: str,
+    ngc_api_key: str | None = None,
+    ngc_org: str | None = None,
 ) -> str:
     """Render the OSMO workflow YAML for one dispatch chunk.
 
@@ -77,7 +79,12 @@ def render_workflow_yaml(
         cfg: Validated ``odin.yaml`` contents.
         image_ref: Digest-pinned image reference every task in this chunk runs.
         output_uri: Storage prefix for the dispatch, emitted as each task's
-            ``outputs:`` block so OSMO performs the upload itself.
+            ``outputs:`` block so OSMO performs the upload itself. Unused when
+            ``cfg.results_dataset`` selects the DSS upload path.
+        ngc_api_key: NGC key rendered into each task's environment so
+            ``nvdataset`` can upload. Required by the DSS path, ignored
+            otherwise. Never logged; the rendered YAML is not committed.
+        ngc_org: NGC org/tenant the key belongs to.
 
     Returns:
         The rendered workflow YAML.
@@ -94,4 +101,6 @@ def render_workflow_yaml(
         cfg=cfg,
         image_ref=image_ref,
         output_uri=output_uri,
+        ngc_api_key=ngc_api_key,
+        ngc_org=ngc_org,
     )

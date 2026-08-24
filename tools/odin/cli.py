@@ -137,6 +137,40 @@ def _resolve_dispatch_id(runs_root: Path, target: str) -> str:
     return candidates[-1]
 
 
+_NGC_CONFIG = Path.home() / ".ngc" / "config"
+
+
+def _read_ngc_credentials(path: Path = _NGC_CONFIG) -> tuple[str | None, str | None]:
+    """Return ``(api_key, org)`` from the NGC CLI config, or ``(None, None)``.
+
+    The DSS upload path needs the key inside the container, and OSMO exposes
+    neither its GENERIC credentials nor a secret store to the task. Reading the
+    operator's own NGC config keeps the key out of ``odin.yaml`` and out of git;
+    it still ends up in the rendered workflow, which is why ``odin_runs/`` is
+    ignored.
+
+    Args:
+        path: NGC CLI config file.
+
+    Returns:
+        The API key and org, either of which is ``None`` when absent.
+    """
+    if not path.is_file():
+        return None, None
+    key = org = None
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith(";") or "=" not in stripped:
+            continue
+        name, _, value = stripped.partition("=")
+        match name.strip().lower():
+            case "apikey":
+                key = value.strip() or None
+            case "org":
+                org = value.strip() or None
+    return key, org
+
+
 def command_dispatch(args: argparse.Namespace) -> int:
     """Plan rows, render workflows, and (unless dry-running) submit and poll."""
     cfg = load_odin_config(args.config)
@@ -227,6 +261,17 @@ def command_dispatch(args: argparse.Namespace) -> int:
     )
     write_dispatch_state(dispatch_dir, state)
 
+    # Only read when the DSS path is selected, so the key never enters a
+    # rendered workflow that does not need it.
+    ngc_api_key, ngc_org = _read_ngc_credentials() if cfg.results_dataset else (None, None)
+    if cfg.results_dataset and not ngc_api_key:
+        print(
+            f"[odin] results_dataset is set but no NGC key found in {_NGC_CONFIG}; "
+            "tasks would upload nothing. Run `ngc config set` first.",
+            file=sys.stderr,
+        )
+        return 1
+
     rendered: list[tuple[Path, str]] = []
     for side, image in sides:
         for chunk_index, chunk in chunk_rows(sided_rows[side], chunk_size):
@@ -237,6 +282,8 @@ def command_dispatch(args: argparse.Namespace) -> int:
                 cfg=cfg,
                 image_ref=image,
                 output_uri=dispatch_output_uri(cfg.results_uri, dispatch_id),
+                ngc_api_key=ngc_api_key,
+                ngc_org=ngc_org,
             )
             path = dispatch_dir / f"workflow.{side}{chunk_index}.yaml"
             path.write_text(yaml_text)

@@ -589,3 +589,20 @@ def test_dispatch_without_a_task_list_says_how_to_make_one(workspace: Path, caps
     )
     assert code == 1
     assert "odin discover" in capsys.readouterr().err
+
+
+def test_ngc_credentials_are_read_from_the_operator_config(tmp_path) -> None:
+    # The key cannot live in odin.yaml (committed) and OSMO exposes no secret
+    # store to the task, so it is read from the operator's own NGC config.
+    from tools.odin.cli import _read_ngc_credentials
+
+    cfg = tmp_path / "config"
+    cfg.write_text(";WARNING - machine generated\n\n[CURRENT]\napikey = abc123\nformat_type = json\norg = 0981144915496358\n")
+
+    assert _read_ngc_credentials(cfg) == ("abc123", "0981144915496358")
+
+
+def test_missing_ngc_config_is_not_an_error(tmp_path) -> None:
+    from tools.odin.cli import _read_ngc_credentials
+
+    assert _read_ngc_credentials(tmp_path / "absent") == (None, None)
