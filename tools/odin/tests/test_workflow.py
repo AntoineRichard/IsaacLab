@@ -245,3 +245,14 @@ def test_the_key_is_absent_when_the_dataset_path_is_off() -> None:
     assert "super-secret" not in text
     assert "NGC_API_KEY" not in text
     assert "\n      outputs:" in text
+
+
+def test_the_tenant_variable_uses_the_spelling_the_cli_reads() -> None:
+    # NVDATASET_TENANT_ID authenticates but then fails with "Did not find
+    # tenant_id"; the CLI only reads NVDATASET_TENANTID.
+    text = render_workflow_yaml(
+        dispatch_id="20260101-000000", chunk_index=0, rows=[_ROW], cfg=_dss_cfg(),
+        image_ref="img", output_uri="swift://unused", ngc_api_key="k", ngc_org="org-1",
+    )
+    assert "NVDATASET_TENANTID: \"org-1\"" in text
+    assert "NVDATASET_TENANT_ID" not in text

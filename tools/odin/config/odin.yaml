@@ -41,6 +41,9 @@ chunk_size: 25
 # "Bucket isaac mode is read-only". Direct swift writes to this prefix pass
 # `osmo data check -a WRITE`, which `dispatch` runs as a preflight.
 results_uri: swift://pdx.s8k.io/AUTH_team-isaac/datasets/odin
+# AUTH_team-isaac is out of quota and OSMO holds no credential for
+# team-isaaclab, so results go through the datasets API instead.
+results_dataset: odin-results
 
 retry:
   reschedule_codes: "3001-3006"

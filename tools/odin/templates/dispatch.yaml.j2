@@ -48,7 +48,9 @@ workflow:
         # to travel with the workflow. Rendered YAML stays out of git.
         NGC_API_KEY: "{{ ngc_api_key }}"
         NGC_CLI_API_KEY: "{{ ngc_api_key }}"
-        NVDATASET_TENANT_ID: "{{ ngc_org }}"
+        # Spelled TENANTID, not TENANT_ID: the CLI reads only the former and
+        # otherwise fails with "Did not find tenant_id" after authenticating.
+        NVDATASET_TENANTID: "{{ ngc_org }}"
 {% endif %}
       command: ["bash"]
       args: ["/tmp/entry.sh"]
