@@ -616,7 +616,7 @@ def test_the_swift_preflight_is_skipped_on_the_dataset_path() -> None:
 
     from tools.odin import cli
 
-    source = inspect.getsource(cli.command_dispatch)
+    source = inspect.getsource(cli._submit_and_poll)
     guard = "if not args.skip_preflight and not cfg.results_dataset:"
 
     assert guard in source
