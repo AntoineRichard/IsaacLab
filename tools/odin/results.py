@@ -32,6 +32,10 @@ __all__ = ["dispatch_output_uri", "fetch_results", "read_bundle", "results_uri_f
 _BUNDLE_GLOB = "benchmark_*.json"
 
 
+class ResultsError(RuntimeError):
+    """Raised when results cannot be retrieved."""
+
+
 class _DownloaderProto(Protocol):
     def data_download(self, remote_uri: str, dest_dir: Path) -> None: ...
 
@@ -104,6 +108,44 @@ def validate_bundle(bundle_dir: Path) -> bool:
     return read_bundle(bundle_dir) is not None
 
 
+# Dispatch directories whose dataset snapshot has already been pulled. DSS has no
+# per-row download: ``--filter`` matched nothing in testing and ``--snapshot-name``
+# returns the whole dataset, so the pull is once per dispatch and rows are read
+# out of the resulting tree.
+_DATASET_PULLED: set[Path] = set()
+
+
+def download_dataset_once(dataset: str, dest_dir: Path, *, run: Any = None) -> None:
+    """Pull *dataset* into *dest_dir*, at most once per directory.
+
+    Rows upload under ``<row_key>/...``, so the downloaded tree already has the
+    shape :func:`fetch_results` expects and each row is a subdirectory.
+
+    Args:
+        dataset: DSS dataset name.
+        dest_dir: Dispatch directory to download into.
+        run: Subprocess runner, injected for testing.
+
+    Raises:
+        ResultsError: If the download fails.
+    """
+    import subprocess
+
+    if dest_dir in _DATASET_PULLED:
+        return
+    runner = run or subprocess.run
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    completed = runner(
+        ["nvdataset", "download", dataset, str(dest_dir), "-y"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ResultsError(f"`nvdataset download {dataset}` failed: {(completed.stderr or '').strip()}")
+    _DATASET_PULLED.add(dest_dir)
+
+
 def fetch_results(
     *,
     client: _DownloaderProto,
@@ -111,6 +153,7 @@ def fetch_results(
     dispatch_id: str,
     row_key: str,
     dest_dir: Path,
+    dataset: str | None = None,
 ) -> Path:
     """Download one row's results into ``<dest_dir>/<row_key>``.
 
@@ -123,12 +166,18 @@ def fetch_results(
         dispatch_id: Dispatch identifier.
         row_key: Row identity.
         dest_dir: Dispatch directory the row directory is created under.
+        dataset: DSS dataset holding the results. When set, the dispatch's
+            snapshot is pulled once and rows are read from it; *base_uri* is
+            unused, because nothing was written there.
 
     Returns:
         The row directory, whether or not the bundle within it validates.
     """
     row_dir = dest_dir / row_key
     if validate_bundle(row_dir):
+        return row_dir
+    if dataset:
+        download_dataset_once(dataset, dest_dir)
         return row_dir
     client.data_download(results_uri_for(base_uri, dispatch_id, row_key), row_dir)
     return row_dir

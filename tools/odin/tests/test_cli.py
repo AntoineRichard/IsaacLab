@@ -38,7 +38,13 @@ def _fake_task(task_id: str, scope: str, physics: str | None):
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
-    shutil.copy(_ODIN_ROOT / "config" / "odin.yaml", tmp_path / "odin.yaml")
+    # The real config is copied so the tests exercise what ships, but
+    # ``results_dataset`` is stripped: it routes fetching through the nvdataset
+    # CLI, and a unit test must not shell out to a network service. The dataset
+    # path is covered directly in ``test_results.py``.
+    config = yaml.safe_load((_ODIN_ROOT / "config" / "odin.yaml").read_text())
+    config.pop("results_dataset", None)
+    (tmp_path / "odin.yaml").write_text(yaml.safe_dump(config))
     (tmp_path / "tasks.yaml").write_text(
         yaml.safe_dump(
             {

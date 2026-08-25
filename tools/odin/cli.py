@@ -478,6 +478,7 @@ def _poll_to_completion(
             dispatch_id=state.dispatch_id,
             row_key=job.row_key,
             dest_dir=dispatch_dir,
+            dataset=cfg.results_dataset,
         )
         if validate_bundle(row_dir):
             return
@@ -541,6 +542,7 @@ def command_fetch(args: argparse.Namespace) -> int:
             dispatch_id=state.dispatch_id,
             row_key=job.row_key,
             dest_dir=dispatch_dir,
+            dataset=cfg.results_dataset,
         )
         valid += 1 if validate_bundle(row_dir) else 0
     print(f"[odin] fetched {len(completed)} row(s), {valid} with a readable bundle")

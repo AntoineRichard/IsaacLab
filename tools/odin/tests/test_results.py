@@ -125,3 +125,44 @@ def test_fetch_returns_the_row_dir_even_when_the_bundle_is_bad(tmp_path: Path) -
     dest = fetch_results(client=_Client(), base_uri="s3://b", dispatch_id="d", row_key="row", dest_dir=tmp_path)
     assert dest == tmp_path / "row"
     assert validate_bundle(dest) is False
+
+
+def test_the_dataset_is_pulled_once_per_dispatch(tmp_path, monkeypatch) -> None:
+    # DSS has no per-row download: --filter matches nothing and --snapshot-name
+    # returns the whole dataset. Pulling per row would re-download everything
+    # once per row, so the pull is cached by dispatch directory.
+    import subprocess
+
+    from tools.odin import results
+
+    results._DATASET_PULLED.clear()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    for row in ("row_a", "row_b", "row_c"):
+        results.fetch_results(
+            client=None, base_uri="swift://unused", dispatch_id="d",
+            row_key=row, dest_dir=tmp_path, dataset="odin-results",
+        )
+
+    assert len(calls) == 1
+    assert calls[0][:3] == ["nvdataset", "download", "odin-results"]
+
+
+def test_the_swift_download_is_untouched_without_a_dataset(tmp_path) -> None:
+    seen = []
+
+    class _Client:
+        def data_download(self, uri, dest):
+            seen.append(uri)
+
+    from tools.odin.results import fetch_results
+
+    fetch_results(client=_Client(), base_uri="swift://b/odin", dispatch_id="d",
+                  row_key="row_a", dest_dir=tmp_path)
+
+    assert seen == ["swift://b/odin/d/row_a"]
