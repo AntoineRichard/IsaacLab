@@ -173,8 +173,16 @@ workflow:
           # contents, so uploading $OUT drops the row_key and every row writes
           # `odin-steps.json` and `checkpoint/model_N.pt` to the same flat key.
           # The parent keeps `<row_key>/...`, matching the layout fetch expects.
-          nvdataset upload {{ cfg.results_dataset }} "$(dirname "$OUT")" \
-            --snapshot-name "$ODIN_DISPATCH_ID/$ODIN_ROW_KEY" || UP_RC=$?
+          # Retried: ~3% of rows lost their upload under 800-way concurrency,
+          # and the GPU time is already spent by this point.
+          for attempt in 1 2 3; do
+            UP_RC=0
+            nvdataset upload {{ cfg.results_dataset }} "$(dirname "$OUT")" \
+              --snapshot-name "$ODIN_DISPATCH_ID/$ODIN_ROW_KEY" || UP_RC=$?
+            [ "$UP_RC" -eq 0 ] && break
+            echo "=== odin: upload attempt $attempt failed rc=$UP_RC, retrying ==="
+            sleep $((attempt * 20))
+          done
           if [ "$UP_RC" -ne 0 ]; then
             echo "=== odin: dataset upload FAILED rc=$UP_RC ==="
             # A silent upload loss is worse than a red row: the run looks

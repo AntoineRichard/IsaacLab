@@ -267,3 +267,14 @@ def test_the_upload_keeps_the_row_key_as_a_path_prefix() -> None:
         image_ref="img", output_uri="swift://unused", ngc_api_key="k", ngc_org="org",
     )
     assert 'nvdataset upload odin-results "$(dirname "$OUT")"' in text
+
+
+def test_the_upload_is_retried() -> None:
+    # ~3% of rows lost their upload under 800-way concurrency. By the time the
+    # upload runs the GPU time is already spent, so a retry is far cheaper than
+    # re-running the row.
+    text = render_workflow_yaml(
+        dispatch_id="20260101-000000", chunk_index=0, rows=[_ROW], cfg=_dss_cfg(),
+        image_ref="img", output_uri="swift://unused", ngc_api_key="k", ngc_org="org",
+    )
+    assert "for attempt in 1 2 3; do" in text
