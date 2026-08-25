@@ -256,3 +256,14 @@ def test_the_tenant_variable_uses_the_spelling_the_cli_reads() -> None:
     )
     assert "NVDATASET_TENANTID: \"org-1\"" in text
     assert "NVDATASET_TENANT_ID" not in text
+
+
+def test_the_upload_keeps_the_row_key_as_a_path_prefix() -> None:
+    # nvdataset uploads a directory's *contents*. Uploading $OUT flattens every
+    # row into one namespace, so `odin-steps.json` and `checkpoint/model_N.pt`
+    # collide across the whole dispatch and only the last writer survives.
+    text = render_workflow_yaml(
+        dispatch_id="20260101-000000", chunk_index=0, rows=[_ROW], cfg=_dss_cfg(),
+        image_ref="img", output_uri="swift://unused", ngc_api_key="k", ngc_org="org",
+    )
+    assert 'nvdataset upload odin-results "$(dirname "$OUT")"' in text

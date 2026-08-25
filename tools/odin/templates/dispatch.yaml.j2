@@ -169,7 +169,11 @@ workflow:
           # before the exit-code checks so a crashed row still ships what it
           # produced, which is what OSMO's own uploader did.
           UP_RC=0
-          nvdataset upload {{ cfg.results_dataset }} "$OUT" \
+          # Upload the PARENT of $OUT, not $OUT: the CLI uploads a directory's
+          # contents, so uploading $OUT drops the row_key and every row writes
+          # `odin-steps.json` and `checkpoint/model_N.pt` to the same flat key.
+          # The parent keeps `<row_key>/...`, matching the layout fetch expects.
+          nvdataset upload {{ cfg.results_dataset }} "$(dirname "$OUT")" \
             --snapshot-name "$ODIN_DISPATCH_ID/$ODIN_ROW_KEY" || UP_RC=$?
           if [ "$UP_RC" -ne 0 ]; then
             echo "=== odin: dataset upload FAILED rc=$UP_RC ==="
