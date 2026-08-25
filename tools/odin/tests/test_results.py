@@ -8,6 +8,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from tools.odin.results import dispatch_output_uri, fetch_results, read_bundle, results_uri_for, validate_bundle
 
 
@@ -143,6 +145,7 @@ def test_the_dataset_is_pulled_once_per_dispatch(tmp_path, monkeypatch) -> None:
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("ODIN_NVDATASET", "/usr/bin/true")
     for row in ("row_a", "row_b", "row_c"):
         results.fetch_results(
             client=None, base_uri="swift://unused", dispatch_id="d",
@@ -150,7 +153,7 @@ def test_the_dataset_is_pulled_once_per_dispatch(tmp_path, monkeypatch) -> None:
         )
 
     assert len(calls) == 1
-    assert calls[0][:3] == ["nvdataset", "download", "odin-results"]
+    assert calls[0][1:3] == ["download", "odin-results"]
 
 
 def test_the_swift_download_is_untouched_without_a_dataset(tmp_path) -> None:
@@ -166,3 +169,19 @@ def test_the_swift_download_is_untouched_without_a_dataset(tmp_path) -> None:
                   row_key="row_a", dest_dir=tmp_path)
 
     assert seen == ["swift://b/odin/d/row_a"]
+
+
+def test_a_missing_cli_is_reported_not_crashed(tmp_path, monkeypatch) -> None:
+    # The CLI is on PATH inside the image but not necessarily on the host, where
+    # fetching runs. A bare FileNotFoundError killed a live 801-row dispatch.
+    import shutil
+
+    from tools.odin.results import ResultsError, _DATASET_PULLED, fetch_results
+
+    _DATASET_PULLED.clear()
+    monkeypatch.delenv("ODIN_NVDATASET", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(ResultsError, match="ODIN_NVDATASET"):
+        fetch_results(client=None, base_uri="swift://unused", dispatch_id="d",
+                      row_key="row_a", dest_dir=tmp_path, dataset="odin-results")

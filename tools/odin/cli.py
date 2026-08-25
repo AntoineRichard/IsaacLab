@@ -34,7 +34,7 @@ from tools.odin.image import DEFAULT_CUDA_IMAGE, ImageBuildError, build_image
 from tools.odin.plan import PlanError, PlannedRow, apply_metadata, chunk_rows, load_task_rows, plan_rows
 from tools.odin.poller import PollError, poll_until_terminal
 from tools.odin.publish import TABLE, PublishError, collect_rows, insert_rows, split_run_keys
-from tools.odin.results import dispatch_output_uri, fetch_results, validate_bundle
+from tools.odin.results import ResultsError, dispatch_output_uri, fetch_results, validate_bundle
 from tools.odin.state import (
     SCHEMA_VERSION,
     DispatchState,
@@ -472,6 +472,14 @@ def _poll_to_completion(
     """
 
     def on_completed(job: JobEntry) -> None:
+        # A fetch failure must not kill a dispatch that is still running: the
+        # rows keep uploading and can be pulled afterwards.
+        try:
+            _fetch_and_record(job)
+        except ResultsError as exc:
+            print(f"[odin] fetch for {job.row_key} failed: {exc}", file=sys.stderr)
+
+    def _fetch_and_record(job: JobEntry) -> None:
         row_dir = fetch_results(
             client=client,
             base_uri=cfg.results_uri,

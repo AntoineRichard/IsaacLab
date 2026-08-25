@@ -129,14 +129,23 @@ def download_dataset_once(dataset: str, dest_dir: Path, *, run: Any = None) -> N
     Raises:
         ResultsError: If the download fails.
     """
+    import os
+    import shutil
     import subprocess
 
     if dest_dir in _DATASET_PULLED:
         return
+    # The CLI is on PATH inside the benchmark image but not necessarily on the
+    # host, where fetching runs. ODIN_NVDATASET names it explicitly.
+    binary = os.environ.get("ODIN_NVDATASET") or shutil.which("nvdataset")
+    if not binary:
+        raise ResultsError(
+            "nvdataset is not on PATH; set ODIN_NVDATASET to its path to fetch from a dataset"
+        )
     runner = run or subprocess.run
     dest_dir.mkdir(parents=True, exist_ok=True)
     completed = runner(
-        ["nvdataset", "download", dataset, str(dest_dir), "-y"],
+        [binary, "download", dataset, str(dest_dir), "-y"],
         capture_output=True,
         text=True,
         check=False,
