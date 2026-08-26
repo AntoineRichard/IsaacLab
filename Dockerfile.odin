@@ -1,5 +1,7 @@
-# Rendered once by tools/odin/image.py + tools/odin/osmo_build/render.py, then
-# hand-adapted for OSMO's kaniko git context (see tools/odin/osmo_build/README.md).
+# Rendered once from tools/odin/templates/Dockerfile.j2 via tools/odin/image.py,
+# then hand-adapted for OSMO's kaniko git context (see
+# tools/odin/osmo_build/README.md). tools/odin/osmo_build/render.py renders the
+# OSMO workflow that builds this file; it does not render Dockerfiles.
 # This file is committed and reused for every future OSMO build, so it must not
 # hardcode anything specific to the commit that first rendered it.
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
@@ -48,8 +50,17 @@ ENV UV_HTTP_TIMEOUT=180
 
 # Cache mounts removed: the OSMO builder does not support them (see
 # tools/odin/osmo_build/README.md). A dropped transfer restarts this step
-# from zero, so treat a network failure here as expected-flaky, not a bug.
-RUN uv sync --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video --extra tetrahedralization
+# from zero, but the measured build (see the README's "Measured sizing")
+# needed a single attempt with zero retries -- kaniko's full-filesystem
+# snapshot and the registry push, not this step, are where a slow OSMO build
+# is actually spent.
+#
+# Without a cache mount, anything uv writes under UV_CACHE_DIR lands in this
+# layer permanently -- templates/Dockerfile.j2 avoids that with
+# `RUN --mount=type=cache`, which also keeps the cache out of the image; that
+# mount is unavailable here, so `rm -rf` the cache in the same RUN instead.
+RUN uv sync --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video --extra tetrahedralization \
+    && rm -rf "$UV_CACHE_DIR"
 
 # KNOWN GAP: the nvdataset CLI install is dropped for OSMO builds. It used to
 # live here as a `uv tool install` from artifactory.pdx.nvidia.com (the NGC
@@ -59,5 +70,10 @@ RUN uv sync --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-
 # api.ngc.nvidia.com -- resolves fine; this is one host, not a network
 # boundary). Images built from this Dockerfile therefore do NOT have
 # `nvdataset` and CANNOT run the DSS upload path in dispatch.yaml.j2 (the
-# `nvdataset upload` call). Restore this step once artifactory.pdx DNS is
-# reachable from OSMO pools -- see tools/odin/osmo_build/README.md.
+# `nvdataset upload` call). This fails LOUDLY, not silently: `nvdataset` not
+# being on PATH exits 127, the upload loop in dispatch.yaml.j2 retries it
+# three times and then sets rc=91, so the row goes red -- it does not train
+# successfully and quietly drop its results. The symptom is a red row, three
+# wasted retry sleeps, and an rc=91 that reads like a DSS outage rather than
+# a missing binary. Restore this step once artifactory.pdx DNS is reachable
+# from OSMO pools -- see tools/odin/osmo_build/README.md.
