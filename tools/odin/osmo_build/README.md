@@ -63,3 +63,53 @@ images must not gain one.
 transfer during a multi-gigabyte `uv sync` resumes instead of restarting.
 `Dockerfile.odin` cannot use it: a builder without cache-mount support forces
 that flag out, making long OSMO builds materially more fragile than local ones.
+
+## Known gap: `nvdataset` is absent from OSMO-built images
+
+`Dockerfile.odin` used to install the `nvdataset` CLI (the DSS upload path
+used by `dispatch.yaml.j2`) from `artifactory.pdx.nvidia.com`, an internal
+NVIDIA index that does not carry the package on public PyPI. The OSMO kaniko
+build pod cannot resolve that host — every other host the Dockerfile touches
+(`github.com`, `pypi.org`, `nvcr.io`, `api.ngc.nvidia.com`) resolves fine, so
+this is a single unreachable host, not a network boundary. The step is
+dropped for OSMO builds; images built from this Dockerfile do **not** have
+`nvdataset` and cannot run the DSS upload path. Restore the step once
+`artifactory.pdx.nvidia.com` is reachable from OSMO pools; see the comment at
+the same spot in `Dockerfile.odin`.
+
+## Measured sizing
+
+Recorded from the first successful real build (Task A3).
+
+| Setting | Value | How it was determined |
+|---|---|---|
+| `cpu` | 16 | first try; never raised, no CPU-bound symptom observed |
+| `memory` | 64Gi | first try; never raised, no OOM signal |
+| `storage` | 256Gi | first try; never raised, no `no space left on device` signal |
+| wall-clock | 26m07s | from `osmo workflow query` (kaniko log's own elapsed markers) |
+
+Phase breakdown of the 26m07s, so a future reader optimizes the right thing:
+
+| Phase | Duration | Share |
+|---|---|---|
+| base image + apt + uv installer | ~2m | ~8% |
+| `uv sync` (`Prepared 297 packages in 3m 35s`, `Installed ... in 2.13s`) | ~3m35s | ~14% |
+| kaniko full-filesystem snapshot after `uv sync` | 11m27s | ~44% |
+| push to `nvcr.io` | 8m50s | ~34% |
+
+Dependency resolution (`uv sync`) is only ~14% of the wall clock. Snapshot +
+push together are ~78% — both are kaniko/registry overhead rather than work
+this Dockerfile controls, so that is where future speedups should be sought,
+not in `uv sync` itself. `uv sync` needed a single attempt with zero retries;
+the concern that the non-resumable dependency layer would be flaky did not
+materialize on either build attempt in this task.
+
+An earlier attempt at this same commit-and-sizing combination (before the
+`nvdataset` step was dropped, see above) failed after `uv sync` on a DNS
+failure resolving `artifactory.pdx.nvidia.com` — that failure was unrelated
+to sizing.
+
+Build workflow ID: `odin-build-c20a57a-1`. Verify workflow ID:
+`odin-build-verify-1`. Both COMPLETED. Pushed image:
+`nvcr.io/nvidian/antoiner-isaac-lab:c20a57a` →
+`sha256:628c942b225ecfa62f170bf87e8eebc84dfd44f12d06627db9513f81273d5c67`.
