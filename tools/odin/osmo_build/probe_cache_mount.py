@@ -6,22 +6,19 @@
 """Probe which OSMO-runnable builder supports ``RUN --mount=type=cache``.
 
 Odin's benchmark Dockerfile depends on a BuildKit cache mount to make a
-multi-gigabyte ``uv sync`` resumable. Kaniko's support for that flag is
-uncertain, so the builder is chosen by running both rather than by assumption.
+multi-gigabyte ``uv sync`` resumable. Kaniko's support for that flag was
+uncertain, so the choice was settled by running both builders on OSMO rather
+than by assumption: kaniko completed, buildkit failed (see
+``tools/odin/osmo_build/README.md`` for the deciding log lines).
 """
 
 from __future__ import annotations
 
 import json
 
-from tools.odin.osmo_build.render import read_push_auth
+from tools.odin.osmo_build.render import BUILDER_IMAGES as BUILDERS
 
-__all__ = ["BUILDERS", "PROBE_DOCKERFILE", "read_push_auth", "render_probe"]
-
-BUILDERS: dict[str, str] = {
-    "kaniko": "gcr.io/kaniko-project/executor:v1.23.2",
-    "buildkit": "moby/buildkit:v0.18.2-rootless",
-}
+__all__ = ["BUILDERS", "PROBE_DOCKERFILE", "render_probe"]
 
 PROBE_DOCKERFILE = """FROM busybox:latest
 RUN --mount=type=cache,target=/opt/probe-cache,sharing=locked \\

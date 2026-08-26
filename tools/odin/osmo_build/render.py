@@ -9,6 +9,12 @@ The local path in :mod:`tools.odin.image` ships the commit as a ``git bundle``
 into ``docker build``. Neither is available on OSMO: a task has no Docker
 daemon and no local repository, so the commit is fetched from a pushed remote
 by the builder's own git context.
+
+Only ``"kaniko"`` has been validated end to end on OSMO. ``"buildkit"`` failed
+the OSMO builder probe (rootless ``buildkitd`` could not get a mount inside
+the task sandbox; see ``tools/odin/osmo_build/README.md``) and is kept here as
+a reference point, not a supported option -- its git-credential delivery
+(``/home/user/.git-credentials``) has never actually run on OSMO.
 """
 
 from __future__ import annotations
@@ -64,6 +70,9 @@ def render_build_workflow(
 
     Args:
         builder: ``"kaniko"`` or ``"buildkit"``; see :data:`BUILDER_IMAGES`.
+            Only ``"kaniko"`` passed the OSMO builder probe; ``"buildkit"``
+            failed it (rootless mount permission error) and is retained as a
+            reference point with its git-credential delivery unverified.
         commit_sha: Full commit SHA to pin. Must exist on *git_remote*.
         git_remote: HTTPS clone URL the builder fetches the context from.
         destination: Full image reference to push.
