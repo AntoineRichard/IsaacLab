@@ -51,12 +51,13 @@ ENV UV_HTTP_TIMEOUT=180
 # from zero, so treat a network failure here as expected-flaky, not a bug.
 RUN uv sync --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video --extra tetrahedralization
 
-# The datasets CLI, used by the DSS upload path. Installed outside the project
-# venv with its own tool install so it cannot perturb the benchmark's resolved
-# dependency set, which is the thing under test. Pulled from the NGC data
-# platform index, which does not carry the package on public PyPI.
-RUN uv tool install --index-url https://pypi.org/simple \
-      --extra-index-url https://artifactory.pdx.nvidia.com/artifactory/api/pypi/sw-ngc-data-platform-pypi-local/simple \
-      nvdataset \
-    && ln -sf /root/.local/bin/nvdataset /usr/local/bin/nvdataset \
-    && nvdataset --version
+# KNOWN GAP: the nvdataset CLI install is dropped for OSMO builds. It used to
+# live here as a `uv tool install` from artifactory.pdx.nvidia.com (the NGC
+# data platform index; the package is not on public PyPI). The OSMO kaniko
+# build pod cannot resolve artifactory.pdx.nvidia.com (confirmed: every other
+# host this Dockerfile touches -- github.com, pypi.org, nvcr.io,
+# api.ngc.nvidia.com -- resolves fine; this is one host, not a network
+# boundary). Images built from this Dockerfile therefore do NOT have
+# `nvdataset` and CANNOT run the DSS upload path in dispatch.yaml.j2 (the
+# `nvdataset upload` call). Restore this step once artifactory.pdx DNS is
+# reachable from OSMO pools -- see tools/odin/osmo_build/README.md.
