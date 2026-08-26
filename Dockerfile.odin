@@ -62,18 +62,24 @@ ENV UV_HTTP_TIMEOUT=180
 RUN uv sync --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video --extra tetrahedralization \
     && rm -rf "$UV_CACHE_DIR"
 
-# KNOWN GAP: the nvdataset CLI install is dropped for OSMO builds. It used to
-# live here as a `uv tool install` from artifactory.pdx.nvidia.com (the NGC
-# data platform index; the package is not on public PyPI). The OSMO kaniko
-# build pod cannot resolve artifactory.pdx.nvidia.com (confirmed: every other
-# host this Dockerfile touches -- github.com, pypi.org, nvcr.io,
-# api.ngc.nvidia.com -- resolves fine; this is one host, not a network
-# boundary). Images built from this Dockerfile therefore do NOT have
-# `nvdataset` and CANNOT run the DSS upload path in dispatch.yaml.j2 (the
-# `nvdataset upload` call). This fails LOUDLY, not silently: `nvdataset` not
-# being on PATH exits 127, the upload loop in dispatch.yaml.j2 retries it
-# three times and then sets rc=91, so the row goes red -- it does not train
-# successfully and quietly drop its results. The symptom is a red row, three
-# wasted retry sleeps, and an rc=91 that reads like a DSS outage rather than
-# a missing binary. Restore this step once artifactory.pdx DNS is reachable
-# from OSMO pools -- see tools/odin/osmo_build/README.md.
+# The nvdataset CLI, used by the DSS upload path in dispatch.yaml.j2. It is
+# NOT installed from an index here: OSMO's build pods cannot resolve
+# artifactory.pdx.nvidia.com and have no route to artifactory.nvidia.com, and
+# the package is not on public PyPI. They can reach nvcr.io, so it arrives
+# pre-installed in a carrier image instead.
+#
+# TEMPORARY. Delete this and restore the plain `uv tool install` once OSMO can
+# reach artifactory. See tools/odin/osmo_build/README.md for the carrier's
+# rebuild command and the full rationale.
+#
+# `COPY --from` needs no extra credential: kaniko pulls it with the same
+# /kaniko/.docker/config.json injected for the push, which carries pull scope.
+#
+# The carrier is built FROM this same base so the console_scripts shebang in
+# /root/.local/bin/nvdataset resolves here. `nvdataset --version` below is the
+# guard: if the two bases ever diverge, the build fails here rather than
+# shipping an image whose CLI cannot start.
+COPY --from=nvcr.io/nvidian/antoiner-isaac-lab:nvdataset-0.96.0 /root/.local /root/.local
+
+RUN ln -sf /root/.local/bin/nvdataset /usr/local/bin/nvdataset \
+    && nvdataset --version

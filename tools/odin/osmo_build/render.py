@@ -22,12 +22,28 @@ from __future__ import annotations
 import json
 import pathlib
 
-__all__ = ["BUILDER_IMAGES", "read_push_auth", "render_build_workflow"]
+__all__ = [
+    "BUILDER_IMAGES",
+    "NVDATASET_CARRIER_IMAGE",
+    "NVDATASET_VERSION",
+    "read_push_auth",
+    "render_build_workflow",
+]
 
 BUILDER_IMAGES: dict[str, str] = {
     "kaniko": "gcr.io/kaniko-project/executor:v1.23.2",
     "buildkit": "moby/buildkit:v0.18.2-rootless",
 }
+
+# The nvdataset CLI reaches the OSMO build through a carrier image rather than
+# an index, because OSMO cannot route to artifactory. These two constants are
+# the single source of truth: ``Dockerfile.nvdataset`` is built with the
+# version, ``Dockerfile.odin`` copies from the image, and a test asserts the
+# Dockerfile still names this exact tag. Bumping the version here without
+# rebuilding and pushing the carrier fails that test rather than failing a
+# 26-minute OSMO build.
+NVDATASET_VERSION = "0.96.0"
+NVDATASET_CARRIER_IMAGE = f"nvcr.io/nvidian/antoiner-isaac-lab:nvdataset-{NVDATASET_VERSION}"
 
 
 def read_push_auth(path: pathlib.Path | None = None) -> str:

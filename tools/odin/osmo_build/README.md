@@ -109,27 +109,69 @@ of a 26m07s build. The real cost is kaniko's full-filesystem snapshot
 (11m27s) plus the registry push (8m50s) -- together ~78% of the build -- so
 that is where future optimisation should be aimed, not at `uv sync`.
 
-## Known gap: `nvdataset` is absent from OSMO-built images
+## `nvdataset` and the carrier image
 
-`Dockerfile.odin` used to install the `nvdataset` CLI (the DSS upload path
-used by `dispatch.yaml.j2`) from `artifactory.pdx.nvidia.com`, an internal
-NVIDIA index that does not carry the package on public PyPI. The OSMO kaniko
-build pod cannot resolve that host — every other host the Dockerfile touches
-(`github.com`, `pypi.org`, `nvcr.io`, `api.ngc.nvidia.com`) resolves fine, so
-this is a single unreachable host, not a network boundary. The step is
-dropped for OSMO builds; images built from this Dockerfile do **not** have
-`nvdataset` and cannot run the DSS upload path. Restore the step once
-`artifactory.pdx.nvidia.com` is reachable from OSMO pools; see the comment at
-the same spot in `Dockerfile.odin`.
+`dispatch.yaml.j2` uploads results with the `nvdataset` CLI, so OSMO-built
+images need it. It cannot be installed from an index during an OSMO build:
+the package is not on public PyPI, `artifactory.pdx.nvidia.com` has no DNS
+from OSMO pods, and `artifactory.nvidia.com` resolves but has no route
+(TCP never connects). `gitlab-master.nvidia.com`, `github.com`, `pypi.org`,
+`nvcr.io` and `api.ngc.nvidia.com` are all reachable, so this is two
+unreachable hosts, not a network boundary.
 
-This does **not** mean a dispatch trains successfully and then silently loses
-its results. `dispatch.yaml.j2` (the `nvdataset upload` call, ~lines 178-191)
-retries the upload three times and, on failure, sets `rc=91` so the row goes
-red rather than reporting success. A missing `nvdataset` binary exits 127 on
-the first attempt. The actual symptom is a red row, three wasted retry
-sleeps, and an `rc=91` that reads like a DSS outage -- easy to misdiagnose as
-a dataset-service problem when the real cause is a missing binary in the
-image.
+`nvcr.io` being reachable is what the carrier exploits. `nvdataset` is
+installed once into a small image built from a machine that *does* have
+artifactory access, that image is pushed to `nvcr.io`, and `Dockerfile.odin`
+pulls the installed tree in with `COPY --from`. No credential beyond the one
+already injected for the push: kaniko resolves `COPY --from` using the same
+`/kaniko/.docker/config.json`, which carries pull scope.
+
+### This is temporary
+
+It exists only because OSMO cannot reach artifactory. When that is fixed,
+delete `Dockerfile.nvdataset`, drop the two constants from `render.py`, drop
+the two carrier tests, and restore the plain `uv tool install` in
+`Dockerfile.odin`. Nothing else depends on it.
+
+### Rebuilding the carrier
+
+Needs Docker **and** NVIDIA-internal network access, so it cannot run in CI or
+on OSMO — it is a deliberate manual step. Run it from a repo checkout on a
+machine with both:
+
+```bash
+VERSION=0.96.0   # must match NVDATASET_VERSION in tools/odin/osmo_build/render.py
+docker build \
+  --build-arg "NVDATASET_VERSION=${VERSION}" \
+  -f tools/odin/osmo_build/Dockerfile.nvdataset \
+  -t "nvcr.io/nvidian/antoiner-isaac-lab:nvdataset-${VERSION}" \
+  tools/odin/osmo_build
+docker push "nvcr.io/nvidian/antoiner-isaac-lab:nvdataset-${VERSION}"
+```
+
+To move to a new `nvdataset`: bump `NVDATASET_VERSION` in `render.py`, update
+the `COPY --from` tag in `Dockerfile.odin`, rebuild and push the carrier, then
+run the tests. `test_dockerfile_odin_copies_the_pinned_nvdataset_carrier`
+fails if the constant and the Dockerfile disagree, which is cheaper than
+discovering a missing tag 20 minutes into an OSMO build.
+
+### Why the base images must match
+
+The carrier hands over `/root/.local`. `nvdataset` is pure Python installed
+through `console_scripts`, so its launcher carries a shebang baked to the
+interpreter path `uv tool install` used, and that path only resolves in the
+consuming image if both were built from the same base. Both Dockerfiles
+therefore use `DEFAULT_CUDA_IMAGE`, and
+`test_nvdataset_carrier_shares_dockerfile_odin_base_image` holds them
+together. The `nvdataset --version` call in `Dockerfile.odin` is the runtime
+backstop: a mismatch fails the build there rather than shipping an image
+whose CLI cannot start.
+
+### If the carrier tag is missing
+
+`COPY --from` on an unpushed tag fails the OSMO build with a manifest error
+after the expensive layers have already run. If that happens, the carrier was
+never pushed for the pinned version — rebuild it with the command above.
 
 ## Measured sizing
 

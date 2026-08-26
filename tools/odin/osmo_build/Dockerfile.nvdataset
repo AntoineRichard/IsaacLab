@@ -1,0 +1,42 @@
+# Carrier image for the nvdataset CLI.
+#
+# Why this exists: OSMO's build pods cannot reach artifactory.pdx.nvidia.com
+# (no DNS) or artifactory.nvidia.com (DNS resolves, no route), and nvdataset is
+# not on public PyPI. They can reach nvcr.io. So nvdataset is installed once
+# here, from a machine that does have artifactory access, pushed to nvcr.io,
+# and pulled into the OSMO build with `COPY --from`.
+#
+# This image is built by hand, not by CI, because building it requires both
+# Docker and NVIDIA-internal network access. It is deliberately TEMPORARY --
+# see tools/odin/osmo_build/README.md for the rebuild command and for the
+# condition under which this whole mechanism should be deleted.
+#
+# The base image MUST match Dockerfile.odin's base. nvdataset is pure Python
+# installed through console_scripts, so its launcher carries a shebang baked to
+# the interpreter path `uv tool install` used. Copying /root/.local across
+# images only resolves if that path is identical on both sides. Changing this
+# base without changing Dockerfile.odin's will produce a carrier whose
+# `nvdataset` binary cannot start.
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+
+ARG NVDATASET_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH=/root/.local/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Same uv installer and same layout as Dockerfile.odin, so the tool venv this
+# creates is byte-compatible with the image that will consume it.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Pinned: an unpinned carrier would silently change what every OSMO-built image
+# ships the next time it is rebuilt. The index is the NGC data platform's, which
+# is reachable from a machine on the NVIDIA network but not from OSMO -- which
+# is the entire reason this file exists.
+RUN uv tool install --index-url https://pypi.org/simple \
+      --extra-index-url https://artifactory.pdx.nvidia.com/artifactory/api/pypi/sw-ngc-data-platform-pypi-local/simple \
+      "nvdataset==${NVDATASET_VERSION}" \
+    && /root/.local/bin/nvdataset --version

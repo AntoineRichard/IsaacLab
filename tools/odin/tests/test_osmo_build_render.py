@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from tools.odin.image import DEFAULT_CUDA_IMAGE
-from tools.odin.osmo_build.render import read_push_auth, render_build_workflow
+from tools.odin.osmo_build.render import NVDATASET_CARRIER_IMAGE, read_push_auth, render_build_workflow
 from tools.odin.plan import UV_EXTRAS
 
 _COMMIT = "a" * 40
@@ -130,3 +130,24 @@ def test_dockerfile_odin_matches_the_live_extras_and_cuda_base():
     text = dockerfile.read_text()
     assert " --extra ".join(UV_EXTRAS) in text
     assert DEFAULT_CUDA_IMAGE in text
+
+
+def test_dockerfile_odin_copies_the_pinned_nvdataset_carrier():
+    """`nvdataset` reaches the OSMO image through a hand-built carrier, because
+    OSMO cannot route to artifactory. Bumping `NVDATASET_VERSION` without
+    rebuilding and pushing the carrier would otherwise fail 20-odd minutes into
+    an OSMO build, on a `COPY --from` of a tag that was never pushed. Failing
+    here instead costs nothing."""
+    dockerfile = pathlib.Path(__file__).parents[3] / "Dockerfile.odin"
+    assert NVDATASET_CARRIER_IMAGE in dockerfile.read_text()
+
+
+def test_nvdataset_carrier_shares_dockerfile_odin_base_image():
+    """The carrier hands over `/root/.local`, whose `console_scripts` launcher
+    has a shebang baked to the interpreter path `uv tool install` used. That
+    path only resolves in the consuming image if both were built from the same
+    base, so the two Dockerfiles must not drift apart."""
+    root = pathlib.Path(__file__).parents[3]
+    carrier = (root / "tools/odin/osmo_build/Dockerfile.nvdataset").read_text()
+    assert f"FROM {DEFAULT_CUDA_IMAGE}" in carrier
+    assert DEFAULT_CUDA_IMAGE in (root / "Dockerfile.odin").read_text()
