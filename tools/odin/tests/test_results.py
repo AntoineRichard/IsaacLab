@@ -137,7 +137,7 @@ def test_the_dataset_is_pulled_once_per_dispatch(tmp_path, monkeypatch) -> None:
 
     from tools.odin import results
 
-    results._DATASET_PULLED.clear()
+    results._DATASET_PULLED_AT.clear()
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -176,12 +176,41 @@ def test_a_missing_cli_is_reported_not_crashed(tmp_path, monkeypatch) -> None:
     # fetching runs. A bare FileNotFoundError killed a live 801-row dispatch.
     import shutil
 
-    from tools.odin.results import ResultsError, _DATASET_PULLED, fetch_results
+    from tools.odin.results import ResultsError, _DATASET_PULLED_AT, fetch_results
 
-    _DATASET_PULLED.clear()
+    _DATASET_PULLED_AT.clear()
     monkeypatch.delenv("ODIN_NVDATASET", raising=False)
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 
     with pytest.raises(ResultsError, match="ODIN_NVDATASET"):
         fetch_results(client=None, base_uri="swift://unused", dispatch_id="d",
                       row_key="row_a", dest_dir=tmp_path, dataset="odin-results")
+
+
+def test_the_pull_repeats_after_the_throttle_window(tmp_path, monkeypatch) -> None:
+    # A poller runs for hours while rows upload continuously. Caching the pull
+    # for the process lifetime left every row that finished after the first pull
+    # looking unfetched -- 326 of one dispatch's rows read as malformed_bundle.
+    import subprocess
+    import time
+
+    from tools.odin import results
+
+    results._DATASET_PULLED_AT.clear()
+    monkeypatch.setenv("ODIN_NVDATASET", "/usr/bin/true")
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+
+    results.fetch_results(client=None, base_uri="s", dispatch_id="d", row_key="a",
+                          dest_dir=tmp_path, dataset="odin-results")
+    results.fetch_results(client=None, base_uri="s", dispatch_id="d", row_key="b",
+                          dest_dir=tmp_path, dataset="odin-results")
+    assert len(calls) == 1, "within the window a second row must not re-pull"
+
+    clock[0] += results.DATASET_PULL_INTERVAL_S + 1
+    results.fetch_results(client=None, base_uri="s", dispatch_id="d", row_key="c",
+                          dest_dir=tmp_path, dataset="odin-results")
+    assert len(calls) == 2, "past the window a later row must pull again"

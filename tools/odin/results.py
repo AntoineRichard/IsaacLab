@@ -108,11 +108,14 @@ def validate_bundle(bundle_dir: Path) -> bool:
     return read_bundle(bundle_dir) is not None
 
 
-# Dispatch directories whose dataset snapshot has already been pulled. DSS has no
-# per-row download: ``--filter`` matched nothing in testing and ``--snapshot-name``
-# returns the whole dataset, so the pull is once per dispatch and rows are read
-# out of the resulting tree.
-_DATASET_PULLED: set[Path] = set()
+# When each dispatch directory was last pulled. DSS has no per-row download:
+# ``--filter`` matched nothing in testing and ``--snapshot-name`` returns the whole
+# dataset, so the whole snapshot is pulled and rows are read out of the tree.
+# Throttled rather than cached forever: a poller runs for hours and rows upload
+# continuously, so pulling once left every later row looking unfetched.
+_DATASET_PULLED_AT: dict[Path, float] = {}
+
+DATASET_PULL_INTERVAL_S = 300.0
 
 
 def download_dataset_once(dataset: str, dest_dir: Path, *, run: Any = None) -> None:
@@ -133,7 +136,10 @@ def download_dataset_once(dataset: str, dest_dir: Path, *, run: Any = None) -> N
     import shutil
     import subprocess
 
-    if dest_dir in _DATASET_PULLED:
+    import time
+
+    last = _DATASET_PULLED_AT.get(dest_dir)
+    if last is not None and (time.monotonic() - last) < DATASET_PULL_INTERVAL_S:
         return
     # The CLI is on PATH inside the benchmark image but not necessarily on the
     # host, where fetching runs. ODIN_NVDATASET names it explicitly.
@@ -152,7 +158,7 @@ def download_dataset_once(dataset: str, dest_dir: Path, *, run: Any = None) -> N
     )
     if completed.returncode != 0:
         raise ResultsError(f"`nvdataset download {dataset}` failed: {(completed.stderr or '').strip()}")
-    _DATASET_PULLED.add(dest_dir)
+    _DATASET_PULLED_AT[dest_dir] = time.monotonic()
 
 
 def fetch_results(
