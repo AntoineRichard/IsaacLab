@@ -75,10 +75,12 @@ RUN uv sync --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-
 # `COPY --from` needs no extra credential: kaniko pulls it with the same
 # /kaniko/.docker/config.json injected for the push, which carries pull scope.
 #
-# The carrier is built FROM this same base so the console_scripts shebang in
-# /root/.local/bin/nvdataset resolves here. `nvdataset --version` below is the
-# guard: if the two bases ever diverge, the build fails here rather than
-# shipping an image whose CLI cannot start.
+# The copied tree is self-contained: the launcher's shebang points at
+# /root/.local/share/uv/tools/nvdataset/bin/python, which travels with it, so
+# this image needs no Python of its own. The carrier shares this base for ABI
+# compatibility -- that interpreter is a real binary linked against the
+# carrier's glibc. `nvdataset --version` below turns any mismatch into a build
+# failure rather than an image whose CLI cannot start.
 COPY --from=nvcr.io/nvidian/antoiner-isaac-lab:nvdataset-0.96.0 /root/.local /root/.local
 
 RUN ln -sf /root/.local/bin/nvdataset /usr/local/bin/nvdataset \

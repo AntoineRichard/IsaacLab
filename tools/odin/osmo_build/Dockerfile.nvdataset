@@ -36,7 +36,14 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # ships the next time it is rebuilt. The index is the NGC data platform's, which
 # is reachable from a machine on the NVIDIA network but not from OSMO -- which
 # is the entire reason this file exists.
-RUN uv tool install --index-url https://pypi.org/simple \
+#
+# `--python` is pinned deliberately. Without it `uv tool install` has no
+# project context here and picks the newest CPython it can fetch, which at
+# 3.14 has no `multi-storage-client` wheel (that dependency ships cp310-cp313
+# only) and fails resolution. The original in-project install never hit this
+# because Isaac Lab's pyproject constrained the interpreter. 3.12 also matches
+# the venv in the consuming image, keeping the two sides consistent.
+RUN uv tool install --python 3.12 --index-url https://pypi.org/simple \
       --extra-index-url https://artifactory.pdx.nvidia.com/artifactory/api/pypi/sw-ngc-data-platform-pypi-local/simple \
       "nvdataset==${NVDATASET_VERSION}" \
     && /root/.local/bin/nvdataset --version

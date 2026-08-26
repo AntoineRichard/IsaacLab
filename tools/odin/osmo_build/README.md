@@ -141,7 +141,7 @@ machine with both:
 
 ```bash
 VERSION=0.96.0   # must match NVDATASET_VERSION in tools/odin/osmo_build/render.py
-docker build \
+docker build --network=host \
   --build-arg "NVDATASET_VERSION=${VERSION}" \
   -f tools/odin/osmo_build/Dockerfile.nvdataset \
   -t "nvcr.io/nvidian/antoiner-isaac-lab:nvdataset-${VERSION}" \
@@ -155,17 +155,24 @@ run the tests. `test_dockerfile_odin_copies_the_pinned_nvdataset_carrier`
 fails if the constant and the Dockerfile disagree, which is cheaper than
 discovering a missing tag 20 minutes into an OSMO build.
 
-### Why the base images must match
+### Why the base images should match
 
 The carrier hands over `/root/.local`. `nvdataset` is pure Python installed
-through `console_scripts`, so its launcher carries a shebang baked to the
-interpreter path `uv tool install` used, and that path only resolves in the
-consuming image if both were built from the same base. Both Dockerfiles
-therefore use `DEFAULT_CUDA_IMAGE`, and
+through `console_scripts`, and the launcher's shebang is
+`#!/root/.local/share/uv/tools/nvdataset/bin/python` — a path *inside* the
+copied tree, because `uv tool install` puts its managed interpreter there
+too. The handover is therefore self-contained and does not depend on the
+consuming image providing a Python at all (verified: copying this tree into a
+bare `nvidia/cuda:12.8.1-runtime-ubuntu24.04` and running `nvdataset
+--version` prints `nvdataset 0.96.0`).
+
+What the shared base does buy is ABI compatibility: the copied interpreter is
+a real binary linked against the carrier's glibc, so a consuming image on an
+older or different libc would fail at exec time rather than at copy time.
+Both Dockerfiles use `DEFAULT_CUDA_IMAGE` and
 `test_nvdataset_carrier_shares_dockerfile_odin_base_image` holds them
-together. The `nvdataset --version` call in `Dockerfile.odin` is the runtime
-backstop: a mismatch fails the build there rather than shipping an image
-whose CLI cannot start.
+together. The `nvdataset --version` call in `Dockerfile.odin` is the backstop
+that turns any such mismatch into a build failure.
 
 ### If the carrier tag is missing
 
