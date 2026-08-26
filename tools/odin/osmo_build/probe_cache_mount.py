@@ -13,7 +13,8 @@ uncertain, so the builder is chosen by running both rather than by assumption.
 from __future__ import annotations
 
 import json
-import pathlib
+
+from tools.odin.osmo_build.render import read_push_auth
 
 __all__ = ["BUILDERS", "PROBE_DOCKERFILE", "read_push_auth", "render_probe"]
 
@@ -26,25 +27,6 @@ PROBE_DOCKERFILE = """FROM busybox:latest
 RUN --mount=type=cache,target=/opt/probe-cache,sharing=locked \\
     echo cache-mount-ok > /probe.txt
 """
-
-
-def read_push_auth(path: pathlib.Path | None = None) -> str:
-    """Return the base64 nvcr.io credential that carries push scope.
-
-    Args:
-        path: Docker config to read. Defaults to ``~/.docker/config.json``.
-
-    Returns:
-        The base64 ``user:password`` blob for ``nvcr.io``.
-
-    Raises:
-        SystemExit: If no nvcr.io credential is present.
-    """
-    path = path or pathlib.Path.home() / ".docker" / "config.json"
-    auth = json.loads(path.read_text()).get("auths", {}).get("nvcr.io", {}).get("auth")
-    if not auth:
-        raise SystemExit(f"no nvcr.io auth in {path}")
-    return auth
 
 
 def _indent(text: str, spaces: int) -> str:
