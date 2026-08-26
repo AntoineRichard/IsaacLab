@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import yaml
 
-from tools.odin.osmo_build.render import render_build_workflow
+from tools.odin.osmo_build.render import read_push_auth, render_build_workflow
 
 _COMMIT = "a" * 40
 _KWARGS = {
@@ -80,6 +82,24 @@ def test_git_token_is_not_embedded_in_the_context_url():
 def test_rejects_an_unknown_builder():
     with pytest.raises(KeyError):
         render_build_workflow(builder="podman", **_KWARGS)
+
+
+def test_read_push_auth_returns_the_nvcr_credential(tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"auths": {"nvcr.io": {"auth": "ZHVtbXk6ZHVtbXk="}}}))
+    assert read_push_auth(config) == "ZHVtbXk6ZHVtbXk="
+
+
+def test_read_push_auth_raises_when_the_config_is_absent(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        read_push_auth(tmp_path / "does-not-exist.json")
+
+
+def test_read_push_auth_raises_when_nvcr_is_not_configured(tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"auths": {"docker.io": {"auth": "ZHVtbXk6ZHVtbXk="}}}))
+    with pytest.raises(FileNotFoundError):
+        read_push_auth(config)
 
 
 @pytest.mark.parametrize(
