@@ -8,11 +8,14 @@
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 import yaml
 
+from tools.odin.image import DEFAULT_CUDA_IMAGE
 from tools.odin.osmo_build.render import read_push_auth, render_build_workflow
+from tools.odin.plan import UV_EXTRAS
 
 _COMMIT = "a" * 40
 _KWARGS = {
@@ -113,3 +116,17 @@ def test_commit_sha_is_threaded_through_as_a_build_arg(builder, build_arg_flag):
     doc = yaml.safe_load(render_build_workflow(builder=builder, **_KWARGS))
     task = doc["workflow"]["groups"][0]["tasks"][0]
     assert f"{build_arg_flag}{_COMMIT}" in task["args"]
+
+
+def test_dockerfile_odin_matches_the_live_extras_and_cuda_base():
+    """`Dockerfile.odin` hardcodes what `templates/Dockerfile.j2` renders from
+    `UV_EXTRAS` (plan.py) and `DEFAULT_CUDA_IMAGE` (image.py) because the OSMO
+    builder has no templating step. If either constant changes and this file
+    is not, the OSMO image silently ships without the new extra (or the wrong
+    CUDA base) while `dispatch.yaml.j2` still expects it -- a gap that only
+    surfaces mid-dispatch, inside a GPU pod, as a runtime install or a
+    mismatched base."""
+    dockerfile = pathlib.Path(__file__).parents[3] / "Dockerfile.odin"
+    text = dockerfile.read_text()
+    assert " --extra ".join(UV_EXTRAS) in text
+    assert DEFAULT_CUDA_IMAGE in text
