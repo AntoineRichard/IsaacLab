@@ -78,9 +78,9 @@ def snapshot_camera_tensor(data: Any) -> Any:
     return data.detach().to(device="cpu", copy=True)
 
 
-def poster_frame_index(frame_count: int) -> int:
-    """Select the still-image frame after two thirds of the fall."""
-    return min(frame_count - 1, frame_count * 2 // 3)
+def thumbnail_frame_index(_frame_count: int) -> int:
+    """Select the still-image frame before any physics steps."""
+    return 0
 
 
 def renderer_requires_kit(renderer: str) -> bool:
@@ -275,10 +275,10 @@ def _capture(args: argparse.Namespace) -> None:
         for _ in range(args.warmup_steps):
             camera.update(dt=0.0, force_recompute=True)
 
-        poster_index = poster_frame_index(args.frames)
+        thumbnail_index = thumbnail_frame_index(args.frames)
         if args.capture_group == "standard":
             rgb_frames: list[Image.Image] = []
-            poster_frames: dict[str, Image.Image] = {}
+            thumbnail_frames: dict[str, Image.Image] = {}
             for frame_index in range(args.frames):
                 if frame_index > 0:
                     for _ in range(args.physics_steps_per_frame):
@@ -289,10 +289,10 @@ def _capture(args: argparse.Namespace) -> None:
                 )
                 if "rgb" in data_types:
                     rgb_frames.append(tensor_to_image(camera.data.output["rgb"].torch[0], "rgb"))
-                if frame_index == poster_index:
+                if frame_index == thumbnail_index:
                     for output_name in data_types:
                         if output_name != "rgb":
-                            poster_frames[output_name] = tensor_to_image(
+                            thumbnail_frames[output_name] = tensor_to_image(
                                 camera.data.output[output_name].torch[0], output_name
                             )
 
@@ -307,12 +307,12 @@ def _capture(args: argparse.Namespace) -> None:
                 method=6,
             )
             print(f"[INFO] Wrote {rgb_path}", flush=True)
-            for output_name, image in poster_frames.items():
+            for output_name, image in thumbnail_frames.items():
                 output_path = args.output_dir / gallery_asset_name(args.renderer_backend, output_name)
                 image.save(output_path, optimize=True)
                 print(f"[INFO] Wrote {output_path}", flush=True)
         else:
-            for _ in range(poster_index * args.physics_steps_per_frame):
+            for _ in range(thumbnail_index * args.physics_steps_per_frame):
                 sim.step(render=False)
             camera.update(
                 dt=sim.get_physics_dt() * args.physics_steps_per_frame,

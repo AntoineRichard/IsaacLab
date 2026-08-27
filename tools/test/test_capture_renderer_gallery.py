@@ -240,9 +240,9 @@ def test_camera_tensor_snapshot_does_not_alias_mutable_renderer_buffer():
     assert torch.count_nonzero(snapshot) == 0
 
 
-def test_poster_frame_is_selected_after_two_thirds_of_the_fall():
-    assert capture_renderer_gallery.poster_frame_index(37) == 24
-    assert capture_renderer_gallery.poster_frame_index(2) == 1
+def test_thumbnail_frame_is_selected_before_physics_steps():
+    assert capture_renderer_gallery.thumbnail_frame_index(37) == 0
+    assert capture_renderer_gallery.thumbnail_frame_index(2) == 0
 
 
 def test_only_isaac_rtx_capture_launches_kit():
