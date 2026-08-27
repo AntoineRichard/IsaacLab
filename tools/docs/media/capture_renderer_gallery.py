@@ -144,7 +144,7 @@ def _make_renderer_cfg(renderer: str) -> Any:
     if renderer == "newton":
         from isaaclab_newton.renderers import NewtonWarpRendererCfg
 
-        return NewtonWarpRendererCfg()
+        return NewtonWarpRendererCfg(enable_shadows=True)
     if renderer == "ovrtx":
         from isaaclab_ov.renderers import OVRTXRendererCfg
 
@@ -189,9 +189,7 @@ def gallery_lighting_override(renderer: str) -> Iterator[None]:
         ovrtx_renderer.build_render_product_as_string = original_builder
 
 
-def _create_camera_and_reset(
-    renderer: str, create_camera: Callable[[], Any], reset_sim: Callable[[], None]
-) -> Any:
+def _create_camera_and_reset(renderer: str, create_camera: Callable[[], Any], reset_sim: Callable[[], None]) -> Any:
     """Create the camera and initialize its renderer under capture lighting overrides."""
     with gallery_lighting_override(renderer):
         camera = create_camera()

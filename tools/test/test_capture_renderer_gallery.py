@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import torch
+from newton._src.usd.utils import _resolve_material_uv_primvar_name, resolve_material_properties_for_prim
 
 from pxr import Gf, Usd, UsdGeom
 
@@ -74,6 +75,7 @@ def test_only_rgb_is_animated():
         animated_modes = [mode.output_name for mode in gallery_modes(renderer) if mode.animated]
         assert animated_modes == ["rgb"]
 
+
 def test_standard_capture_groups_share_one_render_product():
     for renderer in ("newton", "ovrtx", "isaac_rtx"):
         expected = tuple(
@@ -119,6 +121,14 @@ def test_gallery_renderer_argument_does_not_conflict_with_app_launcher_renderer(
     assert "--renderer" not in parser._option_string_actions
 
 
+def test_newton_gallery_enables_textures_and_shadow_rays():
+    renderer_cfg = capture_renderer_gallery._make_renderer_cfg("newton")
+
+    assert renderer_cfg.enable_textures
+    assert renderer_cfg.enable_shadows
+    assert renderer_cfg.create_default_light
+
+
 def test_gallery_scene_uses_rigid_spheres_for_cross_renderer_motion():
     stage = Usd.Stage.Open(str(MEDIA_TOOLS_DIR / "renderer_gallery_scene.usda"))
     spheres = [prim for prim in stage.Traverse() if prim.GetTypeName() == "Sphere"]
@@ -153,7 +163,6 @@ def test_gallery_spheres_share_one_semantic_class_but_remain_distinct_from_the_s
     )
 
 
-
 def test_gallery_table_and_backdrop_are_authored_size_texturable_meshes():
     stage = Usd.Stage.Open(str(MEDIA_TOOLS_DIR / "renderer_gallery_scene.usda"))
     expected_bounds = {
@@ -177,6 +186,31 @@ def test_gallery_table_and_backdrop_are_authored_size_texturable_meshes():
 
     table = stage.GetPrimAtPath("/RendererGallery/Table")
     assert "PhysicsCollisionAPI" in table.GetAppliedSchemas()
+
+
+def test_newton_gallery_resolves_textured_material_fallbacks_with_dedicated_uvs():
+    stage = Usd.Stage.Open(str(MEDIA_TOOLS_DIR / "renderer_gallery_scene.usda"))
+    expected_materials = {
+        "/RendererGallery/Table": (
+            "Parquet_Floor/Parquet_Floor_BaseColor.png",
+            Gf.Vec2f(4.0, 4.0),
+        ),
+        "/RendererGallery/Backdrop": (
+            "Marble_Tile_12/Marble_Tile_12_BaseColor.png",
+            Gf.Vec2f(2.0, 1.0),
+        ),
+    }
+
+    for prim_path, (texture_suffix, expected_uv_max) in expected_materials.items():
+        prim = stage.GetPrimAtPath(prim_path)
+        material_properties = resolve_material_properties_for_prim(prim)
+        assert material_properties["texture"].endswith(texture_suffix)
+        assert _resolve_material_uv_primvar_name(prim) == "st_newton"
+
+        uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st_newton")
+        flattened_uvs = uv_primvar.ComputeFlattened()
+        assert max(uv[0] for uv in flattened_uvs) == expected_uv_max[0]
+        assert max(uv[1] for uv in flattened_uvs) == expected_uv_max[1]
 
 
 def test_gallery_camera_points_at_authored_target():
@@ -222,6 +256,7 @@ def test_gallery_uses_single_environment_paths_required_by_ovrtx():
         "/World/envs/env_.*/Scene/Camera",
     )
 
+
 def test_ovrtx_gallery_disables_renderer_ambient_fill_without_changing_other_settings():
     render_product_usd = """\
 float omni:rtx:rt:ambientLight:intensity = 1.0
@@ -232,6 +267,7 @@ float unrelated = 1.0
 
     assert "float omni:rtx:rt:ambientLight:intensity = 0.0" in adjusted_usd
     assert "float unrelated = 1.0" in adjusted_usd
+
 
 def test_renderer_lighting_override_covers_deferred_camera_initialization():
     events = []
