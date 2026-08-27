@@ -126,6 +126,7 @@ def test_newton_gallery_enables_textures_and_shadow_rays():
 
     assert renderer_cfg.enable_textures
     assert renderer_cfg.enable_shadows
+    assert not renderer_cfg.enable_ambient_lighting
     assert renderer_cfg.create_default_light
 
 

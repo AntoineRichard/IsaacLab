@@ -144,7 +144,7 @@ def _make_renderer_cfg(renderer: str) -> Any:
     if renderer == "newton":
         from isaaclab_newton.renderers import NewtonWarpRendererCfg
 
-        return NewtonWarpRendererCfg(enable_shadows=True)
+        return NewtonWarpRendererCfg(enable_shadows=True, enable_ambient_lighting=False)
     if renderer == "ovrtx":
         from isaaclab_ov.renderers import OVRTXRendererCfg
 
