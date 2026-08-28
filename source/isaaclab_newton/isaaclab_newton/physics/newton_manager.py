@@ -419,6 +419,13 @@ class NewtonManager(PhysicsManager):
 
     # Newton actuator adapter (owns actuators and double-buffered states)
     _adapter: NewtonActuatorAdapter | None = None
+    # One-shot hooks invoked once the solver exists and before any graph capture,
+    # in registration order. Consumed (cleared) by the dispatch.
+    _solver_init_callbacks: list[Callable[[], None]] = []
+    # In-graph hooks invoked before the actuator step, in registration order.
+    # Used to publish solver quantities of the previous substep into the arrays
+    # the actuators read on this iteration.
+    _pre_actuator_callbacks: list[Callable[[], None]] = []
     # In-graph hooks invoked after the actuator step and before the solver
     # substeps, in registration order. Multiple articulations register their
     # implicit-DOF telemetry / FF-routing kernels here.
@@ -967,6 +974,7 @@ class NewtonManager(PhysicsManager):
 
         if capture_pending:
             NewtonManager._graph_capture_pending = False
+            cls._check_actuator_state_capture_balance()
             if cls._usdrt_stage is None:
                 simulate = cls._simulate_full if cls._is_all_graphable() else cls._simulate_physics_only
                 with Timer(name="newton_cuda_graph", msg="CUDA graph took:"):
@@ -1004,6 +1012,8 @@ class NewtonManager(PhysicsManager):
             PhysicsManager._sim_time += physics_dt * cls._decimation
         else:
             # --- Some actuators not graph-safe: step them eagerly, graph solver only ---
+            for cb in cls._pre_actuator_callbacks:
+                cb()
             if cls._adapter is not None:
                 cls._adapter.step(cls._state_0, cls._control, physics_dt)
             for cb in cls._post_actuator_callbacks:
@@ -1090,6 +1100,8 @@ class NewtonManager(PhysicsManager):
         NewtonManager._report_contacts = False
         NewtonManager._supports_contact_sensors = True
         NewtonManager._adapter = None
+        NewtonManager._solver_init_callbacks = []
+        NewtonManager._pre_actuator_callbacks = []
         NewtonManager._post_actuator_callbacks = []
         NewtonManager._state_force_callbacks = []
         NewtonManager._post_step_callbacks = []
@@ -2193,6 +2205,11 @@ class NewtonManager(PhysicsManager):
                 )
             cls._initialize_contacts()
 
+        # One-shot consumers of the concrete solver (index mappings, device model handles).
+        pending_solver_init, NewtonManager._solver_init_callbacks = cls._solver_init_callbacks, []
+        for cb in pending_solver_init:
+            cb()
+
         # Picking callbacks must be registered after the concrete solver has
         # published its force-input capability, but before CUDA graph capture.
         sim = PhysicsManager._sim
@@ -2248,6 +2265,7 @@ class NewtonManager(PhysicsManager):
             return
 
         if use_cuda_graph:
+            cls._check_actuator_state_capture_balance()
             with Timer(name="newton_cuda_graph", msg="CUDA graph took:", activity="Capturing CUDA graph"):
                 if cls._usdrt_stage is None and not cls._requires_initial_reset_before_graph_capture():
                     simulate = cls._simulate_full if cls._is_all_graphable() else cls._simulate_physics_only
@@ -2271,6 +2289,44 @@ class NewtonManager(PhysicsManager):
                     logger.info("Newton CUDA graph capture deferred until first step() (%s)", reason)
         else:
             NewtonManager._graph = None
+
+    @classmethod
+    def _check_actuator_state_capture_balance(cls) -> None:
+        """Reject or flag a graph capture that would discard the actuator state ping-pong.
+
+        Stateful Newton actuators read one state buffer and write the other, and
+        :meth:`NewtonActuatorAdapter.step <isaaclab.actuators.newton.NewtonActuatorAdapter.step>`
+        swaps the pair host-side. Under capture the swaps happen while the kernels are being
+        recorded, so a replayed graph always starts from the buffer that was current at capture
+        time. That is exact only when the captured loop contains an *even* number of actuator
+        steps. With an odd number above one the last step's update is dropped on each replay --
+        a small, warned-about staleness. With a decimation of one nothing is left: the state
+        never advances, so delay buffers stay empty, integral terms stay at zero and a
+        load-dependent friction model reports the budget of a freshly reset joint on every step.
+        That is silently wrong physics, so it is refused rather than warned about.
+
+        Raises:
+            RuntimeError: If a decimation of one would be captured with stateful actuators.
+        """
+        if not cls._is_all_graphable() or cls._adapter is None or not cls._adapter.is_stateful:
+            return
+        if cls._decimation % 2 == 0:
+            return
+        if cls._decimation == 1:
+            raise RuntimeError(
+                "Stateful Newton actuators cannot be CUDA-graph-captured at a decimation of one:"
+                " their state is double buffered and the buffers are swapped while the graph is"
+                " recorded, so every replay restarts from the same buffer and the state never"
+                " advances. Use an even decimation, or set 'use_cuda_graph=False' on the physics"
+                " configuration."
+            )
+        logger.warning(
+            "CUDA graph capture with stateful Newton actuators and an odd decimation (%d) discards the"
+            " last actuator-state update of every replay. Use an even decimation, or disable"
+            " 'use_cuda_graph', for delay buffers, integral terms and other actuator state to advance"
+            " exactly.",
+            cls._decimation,
+        )
 
     @classmethod
     def _requires_initial_reset_before_graph_capture(cls) -> bool:
@@ -2479,6 +2535,8 @@ class NewtonManager(PhysicsManager):
             if cls._needs_collision_pipeline:
                 cls._collision_pipeline.collide(cls._state_0, cls._contacts)
 
+            for cb in cls._pre_actuator_callbacks:
+                cb()
             if cls._adapter is not None:
                 cls._adapter.step(cls._state_0, cls._control, physics_dt)
             for cb in cls._post_actuator_callbacks:
@@ -3239,6 +3297,31 @@ class NewtonManager(PhysicsManager):
             device=PhysicsManager._device,
         )
         cls._adapter.finalize(cls._control)
+
+    @classmethod
+    def register_solver_init_callback(cls, callback: Callable[[], None]) -> None:
+        """Append a one-shot hook invoked once the solver exists.
+
+        Assets initialize while the model is being built, before
+        :meth:`initialize_solver` runs, so anything that needs the concrete
+        solver -- its device model, its index mappings -- has to be deferred to
+        this hook. It fires before the first step and therefore before any CUDA
+        graph capture, which is what lets a deferred binding still register
+        in-graph callbacks. The list is consumed by the dispatch.
+        """
+        cls._solver_init_callbacks.append(callback)
+
+    @classmethod
+    def register_pre_actuator_callback(cls, callback: Callable[[], None]) -> None:
+        """Append a hook to the list invoked before the actuator step on every iteration.
+
+        Runs in the same captured region as
+        :meth:`register_post_actuator_callback`, one position earlier in the
+        decimation loop. Use it to publish solver quantities that the actuators
+        consume on the *same* iteration; a hook registered on the post-actuator
+        list would instead be read one solver step later.
+        """
+        cls._pre_actuator_callbacks.append(callback)
 
     @classmethod
     def register_post_actuator_callback(cls, callback: Callable[[], None]) -> None:

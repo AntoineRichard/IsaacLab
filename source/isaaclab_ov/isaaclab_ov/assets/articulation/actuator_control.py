@@ -53,7 +53,9 @@ class OvPhysxActuatorControl(ArticulationActuatorControl):
         if not use_newton_actuators:
             return set()
 
-        _validate_newton_native_actuator_cfgs(actuator_cfgs)
+        # ``host_adapter``: this backend steps native actuators through the shared host
+        # runtime, so a config whose model is defined by solver quantities cannot run here.
+        _validate_newton_native_actuator_cfgs(actuator_cfgs, host_adapter=True)
         # Activate the runtime even without explicit native groups: implicit-only
         # articulations still rely on it for the solver telemetry fast path.
         self._native_actuator_path_active = True

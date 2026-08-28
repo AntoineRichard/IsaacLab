@@ -47,6 +47,8 @@ def _resolve_actuator_class(class_type: type | str) -> type:
 def _is_newton_native_actuator_cfg(cfg: Any) -> bool:
     """Return whether an actuator config can be authored as a Newton actuator."""
     from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg  # noqa: PLC0415
+    from isaaclab.actuators.actuator_bam import BamActuator  # noqa: PLC0415
+    from isaaclab.actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_net import ActuatorNetLSTM, ActuatorNetMLP  # noqa: PLC0415
     from isaaclab.actuators.actuator_net_cfg import ActuatorNetLSTMCfg, ActuatorNetMLPCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_pd import (  # noqa: PLC0415
@@ -63,6 +65,7 @@ def _is_newton_native_actuator_cfg(cfg: Any) -> bool:
         (RemotizedPDActuatorCfg, RemotizedPDActuator),
         (DelayedPDActuatorCfg, DelayedPDActuator),
         (DCMotorCfg, DCMotor),
+        (BamActuatorCfg, BamActuator),
         (IdealPDActuatorCfg, IdealPDActuator),
     )
     try:
@@ -75,20 +78,60 @@ def _is_newton_native_actuator_cfg(cfg: Any) -> bool:
     return False
 
 
-def _validate_newton_native_actuator_cfgs(actuator_cfgs: dict[str, Any]) -> None:
-    """Reject explicit actuator configurations that Newton cannot author."""
+def _is_solver_hosted_actuator_cfg(cfg: Any) -> bool:
+    """Return whether a config's native execution needs Newton's in-solver actuator path.
+
+    A backend that runs native actuators through the shared host adapter executes every other
+    supported config unchanged, but not one whose *model* is written in terms of solver
+    quantities. :class:`~isaaclab.actuators.BamActuatorCfg` is the only such config today: its
+    controller publishes the gearbox friction budget into the solver's joint dry friction and
+    reads the external load back out of the solver's generalized forces, and a host adapter
+    provides neither.
+    """
+    from isaaclab.actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
+
+    return isinstance(cfg, BamActuatorCfg)
+
+
+def _validate_newton_native_actuator_cfgs(actuator_cfgs: dict[str, Any], *, host_adapter: bool = False) -> None:
+    """Reject explicit actuator configurations the native actuator path cannot run.
+
+    Args:
+        actuator_cfgs: Actuator configurations of one articulation, keyed by group name.
+        host_adapter: Whether the backend executes native actuators through the shared host
+            adapter (PhysX, OVPhysX) instead of inside the Newton solver. Such a backend
+            additionally cannot run a solver-hosted config; see
+            :func:`_is_solver_hosted_actuator_cfg`. Defaults to False, which is both the Newton
+            backend and the backend-agnostic USD authoring pass.
+
+    Raises:
+        ValueError: If a group's config cannot be authored as a Newton actuator, or if it needs
+            the Newton solver and ``host_adapter`` is set.
+    """
     unsupported_groups = []
+    solver_hosted_groups = []
     for group_name, cfg in actuator_cfgs.items():
         try:
             is_implicit = _is_implicit_actuator_cfg(cfg)
         except ValueError:
             is_implicit = False
-        if not is_implicit and not _is_newton_native_actuator_cfg(cfg):
+        if is_implicit:
+            continue
+        if not _is_newton_native_actuator_cfg(cfg):
             unsupported_groups.append(f"'{group_name}' ({type(cfg).__name__})")
+        elif host_adapter and _is_solver_hosted_actuator_cfg(cfg):
+            solver_hosted_groups.append(f"'{group_name}' ({type(cfg).__name__})")
     if unsupported_groups:
         raise ValueError(
             "Newton-native actuator execution does not support "
             f"{', '.join(unsupported_groups)}. Disable 'use_newton_actuators' or use a supported actuator config."
+        )
+    if solver_hosted_groups:
+        raise ValueError(
+            f"Native actuator execution of {', '.join(solver_hosted_groups)} requires the Newton backend: the model"
+            " publishes its friction budget into the solver's joint dry friction and reads the external load back"
+            " out of the solver, and this backend runs native actuators through the host adapter, which provides"
+            " neither. Set 'use_newton_actuators=False' to run the Isaac Lab-executed model on this backend."
         )
 
 
@@ -233,6 +276,7 @@ def _author_actuator_prims(
     _remove_actuator_prims_for_joints(art_prim, covered_joint_paths)
 
     from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg  # noqa: PLC0415
+    from isaaclab.actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_net_cfg import ActuatorNetLSTMCfg, ActuatorNetMLPCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_pd_cfg import RemotizedPDActuatorCfg  # noqa: PLC0415
 
@@ -244,6 +288,7 @@ def _author_actuator_prims(
         is_remotized = isinstance(cfg, RemotizedPDActuatorCfg)
         is_dc_motor = isinstance(cfg, DCMotorCfg)
         is_delayed = isinstance(cfg, DelayedPDActuatorCfg)
+        is_bam = isinstance(cfg, BamActuatorCfg)
 
         configured_effort_limit = getattr(cfg, "actuator_effort_limit", None)
         effort_map: dict[str, float] = {}
@@ -265,6 +310,22 @@ def _author_actuator_prims(
 
         raw_delay = getattr(cfg, "max_delay", 0) if is_delayed else 0
         delay_map = resolve_per_dof(raw_delay, joint_names, cast=int) if raw_delay else {}
+
+        bam_attrs: dict[str, float | int] = {}
+        bam_seed_friction: float | None = None
+        bam_control_api = ""
+        if is_bam:
+            # Both construction paths resolve the schema token through Newton's component
+            # registry, and authoring always precedes parsing, so this is the earliest point
+            # at which the BAM controller is guaranteed to be registered.
+            from isaaclab.actuators.newton.bam_component import (  # noqa: PLC0415
+                BAM_CONTROL_API,
+                register_bam_actuator_component,
+            )
+
+            register_bam_actuator_component()
+            bam_control_api = BAM_CONTROL_API
+            bam_attrs, bam_seed_friction = _resolve_bam_attributes(cfg)
 
         patched_model_path: str | None = None
         if is_neural:
@@ -289,12 +350,26 @@ def _author_actuator_prims(
 
             if is_neural:
                 schemas.append("NewtonNeuralControlAPI")
+            elif is_bam:
+                schemas.append(bam_control_api)
+                attrs.update(bam_attrs)
+                # MuJoCo only assembles a DOF-friction constraint row for joints whose
+                # frictionloss is positive, and the initial constraint budget (``njmax``) is
+                # sized from the model as spawned. Seeding a positive friction keeps the row
+                # present from the very first solve; the per-step budget overwrites it.
+                _seed_joint_friction(stage, joint_inventory[jname], bam_seed_friction)
             else:
                 schemas.append("NewtonPDControlAPI")
                 attrs["kp"] = stiffness_map.get(jname, 0.0)
                 attrs["kd"] = damping_map.get(jname, 0.0)
 
-            if is_dc_motor:
+            if is_bam:
+                # No clamping component: BAM applies its own effort limit. Authoring a
+                # USD-registered token beside the unregistered ``NewtonBamControlAPI`` would
+                # hide the controller from Newton's schema discovery entirely.
+                if jname in effort_map:
+                    attrs["max_effort"] = effort_map[jname]
+            elif is_dc_motor:
                 schemas.append("NewtonDCMotorClampingAPI")
                 attrs["saturation_effort"] = sat_effort_map.get(jname, 0.0)
                 if jname in vel_limit_map:
@@ -332,6 +407,11 @@ def _author_actuator_prims(
                     Sdf.AssetPath(patched_model_path)
                 )
 
+            if is_bam:
+                act_prim.CreateAttribute("newton:paramsFile", Sdf.ValueTypeNames.Asset).Set(
+                    Sdf.AssetPath(str(cfg.params_file))
+                )
+
             for attr_name, attr_val in attrs.items():
                 usd_name = f"newton:{_snake_to_camel(attr_name)}"
                 if isinstance(attr_val, int):
@@ -349,6 +429,60 @@ def _author_actuator_prims(
 # ---------------------------------------------------------------------------
 
 _SNAKE_TO_CAMEL_RE = re.compile(r"_([a-z])")
+
+
+def _resolve_bam_attributes(cfg: Any) -> tuple[dict[str, float | int], float]:
+    """Return the ``newton:`` attribute values and the seed friction of a BAM actuator group.
+
+    The identified motor constants are *not* authored: the Newton controller reads them from
+    the same parameter file this config names, which is what keeps the two implementations
+    on identical numbers. Only the deployment settings and the per-environment knobs are
+    written, and the latter carry the config's nominal value -- a USD prim is shared by every
+    clone, so start-up range sampling has to be applied afterwards through
+    :func:`~isaaclab.actuators.newton.write_group_parameter`.
+
+    Args:
+        cfg: The :class:`~isaaclab.actuators.BamActuatorCfg` being authored.
+
+    Returns:
+        The attribute mapping to author on the actuator prim, and the joint friction [N.m] to
+        seed the driven joints with.
+    """
+    from isaaclab.actuators.bam_model import BamMotorParams  # noqa: PLC0415
+
+    params = BamMotorParams.from_json(cfg.params_file)
+    attrs: dict[str, float | int] = {
+        "kp_fw": float(cfg.kp_fw) if cfg.kp_fw is not None else params.kp,
+        "vin": float(cfg.vin) if cfg.vin is not None else params.vin,
+        "sag_gain": 0.0,
+        "friction_scale": 1.0,
+        "kp_scale": 1.0,
+        "kd_scale": 1.0,
+        "min_delay": int(cfg.min_delay),
+        "max_delay": int(cfg.max_delay),
+        "delay_hold_prob": float(cfg.delay_hold_prob),
+        "delay_update_period": int(cfg.delay_update_period),
+    }
+    if cfg.vin_min is not None:
+        attrs["vin_min"] = float(cfg.vin_min)
+    return attrs, params.friction_base
+
+
+def _seed_joint_friction(stage: Usd.Stage, joint_prim_path: str, friction: float | None) -> None:
+    """Author a positive ``newton:friction`` on a joint that has none.
+
+    An authored value is left alone: a task that deliberately tunes its joint friction must
+    win over the seed.
+    """
+    if friction is None or friction <= 0.0:
+        return
+    joint_prim = stage.GetPrimAtPath(joint_prim_path)
+    if not joint_prim.IsValid():
+        return
+    attribute = joint_prim.GetAttribute("newton:friction")
+    if attribute and attribute.HasAuthoredValue() and (attribute.Get() or 0.0) > 0.0:
+        return
+    joint_prim.CreateAttribute("newton:friction", Sdf.ValueTypeNames.Float).Set(float(friction))
 
 
 def _snake_to_camel(name: str) -> str:

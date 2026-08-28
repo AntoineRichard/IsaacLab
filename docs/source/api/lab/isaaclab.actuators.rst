@@ -27,6 +27,9 @@
     ActuatorNetMLPCfg
     ActuatorNetLSTM
     ActuatorNetLSTMCfg
+    BamActuator
+    BamActuatorCfg
+    BamMotorParams
 
   .. rubric:: Functions
 
@@ -166,10 +169,52 @@ LSTM Network Actuator
   :show-inheritance:
   :exclude-members: __init__, class_type
 
+BAM Servo Model
+---------------
+
+.. autoclass:: BamActuator
+  :members:
+  :inherited-members:
+  :show-inheritance:
+
+.. autoclass:: BamActuatorCfg
+  :members:
+  :inherited-members:
+  :show-inheritance:
+  :exclude-members: __init__, class_type
+
+.. autoclass:: BamMotorParams
+  :members:
+  :exclude-members: __init__
+
+.. autodata:: BAM_XL330_M6_PARAMS_FILE
+  :no-value:
+
+The stateless equations both BAM implementations share are not re-exported at the package root;
+their canonical home is :mod:`isaaclab.actuators.bam_model`:
+
+.. autofunction:: isaaclab.actuators.bam_model.compute_duty
+
+.. autofunction:: isaaclab.actuators.bam_model.compute_motor_torque
+
+.. autofunction:: isaaclab.actuators.bam_model.compute_stribeck_coeff
+
+.. autofunction:: isaaclab.actuators.bam_model.compute_friction_budget
+
+.. autofunction:: isaaclab.actuators.bam_model.apply_stiction_clip
+
+.. autofunction:: isaaclab.actuators.bam_model.battery_sag
+
 Newton Actuator Access
 ----------------------
 
 .. automodule:: isaaclab.actuators.newton
+
+  .. rubric:: Classes
+
+  .. autosummary::
+
+    ControllerBam
 
   .. rubric:: Functions
 
@@ -177,7 +222,14 @@ Newton Actuator Access
 
     read_group_parameter
     write_group_parameter
+    apply_bam_startup_sampling
+
+.. autoclass:: isaaclab.actuators.newton.ControllerBam
+    :members:
+    :show-inheritance:
 
 .. autofunction:: isaaclab.actuators.newton.read_group_parameter
 
 .. autofunction:: isaaclab.actuators.newton.write_group_parameter
+
+.. autofunction:: isaaclab.actuators.newton.apply_bam_startup_sampling
