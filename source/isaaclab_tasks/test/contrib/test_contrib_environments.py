@@ -38,6 +38,10 @@ _SKIPPED_TASK_SUBSTRINGS = {
 }
 _COVERED_TASKS = [
     "IsaacContrib-Lift-Cube-Franka",  # Already covered by test_environment_determinism.py
+    # Covered by test_microduck_env.py, which skips when the generated MicroDuck USD is absent.
+    # This suite cannot express that: it would fail on the missing asset rather than skip.
+    "IsaacContrib-Velocity-Flat-MicroDuck",
+    "IsaacContrib-Velocity-Rough-MicroDuck",
 ]
 
 
