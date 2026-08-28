@@ -683,6 +683,21 @@ def test_the_velocity_command_buckets_and_sim_rates_match_upstream():
 
 
 @pytest.mark.unit
+def test_the_physics_preset_keeps_the_mujoco_parity_joint_limits():
+    """The joint damping the asset restores is only stable with MuJoCo's default limit ``solref``.
+
+    ``MICRODUCK_JOINT_DAMPING`` is upstream's deployed viscous coefficient (~0.0054), an order of
+    magnitude below the MJCF's. At that value this light, limit-bounded biped only integrates
+    because unauthored joint limits resolve to MuJoCo's critically damped ``solreflimit`` -- the
+    force-space conversion Newton's default limit gains produce is underdamped and diverges. The
+    preset inherits the backend default rather than setting the flag, so this pins both that the
+    default is still on and that neither task turns it off.
+    """
+    for cfg in (MicroDuckVelocityRoughEnvCfg(), MicroDuckVelocityFlatEnvCfg()):
+        assert cfg.sim.physics.default.solver_cfg.use_mujoco_default_joint_limit_solref is True
+
+
+@pytest.mark.unit
 def test_the_runner_iteration_size_is_tied_to_the_curriculum_step_constant():
     """A runner change would otherwise silently desync every curriculum boundary from 'iteration N'.
 

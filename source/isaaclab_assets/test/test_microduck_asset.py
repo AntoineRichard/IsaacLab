@@ -477,6 +477,13 @@ def test_microduck_cfg_restores_the_joint_dynamics_the_asset_drops(microduck_art
     model would never read. On the Isaac Lab-executed path they are the only joint-level
     dissipation the solver has, and it diverges without them; on the Newton-native path the
     controller republishes its own budget over them every physics step, so they are seeds there.
+
+    The viscous coefficient is deliberately *not* the MJCF's ``dof_damping``: upstream's BAM binding
+    overwrites that with the servo fit's ``friction_viscous`` every step, so the fit is what the
+    deployed robot runs at, and the two differ by an order of magnitude. The comparison is against
+    the vendored fit the actuator loaded rather than against
+    :data:`~isaaclab_assets.robots.microduck.MICRODUCK_JOINT_DAMPING`, so the configured constant is
+    checked against an independent source.
     """
     robot = microduck_articulation
     servos = robot.actuators["servos"]
@@ -484,8 +491,12 @@ def test_microduck_cfg_restores_the_joint_dynamics_the_asset_drops(microduck_art
     friction = robot.data.joint_friction_coeff.torch[0].cpu().numpy()
     armature = robot.data.joint_armature.torch[0].cpu().numpy()
 
+    # the MJCF value is ten times the fit, so a revert to it cannot pass the comparison below
+    assert all(mj_joints[name]["damping"] > 5.0 * servos.params.friction_viscous for name in robot.joint_names)
+
     for index, name in enumerate(robot.joint_names):
-        assert viscous[index] == pytest.approx(mj_joints[name]["damping"], rel=1e-4), name
+        # rel=1e-3 because the configured constant is the fit rounded to three significant digits
+        assert viscous[index] == pytest.approx(servos.params.friction_viscous, rel=1e-3), name
         assert friction[index] == pytest.approx(mj_joints[name]["frictionloss"], rel=1e-4), name
         # armature is left to the USD, which carries the MJCF value unchanged
         assert armature[index] == pytest.approx(mj_joints[name]["armature"], rel=1e-4), name

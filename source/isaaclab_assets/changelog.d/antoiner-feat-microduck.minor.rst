@@ -21,3 +21,18 @@ Added
   friction the conversion drops and bounds the model at the electrical stall torque upstream derives
   from the top of its battery range. Spawning it without the generated USD raises an error naming
   the command that regenerates it.
+
+Changed
+^^^^^^^
+
+* Changed the passive joint damping :data:`~isaaclab_assets.MICRODUCK_CFG` restores from the MJCF's
+  ``0.053`` to ``0.00536`` N·m·s/rad, the ``friction_viscous`` of the vendored Dynamixel XL330
+  ``m6`` fit that upstream's servo binding publishes into MuJoCo's ``dof_damping`` -- so MicroDuck
+  now integrates at the joint damping the deployed robot is identified and trained against. The
+  ten-times-inflated MJCF value had only masked the underdamped joint-limit conversion on the
+  MuJoCo Warp backend, which the **Breaking:** ``isaaclab_newton`` entry on unauthored joint-limit
+  ``solref`` fixes. The corrected value therefore depends on that fix:
+  :attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref` must stay
+  at its default of ``True``, since turning it off without restoring ``0.053`` here drives the
+  robot to a non-finite state within a few hundred steps. Policies trained against the previous
+  damping should be retrained.
