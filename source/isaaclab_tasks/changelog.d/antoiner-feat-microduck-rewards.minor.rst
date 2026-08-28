@@ -15,4 +15,7 @@ Added
   terminates an environment whose joint state, root state or named contact-sensor forces have
   stopped being finite.
 * Added ``test/test_microduck_rewards.py``, which unit-tests every MicroDuck reward and termination
-  term against an environment double with hand-computed expected values.
+  term against an environment double with hand-computed expected values. The contact-sensor double
+  returns the landing mask as float32, matching what
+  ``ContactSensor.compute_first_contact`` produces, so the tests exercise the dtype the Newton
+  backend actually returns.

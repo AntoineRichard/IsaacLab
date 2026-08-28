@@ -65,8 +65,12 @@ class _DummyAsset:
 class _DummySensor:
     """Contact sensor double.
 
-    ``compute_first_contact`` mirrors the real sensor: a body has just landed when it is in contact
-    and has been for no longer than the control step.
+    ``compute_first_contact`` mirrors the real sensor: a body has just landed when its contact time
+    is inside ``(0, dt + abs_tol)``. Critically it returns that mask as **float32 ones and zeros**,
+    not as booleans, exactly as
+    ``isaaclab_newton.sensors.contact_sensor.ContactSensor.compute_first_contact`` does through
+    ``compute_first_transition_kernel``. A boolean double would hide the fact that the result
+    cannot be handed to ``torch.where`` as a condition.
     """
 
     def __init__(self, **fields: torch.Tensor | None) -> None:
@@ -74,7 +78,7 @@ class _DummySensor:
 
     def compute_first_contact(self, dt: float, abs_tol: float = 1.0e-8) -> _DummyTensorView:
         contact_time = self.data.current_contact_time.torch
-        return _DummyTensorView((contact_time > 0.0) & (contact_time <= dt + abs_tol))
+        return _DummyTensorView(((contact_time > 0.0) & (contact_time < dt + abs_tol)).float())
 
 
 class _DummyCommandManager:
@@ -703,6 +707,78 @@ def test_foot_swing_height_is_gated_on_the_command_magnitude():
     cost = term(env.as_env(), **params)
 
     torch.testing.assert_close(cost, torch.tensor([0.0]))
+
+
+def test_foot_swing_height_handles_the_float_landing_mask_the_sensor_returns():
+    """The contact sensor reports the landing mask as floats, which is not a ``where`` condition.
+
+    Regression: consuming ``compute_first_contact`` directly raised
+    ``where expected condition to be a boolean tensor`` on the Newton backend.
+    """
+    term, env, params, sensor, _ = _swing_height_term()
+
+    # the double must keep matching the real sensor, or this test stops covering anything
+    assert sensor.compute_first_contact(env.step_dt).torch.dtype is torch.float32
+
+    sensor.data.current_contact_time.torch = torch.tensor([[env.step_dt, 0.0]])
+    cost = term(env.as_env(), **params)
+
+    torch.testing.assert_close(cost, torch.tensor([1.0]))
+
+
+##
+# Term configuration errors
+##
+
+
+def test_pose_mode_switch_rejects_a_configuration_without_a_joint_selection():
+    """Selecting every joint would silently pair the standard deviations with the wrong ones."""
+    command = torch.zeros(1, 3)
+    robot = _DummyAsset(joint_pos=torch.zeros(1, 2), default_joint_pos=torch.zeros(1, 2))
+    robot.joint_names = ["left_hip_pitch", "left_knee"]
+    env = _DummyEnv(num_envs=1, assets={"robot": robot}, commands={"twist": command})
+    params = {
+        "command_name": "twist",
+        "std_standing": {r".*": 0.15},
+        "std_walking": {r".*": 0.4},
+        "std_running": {r".*": 0.4},
+        "walking_threshold": 0.01,
+        "running_threshold": 1.5,
+        "asset_cfg": SceneEntityCfg("robot"),
+    }
+    cfg = RewardTermCfg(func=mdp.pose_mode_switch, weight=1.0, params=params)
+
+    with pytest.raises(ValueError, match="select its joints by name"):
+        mdp.pose_mode_switch(cfg, env.as_env())
+
+
+def test_pose_mode_switch_rejects_a_configuration_without_an_asset():
+    """A missing entity configuration names the parameter rather than raising a bare KeyError."""
+    env = _DummyEnv(num_envs=1)
+    cfg = RewardTermCfg(func=mdp.pose_mode_switch, weight=1.0, params={"command_name": "twist"})
+
+    with pytest.raises(ValueError, match="asset_cfg"):
+        mdp.pose_mode_switch(cfg, env.as_env())
+
+
+def test_head_pose_bias_penalty_rejects_a_configuration_without_a_joint_selection():
+    """The moving average is sized from the selection, and the command columns are paired with it."""
+    robot = _DummyAsset(joint_pos=torch.zeros(1, 4), default_joint_pos=torch.zeros(1, 4))
+    env = _DummyEnv(num_envs=1, assets={"robot": robot}, commands={"head_pose": torch.zeros(1, 4)})
+    params = {"command_name": "head_pose", "tau_s": 1.0, "asset_cfg": SceneEntityCfg("robot")}
+    cfg = RewardTermCfg(func=mdp.head_pose_bias_penalty, weight=1.0, params=params)
+
+    with pytest.raises(ValueError, match="select its joints by name"):
+        mdp.head_pose_bias_penalty(cfg, env.as_env())
+
+
+def test_foot_swing_height_rejects_a_configuration_without_a_sensor():
+    """The peak buffer is sized from the sensor, so it cannot be left out."""
+    env = _DummyEnv(num_envs=1)
+    cfg = RewardTermCfg(func=mdp.foot_swing_height, weight=1.0, params={"command_name": "twist"})
+
+    with pytest.raises(ValueError, match="sensor_cfg"):
+        mdp.foot_swing_height(cfg, env.as_env())
 
 
 ##
