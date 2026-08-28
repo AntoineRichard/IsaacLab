@@ -51,7 +51,9 @@ here and only the ring buffer is reused.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
+from dataclasses import MISSING
 from typing import TYPE_CHECKING
 
 import torch
@@ -145,16 +147,31 @@ class BamActuator(ActuatorBase):
             actuator_velocity_limit: Actuator velocity limit [rad/s].
         """
         del stiffness, damping
-        super().__init__(
-            cfg, joint_names, joint_ids, num_envs, device, actuator_effort_limit, actuator_velocity_limit
-        )
+        # configclass deep-copies the MISSING sentinel per field, so compare by type.
+        ignored_gains = [
+            name
+            for name in ("stiffness", "damping")
+            if getattr(cfg, name) is not None and not isinstance(getattr(cfg, name), type(MISSING))
+        ]
+        if ignored_gains:
+            warnings.warn(
+                f"BamActuatorCfg.{' and '.join(ignored_gains)} is ignored by the BAM model: its position loop"
+                " runs in the firmware domain (see kp_fw) and its damping is the motor's back-EMF.",
+                UserWarning,
+                stacklevel=2,
+            )
+        super().__init__(cfg, joint_names, joint_ids, num_envs, device, actuator_effort_limit, actuator_velocity_limit)
 
         self.params = BamMotorParams.from_json(cfg.params_file)
         self._firmware_kp = float(cfg.kp_fw) if cfg.kp_fw is not None else self.params.kp
         self._dt = float(cfg.dt) if cfg.dt is not None else PhysicsManager.get_physics_dt()
 
+        if cfg.min_delay < 0:
+            raise ValueError(f"BamActuatorCfg.min_delay must not be negative. Received: {cfg.min_delay}.")
         if cfg.max_delay < cfg.min_delay:
-            raise ValueError(f"BamActuatorCfg.max_delay ({cfg.max_delay}) must not be below min_delay.")
+            raise ValueError(
+                f"BamActuatorCfg.max_delay ({cfg.max_delay}) must not be below min_delay ({cfg.min_delay})."
+            )
         if not 0.0 <= cfg.delay_hold_prob <= 1.0:
             raise ValueError(f"BamActuatorCfg.delay_hold_prob must lie in [0, 1]. Received: {cfg.delay_hold_prob}.")
 
@@ -213,6 +230,9 @@ class BamActuator(ActuatorBase):
         The startup-sampled quantities (:attr:`vin`, :attr:`sag_gain` and the default of
         :attr:`friction_scale`) are deliberately left untouched, matching the reference
         implementation: they describe the hardware, not the episode.
+
+        Args:
+            env_ids: Environments to reset. Defaults to None, which resets all of them.
         """
         env_ids = slice(None) if env_ids is None else env_ids
         self._prev_motor_effort[env_ids] = 0.0
@@ -224,7 +244,7 @@ class BamActuator(ActuatorBase):
         if self.cfg.delay_update_period > 0:
             self._delay_phase[env_ids] = self._sample_delay_phase()[env_ids]
         if self._delay_buffer is not None:
-            self._delay_buffer.reset(None if isinstance(env_ids, slice) else env_ids)
+            self._delay_buffer.reset(self._as_buffer_ids(env_ids))
 
     def compute(
         self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
@@ -351,6 +371,19 @@ class BamActuator(ActuatorBase):
         joint_acc = (joint_vel - self._prev_joint_vel) / self._dt
         return self.params.armature * joint_acc - self._prev_applied_effort
 
+    def _as_buffer_ids(self, env_ids: Sequence[int] | slice) -> Sequence[int] | None:
+        """Convert a reset selection into what :class:`~isaaclab.utils.buffers.CircularBuffer` takes.
+
+        The buffer accepts indices or None (meaning all environments), so a partial slice has
+        to be materialized: passing None for it would clear every environment's ring while the
+        rest of the actuator state was only partially reset.
+        """
+        if not isinstance(env_ids, slice):
+            return env_ids
+        if env_ids == slice(None):
+            return None
+        return range(*env_ids.indices(self._num_envs))
+
     def _sample_per_env(self, value_range: tuple[float, float] | None, default: float) -> torch.Tensor:
         """Draw one uniform per-environment value, or fill with ``default`` when unset."""
         buffer = torch.empty(self._num_envs, 1, device=self._device)
@@ -362,9 +395,7 @@ class BamActuator(ActuatorBase):
         """Draw a per-environment phase offset for the lag resampling."""
         if self.cfg.delay_update_period <= 0:
             return torch.zeros(self._num_envs, dtype=torch.long, device=self._device)
-        return torch.randint(
-            0, self.cfg.delay_update_period, (self._num_envs,), dtype=torch.long, device=self._device
-        )
+        return torch.randint(0, self.cfg.delay_update_period, (self._num_envs,), dtype=torch.long, device=self._device)
 
     def _apply_delay(self, target: torch.Tensor) -> torch.Tensor:
         """Buffer the position command and return the lagged one."""

@@ -14,6 +14,7 @@ core functions rather than by hard-coded numbers).
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -109,6 +110,25 @@ def test_firmware_gain_and_voltage_fallbacks():
 
     torch.testing.assert_close(make_actuator().vin, torch.full((2, 1), PARAMS.vin))
     torch.testing.assert_close(make_actuator(vin=7.4).vin, torch.full((2, 1), 7.4))
+
+
+def test_invalid_delay_configuration_is_rejected():
+    """Out-of-range delay settings fail at construction rather than at the first step."""
+    with pytest.raises(ValueError, match="min_delay must not be negative"):
+        make_actuator(min_delay=-1)
+    with pytest.raises(ValueError, match="max_delay"):
+        make_actuator(min_delay=3, max_delay=2)
+    with pytest.raises(ValueError, match="delay_hold_prob"):
+        make_actuator(delay_hold_prob=1.5)
+
+
+def test_torque_domain_gains_warn_when_set():
+    """Configuring the unused PD gains warns instead of silently doing nothing."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        make_actuator()  # left at MISSING: nothing to warn about
+    with pytest.warns(UserWarning, match="stiffness and damping is ignored"):
+        make_actuator(stiffness=10.0, damping=1.0)
 
 
 def test_vin_range_overrides_vin_and_is_sampled_per_env():
@@ -208,6 +228,41 @@ def test_external_torque_estimate_is_the_rotor_momentum_residual():
     torch.testing.assert_close(actuator._estimate_external_torque(next_vel), expected)
 
 
+def test_second_step_effort_matches_the_math_core_under_load():
+    """A statically held load pins the whole pipeline, external-torque sign included.
+
+    On the second step the joint has not moved but the previous one applied a torque, so the
+    external-torque estimate is a non-zero ``-tau_prev``: the load the actuator had to
+    balance. It enters both the friction budget and the stopping torque of the stiction clip,
+    so the expected effort below only matches if the estimate is used with that sign.
+    """
+    device = "cpu"
+    actuator = make_actuator(num_envs=1, device=device)
+    joint_pos = torch.zeros(1, 2, device=device)
+    joint_vel = torch.zeros(1, 2, device=device)
+    target = torch.tensor([[0.1, -0.1]], device=device)
+
+    kp = torch.full((1, 1), 200.0, device=device)
+    vin = torch.full((1, 1), PARAMS.vin, device=device)
+    stribeck = compute_stribeck_coeff(joint_vel, PARAMS)
+    zeros = torch.zeros_like(joint_pos)
+    clip_kwargs = dict(dq=joint_vel, viscous=PARAMS.friction_viscous, dt=DT, inertia=PARAMS.armature)
+
+    # Step 1 runs unloaded: both previous-step caches are zero.
+    duty = compute_duty(target, joint_pos, joint_vel, kp, vin, PARAMS)
+    motor_tau = compute_motor_torque(duty, joint_vel, vin, PARAMS)
+    budget = compute_friction_budget(zeros, zeros, stribeck, PARAMS)
+    first = apply_stiction_clip(motor_tau, zeros, frictionloss=budget, **clip_kwargs)
+    torch.testing.assert_close(step(actuator, target, joint_pos, joint_vel), first)
+    assert first.abs().min() > 0.0, "the first step must apply a torque for the load estimate to be non-zero"
+
+    # Step 2: the joint did not move, so the estimate is exactly the negated applied effort.
+    external = -first
+    budget = compute_friction_budget(motor_tau, external, stribeck, PARAMS)
+    expected = apply_stiction_clip(motor_tau, external, frictionloss=budget, **clip_kwargs)
+    torch.testing.assert_close(step(actuator, target, joint_pos, joint_vel), expected)
+
+
 def test_first_step_after_a_reset_sees_no_acceleration():
     """A joint reset while moving must not produce an acceleration spike.
 
@@ -248,7 +303,9 @@ def test_battery_sag_lowers_the_supply_after_a_loaded_step():
 
     vin = torch.full((1, 1), PARAMS.vin, device=device)
     kp = torch.full((1, 1), 200.0, device=device)
-    motor_tau = compute_motor_torque(compute_duty(target, joint_pos, joint_vel, kp, vin, PARAMS), joint_vel, vin, PARAMS)
+    motor_tau = compute_motor_torque(
+        compute_duty(target, joint_pos, joint_vel, kp, vin, PARAMS), joint_vel, vin, PARAMS
+    )
     expected_vin = torch.clamp(vin - 0.2 * motor_tau.abs().sum(dim=-1, keepdim=True), min=6.0)
     assert expected_vin.item() < PARAMS.vin
 
@@ -427,3 +484,32 @@ def test_reset_clears_the_delay_state():
     # Env 0 restarted, so it sees the fresh command; env 1 still lags by two steps.
     torch.testing.assert_close(effort[0], step(reference, fresh, joint_pos, joint_vel)[0])
     assert not torch.allclose(effort[1], effort[0])
+
+
+@pytest.mark.parametrize("env_ids", [[0], slice(0, 1)])
+def test_partial_reset_keeps_the_other_envs_delayed_history(env_ids):
+    """Resetting one environment must not clear the buffered commands of the others.
+
+    The delayed command of the untouched environment is what proves its ring survived: a
+    slice selection that leaked through as "all environments" would clear its history and
+    hand it the fresh command instead of the one from two steps ago.
+    """
+    lag = 2
+    actuator = make_actuator(num_envs=2, min_delay=lag, max_delay=lag)
+    untouched = make_actuator(num_envs=2, min_delay=lag, max_delay=lag)
+    joint_pos = torch.zeros(2, 2)
+    joint_vel = torch.zeros(2, 2)
+    fresh = torch.full((2, 2), 9.0)
+    for index in range(4):
+        target = torch.full((2, 2), 0.1 * (index + 1))
+        step(actuator, target, joint_pos, joint_vel)
+        step(untouched, target, joint_pos, joint_vel)
+
+    actuator.reset(env_ids)
+    effort = step(actuator, fresh, joint_pos, joint_vel)
+    expected = step(untouched, fresh, joint_pos, joint_vel)
+
+    # Env 1 was not reset, so it behaves exactly like the actuator that was never reset.
+    torch.testing.assert_close(effort[1], expected[1])
+    # ... while env 0 restarted and now runs on the fresh command.
+    assert not torch.allclose(effort[0], expected[0])
