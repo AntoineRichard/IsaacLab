@@ -666,6 +666,36 @@ def test_the_pose_commands_are_registered_at_their_initial_ranges():
 
 
 @pytest.mark.unit
+def test_the_velocity_command_buckets_and_sim_rates_match_upstream():
+    """Pins the recipe scalars the parity tables above do not touch: bucket fractions and rates."""
+    cfg = MicroDuckVelocityRoughEnvCfg()
+    base_velocity = cfg.commands.base_velocity
+
+    assert base_velocity.resampling_time_range == (3.0, 8.0)
+    assert base_velocity.rel_standing_envs == pytest.approx(0.02)
+    assert base_velocity.rel_forward_envs == pytest.approx(0.2)
+    assert base_velocity.rel_turn_in_place_envs == pytest.approx(0.15)
+    assert base_velocity.rel_heading_envs == pytest.approx(0.0)
+
+    assert cfg.decimation == 4
+    assert cfg.sim.dt == pytest.approx(0.005)
+    assert cfg.episode_length_s == pytest.approx(20.0)
+
+
+@pytest.mark.unit
+def test_the_runner_iteration_size_is_tied_to_the_curriculum_step_constant():
+    """A runner change would otherwise silently desync every curriculum boundary from 'iteration N'.
+
+    ``num_steps_per_env`` exists in two places that must agree: the runner's own field and the
+    constant ``velocity_env_cfg.MICRODUCK_STEPS_PER_ITERATION`` the curriculum stage tables convert
+    upstream's iteration counts with. The runner imports that constant rather than restating it, so
+    this assertion is really pinning that the import stayed wired -- see
+    :data:`STEPS_PER_ITERATION` above for the independent, upstream-derived value both must equal.
+    """
+    assert MicroDuckPPORunnerCfg().num_steps_per_env == STEPS_PER_ITERATION
+
+
+@pytest.mark.unit
 def test_the_terrain_generator_carries_upstream_sub_terrain_mix():
     """The rough terrain is upstream's gentle mix, and the flat task keeps a plain plane."""
     rough = MicroDuckVelocityRoughEnvCfg()

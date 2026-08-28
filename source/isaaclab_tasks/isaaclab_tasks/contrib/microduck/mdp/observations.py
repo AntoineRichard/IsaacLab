@@ -226,6 +226,13 @@ class delayed_observation(ManagerTermBase):
 
     ``per_env`` and ``per_env_phase`` are not exposed: upstream leaves both at their per-environment
     defaults, and a shared lag would defeat the point of the term.
+
+    Never hoist an :class:`~isaaclab.managers.ObservationTermCfg` wrapping this term to module
+    level and reuse the same instance across two observation slots (for example the actor's
+    ``base_ang_vel`` and ``projected_gravity``): the manager keys its term instance -- and this
+    term's lag state and :class:`~isaaclab.utils.buffers.CircularBuffer` -- off the cfg object's
+    identity, so sharing one cfg instance aliases the delay buffer between the two slots instead
+    of giving each its own. Construct a distinct cfg per slot.
     """
 
     def __init__(self, cfg: ObservationTermCfg, env: ManagerBasedEnv):

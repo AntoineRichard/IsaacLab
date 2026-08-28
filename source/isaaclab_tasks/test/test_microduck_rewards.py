@@ -231,6 +231,16 @@ def test_upright_reads_the_selected_body_rather_than_the_root():
     torch.testing.assert_close(rolled, torch.tensor([math.exp(-1.0 / 0.05)]))
 
 
+def test_upright_rejects_a_configuration_with_more_than_one_body():
+    """A multi-body selection would squeeze the body axis away and slice bodies, not xy, instead."""
+    quat = torch.tensor([[[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]]])
+    robot = _DummyAsset(body_link_quat_w=quat, GRAVITY_VEC_W=torch.tensor([[0.0, 0.0, -9.81]]))
+    env = _DummyEnv(num_envs=1, assets={"robot": robot})
+
+    with pytest.raises(ValueError, match="single body"):
+        mdp.upright(env.as_env(), std=0.2, asset_cfg=_entity("robot", body_ids=[0, 1], body_names=["trunk", "other"]))
+
+
 ##
 # Posture (reference section 5, ``variable_posture``)
 ##
