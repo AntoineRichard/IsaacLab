@@ -758,3 +758,212 @@ def test_the_safe_foot_height_is_the_sole_clearance_above_the_environment_origin
     height = mdp.foot_height_safe(cast("ManagerBasedEnv", env), asset_cfg)
 
     torch.testing.assert_close(height, torch.tensor([[0.3, 0.3], [0.3, 0.0]]))
+
+
+##
+# Staged curricula
+##
+
+
+ACTION_RATE_WEIGHT_STAGES = [
+    {"step": 0 * 24, "weight": -0.1},
+    {"step": 500 * 24, "weight": -0.2},
+    {"step": 750 * 24, "weight": -0.4},
+    {"step": 1000 * 24, "weight": -0.6},
+    {"step": 1250 * 24, "weight": -0.8},
+    {"step": 1500 * 24, "weight": -1.0},
+]
+"""Upstream's ``action_rate_weight`` ramp (reference section 6, curriculum stage tables)."""
+
+STANDING_ENVS_STAGES = [
+    {"step": 0 * 24, "rel_standing_envs": 0.02},
+    {"step": 500 * 24, "rel_standing_envs": 0.05},
+    {"step": 750 * 24, "rel_standing_envs": 0.1},
+    {"step": 1000 * 24, "rel_standing_envs": 0.15},
+    {"step": 1500 * 24, "rel_standing_envs": 0.2},
+    {"step": 2000 * 24, "rel_standing_envs": 0.25},
+]
+"""Upstream's ``standing_envs`` ramp (reference section 6, curriculum stage tables)."""
+
+
+class _DummyRewardManager:
+    """Reward-manager double exposing the two accessors the weight curriculum uses."""
+
+    def __init__(self, term_cfgs: dict) -> None:
+        self._term_cfgs = term_cfgs
+
+    def get_term_cfg(self, term_name: str):
+        return self._term_cfgs[term_name]
+
+    def set_term_cfg(self, term_name: str, cfg) -> None:
+        self._term_cfgs[term_name] = cfg
+
+
+class _DummyCommandManager:
+    def __init__(self, terms: dict) -> None:
+        self._terms = terms
+
+    def get_term(self, name: str):
+        return self._terms[name]
+
+
+class _DummyEventManager:
+    def __init__(self, term_cfgs: dict) -> None:
+        self._term_cfgs = term_cfgs
+
+    def get_term_cfg(self, term_name: str):
+        return self._term_cfgs[term_name]
+
+
+class _DummyTermCfg:
+    """Stands in for a term configuration the curricula mutate in place."""
+
+    def __init__(self, **kwargs) -> None:
+        self.__dict__.update(kwargs)
+
+
+def _make_curriculum_env() -> _DummyEnv:
+    """An environment double carrying the reward, command and event terms the curricula mutate."""
+    env = _DummyEnv(num_envs=4)
+    env.reward_manager = _DummyRewardManager(
+        {
+            "action_rate_l2": _DummyTermCfg(weight=-0.1),
+            "head_pose_bias": _DummyTermCfg(weight=0.0),
+        }
+    )
+    env.command_manager = _DummyCommandManager(
+        {
+            "base_velocity": _DummyTermCfg(cfg=_DummyTermCfg(rel_standing_envs=0.02)),
+            "head_pose": _DummyTermCfg(cfg=_DummyTermCfg(ranges=HEAD_POSE_RANGES)),
+        }
+    )
+    env.event_manager = _DummyEventManager(
+        {
+            "randomize_com": _DummyTermCfg(params={"com_range": {"x": (-0.003, 0.003)}}),
+        }
+    )
+    return env
+
+
+def _apply(env: _DummyEnv, func, **params):
+    return func(cast("ManagerBasedRLEnv", env), slice(None), **params)
+
+
+@pytest.mark.parametrize(
+    "step, expected",
+    [
+        (0, -0.1),
+        (500 * 24, -0.1),
+        (500 * 24 + 1, -0.2),
+        (1000 * 24 + 1, -0.6),
+        (1500 * 24 + 1, -1.0),
+        (10_000 * 24, -1.0),
+    ],
+)
+def test_the_reward_weight_ramp_steps_on_a_strictly_greater_step_boundary(step, expected):
+    """The weight is the payload of the last stage the environment has strictly passed."""
+    env = _make_curriculum_env()
+    env.common_step_counter = step
+
+    value = _apply(env, mdp.reward_weight_stages, reward_name="action_rate_l2", weight_stages=ACTION_RATE_WEIGHT_STAGES)
+
+    assert value == pytest.approx(expected)
+    assert env.reward_manager.get_term_cfg("action_rate_l2").weight == pytest.approx(expected)
+
+
+def test_the_reward_weight_ramp_reaches_every_stage_it_lists():
+    """Every listed weight is served, so no stage is unreachable."""
+    env = _make_curriculum_env()
+    served = []
+    for stage in ACTION_RATE_WEIGHT_STAGES:
+        env.common_step_counter = stage["step"] + 1
+        served.append(
+            _apply(env, mdp.reward_weight_stages, reward_name="action_rate_l2", weight_stages=ACTION_RATE_WEIGHT_STAGES)
+        )
+
+    assert served == pytest.approx([stage["weight"] for stage in ACTION_RATE_WEIGHT_STAGES])
+
+
+@pytest.mark.parametrize(
+    "step, expected",
+    [(0, 0.02), (500 * 24, 0.02), (500 * 24 + 1, 0.05), (2000 * 24 + 1, 0.25)],
+)
+def test_the_standing_fraction_ramp_mutates_the_live_command_configuration(step, expected):
+    """The curriculum writes the live command term's configuration, not the environment's copy."""
+    env = _make_curriculum_env()
+    env.common_step_counter = step
+
+    value = _apply(env, mdp.standing_envs_stages, command_name="base_velocity", standing_stages=STANDING_ENVS_STAGES)
+
+    assert value == pytest.approx(expected)
+    assert env.command_manager.get_term("base_velocity").cfg.rel_standing_envs == pytest.approx(expected)
+
+
+def test_the_command_range_ramp_steps_on_an_inclusive_step_boundary():
+    """Upstream's pose-range curriculum triggers at the stage step, unlike the weight ramps."""
+    stages = [
+        {"step": 0, "ranges": HEAD_POSE_RANGES},
+        {"step": 500 * 24, "ranges": ((-1.10, 1.10), (-1.10, 1.10), (-1.40, 1.40), (-0.31, 0.31))},
+    ]
+    env = _make_curriculum_env()
+    env.common_step_counter = 500 * 24
+
+    value = _apply(env, mdp.command_range_stages, command_name="head_pose", range_stages=stages)
+
+    assert env.command_manager.get_term("head_pose").cfg.ranges == stages[1]["ranges"]
+    # the logged value is the widest half-range currently commanded
+    assert value == pytest.approx(1.40)
+
+
+def test_the_command_range_ramp_restates_the_first_stage_before_any_boundary():
+    """A fresh run is pinned to the first stage rather than to whatever the configuration held."""
+    stages = [{"step": 100, "ranges": HEAD_POSE_RANGES}]
+    env = _make_curriculum_env()
+    env.command_manager.get_term("head_pose").cfg.ranges = ((-9.0, 9.0),) * 4
+    env.common_step_counter = 0
+
+    _apply(env, mdp.command_range_stages, command_name="head_pose", range_stages=stages)
+
+    assert env.command_manager.get_term("head_pose").cfg.ranges == HEAD_POSE_RANGES
+
+
+@pytest.mark.parametrize(
+    "step, expected",
+    [(0, 0.003), (500 * 24, 0.003), (500 * 24 + 1, 0.005), (1500 * 24 + 1, 0.015)],
+)
+def test_the_event_range_ramp_widens_a_symmetric_range_on_every_axis(step, expected):
+    """The centre-of-mass ramp rewrites the event's own parameters, symmetrically about zero."""
+    stages = [
+        {"step": 0 * 24, "range": 0.003},
+        {"step": 500 * 24, "range": 0.005},
+        {"step": 1000 * 24, "range": 0.01},
+        {"step": 1500 * 24, "range": 0.015},
+    ]
+    env = _make_curriculum_env()
+    env.common_step_counter = step
+
+    value = _apply(env, mdp.event_range_stages, event_name="randomize_com", range_stages=stages)
+
+    assert value == pytest.approx(expected)
+    assert env.event_manager.get_term_cfg("randomize_com").params["com_range"] == {
+        "x": (-expected, expected),
+        "y": (-expected, expected),
+        "z": (-expected, expected),
+    }
+
+
+@pytest.mark.parametrize(
+    "stages",
+    [
+        [],
+        [{"step": 500, "weight": -0.2}, {"step": 0, "weight": -0.1}],
+        [{"step": 0, "weight": -0.1}, {"step": 0, "weight": -0.2}],
+        [{"step": 0}],
+    ],
+)
+def test_a_malformed_stage_table_is_rejected_rather_than_silently_misapplied(stages):
+    """An empty, unsorted, duplicated or incomplete stage table cannot be applied by accident."""
+    env = _make_curriculum_env()
+
+    with pytest.raises(ValueError):
+        _apply(env, mdp.reward_weight_stages, reward_name="action_rate_l2", weight_stages=stages)

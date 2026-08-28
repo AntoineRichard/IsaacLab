@@ -31,3 +31,8 @@ class MicroDuckVelocityFlatEnvCfg(MicroDuckVelocityRoughEnvCfg):
         # scene
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
+
+        # a plane has no difficulty levels to progress through, and the term reads the terrain
+        # generator's configuration, so it cannot merely sit inert here. Upstream deletes it on
+        # flat terrain for the same reason (reference section 2.8).
+        self.curriculum.terrain_levels = None
