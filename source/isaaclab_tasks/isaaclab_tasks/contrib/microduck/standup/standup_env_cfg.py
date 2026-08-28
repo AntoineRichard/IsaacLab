@@ -79,9 +79,10 @@ below the 0.11718 m the model reaches geometrically at the stand pose with the s
 MICRODUCK_SIT_HEIGHT = 0.060
 """Trunk height [m] of the seated equilibrium, where the ``upright_sharp`` height gate opens.
 
-Upstream's measured rest height of the sitting keyframe below. Compiling that keyframe and dropping
-it on the floor puts the trunk at 0.0813 m; the 2 cm difference is the robot settling onto its
-folded legs, and this is the value upstream's gate was tuned against.
+This is upstream's *measured* rest height for :data:`MICRODUCK_SITTING_JOINT_POS`, the sitting
+keyframe defined below -- the height the trunk settles at once the robot's weight is on its folded
+legs. Resting that keyframe on the floor geometrically, with no dynamics, puts the trunk 2 cm higher
+at 0.0813 m; upstream's gate was tuned against the settled value, so that is the one used here.
 """
 
 MICRODUCK_SITTING_JOINT_POS = {

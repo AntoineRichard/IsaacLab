@@ -114,8 +114,125 @@ _SIT_TO_STAND_HEIGHT_GAP = 0.055
 """Distance [m] the trunk has to travel from the seated equilibrium to the standing keyframe."""
 
 
+EXPECTED_SERVO_JOINT_NAMES = [
+    "left_hip_yaw",
+    "left_hip_roll",
+    "left_hip_pitch",
+    "left_knee",
+    "left_ankle",
+    "neck_pitch",
+    "head_pitch",
+    "head_yaw",
+    "head_roll",
+    "right_hip_yaw",
+    "right_hip_roll",
+    "right_hip_pitch",
+    "right_knee",
+    "right_ankle",
+]
+"""The 14 servos in upstream's MJCF actuator order: 0-4 left leg, 5-8 neck/head, 9-13 right leg.
+
+Spelling them out also reproduces upstream's ``^(?!passive_).*`` selector, since an exact name can
+never pick up a ``passive_`` joint.
+"""
+
+EXPECTED_LEG_JOINT_NAMES = [
+    "left_hip_yaw",
+    "left_hip_roll",
+    "left_hip_pitch",
+    "left_knee",
+    "left_ankle",
+    "right_hip_yaw",
+    "right_hip_roll",
+    "right_hip_pitch",
+    "right_knee",
+    "right_ankle",
+]
+"""The 10 leg joints -- upstream's ``_LEG_JOINTS = [0, 1, 2, 3, 4, 9, 10, 11, 12, 13]``.
+
+The neck and head are excluded from every posture term on purpose: they are steered by the head-pose
+command instead, so pinning them to the stand pose would fight ``head_pose_tracking``'s gradient.
+"""
+
+EXPECTED_HEAD_JOINT_NAMES = ["neck_pitch", "head_pitch", "head_yaw", "head_roll"]
+"""The 4 head servos, in the order the head-pose command indexes its columns."""
+
+EXPECTED_FOOT_BODY_NAMES = ["ankle_left", "ankle_right"]
+"""Foot bodies in upstream's ``[left, right]`` site order."""
+
+EXPECTED_TRUNK_BODY_NAMES = ["trunk_base"]
+"""The body upstream measures the trunk height, tilt and angular velocity on, and randomizes."""
+
+EXPECTED_HEAD_BODY_COUNT = 4
+"""Bodies the head centre-of-mass randomization perturbs.
+
+Upstream lists five, the fifth being ``bearing_roll`` -- the right hip-yaw link, which its own
+comment admits "has always been listed here by mistake". The velocity port drops it and this task
+inherits that selection, so four is the expected count.
+"""
+
+EXPECTED_ENTITY_SELECTIONS = {
+    # "<manager>.<term>.<param>": (kind, expected names, preserve_order)
+    "rewards.pose_stand_legs.asset_cfg": ("joint", EXPECTED_LEG_JOINT_NAMES, True),
+    "rewards.pose_stand_l1.asset_cfg": ("joint", EXPECTED_LEG_JOINT_NAMES, True),
+    "rewards.standing_composite.asset_cfg": ("joint", EXPECTED_LEG_JOINT_NAMES, True),
+    "rewards.head_pose_tracking.asset_cfg": ("joint", EXPECTED_HEAD_JOINT_NAMES, True),
+    "rewards.head_pose_bias.asset_cfg": ("joint", EXPECTED_HEAD_JOINT_NAMES, True),
+    "rewards.joint_torque_rate_l2.asset_cfg": ("joint", EXPECTED_SERVO_JOINT_NAMES, True),
+    "rewards.arrival_damping.asset_cfg": ("body", EXPECTED_TRUNK_BODY_NAMES, False),
+    "rewards.body_ang_vel.asset_cfg": ("body", EXPECTED_TRUNK_BODY_NAMES, False),
+    "rewards.self_collisions.sensor_cfg": ("sensor", "self_collision", False),
+    "events.foot_friction.asset_cfg": ("body", EXPECTED_FOOT_BODY_NAMES, False),
+    "events.mass_inertia.asset_cfg": ("body", EXPECTED_TRUNK_BODY_NAMES, False),
+    "events.randomize_com.asset_cfg": ("body", EXPECTED_TRUNK_BODY_NAMES, False),
+    "events.randomize_armature.asset_cfg": ("joint", [".*"], False),
+    "events.set_ground_state.asset_cfg": ("joint", EXPECTED_SERVO_JOINT_NAMES, True),
+}
+"""Every entity selection the stand-up recipe makes, outside the observation groups.
+
+These are as load-bearing as the scalar parameters ``_scalar_params`` compares: a posture term that
+silently selected all 14 joints instead of the 10 legs would fight the head-pose command, and a
+head-pose term whose joint order drifted would pair the command columns with the wrong servos.
+Isaac Lab resolves joints and bodies in USD order, which is neither upstream's nor this table's, so
+``preserve_order`` is part of the contract wherever a term indexes a command positionally.
+
+``events.randomize_head_com`` is absent because its selection is four *patterns* rather than four
+names; ``test_the_head_centre_of_mass_randomization_drops_the_upstream_hip_link`` pins it instead.
+``events.randomize_joint_friction`` is absent because the term reads only the articulation name.
+"""
+
+EXPECTED_OBSERVATION_SELECTIONS = {
+    # "<group>.<term>": (kind, expected names)
+    "policy.joint_pos": ("joint", EXPECTED_SERVO_JOINT_NAMES),
+    "policy.joint_vel": ("joint", EXPECTED_SERVO_JOINT_NAMES),
+    "critic.joint_pos": ("joint", EXPECTED_SERVO_JOINT_NAMES),
+    "critic.joint_vel": ("joint", EXPECTED_SERVO_JOINT_NAMES),
+    "critic.foot_air_time": ("body", EXPECTED_FOOT_BODY_NAMES),
+    "critic.foot_contact": ("body", EXPECTED_FOOT_BODY_NAMES),
+    "critic.foot_contact_forces": ("body", EXPECTED_FOOT_BODY_NAMES),
+}
+"""Entity selections inside the two observation groups, all of which are ordering contracts.
+
+The joint blocks are the deployed vector's own layout, which the runtime on the robot rebuilds by
+hand from its sensor reads; the foot blocks are three consecutive critic terms that must agree on
+which column is the left foot.
+"""
+
+
+def _entity_cfg_of(term_cfg, key: str) -> SceneEntityCfg:
+    """Fetch a term's entity selection, looking inside a delayed term's wrapped parameters."""
+    if key in term_cfg.params:
+        return term_cfg.params[key]
+    return term_cfg.params["term_params"][key]
+
+
 def _scalar_params(term_cfg) -> dict:
-    """Drop the entity selections, which are compared separately and are not upstream's values."""
+    """Drop the entity selections, which carry no upstream scalar to compare against.
+
+    They are not left unchecked: :data:`EXPECTED_ENTITY_SELECTIONS` and
+    :data:`EXPECTED_OBSERVATION_SELECTIONS` pin every one of them by name, and the two
+    ``*_select_*`` tests below are what assert it.
+    """
     return {key: value for key, value in term_cfg.params.items() if not isinstance(value, SceneEntityCfg)}
 
 
@@ -488,6 +605,75 @@ def test_the_ground_state_reset_runs_after_the_resets_it_overwrites():
 
     reset_terms = [name for name, term in vars(events).items() if getattr(term, "mode", None) == "reset"]
     assert reset_terms == EXPECTED_RESET_EVENT_ORDER
+
+
+@pytest.mark.unit
+def test_the_terms_select_the_joints_bodies_and_sensors_upstream_measures():
+    """A term that measures the wrong joints is as wrong as one carrying the wrong weight."""
+    cfg = MicroDuckStandUpFlatEnvCfg()
+
+    # two-sided over the terms that carry a selection at all, so a term that gains or loses one
+    # -- say a height reward that starts reading a body -- fails rather than going unchecked
+    measured = {
+        f"{manager}.{term_name}.{key}"
+        for manager in ("rewards", "events")
+        for term_name, term in vars(getattr(cfg, manager)).items()
+        for key, value in term.params.items()
+        if isinstance(value, SceneEntityCfg)
+    }
+    # the two selections pinned by their own tests rather than by the table
+    exempt = {"events.randomize_head_com.asset_cfg", "events.randomize_joint_friction.asset_cfg"}
+    assert measured - exempt == set(EXPECTED_ENTITY_SELECTIONS)
+
+    for path, (kind, expected, preserve_order) in EXPECTED_ENTITY_SELECTIONS.items():
+        manager, term_name, key = path.split(".")
+        entity_cfg = getattr(getattr(cfg, manager), term_name).params[key]
+        if kind == "sensor":
+            assert entity_cfg.name == expected, path
+            assert entity_cfg.joint_names is None and entity_cfg.body_names is None, path
+            continue
+        assert entity_cfg.name == "robot", path
+        if kind == "joint":
+            assert entity_cfg.joint_names == expected, path
+            assert entity_cfg.body_names is None, path
+        else:
+            assert entity_cfg.body_names == expected, path
+            assert entity_cfg.joint_names is None, path
+        assert entity_cfg.preserve_order is preserve_order, path
+
+
+@pytest.mark.unit
+def test_both_observation_groups_read_the_servos_and_the_feet_in_the_deploy_order():
+    """Isaac Lab resolves joints and bodies in USD order; the deployed vector is in MJCF order."""
+    observations = MicroDuckStandUpFlatEnvCfg().observations
+    groups = {"policy": _observation_terms(observations.policy), "critic": _observation_terms(observations.critic)}
+
+    for path, (kind, expected) in EXPECTED_OBSERVATION_SELECTIONS.items():
+        group, term_name = path.split(".")
+        term = groups[group][term_name]
+        # the delayed actor terms hold their selection inside the wrapped term's parameters
+        entity_cfg = _entity_cfg_of(term, "asset_cfg" if kind == "joint" else "sensor_cfg")
+        if kind == "joint":
+            assert entity_cfg.name == "robot", path
+            assert entity_cfg.joint_names == expected, path
+        else:
+            assert entity_cfg.name == "contact_forces", path
+            assert entity_cfg.body_names == expected, path
+        assert entity_cfg.preserve_order, path
+
+    # the two head rewards index their command's columns positionally, so their joint order is the
+    # command's; the observation joint order is the deployed vector's. They are different contracts
+    # over the same articulation, and both are pinned above.
+    assert EXPECTED_SERVO_JOINT_NAMES[5:9] == EXPECTED_HEAD_JOINT_NAMES
+
+
+@pytest.mark.unit
+def test_the_head_centre_of_mass_randomization_drops_the_upstream_hip_link():
+    """``bearing_roll`` is the right hip-yaw link; upstream lists it among the head bodies in error."""
+    body_names = MicroDuckStandUpFlatEnvCfg().events.randomize_head_com.params["asset_cfg"].body_names
+
+    assert "bearing_roll" not in body_names
+    assert len(body_names) == EXPECTED_HEAD_BODY_COUNT
 
 
 @pytest.mark.unit

@@ -308,10 +308,9 @@ def reset_ground_state(
     height = torch.where(is_sitting, _uniform(sitting_z_range), height)
     height = torch.where(is_standing, _uniform(standing_z_range), height)
 
-    # the horizontal position is left alone: it is what an earlier root reset spread out
-    pose = torch.cat(
-        (asset.data.root_link_pos_w.torch[env_ids], asset.data.root_link_quat_w.torch[env_ids]), dim=-1
-    ).clone()
+    # The horizontal position is left alone: it is what an earlier root reset spread out. ``cat``
+    # already allocates, so the assignments below cannot reach the articulation's own buffers.
+    pose = torch.cat((asset.data.root_link_pos_w.torch[env_ids], asset.data.root_link_quat_w.torch[env_ids]), dim=-1)
     pose[:, 2] = env.scene.env_origins[env_ids, 2] + height
     pose[:, 3:7] = quat
     asset.write_root_link_pose_to_sim_index(root_pose=pose, env_ids=env_ids)
