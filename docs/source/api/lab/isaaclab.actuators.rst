@@ -27,12 +27,19 @@
     ActuatorNetMLPCfg
     ActuatorNetLSTM
     ActuatorNetLSTMCfg
+    BamMotorParams
 
   .. rubric:: Functions
 
   .. autosummary::
 
     resolve_joint_parameter
+    compute_duty
+    compute_motor_torque
+    compute_stribeck_coeff
+    compute_friction_budget
+    apply_stiction_clip
+    battery_sag
 
 Actuator Base
 -------------
@@ -165,6 +172,25 @@ LSTM Network Actuator
   :inherited-members:
   :show-inheritance:
   :exclude-members: __init__, class_type
+
+BAM Servo Model
+---------------
+
+.. autoclass:: BamMotorParams
+  :members:
+  :exclude-members: __init__
+
+.. autofunction:: compute_duty
+
+.. autofunction:: compute_motor_torque
+
+.. autofunction:: compute_stribeck_coeff
+
+.. autofunction:: compute_friction_budget
+
+.. autofunction:: apply_stiction_clip
+
+.. autofunction:: battery_sag
 
 Newton Actuator Access
 ----------------------

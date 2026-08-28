@@ -14,6 +14,13 @@ __all__ = [
     "ActuatorNetMLP",
     "ActuatorNetLSTMCfg",
     "ActuatorNetMLPCfg",
+    "BamMotorParams",
+    "apply_stiction_clip",
+    "battery_sag",
+    "compute_duty",
+    "compute_friction_budget",
+    "compute_motor_torque",
+    "compute_stribeck_coeff",
     "DCMotor",
     "DelayedPDActuator",
     "IdealPDActuator",
@@ -46,4 +53,13 @@ from .actuator_pd_cfg import (
     IdealPDActuatorCfg,
     ImplicitActuatorCfg,
     RemotizedPDActuatorCfg,
+)
+from .bam_model import (
+    BamMotorParams,
+    apply_stiction_clip,
+    battery_sag,
+    compute_duty,
+    compute_friction_budget,
+    compute_motor_torque,
+    compute_stribeck_coeff,
 )

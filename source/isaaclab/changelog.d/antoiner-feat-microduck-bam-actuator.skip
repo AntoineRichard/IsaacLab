@@ -1,1 +1,0 @@
-Internal: added the BAM XL330/m6 golden reference fixture used by the actuator parity tests (test data only, no public API change).
