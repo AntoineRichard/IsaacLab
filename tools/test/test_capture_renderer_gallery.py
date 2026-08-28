@@ -131,6 +131,17 @@ def test_newton_gallery_enables_textures_and_shadow_rays():
     assert renderer_cfg.create_default_light
 
 
+def test_newton_gallery_shadow_toggle_controls_renderer_cfg():
+    parser = argparse.ArgumentParser()
+    add_gallery_arguments(parser)
+    args = parser.parse_args(["--renderer-backend", "newton", "--no-newton-shadows"])
+
+    renderer_cfg = capture_renderer_gallery._make_renderer_cfg("newton", enable_shadows=args.newton_shadows)
+
+    assert not renderer_cfg.enable_shadows
+    assert not renderer_cfg.enable_ambient_lighting
+
+
 def test_gallery_scene_uses_rigid_spheres_for_cross_renderer_motion():
     stage = Usd.Stage.Open(str(MEDIA_TOOLS_DIR / "renderer_gallery_scene.usda"))
     spheres = [prim for prim in stage.Traverse() if prim.GetTypeName() == "Sphere"]

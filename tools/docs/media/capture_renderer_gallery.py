@@ -100,6 +100,7 @@ def add_gallery_arguments(parser: argparse.ArgumentParser) -> None:
     script_dir = Path(__file__).resolve().parent
     parser.add_argument("--renderer-backend", choices=tuple(_RENDERER_SLUGS), required=True)
     parser.add_argument("--capture-group", choices=("standard", *_SIMPLE_SHADING_MODES), default="standard")
+    parser.add_argument("--newton-shadows", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--scene", type=Path, default=script_dir / "renderer_gallery_scene.usda")
     parser.add_argument(
         "--output-dir",
@@ -141,12 +142,12 @@ def _parse_args() -> argparse.Namespace:
     return args
 
 
-def _make_renderer_cfg(renderer: str) -> Any:
+def _make_renderer_cfg(renderer: str, *, enable_shadows: bool = True) -> Any:
     """Create the selected renderer configuration."""
     if renderer == "newton":
         from isaaclab_newton.renderers import NewtonWarpRendererCfg
 
-        return NewtonWarpRendererCfg(enable_shadows=True, enable_ambient_lighting=False)
+        return NewtonWarpRendererCfg(enable_shadows=enable_shadows, enable_ambient_lighting=False)
     if renderer == "ovrtx":
         from isaaclab_ov.renderers import OVRTXRendererCfg
 
@@ -242,7 +243,7 @@ def _capture(args: argparse.Namespace) -> None:
                 height=args.height,
                 data_types=list(data_types),
                 spawn=None,
-                renderer_cfg=_make_renderer_cfg(args.renderer_backend),
+                renderer_cfg=_make_renderer_cfg(args.renderer_backend, enable_shadows=args.newton_shadows),
             )
         ),
         sim.reset,
