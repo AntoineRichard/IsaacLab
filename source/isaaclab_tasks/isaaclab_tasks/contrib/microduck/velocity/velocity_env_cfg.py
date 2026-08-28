@@ -148,9 +148,16 @@ class MicroDuckSceneCfg(InteractiveSceneCfg):
     # the trunk subtree (reference section 2.9). No height scanner -- upstream drops the terrain
     # scan and the matching observation for MicroDuck (reference sections 2.3 and 2.9).
     #
-    # The pattern is matched against whole body paths, and the MJCF import nests every link under
-    # the trunk, so the ankle links the soles hang off are reached through a wildcard rather than
-    # as direct children.
+    # The pattern is deliberately unlike the flat ``Robot/[^/]*`` other locomotion tasks use. The
+    # MJCF import nests every link under the trunk -- the ankle links the soles hang off sit four
+    # levels below it -- so a single-level pattern matches nothing here. Newton compiles this as one
+    # plain regular expression and full-matches it against body labels, which are whole prim paths,
+    # so ``.*`` crosses ``/`` and reaches them. That is a Newton-only property: the PhysX backend
+    # matches prim paths one path token at a time and would need a different expression, which is
+    # consistent as long as :class:`MicroDuckPhysicsCfg` offers only the MJWarp backend.
+    #
+    # Bodies resolve in label order, ``[trunk_base, ankle_right, ankle_left]``, which is neither the
+    # order below nor upstream's ``[left, right]``: select feet by name with ``preserve_order=True``.
     contact_forces = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base(/.*/(ankle_left|ankle_right))?",
         history_length=3,
@@ -176,6 +183,11 @@ class CommandsCfg:
     # inherited from upstream's base template; the velocity ranges and the standing fraction are
     # MicroDuck's own. ``rel_heading_envs = 0.0`` leaves the heading controller configured but
     # inert, which is what upstream ships.
+    #
+    # TODO: upstream also inherits ``rel_forward_envs = 0.2`` -- a fifth of the environments get a
+    # forward-only command, ``vx = |vx|.clamp(min=0.3)`` with ``vy = wz = 0``. The stock
+    # configuration has no such field, so it arrives with the MicroDuck command term that also
+    # brings ``rel_turn_in_place_envs``.
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(3.0, 8.0),
@@ -290,16 +302,25 @@ class EventsCfg:
 class RewardsCfg:
     """Reward terms for the MDP.
 
-    The four terms of upstream's recipe that map onto stock Isaac Lab rewards (reference section
-    2.4). The gait, foot-clearance, posture, self-collision and pose-tracking terms upstream also
-    uses need MicroDuck-specific implementations and are added later.
+    The four slots of upstream's recipe that have a stock Isaac Lab counterpart (reference section
+    2.4), filled with the closest stock term. None of them is functionally identical to upstream:
+    every one is noted below and replaced when the MicroDuck reward terms land. The gait,
+    foot-clearance, posture, self-collision and pose-tracking terms upstream also uses have no
+    stock counterpart at all and are added at the same time.
     """
 
+    # Upstream's ``track_linear_velocity`` folds the vertical velocity into the same exponent,
+    # ``exp(-(|v_xy_cmd - v_xy|^2 + v_z^2) / std^2)`` (reference section 5), so an unwanted vertical
+    # bounce costs tracking reward. The stock term only scores the xy error, and reads the
+    # centre-of-mass frame where upstream reads the root link frame.
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp,
         weight=2.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.1)},
     )
+    # Same divergence on the angular side: upstream is
+    # ``exp(-((w_z_cmd - w_z)^2 + |w_xy|^2) / std^2)`` (reference section 5), penalizing roll and
+    # pitch rate inside the tracking exponent, which the stock term does not.
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp,
         weight=2.0,
