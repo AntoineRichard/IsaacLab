@@ -64,6 +64,18 @@ class BiasedJointPositionAction(JointPositionAction):
         # resolved eagerly so a mismatched asset fails at construction rather than at the first step
         self._encoder_bias = encoder_bias(env, SceneEntityCfg(cfg.asset_name))
 
+    @property
+    def joint_ids(self) -> list[int] | slice:
+        """Indices of the joints this term drives, in ``asset_cfg.joint_ids`` order.
+
+        Public accessor for the base class's ``_joint_ids``: this task family's reward terms need
+        to cross-reference an action term's driven joints against their own ``asset_cfg`` selection
+        (see :func:`~isaaclab_tasks.contrib.microduck.mdp.rewards.action_over_limit_penalty` and
+        :class:`~isaaclab_tasks.contrib.microduck.mdp.rewards.joint_action_rate_l2`), and the base
+        :class:`~isaaclab.envs.mdp.actions.joint_actions.JointAction` exposes no public equivalent.
+        """
+        return self._joint_ids
+
     def apply_actions(self):
         # written out rather than delegated: this runs once per physics step, so subtracting the
         # bias into ``processed_actions`` would compound it over the decimation window

@@ -995,7 +995,11 @@ def test_a_scripted_push_rolls_the_wheels_and_glides_further_than_braked_bearing
         assert bool((free_rate > 1.0).all()), f"the wheels never turned: {free_rate.tolist()}"
         # 2. braked bearings do not, by an order of magnitude. The bound is not zero because the
         #    first physics step of the push happens before the friction constraint is solved, which
-        #    leaves the braked wheels a tenth of a radian per second of transient
+        #    leaves the braked wheels a tenth of a radian per second of transient. 0.25 is a
+        #    generous margin above that transient, not itself the contract: the assertion below
+        #    (>=10x separation from the free bearings) is what actually pins the behavior, so a
+        #    solver friction-staging change that shifts the transient does not need this bound
+        #    hand-tuned to match.
         assert bool((braked_rate < 0.25).all()), f"the braked wheels turned anyway: {braked_rate.tolist()}"
         assert float(free_rate.min()) > 10.0 * float(braked_rate.max())
         # 3. and the rolling robot glides further than the skidding one
