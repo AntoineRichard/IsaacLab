@@ -217,6 +217,23 @@ cone changes because this changes the constraint formulation.
 Do not use ``impratio`` to compensate for missing contacts, incorrect friction coefficients,
 insufficient gripper effort, sparse collision geometry, or a controller that opens the grasp.
 
+Joint limits: ``use_mujoco_default_joint_limit_solref``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Keep the default ``True``. Joint DOFs that do not author their own limit gains then use MuJoCo's
+default limit ``solref`` of ``(0.02, 1.0)``, so an imported asset hits its joint limits the same
+way it does in MuJoCo. Joints that author limit gains — USD limit stiffness/damping, an MJCF
+``solreflimit``, or explicit Newton ``limit_ke``/``limit_kd`` — keep their own values. Those
+defaults act as a sentinel, so a joint deliberately authored at exactly ``1e4``/``1e1`` is
+retagged as well; author the equivalent ``solreflimit`` to keep such a pair.
+
+Set it to ``False`` only to reproduce a run recorded before this default existed. Newton's generic
+``limit_ke=1e4`` / ``limit_kd=1e1`` defaults are then converted force-space through
+``dof_invweight0``, which yields a stiffer and heavily underdamped limit (about ``(0.008, 0.25)``
+for a light servo robot). Underdamped limits rebound instead of absorbing, so light limit-bounded
+robots can diverge unless their joint damping is inflated well past the identified value. This is
+not a stability knob: prefer authoring explicit limit gains on the asset.
+
 Contact path: ``use_mujoco_contacts`` and ``collision_cfg``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

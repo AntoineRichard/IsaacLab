@@ -119,6 +119,27 @@ class MJWarpSolverCfg(NewtonSolverCfg):
         :class:`ValueError` because the two collision modes are mutually exclusive.
     """
 
+    use_mujoco_default_joint_limit_solref: bool = True
+    """Whether joints with unauthored limit gains use MuJoCo's default limit ``solref``.
+
+    When ``True`` (default), every joint DOF that still carries Newton's generic
+    ``limit_ke=1e4`` / ``limit_kd=1e1`` defaults is tagged with MuJoCo's
+    critically damped ``solreflimit = (0.02, 1.0)``, matching how the same asset
+    behaves in MuJoCo. Joints that author their own limit gains (USD limit
+    stiffness/damping, MJCF ``solreflimit``, or explicit force-space gains) are
+    untouched. Those defaults act as a sentinel, so a joint that deliberately
+    authors exactly ``1e4`` / ``1e1`` is indistinguishable from one that authored
+    nothing and is retagged as well; author the equivalent ``solreflimit`` to
+    keep such a pair.
+
+    Setting this to ``False`` restores the legacy behavior, where Newton's
+    generic defaults are converted force-space through ``dof_invweight0`` into a
+    much stiffer and heavily underdamped pair (``~(0.008, 0.25)`` for a light
+    servo robot). The escape hatch exists for policies trained against that
+    conversion, which would otherwise see different limit dynamics; prefer
+    authoring explicit limit gains over flipping it.
+    """
+
     tolerance: float = 1e-6
     """Solver convergence tolerance for the constraint residual.
 
