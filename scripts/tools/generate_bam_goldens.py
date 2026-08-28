@@ -87,8 +87,10 @@ import ast
 import importlib.metadata
 import importlib.util
 import json
+import subprocess
 import types
 from pathlib import Path
+from urllib.request import url2pathname
 
 import numpy as np
 import torch
@@ -134,15 +136,42 @@ def _require(condition: bool, message: str) -> None:
 def verify_installed_bam_revision() -> None:
     """Abort unless the installed ``bam`` distribution is exactly :data:`BAM_COMMIT`.
 
-    ``attr_bam_commit`` is written into the fixture from the :data:`BAM_COMMIT` constant,
-    so without this guard a run against a drifted revision would stamp the fixture with a
-    SHA that did not produce it. ``pip``/``uv`` record the resolved revision of a VCS
-    install in the distribution's ``direct_url.json`` (PEP 610), which is what we read.
+    ``attr_bam_commit`` is written into the fixture from the :data:`BAM_COMMIT` constant, so
+    without this guard a run against a drifted revision would stamp the fixture with a SHA that
+    did not produce it. A local checkout is deliberately *not* accepted here: the fixture is
+    committed and its provenance stamp has to name a published commit.
 
     Raises:
-        RuntimeError: If ``bam`` is missing, was not installed from git (e.g. an editable
-            path or a PyPI wheel, neither of which carries a commit id), or was installed
-            from a different commit than :data:`BAM_COMMIT`.
+        RuntimeError: If ``bam`` is missing, was not installed from git (e.g. an editable path
+            or a PyPI wheel, neither of which carries a commit id), or was installed from a
+            different commit than :data:`BAM_COMMIT`.
+    """
+    resolve_installed_bam_revision(allow_local_checkout=False)
+
+
+def resolve_installed_bam_revision(*, allow_local_checkout: bool = False) -> str:
+    """Return the revision of the installed ``bam``, or raise if it is not :data:`BAM_COMMIT`.
+
+    ``pip``/``uv`` record where a distribution came from in ``direct_url.json`` (PEP 610). A git
+    install carries the resolved commit directly; a local checkout carries only its path, so its
+    ``git`` HEAD is read instead and the working tree must be clean -- otherwise the reported
+    revision would not describe the code that actually ran.
+
+    This is the single home of the revision policy. The goldens generator stamps a committed
+    fixture and therefore refuses anything but a git install; ``bam_parity_rollout.py`` reports
+    numbers it prints alongside the revision, so the pinned local checkout the parity runs use
+    is accepted there.
+
+    Args:
+        allow_local_checkout: Whether a ``file://`` install whose git HEAD is :data:`BAM_COMMIT`
+            and whose working tree is clean counts as verified.
+
+    Returns:
+        The verified commit id of the installed ``bam``.
+
+    Raises:
+        RuntimeError: If ``bam`` is missing, its revision cannot be established, or it differs
+            from :data:`BAM_COMMIT`.
     """
     try:
         distribution = importlib.metadata.distribution(BAM_DIST_NAME)
@@ -155,20 +184,54 @@ def verify_installed_bam_revision() -> None:
             f"{BAM_DIST_NAME!r} has no direct_url.json, so its revision cannot be verified against the expected"
             f" {BAM_COMMIT}. Install it from git as shown in the Usage section of this module's docstring."
         )
-    installed_commit = json.loads(direct_url).get("vcs_info", {}).get("commit_id")
+    metadata = json.loads(direct_url)
+    installed_commit = metadata.get("vcs_info", {}).get("commit_id")
     if installed_commit is None:
-        raise RuntimeError(
-            f"{BAM_DIST_NAME!r} was not installed from a VCS (direct_url.json carries no vcs_info.commit_id), so its"
-            f" revision cannot be verified against the expected {BAM_COMMIT}."
-        )
+        if not allow_local_checkout:
+            raise RuntimeError(
+                f"{BAM_DIST_NAME!r} was not installed from a VCS (direct_url.json carries no vcs_info.commit_id), so"
+                f" its revision cannot be verified against the expected {BAM_COMMIT}."
+            )
+        installed_commit = _revision_of_local_checkout(metadata.get("url", ""))
+
     _require(
         installed_commit == BAM_COMMIT,
-        f"Installed {BAM_DIST_NAME!r} revision does not match the reference this generator is pinned to.\n"
+        f"Installed {BAM_DIST_NAME!r} revision does not match the reference this tool is pinned to.\n"
         f"  expected (BAM_COMMIT): {BAM_COMMIT}\n"
         f"  installed:             {installed_commit}\n"
         "Either re-run with the expected revision, or update BAM_COMMIT (and this module's docstring) after"
         " re-verifying that the reference equations still match.",
     )
+    return installed_commit
+
+
+def _revision_of_local_checkout(url: str) -> str:
+    """Return the git HEAD of a ``file://`` install, requiring a clean working tree."""
+    if not url.startswith("file://"):
+        raise RuntimeError(
+            f"{BAM_DIST_NAME!r} was installed from {url!r}, which carries neither a commit id nor a local path, so"
+            f" its revision cannot be verified against the expected {BAM_COMMIT}."
+        )
+    checkout = Path(url2pathname(url[len("file://") :])).resolve()
+
+    def _git(*args: str) -> str:
+        result = subprocess.run(["git", "-C", str(checkout), *args], capture_output=True, text=True)  # noqa: S603, S607
+        _require(
+            result.returncode == 0,
+            f"Could not read the git state of the {BAM_DIST_NAME!r} checkout at {checkout}: {result.stderr.strip()!r}.",
+        )
+        return result.stdout.strip()
+
+    _require(
+        Path(_git("rev-parse", "--show-toplevel")).resolve() == checkout,
+        f"{checkout} is not the root of a git repository, so it cannot identify a {BAM_DIST_NAME!r} revision.",
+    )
+    _require(
+        _git("status", "--porcelain") == "",
+        f"The {BAM_DIST_NAME!r} checkout at {checkout} has uncommitted changes, so its HEAD does not describe the"
+        " code that would run. Commit or stash them first.",
+    )
+    return _git("rev-parse", "HEAD")
 
 
 def load_reference_friction_budget():
