@@ -1,7 +1,7 @@
 # MicroDuck
 
-`microduck_walk.usd` is a converted copy of the MicroDuck walk model from Pollen Robotics'
-`microduck_rl` project.
+`microduck_walk.usd`, `microduck_allcollisions.usd` and `microduck_rollers.usd` are converted
+copies of the three flat-task MicroDuck robot models from Pollen Robotics' `microduck_rl` project.
 
 ## Provenance
 
@@ -9,7 +9,7 @@
 |---|---|
 | Upstream repository | <https://github.com/pollen-robotics/microduck_rl> |
 | Commit | `d424a0c899f6b33cbd3daeb279913134349c0b63` (branch `develop`, 2026-08-27) |
-| Source file | `src/mjlab_microduck/robot/microduck/robot_walk.xml` (plus its includes and the meshes in `assets/`) |
+| Source files | `src/mjlab_microduck/robot/microduck/robot_walk.xml`, `robot_allcollisions.xml` and `robot_allcollisions_rollers.xml` (plus their includes and the meshes in `assets/`) |
 | License | Apache License 2.0 (see the `LICENSE` file at the root of the upstream repository) |
 
 The upstream MJCF itself is generated from Onshape CAD by
@@ -17,17 +17,19 @@ The upstream MJCF itself is generated from Onshape CAD by
 
 ## Conversion
 
-`microduck_walk.usd` is **not** committed: `.gitignore` excludes USD files from this repository
+The assets are **not** committed: `.gitignore` excludes USD files from this repository
 ("No USD files allowed in the repo"), and `isaaclab_assets/data` is documented as local, temporary
-asset hosting — released assets live on the Nucleus server. Generate the file next to this document
+asset hosting — released assets live on the Nucleus server. Generate them next to this document
 with:
 
 ```bash
 uv run --extra importers python scripts/tools/convert_microduck.py
+uv run --extra importers python scripts/tools/convert_microduck.py --model allcollisions
+uv run --extra importers python scripts/tools/convert_microduck.py --model rollers
 ```
 
-No manual checkout is needed: the script fetches `robot_walk.xml` from the pinned commit above into
-a local cache. Pass a path to a `robot_walk.xml` to convert a different copy.
+No manual checkout is needed: the script fetches the selected model's MJCF from the pinned commit
+above into a local cache. Pass a path to an MJCF to convert a different copy.
 
 `scripts/tools/convert_microduck.py` runs the Isaac Sim MJCF importer through
 `isaaclab.sim.converters.MjcfConverter`, selects the `"physx"` entry of the generated `"Physics"`
@@ -40,10 +42,12 @@ The base is left free: the model is a floating-base articulation.
 
 ## What the asset carries
 
-The conversion is verified by `source/isaaclab_assets/test/test_microduck_asset.py`, which compares
-the asset against the source MJCF. Carried over: the 14 hinge joints and their names, the per-joint
-position limits, the body masses and inertias, the joint armature and effort limits, the
-world-contact collider set, and the foot friction.
+The conversion is verified by `source/isaaclab_assets/test/test_microduck_asset.py` (walk) and
+`test_microduck_variant_assets.py` (all-collisions and rollers), which compare each asset against
+its source MJCF. Carried over: the hinge joints and their names — 14 on the walk and all-collisions
+models, 18 on the roller model, whose four extra `passive_*_wheel` hinges are undriven — the
+per-joint position limits, the body masses and inertias, the joint armature and effort limits, the
+world-contact collider set, and the collider friction.
 
 Two of those need the conversion script's help, because the importer loses them to scene-graph
 instancing and the script repairs them on the flattened stage:
@@ -51,19 +55,28 @@ instancing and the script repairs them on the flattened stage:
 * the **contact material**. The importer authors a physics material with the MJCF default friction
   (sliding `1`, torsional `0.005`, rolling `0.0001`) but the bindings it writes from the instanced
   collision meshes point outside the scope of their reference, so USD drops them. The script rebinds
-  the material on the foot collider Xforms, and authors the static friction the importer leaves at
+  the material on the world collider Xforms, and authors the static friction the importer leaves at
   the schema fallback of `0` (MuJoCo has one sliding coefficient; UsdPhysics has two).
 * the **`contype`/`conaffinity` masks**. The importer authors no collision groups or filtered pairs,
-  so the `self_collision_only` geoms (`power_support` and both `leg` shells) would arrive as ordinary
-  world colliders. The script disables them, leaving the MJCF's world-contact set: the two foot
-  soles. Self-collision is not re-created in exchange — the asset is converted with
-  `self_collision=False`, so those geoms have no collision role left.
+  so every geom arrives as an ordinary world collider. The script disables the ones the MJCF keeps
+  out of world contact, which is a per-model set re-derived from each MJCF rather than shared:
+
+  | model | world-contact colliders | kept out |
+  |---|---|---|
+  | `robot_walk.xml` | the two named foot soles | the trunk `power_support` and both `leg` shells |
+  | `robot_allcollisions.xml` | the two soles plus the trunk `np_f970`, both `hip_l` cheeks, both `leg` shells and the three `jaw_soft` head shells | the trunk `power_support` |
+  | `robot_allcollisions_rollers.xml` | the same, with the two soles replaced by the four `tire` colliders | the trunk `power_support` |
+
+  The head shells matter: they are what lets a task roll the robot over its head, and upstream's
+  `FULL_COLLISION` config reads like it disables them while measurably not doing so. Self-collision
+  is not re-created in exchange — the assets are converted with `self_collision=False`, so the
+  disabled geoms have no collision role left.
 
 A third property is deliberately dropped rather than repaired: the importer bakes the MJCF's home
 pose (`qpos0`, 0.12 m of trunk height) into the articulation root's own transform. Spawning applies
 an asset configuration's initial position to the prim the asset is referenced under, so that
 transform would compose with it and double the spawn height. The script clears it, and the home
-height becomes `MICRODUCK_CFG`'s to own.
+height becomes the articulation configuration's to own.
 
 Not carried over, and therefore owned by the task's actuator configuration:
 
@@ -75,6 +88,7 @@ Not carried over, and therefore owned by the task's actuator configuration:
 
 ## Regenerating
 
-Re-running the command above overwrites `microduck_walk.usd` in place. Re-run
-`source/isaaclab_assets/test/test_microduck_asset.py` afterwards; it picks up the same pinned MJCF,
-or one named by `MICRODUCK_MJCF_PATH`.
+Re-running a command above overwrites that model's USD in place. Re-run
+`source/isaaclab_assets/test/test_microduck_asset.py` and `test_microduck_variant_assets.py`
+afterwards; they pick up the same pinned MJCFs, or ones named by `MICRODUCK_MJCF_PATH` (walk) and
+`MICRODUCK_MJCF_DIR` (variants).

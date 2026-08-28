@@ -34,6 +34,8 @@ __all__ = [
     "KINOVA_GEN3_N7_CFG",
     "KUKA_ALLEGRO_CFG",
     "MICRODUCK_CFG",
+    "MICRODUCK_ALLCOLLISIONS_CFG",
+    "MICRODUCK_ROLLERS_CFG",
     "PICK_AND_PLACE_CFG",
     "CRAZYFLIE_CFG",
     "RIDGEBACK_FRANKA_PANDA_CFG",
@@ -91,7 +93,7 @@ from .humanoid import HUMANOID_CFG
 from .humanoid_28 import HUMANOID_28_CFG
 from .kinova import KINOVA_JACO2_N7S300_CFG, KINOVA_JACO2_N6S300_CFG, KINOVA_GEN3_N7_CFG
 from .kuka_allegro import KUKA_ALLEGRO_CFG
-from .microduck import MICRODUCK_CFG
+from .microduck import MICRODUCK_CFG, MICRODUCK_ALLCOLLISIONS_CFG, MICRODUCK_ROLLERS_CFG
 from .pick_and_place import PICK_AND_PLACE_CFG
 from .quadcopter import CRAZYFLIE_CFG
 from .ridgeback_franka import RIDGEBACK_FRANKA_PANDA_CFG
