@@ -650,6 +650,13 @@ def test_native_friction_randomization_changes_the_hanging_error(native_sim, dev
     so one event term drives both implementations.
     """
     robot = _build_native_pendulum(native_sim, pendulum_usd)
+
+    # All five randomizable quantities are addressable under the names
+    # :class:`~isaaclab.actuators.BamActuator` uses, so a single event term covers both paths.
+    for attr in ("vin", "sag_gain", "friction_scale", "kp_scale", "kd_scale"):
+        values = read_group_parameter(robot.actuators, "servo", "controller", attr)
+        assert values.shape == (NUM_ENVS, robot.num_joints)
+
     _settle_with_friction_scales(robot, native_sim, _gravity_load(robot, native_sim))
 
 
