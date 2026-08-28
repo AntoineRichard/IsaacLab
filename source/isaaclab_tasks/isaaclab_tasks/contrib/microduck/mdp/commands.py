@@ -25,11 +25,11 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-class JointPoseCommand(CommandTerm):
+class UniformPoseDeltaCommand(CommandTerm):
     """Generic N-dimensional uniform pose-delta command.
 
     Each dimension is drawn independently and uniformly from its own range and then held until the
-    next resample. The width of the command is the length of :attr:`JointPoseCommandCfg.ranges`,
+    next resample. The width of the command is the length of :attr:`UniformPoseDeltaCommandCfg.ranges`,
     so one term serves both MicroDuck pose commands:
 
     * ``head_pose`` -- 4 joint-position deltas [rad] from the stand pose, in the upstream servo
@@ -42,14 +42,15 @@ class JointPoseCommand(CommandTerm):
     an error the command term itself could measure -- the reward terms do that.
 
     The ranges are read on every resample rather than cached, so a curriculum can widen them by
-    reassigning :attr:`JointPoseCommandCfg.ranges` on the live term configuration. Widening only:
-    the command width is fixed at construction.
+    reassigning :attr:`UniformPoseDeltaCommandCfg.ranges` on the live term configuration. Widening
+    only: the command width is fixed at construction, and a resample asserts that the replacement
+    tuple still has one range per dimension.
     """
 
-    cfg: JointPoseCommandCfg
+    cfg: UniformPoseDeltaCommandCfg
     """Configuration for the command term."""
 
-    def __init__(self, cfg: JointPoseCommandCfg, env: ManagerBasedRLEnv):
+    def __init__(self, cfg: UniformPoseDeltaCommandCfg, env: ManagerBasedRLEnv):
         """Initialize the command term.
 
         Args:
@@ -64,7 +65,7 @@ class JointPoseCommand(CommandTerm):
         self._command = torch.zeros(self.num_envs, self.dim, device=self.device)
 
     def __str__(self) -> str:
-        msg = "JointPoseCommand:\n"
+        msg = "UniformPoseDeltaCommand:\n"
         msg += f"\tCommand dimension: {tuple(self.command.shape[1:])}\n"
         msg += f"\tResampling time range: {self.cfg.resampling_time_range}\n"
         return msg
@@ -92,19 +93,25 @@ class JointPoseCommand(CommandTerm):
         num_envs = len(env_ids)
         if num_envs == 0:
             return
+        # a curriculum that shortened the tuple would silently leave the dropped dimensions holding
+        # their last sampled value rather than fail
+        assert len(self.cfg.ranges) == self.dim, (
+            f"Command width is fixed at {self.dim} dimensions but the configuration now lists"
+            f" {len(self.cfg.ranges)} ranges."
+        )
         r = torch.empty(num_envs, device=self.device)
         for dim, (low, high) in enumerate(self.cfg.ranges):
             self._command[env_ids, dim] = r.uniform_(low, high)
 
 
 @configclass
-class JointPoseCommandCfg(CommandTermCfg):
+class UniformPoseDeltaCommandCfg(CommandTermCfg):
     """Configuration for the N-dimensional uniform pose-delta command term.
 
-    Please refer to the :class:`JointPoseCommand` class for more details.
+    Please refer to the :class:`UniformPoseDeltaCommand` class for more details.
     """
 
-    class_type: type[JointPoseCommand] = JointPoseCommand
+    class_type: type[UniformPoseDeltaCommand] = UniformPoseDeltaCommand
 
     ranges: tuple[tuple[float, float], ...] = ()
     """Per-dimension ``(low, high)`` sampling range. Its length sets the command width.

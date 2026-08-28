@@ -89,10 +89,10 @@ class _DummyEnv:
         self.scene = {"robot": _DummyRobot(num_envs, device)}
 
 
-def _make_pose_command(ranges, resampling_time_range=(2.0, 5.0), num_envs=8) -> mdp.JointPoseCommand:
+def _make_pose_command(ranges, resampling_time_range=(2.0, 5.0), num_envs=8) -> mdp.UniformPoseDeltaCommand:
     env = _DummyEnv(num_envs=num_envs)
-    cfg = mdp.JointPoseCommandCfg(resampling_time_range=resampling_time_range, ranges=ranges)
-    return mdp.JointPoseCommand(cfg, cast("ManagerBasedRLEnv", env))
+    cfg = mdp.UniformPoseDeltaCommandCfg(resampling_time_range=resampling_time_range, ranges=ranges)
+    return mdp.UniformPoseDeltaCommand(cfg, cast("ManagerBasedRLEnv", env))
 
 
 def _make_velocity_command(
@@ -126,7 +126,7 @@ def _all_env_ids(term) -> torch.Tensor:
 
 
 ##
-# Joint-pose command
+# Uniform pose-delta command
 ##
 
 
@@ -135,7 +135,7 @@ def _all_env_ids(term) -> torch.Tensor:
     [(HEAD_POSE_RANGES, 4), (BODY_POSE_RANGES, 6)],
     ids=["head", "body"],
 )
-def test_joint_pose_command_width_follows_the_range_tuple(ranges, expected_dim):
+def test_pose_delta_command_width_follows_the_range_tuple(ranges, expected_dim):
     """The command is as wide as the range tuple is long."""
     term = _make_pose_command(ranges)
 
@@ -147,7 +147,7 @@ def test_joint_pose_command_width_follows_the_range_tuple(ranges, expected_dim):
     [HEAD_POSE_RANGES, BODY_POSE_RANGES],
     ids=["head", "body"],
 )
-def test_joint_pose_command_samples_each_dimension_inside_its_own_range(ranges):
+def test_pose_delta_command_samples_each_dimension_inside_its_own_range(ranges):
     """Every dimension stays inside the range configured for it, not the widest one."""
     torch.manual_seed(0)
     term = _make_pose_command(ranges, num_envs=512)
@@ -162,7 +162,7 @@ def test_joint_pose_command_samples_each_dimension_inside_its_own_range(ranges):
         assert column.abs().max() > 0.5 * high
 
 
-def test_joint_pose_command_holds_its_value_until_the_resampling_clock_expires():
+def test_pose_delta_command_holds_its_value_until_the_resampling_clock_expires():
     """The command is held between resamples and redrawn once the sampled interval elapses."""
     torch.manual_seed(0)
     term = _make_pose_command(HEAD_POSE_RANGES, resampling_time_range=(2.0, 5.0))
@@ -183,6 +183,22 @@ def test_joint_pose_command_holds_its_value_until_the_resampling_clock_expires()
         term.compute(dt=0.1)
     assert torch.all(term.command_counter >= 2)
     assert not torch.allclose(term.command, held)
+
+
+def test_pose_delta_command_accepts_a_widened_range_but_rejects_a_narrowed_one():
+    """A curriculum may replace the ranges, but only with one range per commanded dimension."""
+    torch.manual_seed(0)
+    term = _make_pose_command(HEAD_POSE_RANGES, num_envs=64)
+
+    # widening in place is the curriculum's whole job
+    term.cfg.ranges = tuple((10.0 * low, 10.0 * high) for low, high in HEAD_POSE_RANGES)
+    term._resample_command(_all_env_ids(term))
+    assert term.command[:, 0].abs().max() > HEAD_POSE_RANGES[0][1]
+
+    # dropping a dimension would otherwise leave the last one holding a stale value
+    term.cfg.ranges = HEAD_POSE_RANGES[:3]
+    with pytest.raises(AssertionError):
+        term._resample_command(_all_env_ids(term))
 
 
 ##
@@ -245,9 +261,7 @@ def test_standing_takes_precedence_over_forward_only():
 def test_turn_in_place_takes_precedence_over_standing_and_forward_only():
     """Turn-in-place is applied last and clears the standing flag, so it wins every overlap."""
     torch.manual_seed(0)
-    term = _make_velocity_command(
-        num_envs=512, rel_standing_envs=1.0, rel_forward_envs=1.0, rel_turn_in_place_envs=1.0
-    )
+    term = _make_velocity_command(num_envs=512, rel_standing_envs=1.0, rel_forward_envs=1.0, rel_turn_in_place_envs=1.0)
 
     term._resample_command(_all_env_ids(term))
     term._update_command()
