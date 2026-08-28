@@ -28,7 +28,13 @@ from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
 from isaaclab.actuators import BamActuator, BamActuatorCfg
 from isaaclab.actuators.bam_model import BAM_XL330_M6_PARAMS_FILE, BamMotorParams
-from isaaclab.actuators.newton import BAM_CONTROL_API, ControllerBam, NewtonActuatorAdapter, PhysxActuatorWrapper
+from isaaclab.actuators.newton import (
+    BAM_CONTROL_API,
+    ControllerBam,
+    NewtonActuatorAdapter,
+    PhysxActuatorWrapper,
+    apply_bam_startup_sampling,
+)
 from isaaclab.sim.schemas.schemas_actuators import (
     _author_actuator_prims,
     _is_newton_native_actuator_cfg,
@@ -364,6 +370,28 @@ def test_shared_supply_sags_with_the_group_load(device):
     np.testing.assert_allclose(
         harness.controller.effective_vin.numpy().reshape(2, 2), np.broadcast_to(expected, (2, 2)), rtol=1e-5, atol=0.0
     )
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_startup_sampling_draws_one_value_per_environment(device):
+    """The config's start-up ranges must reach the controller once the actuator exists.
+
+    A USD prim is shared by every clone, so the ranges cannot be authored per environment.
+    They are drawn afterwards, and -- like implementation A's ``_sample_per_env`` -- one value
+    covers all of an environment's joints.
+    """
+    cfg = _make_cfg(vin_range=(6.0, 8.0), friction_scale_range=(0.5, 1.5))
+    harness = _Harness(cfg, num_envs=8, device=device)
+
+    apply_bam_startup_sampling(harness.controller, cfg)
+
+    for attr, (low, high) in (("vin", cfg.vin_range), ("friction_scale", cfg.friction_scale_range)):
+        values = getattr(harness.controller, attr).numpy().reshape(8, len(JOINT_NAMES))
+        np.testing.assert_allclose(values[:, 0], values[:, 1], atol=0.0, rtol=0.0)
+        assert ((values >= low) & (values <= high)).all()
+        assert len(np.unique(values[:, 0])) > 1, "every environment drew the same value"
+    # An unset range leaves the authored nominal in place.
+    np.testing.assert_allclose(harness.controller.sag_gain.numpy(), 0.0, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.parametrize("device", test_devices())
