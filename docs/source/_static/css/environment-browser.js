@@ -152,6 +152,9 @@
             ["IsaacContrib-Velocity-Rough-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Velocity-Rough-UnitreeA1", "rsl_rl,skrl,sb3", "isaacsim_physx,newton_kamino,newton_mjwarp,ovphysx", "", "", "tasks/locomotion/a1_rough.jpg"],
             ["IsaacContrib-Velocity-Rough-UnitreeGo1", "rsl_rl,skrl", "isaacsim_physx,newton_kamino,newton_mjwarp,ovphysx", "", "", "tasks/locomotion/go1_rough.jpg"],
+            ["IsaacContrib-Roulade-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-StandUp-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-Velocity-Flat-MicroDuck-Rollers", "rsl_rl", "newton_mjwarp", "", ""],
         ];
         // END-AUTO-GENERATED: environment-browser-task-rows
 
