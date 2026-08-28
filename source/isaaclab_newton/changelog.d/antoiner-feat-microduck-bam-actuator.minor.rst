@@ -18,6 +18,21 @@ Added
   the model is still being built, so anything that needs the concrete solver has to defer to
   the latter.
 
+Changed
+^^^^^^^
+
+* Joint DOFs that do not author their own limit gains now use MuJoCo's default joint-limit
+  ``solref`` (``(0.02, 1.0)``, critically damped) on the MuJoCo Warp backend instead of the
+  force-space conversion of Newton's generic ``limit_ke=1e4`` / ``limit_kd=1e1`` defaults.
+  That conversion scaled the gains by ``dof_invweight0`` and produced a stiffer, roughly four
+  times underdamped pair (``~(0.008, 0.25)`` for a light servo robot), so joint limits rebounded
+  instead of absorbing and light limit-bounded robots could diverge to non-finite state at
+  realistic joint damping. Joints that author limit gains (USD drive limits, MJCF
+  ``solreflimit``, or explicit force-space gains) are unaffected. Limit dynamics change for
+  every other Newton asset, so re-validate policies trained before this change; set
+  :attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref` to
+  ``False`` to restore the previous conversion.
+
 Fixed
 ^^^^^
 
