@@ -30,7 +30,13 @@ import math
 import numpy as np
 import pytest
 import torch
-from isaaclab_newton.physics import FeatherstoneSolverCfg, MJWarpSolverCfg, NewtonCfg, NewtonManager
+from isaaclab_newton.physics import (
+    FeatherstoneSolverCfg,
+    MjWarpActuatorBridge,
+    MJWarpSolverCfg,
+    NewtonCfg,
+    NewtonManager,
+)
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import BamActuator, BamActuatorCfg
@@ -131,7 +137,7 @@ ANGLE_TOLERANCE = math.radians(2.0)
 """Accepted distance between the settled angle and the analytic equilibrium [rad]."""
 
 
-def _make_sim_cfg(device: str, use_newton_actuators: bool = False) -> SimulationCfg:
+def _make_sim_cfg(device: str, use_newton_actuators: bool = False, use_cuda_graph: bool = True) -> SimulationCfg:
     """Build the MJWarp configuration used by every test in this module."""
     return SimulationCfg(
         dt=DT,
@@ -141,6 +147,7 @@ def _make_sim_cfg(device: str, use_newton_actuators: bool = False) -> Simulation
             solver_cfg=MJWarpSolverCfg(njmax=20, nconmax=20, ls_iterations=20, integrator="implicitfast", impratio=1),
             num_substeps=2,
             debug_mode=False,
+            use_cuda_graph=use_cuda_graph,
         ),
     )
 
@@ -174,6 +181,23 @@ def native_sim(device):
         gravity_enabled=True,
         add_ground_plane=False,
         sim_cfg=_make_sim_cfg(device, use_newton_actuators=True),
+    ) as sim_ctx:
+        sim_ctx._app_control_on_stop_handle = None  # noqa: SLF001
+        yield sim_ctx
+
+
+@pytest.fixture
+def native_sim_eager(device):
+    """Newton-native actuator path with CUDA graph capture off.
+
+    A replayed graph runs its recorded kernels without re-entering Python, so a test that
+    observes the hooks from Python has to step eagerly to see every iteration on both devices.
+    """
+    with build_simulation_context(
+        device=device,
+        gravity_enabled=True,
+        add_ground_plane=False,
+        sim_cfg=_make_sim_cfg(device, use_newton_actuators=True, use_cuda_graph=False),
     ) as sim_ctx:
         sim_ctx._app_control_on_stop_handle = None  # noqa: SLF001
         yield sim_ctx
@@ -689,6 +713,49 @@ def test_native_bam_actuators_are_captured_in_the_cuda_graph(native_sim, device,
     # replaying it under a per-environment randomization is the real capture evidence: the
     # in-graph publish has to read the controller array a host-side write just changed.
     _settle_with_friction_scales(robot, native_sim, load)
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_the_friction_budget_is_refreshed_on_every_physics_step(native_sim_eager, device, pendulum_usd):
+    """Load gather, actuator step and friction publish must run once per *physics* step.
+
+    The BAM friction budget is sized from the previous solve's generalized load, so a budget
+    computed once per *control* step would face a load up to ``decimation`` solves old. The
+    one-step lag is deliberate -- it is what the reference implementation carries -- but a
+    ``decimation``-step lag is not, and nothing else in this suite distinguishes the two: both
+    leave the same value in ``dof_frictionloss`` when the step returns.
+
+    The order within an iteration matters just as much and is asserted with the cadence: the
+    gather has to read the previous solve before the actuators run, and the publish has to land
+    after them and before the substeps consume the row.
+    """
+    robot = _build_native_pendulum(native_sim_eager, pendulum_usd)
+    events: list[str] = []
+    gather, publish = MjWarpActuatorBridge.gather_external_torque, MjWarpActuatorBridge.publish_dof_friction
+    step = NewtonManager._adapter.step
+
+    def spy(name, wrapped):
+        def wrapper(*args, **kwargs):
+            events.append(name)
+            return wrapped(*args, **kwargs)
+
+        return wrapper
+
+    MjWarpActuatorBridge.gather_external_torque = spy("gather", gather)
+    MjWarpActuatorBridge.publish_dof_friction = spy("publish", publish)
+    NewtonManager._adapter.step = spy("actuators", step)
+    try:
+        NewtonManager.set_decimation(GRAPH_DECIMATION)
+        assert NewtonManager._graph is None, "the eager fixture must not capture a graph"
+        events.clear()
+        _release(robot)
+        native_sim_eager.step()
+    finally:
+        MjWarpActuatorBridge.gather_external_torque = gather
+        MjWarpActuatorBridge.publish_dof_friction = publish
+        NewtonManager._adapter.step = step
+
+    assert events == ["gather", "actuators", "publish"] * GRAPH_DECIMATION
 
 
 def _build_two_native_pendulums(sim, pendulum_usd: str, second_cfg: BamActuatorCfg) -> tuple:
