@@ -25,6 +25,11 @@ Three families of divergence recur and are worth stating once:
   Isaac Lab has no site concept, so the ports measure the ankle *body* frames instead. The
   functional form is unchanged, but height thresholds are offset by the sole-to-ankle distance and
   need re-tuning rather than copying.
+
+Upstream's diagnostic metrics -- the per-term breakdowns it writes into ``env.extras["log"]``, and
+its ``mean_action_acc`` metric term (reference section 2.9) -- are intentionally not ported here:
+Isaac Lab's reward manager already logs each term's episode sum, and any further logging belongs
+with the task's instrumentation pass rather than inside the reward kernels.
 """
 
 from __future__ import annotations
@@ -42,6 +47,61 @@ if TYPE_CHECKING:
     from isaaclab.assets import Articulation
     from isaaclab.envs import ManagerBasedRLEnv
     from isaaclab.sensors import ContactSensor
+
+
+def _required_entity_cfg(cfg: RewardTermCfg, key: str, term_name: str) -> SceneEntityCfg:
+    """Fetch a scene entity configuration that a stateful term needs at construction time.
+
+    A class-based term is built before it is ever called, so it cannot fall back on a signature
+    default: the entity has to be spelled out in :attr:`RewardTermCfg.params`. Reading it directly
+    would surface as a bare ``KeyError`` from inside the manager, which says nothing about what to
+    fix.
+
+    Args:
+        cfg: The term configuration.
+        key: Name of the parameter holding the entity configuration.
+        term_name: Name of the term, used in the error message.
+
+    Returns:
+        The scene entity configuration.
+
+    Raises:
+        ValueError: If the parameter is missing or is not a :class:`SceneEntityCfg`.
+    """
+    entity_cfg = cfg.params.get(key)
+    if not isinstance(entity_cfg, SceneEntityCfg):
+        raise ValueError(
+            f"The reward term '{term_name}' requires a 'SceneEntityCfg' under the '{key}' entry of"
+            f" its 'params'. Received: {entity_cfg!r}."
+        )
+    return entity_cfg
+
+
+def _required_joint_ids(entity_cfg: SceneEntityCfg, key: str, term_name: str) -> list[int]:
+    """Fetch an explicit joint selection from a resolved scene entity configuration.
+
+    An unset :attr:`SceneEntityCfg.joint_names` leaves :attr:`~SceneEntityCfg.joint_ids` as
+    ``slice(None)``, which selects every joint in whatever order the backend resolved them. The
+    terms that use this helper index a command tensor positionally, so silently selecting all
+    joints would mis-pair the columns rather than fail.
+
+    Args:
+        entity_cfg: The resolved scene entity configuration.
+        key: Name of the parameter holding it, used in the error message.
+        term_name: Name of the term, used in the error message.
+
+    Returns:
+        The selected joint indices.
+
+    Raises:
+        ValueError: If no joints were selected by name.
+    """
+    if isinstance(entity_cfg.joint_ids, slice):
+        raise ValueError(
+            f"The reward term '{term_name}' requires '{key}' to select its joints by name, so that"
+            " their order is pinned. Set 'joint_names' with 'preserve_order=True'."
+        )
+    return entity_cfg.joint_ids
 
 
 def _command_magnitude(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
@@ -185,14 +245,24 @@ class pose_mode_switch(ManagerTermBase):
             cfg: The term configuration, whose ``params`` carry the three name-to-value dictionaries
                 and the selected joints.
             env: The environment instance.
+
+        Raises:
+            ValueError: If ``asset_cfg`` is missing, selects no joints by name, or if one of the
+                three standard-deviation dictionaries is missing.
         """
         super().__init__(cfg, env)
 
-        asset_cfg: SceneEntityCfg = cfg.params["asset_cfg"]
+        asset_cfg = _required_entity_cfg(cfg, "asset_cfg", self.__name__)
+        joint_ids = _required_joint_ids(asset_cfg, "asset_cfg", self.__name__)
         asset: Articulation = env.scene[asset_cfg.name]
-        joint_names = [asset.joint_names[index] for index in asset_cfg.joint_ids]
+        joint_names = [asset.joint_names[index] for index in joint_ids]
         self._std = {}
         for key in ("std_standing", "std_walking", "std_running"):
+            if key not in cfg.params:
+                raise ValueError(
+                    f"The reward term '{self.__name__}' requires the '{key}' entry of its 'params'"
+                    " to map joint-name patterns to standard deviations."
+                )
             # ordered by the selected joints, so the vector lines up with ``joint_ids``
             _, _, values = resolve_matching_names_values(cfg.params[key], joint_names)
             self._std[key] = torch.tensor(values, dtype=torch.float32, device=env.device).unsqueeze(0)
@@ -301,13 +371,15 @@ class head_pose_bias_penalty(ManagerTermBase):
         Args:
             cfg: The term configuration, whose ``params`` carry the tracked joints.
             env: The environment instance.
+
+        Raises:
+            ValueError: If ``asset_cfg`` is missing or selects no joints by name.
         """
         super().__init__(cfg, env)
 
-        asset_cfg: SceneEntityCfg = cfg.params["asset_cfg"]
-        asset: Articulation = env.scene[asset_cfg.name]
-        num_joints = len(asset.data.joint_pos.torch[0, asset_cfg.joint_ids])
-        self._error_ema = torch.zeros(env.num_envs, num_joints, device=env.device)
+        asset_cfg = _required_entity_cfg(cfg, "asset_cfg", self.__name__)
+        joint_ids = _required_joint_ids(asset_cfg, "asset_cfg", self.__name__)
+        self._error_ema = torch.zeros(env.num_envs, len(joint_ids), device=env.device)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
         """Forget the average for the environments that restarted.
@@ -325,7 +397,7 @@ class head_pose_bias_penalty(ManagerTermBase):
         env: ManagerBasedRLEnv,
         command_name: str,
         tau_s: float,
-        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        asset_cfg: SceneEntityCfg,
     ) -> torch.Tensor:
         """Advance the moving average and return the penalty.
 
@@ -333,7 +405,9 @@ class head_pose_bias_penalty(ManagerTermBase):
             env: The environment instance.
             command_name: Name of the head-pose command term.
             tau_s: Time constant of the moving average [s].
-            asset_cfg: The articulation and the head joints to track.
+            asset_cfg: The articulation and the head joints to track. Mandatory: the term sizes its
+                state from the selection at construction time, and the command columns are paired
+                with the joints positionally.
 
         Returns:
             The penalty in ``(-inf, 0]``. Shape is (num_envs,).
@@ -496,6 +570,11 @@ class foot_swing_height(ManagerTermBase):
     Upstream detects "airborne" through its sensor's ``found`` field. Isaac Lab's equivalent is
     ``current_contact_time``, which is zero exactly while no contact force above the sensor's
     threshold is registered.
+
+    Note:
+        :meth:`~isaaclab.sensors.ContactSensor.compute_first_contact` returns a **float** mask of
+        ones and zeros, not a boolean one, so its result is thresholded before it is used as a
+        condition.
     """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
@@ -504,10 +583,13 @@ class foot_swing_height(ManagerTermBase):
         Args:
             cfg: The term configuration, whose ``params`` carry the tracked feet.
             env: The environment instance.
+
+        Raises:
+            ValueError: If ``sensor_cfg`` is missing from the term parameters.
         """
         super().__init__(cfg, env)
 
-        sensor_cfg: SceneEntityCfg = cfg.params["sensor_cfg"]
+        sensor_cfg = _required_entity_cfg(cfg, "sensor_cfg", self.__name__)
         contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
         num_feet = len(contact_sensor.data.current_contact_time.torch[0, sensor_cfg.body_ids])
         self._peak_heights = torch.zeros(env.num_envs, num_feet, device=env.device)
@@ -552,7 +634,9 @@ class foot_swing_height(ManagerTermBase):
         foot_height = _feet_height_above_ground(env, asset_cfg)
         self._peak_heights = torch.where(in_air, torch.maximum(self._peak_heights, foot_height), self._peak_heights)
 
-        first_contact = contact_sensor.compute_first_contact(env.step_dt).torch[:, sensor_cfg.body_ids]
+        # the sensor reports the landing mask as ones and zeros in float32, which cannot be used as
+        # a ``torch.where`` condition directly
+        first_contact = contact_sensor.compute_first_contact(env.step_dt).torch[:, sensor_cfg.body_ids] > 0.5
         error = self._peak_heights / target_height - 1.0
         cost = torch.sum(torch.square(error) * first_contact.float(), dim=1)
         cost = cost * (_command_magnitude(env, command_name) > command_threshold).float()
