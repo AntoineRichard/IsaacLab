@@ -895,6 +895,32 @@ def test_self_collision_cost_ignores_forces_below_the_threshold():
     torch.testing.assert_close(cost, torch.tensor([0.0]))
 
 
+def test_self_collision_cost_saturates_to_upstreams_zero_or_one():
+    """Shape-level sensing sees one contact from both sides, so the ported cost must saturate.
+
+    Upstream reads a single contact slot and reports 0 or 1. A many-to-many sensor reports the same
+    contact once per shape that carries it, so counting would scale the penalty with how finely the
+    model happens to be split into colliders. ``saturate`` restores upstream's scale.
+    """
+    # env 0 touches nothing, env 1 carries the same contact on both of its two sensing shapes
+    forces = torch.tensor(
+        [
+            [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]],
+            [[[0.0, 0.0, 0.0], [0.0, 0.0, 5.0]], [[0.0, 0.0, 5.0], [0.0, 0.0, 0.0]]],
+        ]
+    )
+    sensor = _DummySensor(force_matrix_w=forces)
+    env = _DummyEnv(num_envs=2, sensors={"self_collision": sensor})
+    sensor_cfg = _entity("self_collision", body_ids=[0, 1])
+
+    saturated = mdp.self_collision_cost(env.as_env(), sensor_cfg=sensor_cfg, saturate=True)
+    counted = mdp.self_collision_cost(env.as_env(), sensor_cfg=sensor_cfg, saturate=False)
+
+    torch.testing.assert_close(saturated, torch.tensor([0.0, 1.0]))
+    # the same physical contact, counted from each of its two sides
+    torch.testing.assert_close(counted, torch.tensor([0.0, 2.0]))
+
+
 ##
 # Termination (reference section 6)
 ##
@@ -968,6 +994,7 @@ def _roulade_env(
     quat: list[float] | None = None,
     head_quat: list[float] | None = None,
     supported: bool = True,
+    self_contact: bool = False,
     head_contact: bool = False,
     height: float = 0.0,
     vertical_speed: float = 0.0,
@@ -991,13 +1018,16 @@ def _roulade_env(
         joint_pos=torch.zeros(1, 2),
         default_joint_pos=torch.zeros(1, 2),
     )
-    support_force = torch.tensor([[[0.0, 0.0, 5.0 if supported else 0.0]]])
+    # the support sensor is filtered against the terrain, so the gate reads its force *matrix*; the
+    # net force additionally carries any self-contact, which is what must not open the gate
+    ground_force = torch.tensor([[[[0.0, 0.0, 5.0 if supported else 0.0]]]])
+    net_force = torch.tensor([[[0.0, 0.0, (5.0 if supported else 0.0) + (5.0 if self_contact else 0.0)]]])
     head_force = torch.tensor([[[0.0, 0.0, 5.0 if head_contact else 0.0]]])
     return _DummyEnv(
         num_envs=1,
         assets={"robot": robot},
         sensors={
-            "robot_ground_contact": _DummySensor(net_forces_w=support_force),
+            "robot_ground_contact": _DummySensor(net_forces_w=net_force, force_matrix_w=ground_force),
             "head_ground_contact": _DummySensor(net_forces_w=head_force),
         },
         common_step_counter=step,
@@ -1080,6 +1110,21 @@ def test_roulade_progress_forfeits_rotation_faster_than_the_cap():
 def test_roulade_progress_pays_nothing_for_unsupported_rotation():
     """The support gate is what makes a ballistic flip worthless: a roulade never leaves the floor."""
     env = _roulade_env(forward_rate=3.0, supported=False)
+
+    reward = _advance(env)
+
+    torch.testing.assert_close(reward, torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.roulade_roll_state(env.as_env()).frontier, torch.tensor([0.0]))
+
+
+def test_roulade_progress_pays_nothing_for_an_airborne_robot_touching_itself():
+    """A tucked robot in mid-air must not open the support gate on its own knee.
+
+    The gate's failure direction: an unfiltered net force cannot tell the floor from the robot's own
+    shin, so a self-contacting ballistic whip read as supported and earned the rotation it was meant
+    to be denied. Reading the terrain-filtered force matrix closes it.
+    """
+    env = _roulade_env(forward_rate=3.0, supported=False, self_contact=True)
 
     reward = _advance(env)
 

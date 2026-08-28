@@ -861,42 +861,51 @@ def angular_momentum_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
 
 
 def self_collision_cost(
-    env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, force_threshold: float = 1.0
+    env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, force_threshold: float = 1.0, saturate: bool = False
 ) -> torch.Tensor:
-    """Penalize bodies of the robot that are touching the robot itself.
+    """Penalize parts of the robot that are touching the robot itself.
 
     Ported from reference section 5 (``self_collision_cost``, upstream term name
     ``self_collisions``). Upstream counts the self-contact slots its sensor reports as found. Isaac
-    Lab reports filtered contacts as a force matrix, so this port counts the *bodies* carrying a
-    self-contact force above :attr:`force_threshold` -- the same "how much of the robot is touching
-    itself" signal, quantized per body rather than per contact slot. The stock
+    Lab reports filtered contacts as a force matrix, so this port counts the *sensing objects*
+    carrying a self-contact force above :attr:`force_threshold` -- the same "how much of the robot is
+    touching itself" signal, quantized per sensing object rather than per contact slot. The stock
     :func:`isaaclab.envs.mdp.undesired_contacts` counts bodies the same way but reads
     ``net_forces_w``, the total contact force including the ground, which for a walking robot is
     never zero.
 
     The sensor must be configured with
-    :attr:`~isaaclab.sensors.ContactSensorCfg.filter_prim_paths_expr` pointing back at the robot,
+    :attr:`~isaaclab.sensors.ContactSensorCfg.filter_prim_paths_expr` or its shape-level counterpart
+    :attr:`~isaaclab.sensors.ContactSensorCfg.filter_shape_prim_expr` pointing back at the robot,
     otherwise no force matrix is produced.
 
     Args:
         env: The environment instance.
-        sensor_cfg: The contact sensor and the bodies to read.
-        force_threshold: Contact-force magnitude above which a body counts as touching [N].
+        sensor_cfg: The contact sensor and the sensing objects to read.
+        force_threshold: Contact-force magnitude above which a sensing object counts as touching [N].
             Defaults to 1.0, the same "a real contact" threshold the stock contact terms use.
+        saturate: Whether to report upstream's 0-or-1 "is the robot touching itself" flag instead of
+            a count. Defaults to False, which counts. Set it whenever the sensor senses *both* sides
+            of a contact -- a many-to-many sensor reports one contact once per shape that carries
+            it, so counting would scale the penalty with how finely the model is split into
+            colliders rather than with how much of the robot is folded onto itself.
 
     Returns:
-        The number of bodies in self-contact. Shape is (num_envs,).
+        Either the number of sensing objects in self-contact, or 0/1 when :attr:`saturate` is set.
+        Shape is (num_envs,).
     """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     force_matrix_w = contact_sensor.data.force_matrix_w
     if force_matrix_w is None:
         raise RuntimeError(
             f"The contact sensor '{sensor_cfg.name}' reports no force matrix. Set"
-            " 'filter_prim_paths_expr' on its configuration so that self-contacts are resolved."
+            " 'filter_prim_paths_expr' or 'filter_shape_prim_expr' on its configuration so that"
+            " self-contacts are resolved."
         )
     forces = force_matrix_w.torch[:, sensor_cfg.body_ids]
     in_contact = torch.linalg.norm(forces, dim=-1) > force_threshold
-    return in_contact.any(dim=-1).sum(dim=-1).float()
+    touching = in_contact.any(dim=-1)
+    return (touching.any(dim=-1) if saturate else touching.sum(dim=-1)).float()
 
 
 ##
@@ -1383,23 +1392,37 @@ def _head_top_is_down(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torc
     return axis_world_z < -_ROULADE_HEAD_TOP_DOWN_MIN
 
 
-def _any_contact(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Whether any body a contact sensor senses is touching something.
+def _any_contact(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, filtered: bool = False) -> torch.Tensor:
+    """Whether any object a contact sensor senses is touching something.
 
     Upstream reads its sensors' boolean ``found`` field, which is set for every contact the solver
-    keeps. Isaac Lab reports the net contact force per sensing body instead, so "found" is a
+    keeps. Isaac Lab reports the net contact force per sensing object instead, so "found" is a
     non-zero force -- the same signal, since the shapes carry no collision margin.
 
     Args:
         env: The environment instance.
-        sensor_cfg: The contact sensor and the bodies to read.
+        sensor_cfg: The contact sensor and the sensing objects to read.
+        filtered: Whether to read the per-partner force matrix rather than the net force. Defaults to
+            False. Set it when the question is "touching *that*" rather than "touching anything" --
+            the net force sums every contact a sensing object carries, including the robot's own
+            limbs, so only the matrix can answer it.
 
     Returns:
-        Whether at least one selected body is in contact. Shape is (num_envs,).
+        Whether at least one selected sensing object is in contact. Shape is (num_envs,).
     """
     sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    forces = sensor.data.net_forces_w.torch[:, sensor_cfg.body_ids]
-    return (forces.norm(dim=-1) > 0.0).any(dim=-1)
+    if not filtered:
+        forces = sensor.data.net_forces_w.torch[:, sensor_cfg.body_ids]
+        return (forces.norm(dim=-1) > 0.0).any(dim=-1)
+    force_matrix_w = sensor.data.force_matrix_w
+    if force_matrix_w is None:
+        raise RuntimeError(
+            f"The contact sensor '{sensor_cfg.name}' reports no force matrix. Set"
+            " 'filter_prim_paths_expr' or 'filter_shape_prim_expr' on its configuration so that its"
+            " contact partners are resolved."
+        )
+    forces = force_matrix_w.torch[:, sensor_cfg.body_ids]
+    return (forces.norm(dim=-1) > 0.0).any(dim=-1).any(dim=-1)
 
 
 def _update_roulade_state(
@@ -1415,7 +1438,8 @@ def _update_roulade_state(
 
     * **Support gate.** Rotation is integrated only while some part of the robot touches the ground.
       A roulade is a supported motion, and upstream's first run discovered that without this gate
-      the optimal policy is a ballistic whip that earns the same rotation sooner.
+      the optimal policy is a ballistic whip that earns the same rotation sooner. The support sensor
+      is read *filtered*, so a tucked robot in mid-air cannot open the gate on its own knee.
     * **Sagittal gate.** Rotation is scaled by a smoothstep on how flat the roll is, so going over a
       shoulder earns little and going over the side earns nothing.
 
@@ -1430,7 +1454,8 @@ def _update_roulade_state(
         env: The environment instance.
         asset_cfg: The articulation, whose root link carries the trunk and whose single selected
             body carries the head shells.
-        support_sensor_cfg: The contact sensor reporting whether the robot touches the ground.
+        support_sensor_cfg: The contact sensor reporting whether the robot touches the ground. It
+            must be filtered against the terrain, because the gate reads its force matrix.
         head_sensor_cfg: The contact sensor reporting whether the head touches the ground.
     """
     state = roulade_roll_state(env)
@@ -1441,7 +1466,7 @@ def _update_roulade_state(
     asset: Articulation = env.scene[asset_cfg.name]
     forward_rate = _ROULADE_FORWARD_SIGN * asset.data.root_link_ang_vel_b.torch[:, 1]
     delta = torch.nan_to_num(forward_rate, nan=0.0) * env.step_dt
-    delta = delta * _any_contact(env, support_sensor_cfg).float()
+    delta = delta * _any_contact(env, support_sensor_cfg, filtered=True).float()
     lateral = torch.nan_to_num(_lateral_axis_z(asset.data.root_link_quat_w.torch), nan=1.0).abs()
     sagittal_gate = _smoothstep((_ROULADE_SAGITTAL_ZERO - lateral) / (_ROULADE_SAGITTAL_ZERO - _ROULADE_SAGITTAL_FULL))
     # in place throughout, so the buffers stay the ones allocated on the environment: a rollout runs
@@ -1519,7 +1544,7 @@ def roulade_progress(
         max_paid_rate: Largest rotation rate [rad/s] that is paid for. Rotation faster than this
             forfeits the excess.
         support_sensor_cfg: The contact sensor reporting whether the robot touches the ground, which
-            gates the accumulator.
+            gates the accumulator. It must be filtered against the terrain.
         head_sensor_cfg: The contact sensor reporting whether the head touches the ground, which
             drives the over-the-head latch.
         asset_cfg: The articulation, whose root link carries the trunk and whose single selected

@@ -53,6 +53,7 @@ from isaaclab_tasks.contrib.microduck.roulade.roulade_env_cfg import (
     MICRODUCK_TUCK_JOINT_POS,
     MicroDuckRouladeFlatEnvCfg,
 )
+from isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg import MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 from isaaclab_assets.robots.microduck import MICRODUCK_ALLCOLLISIONS_USD_PATH
@@ -279,7 +280,7 @@ EXPECTED_REWARDS = {
         {"height_low": 0.09, "height_high": 0.11, "tilt_full_deg": 20.0, "tilt_zero_deg": 45.0},
     ),
     "gentle_landing": (0.002, {}),
-    "self_collisions": (-0.1, {}),
+    "self_collisions": (-0.1, {"saturate": True}),
 }
 """Upstream's reward recipe (addendum section 4.4), keyed by term name, at its initial weights.
 
@@ -750,10 +751,13 @@ def test_the_scene_carries_the_two_sensors_the_accumulator_gates_on():
     assert scene.terrain.terrain_generator is None
     # the head shells live on ``jaw_soft``, and this sensor is what reports them touching the ground
     assert scene.head_ground_contact.prim_path.endswith("jaw_soft")
-    for body in ("jaw_soft", "hip_l", "hip_l_2", "leg", "leg_2", "ankle_left", "ankle_right"):
-        assert body in scene.robot_ground_contact.prim_path, body
-    # neither is filtered: both ask "is this body loaded", which is what upstream's ``found`` reports
+    # the head sensor is unfiltered: it asks "is this body loaded", which is upstream's ``found``
     assert not scene.head_ground_contact.filter_prim_paths_expr
+    assert not scene.head_ground_contact.filter_shape_prim_expr
+    # the support sensor is not, because the anti-breakdance gate has to tell the floor from the
+    # robot's own shin. It senses every collider and filters them against the terrain alone.
+    assert scene.robot_ground_contact.sensor_shape_prim_expr == [MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR]
+    assert scene.robot_ground_contact.filter_shape_prim_expr == [scene.terrain.prim_path + "/.*"]
     assert not scene.robot_ground_contact.filter_prim_paths_expr
     # the head slams into the floor here, so the contact budget is measured rather than inherited
     solver = MicroDuckRouladeFlatEnvCfg().sim.physics.default.solver_cfg
@@ -1010,6 +1014,88 @@ def test_a_standing_spawn_plants_its_head_and_can_reach_the_landing_gate():
             gate_hi=MICRODUCK_LANDING_GATE[1],
         )
         assert bool((tax < 0.0).all()), f"the gated landing terms stayed zero: {tax.tolist()}"
+    finally:
+        if env is not None:
+            env.close()
+        SimulationContext.clear_instance()
+
+
+@pytest.mark.integration
+@requires_microduck_allcollisions_usd
+def test_the_support_gate_stays_shut_for_a_robot_touching_only_itself():
+    """The anti-breakdance gate must read the floor, not any contact at all.
+
+    Upstream's first run found that without a support gate the optimal policy is a ballistic whip
+    that earns the rotation without ever rolling. An unfiltered net contact force reopens exactly
+    that hole from the other side: it cannot tell the floor from the robot's own shin, so a tucked
+    robot in mid-air reads as supported and collects the rotation the gate exists to deny.
+
+    Two environments are spun at the same rate about the same axis and differ only in what they are
+    touching, so the rotation frontier is a direct measurement of the gate rather than of the pose.
+    """
+    sim_utils.create_new_stage()
+    env = None
+    try:
+        env_cfg = parse_env_cfg(TASK_NAME, device="cuda", num_envs=2)
+        # both environments must start at zero rotation, which the mid-roll bucket is granted
+        env_cfg.curriculum.roulade_spawn_mix = None
+        params = env_cfg.events.set_roulade_state.params
+        params["standing_prob"], params["midroll_prob"] = 1.0, 0.0
+        params["standing_tilt_max"] = 0.0
+
+        env = gym.make(TASK_NAME, cfg=env_cfg)
+        env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
+        unwrapped = env.unwrapped
+        env.reset()
+
+        robot = unwrapped.scene["robot"]
+        names = list(robot.joint_names)
+        limits = robot.data.joint_pos_limits.torch[0]
+        joint_pos = robot.data.default_joint_pos.torch.clone()
+        # env 1 folds both legs, which drives each shin into the hip shell on its own side
+        for joint, angle in {
+            "left_hip_pitch": -1.5,
+            "left_knee": 1.5,
+            "right_hip_pitch": 1.5,
+            "right_knee": -1.5,
+        }.items():
+            index = names.index(joint)
+            joint_pos[1, index] = min(max(angle, limits[index, 0].item()), limits[index, 1].item())
+
+        # env 0 rests on the floor, env 1 hangs a metre above it; both are level, so the sagittal
+        # gate is fully open and the only difference between them is what they touch
+        pose = torch.zeros((2, 7), device=unwrapped.device)
+        pose[:, :3] = unwrapped.scene.env_origins
+        pose[0, 2] += MICRODUCK_STAND_HEIGHT
+        pose[1, 2] += 1.0
+        pose[:, 6] = 1.0  # xyzw identity
+        # a forward roll is a positive body-frame pitch rate, and level means body frame is world
+        velocity = torch.zeros((2, 6), device=unwrapped.device)
+        velocity[:, 4] = 3.0
+        joint_vel = torch.zeros_like(joint_pos)
+        action = torch.zeros(unwrapped.action_space.shape, device=unwrapped.device)
+
+        support = unwrapped.scene.sensors["robot_ground_contact"]
+        steps = 10
+        with torch.inference_mode():
+            for _ in range(steps):
+                robot.write_root_link_pose_to_sim_index(root_pose=pose)
+                robot.write_root_com_velocity_to_sim_index(root_velocity=velocity)
+                robot.write_joint_state_to_sim_index(position=joint_pos, velocity=joint_vel)
+                env.step(action)
+
+            ground = support.data.force_matrix_w.torch.norm(dim=-1).flatten(1).max(dim=-1).values
+            net = support.data.net_forces_w.torch.norm(dim=-1).max(dim=-1).values
+            frontier = mdp.roulade_roll_state(unwrapped).frontier.clone()
+
+        # the sensor tells the two apart: only the resting robot is loaded *by the terrain*
+        assert ground[0].item() > 1.0, "the resting robot never reached the floor"
+        assert ground[1].item() == 0.0, "an airborne robot was reported as touching the ground"
+        # and the airborne one is loaded all the same, which is what the old unfiltered read saw
+        assert net[1].item() > 1.0, "the airborne pose produced no self-contact to be fooled by"
+        # so the gate opens for the supported roll and stays shut for the self-contacting one
+        assert frontier[0].item() > 0.0, "a supported roll earned no rotation"
+        assert frontier[1].item() == 0.0, "an airborne robot earned rotation off its own knee"
     finally:
         if env is not None:
             env.close()

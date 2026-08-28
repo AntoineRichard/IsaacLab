@@ -63,6 +63,7 @@ from isaaclab.visualizers import VisualizerCfg
 
 import isaaclab_tasks.contrib.microduck.mdp as mdp
 from isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg import (
+    MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR,
     MICRODUCK_FOOT_BODY_NAMES,
     MICRODUCK_HEAD_BODY_NAMES,
     MICRODUCK_JOINT_NAMES,
@@ -168,6 +169,13 @@ _SELF_COLLISION_SENSOR_CFG = SceneEntityCfg("self_collision")
 _HEAD_GROUND_SENSOR_CFG = SceneEntityCfg("head_ground_contact")
 _ROBOT_GROUND_SENSOR_CFG = SceneEntityCfg("robot_ground_contact")
 
+_TERRAIN_PRIM_PATH = "/World/ground"
+"""Where the terrain is imported, shared by every environment.
+
+Named once because the support sensor filters against it: a terrain that moved without the filter
+following would silently leave that sensor with no contact partner and open its gate permanently.
+"""
+
 _IMU_MISALIGNMENT_DEG = 6.0
 """Upper bound [deg] on the IMU mounting-misalignment angle, upstream's velocity-matched value."""
 
@@ -243,7 +251,7 @@ class MicroDuckRouladeSceneCfg(InteractiveSceneCfg):
     """Scene with the all-collisions MicroDuck robot on a ground plane, and four contact sensors."""
 
     terrain = TerrainImporterCfg(
-        prim_path="/World/ground",
+        prim_path=_TERRAIN_PRIM_PATH,
         terrain_type="plane",
         terrain_generator=None,
         collision_group=-1,
@@ -273,19 +281,13 @@ class MicroDuckRouladeSceneCfg(InteractiveSceneCfg):
         track_air_time=True,
     )
 
-    # Self-collision sensor, identical to the stand-up task's and carrying the same documented
-    # narrowing of upstream's trunk-subtree-against-itself sensor: it senses the trunk against the
-    # seven other collider-carrying bodies, which reports the same 0-or-1 signal through
-    # :func:`~isaaclab_tasks.contrib.microduck.mdp.rewards.self_collision_cost` but does not see
-    # sole against sole, shin against shin or head against leg. Isaac Lab resolves a per-partner
-    # force matrix only for a ``prim_path`` matching a single prim per environment; widening this
-    # needs the Newton backend's shape-level ``sensor_shape_prim_expr`` / ``filter_shape_prim_expr``
-    # and is tracked as separate work.
+    # Self-collision sensor, identical to the stand-up task's: the model's ten enabled colliders
+    # against each other, many-to-many, which is upstream's trunk-subtree-against-itself sensor. The
+    # reward saturates it back to upstream's 0-or-1 scale.
     self_collision = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base",
-        filter_prim_paths_expr=[
-            "{ENV_REGEX_NS}/Robot/Geometry/trunk_base/.*/(jaw_soft|hip_l|hip_l_2|leg|leg_2|ankle_left|ankle_right)"
-        ],
+        sensor_shape_prim_expr=[MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR],
+        filter_shape_prim_expr=[MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR],
     )
 
     # The roll's pivot signal. Upstream matches the ``jaw_soft`` body against the terrain and reads
@@ -299,16 +301,22 @@ class MicroDuckRouladeSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base/.*/jaw_soft",
     )
 
-    # The support gate. Upstream matches the whole trunk subtree against the terrain; this senses
-    # the eight bodies that carry a world collider on this model and asks whether any of them is
-    # loaded, which is the same "is the robot touching the floor" question. Same narrowing as above:
-    # a purely self-contacting airborne robot reads as supported. That is the gate's failure
-    # direction rather than its safe one, so it is called out in the changelog and is the first
-    # thing to revisit if a trained policy rediscovers upstream's ballistic whip.
+    # The support gate. Upstream matches the whole trunk subtree against the terrain, and so does
+    # this: the model's ten world colliders filtered against the ground plane, which answers "is the
+    # robot touching the *floor*" rather than "is the robot touching anything".
+    #
+    # That distinction is the anti-breakdance gate's whole job. Read unfiltered, a net contact force
+    # cannot tell the floor from the robot's own shin, so a tucked airborne robot registered as
+    # supported and earned the rotation the gate exists to deny -- the gate's failure direction, not
+    # its safe one. The terrain filter closes it: the accumulator reads this sensor's force matrix
+    # rather than its net force (see ``_update_roulade_state``).
+    #
+    # The terrain expression is absolute rather than ``{ENV_REGEX_NS}``-relative because the ground
+    # plane is a single shape shared by every environment.
     robot_ground_contact = ContactSensorCfg(
-        prim_path=(
-            "{ENV_REGEX_NS}/Robot/Geometry/trunk_base(/.*/(jaw_soft|hip_l|hip_l_2|leg|leg_2|ankle_left|ankle_right))?"
-        ),
+        prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base",
+        sensor_shape_prim_expr=[MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR],
+        filter_shape_prim_expr=[f"{_TERRAIN_PRIM_PATH}/.*"],
     )
 
     sky_light = AssetBaseCfg(
@@ -780,10 +788,14 @@ class RewardsCfg:
     gentle_landing = RewTerm(func=mdp.trunk_vertical_accel_penalty, weight=0.002)
     # Ten times lighter than the stand-up task's -1.0, and for the opposite reason to the usual: a
     # tucked roll *needs* body-on-body contact, so upstream prices it rather than forbidding it.
+    # ``saturate`` keeps the many-to-many sensor on upstream's 0/1 scale, so the weight is the
+    # penalty for touching yourself at all rather than a per-collider tariff. It matters more here
+    # than on the stand-up task: a roulade is a deep tuck, so the robot spends the roll near the
+    # poses that fire this term.
     self_collisions = RewTerm(
         func=mdp.self_collision_cost,
         weight=-0.1,
-        params={"sensor_cfg": _SELF_COLLISION_SENSOR_CFG},
+        params={"sensor_cfg": _SELF_COLLISION_SENSOR_CFG, "saturate": True},
     )
 
 
