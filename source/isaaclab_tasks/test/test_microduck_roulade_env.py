@@ -828,7 +828,10 @@ def test_the_episode_and_simulation_rates_match_upstream():
     assert cfg.sim.dt == pytest.approx(0.005)
     assert cfg.episode_length_s == pytest.approx(5.0)
     assert cfg.episode_length_s / (cfg.sim.dt * cfg.decimation) == pytest.approx(EPISODE_CONTROL_STEPS)
-    # the joint damping the asset restores is only stable with MuJoCo's default limit solref
+    # the joint damping the asset restores is only stable with MuJoCo's default limit solref.
+    # The task cfg never sets this flag -- it is inherited from the backend default -- so this
+    # assert is a deliberate canary: it fails loudly (here, not mid-roll) if that default ever
+    # changes, rather than let the roll silently destabilize.
     assert cfg.sim.physics.default.solver_cfg.use_mujoco_default_joint_limit_solref is True
 
 
