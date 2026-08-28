@@ -192,6 +192,36 @@ are absent because the BAM actuator is not ported yet; and the three terms it sh
 absent because a term that is never enabled is not part of the recipe.
 """
 
+EXPECTED_TERMINATIONS = {
+    # name: (time_out flag, scalar params)
+    "time_out": (True, {}),
+    "fell_over": (False, {"limit_angle": math.radians(70.0)}),
+    "out_of_terrain_bounds": (True, {"distance_buffer": 20.3}),
+    "nan_state": (False, {"sensor_names": ("contact_forces",)}),
+}
+"""Upstream's terminations (reference sections 2.5 and 6), keyed by term name.
+
+``distance_buffer`` is the one value that is not upstream's literal. Upstream trips at
+``|x| > num_rows * size_x / 2 - 0.3``; this term trips at ``|x| > map_width / 2 - buffer`` with
+``map_width = num_rows * size_x + 2 * border_width``, so reproducing upstream's bound needs
+``buffer = border_width + 0.3``.
+"""
+
+EXPECTED_CURRICULUM_TERMS = {
+    "terrain_levels",
+    "action_rate_weight",
+    "head_pose_bias_weight",
+    "standing_envs",
+    "head_pose_range",
+    "body_pose_range",
+    "com_range",
+    "head_com_range",
+}
+"""Upstream's curriculum term names (reference sections 2.8 and 6).
+
+``command_vel`` is absent because upstream deletes it: MicroDuck's velocity ranges never widen.
+"""
+
 EXPECTED_STAGE_TABLES = {
     "action_rate_weight": (
         "weight_stages",
@@ -288,6 +318,18 @@ def test_the_randomization_suite_matches_upstream_term_for_term():
 
 
 @pytest.mark.unit
+def test_the_terminations_match_upstream_including_the_rebased_terrain_bound():
+    """Every termination upstream ends an episode on is present, with its time-out classification."""
+    terminations = MicroDuckVelocityRoughEnvCfg().terminations
+
+    assert set(vars(terminations)) == set(EXPECTED_TERMINATIONS)
+    for name, (time_out, params) in EXPECTED_TERMINATIONS.items():
+        term = getattr(terminations, name)
+        assert term.time_out is time_out, name
+        assert _scalar_params(term) == pytest.approx(params), name
+
+
+@pytest.mark.unit
 def test_the_head_centre_of_mass_randomization_drops_the_upstream_hip_link():
     """``bearing_roll`` is the right hip-yaw link; upstream lists it among the head bodies in error."""
     body_names = MicroDuckVelocityRoughEnvCfg().events.randomize_head_com.params["asset_cfg"].body_names
@@ -300,6 +342,9 @@ def test_the_head_centre_of_mass_randomization_drops_the_upstream_hip_link():
 def test_the_scalar_curricula_reproduce_upstream_stage_tables():
     """The staged schedules carry upstream's payloads at upstream's iteration boundaries."""
     curriculum = MicroDuckVelocityRoughEnvCfg().curriculum
+
+    # two-sided, so an unexpected extra schedule quietly rewriting a weight or a range also fails
+    assert set(vars(curriculum)) == EXPECTED_CURRICULUM_TERMS
 
     for name, (params_key, payload_key, payloads, iterations) in EXPECTED_STAGE_TABLES.items():
         stages = getattr(curriculum, name).params[params_key]
@@ -350,6 +395,8 @@ def test_the_terrain_generator_carries_upstream_sub_terrain_mix():
     assert generator.sub_terrains["pyramid_stairs"].step_height_range == (0.0, 0.015)
     assert generator.sub_terrains["random_grid"].grid_height_range == (0.0, 0.010)
     assert generator.sub_terrains["pyramid_slope"].slope_range == (0.03, 0.10)
+    # upstream rings none of its sub-terrains with a flat border
+    assert generator.sub_terrains["pyramid_slope"].border_width == 0.0
 
     flat = MicroDuckVelocityFlatEnvCfg()
     assert flat.scene.terrain.terrain_type == "plane"
