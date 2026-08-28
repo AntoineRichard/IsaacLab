@@ -103,8 +103,11 @@ class BamActuatorCfg(ActuatorBaseCfg):
     delay_update_period: int = 0
     """Number of physics steps between lag resamples. Defaults to 0, which resamples every step.
 
-    When positive, each environment gets its own phase offset in ``[0, delay_update_period)``
-    so that the resamples are staggered rather than synchronized across environments.
+    When positive, a phase offset in ``[0, delay_update_period)`` staggers the resamples rather
+    than synchronizing them. The Isaac Lab-executed model draws that offset, and the lag itself,
+    once per environment for the whole joint group; the Newton-native controller draws both per
+    driven joint, because a Newton actuator component is handed no environment structure. The
+    two agree in distribution, not sample for sample.
     """
 
     stiff_frictionloss: bool = True
