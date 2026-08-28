@@ -222,8 +222,10 @@ Joint limits: ``use_mujoco_default_joint_limit_solref``
 
 Keep the default ``True``. Joint DOFs that do not author their own limit gains then use MuJoCo's
 default limit ``solref`` of ``(0.02, 1.0)``, so an imported asset hits its joint limits the same
-way it does in MuJoCo. Joints that author limit gains — USD drive limits, an MJCF
-``solreflimit``, or explicit Newton ``limit_ke``/``limit_kd`` — keep their own values.
+way it does in MuJoCo. Joints that author limit gains — USD limit stiffness/damping, an MJCF
+``solreflimit``, or explicit Newton ``limit_ke``/``limit_kd`` — keep their own values. Those
+defaults act as a sentinel, so a joint deliberately authored at exactly ``1e4``/``1e1`` is
+retagged as well; author the equivalent ``solreflimit`` to keep such a pair.
 
 Set it to ``False`` only to reproduce a run recorded before this default existed. Newton's generic
 ``limit_ke=1e4`` / ``limit_kd=1e1`` defaults are then converted force-space through

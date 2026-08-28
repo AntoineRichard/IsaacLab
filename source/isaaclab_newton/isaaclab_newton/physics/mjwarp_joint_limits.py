@@ -59,9 +59,18 @@ would additionally require overwriting the model's force-space gains with values
 the asset never authored. The raw mode is preferred for that reason.
 
 Only DOFs that inherited Newton's generic defaults are retagged. A DOF that
-authors its own limit gains (from USD drive limits, an MJCF ``solreflimit``, or
-a deliberate force-space configuration) is left on whatever mode the importer
-selected, so explicit authoring always wins.
+authors its own limit gains (USD limit stiffness/damping through the PhysX or
+``newton:limitStiffness`` schemas, an MJCF ``solreflimit``, or a deliberate
+force-space configuration) is left on whatever mode the importer selected, so
+explicit authoring always wins.
+
+The generic defaults are a sentinel, so a joint that deliberately authors
+exactly ``1e4`` / ``1e1`` is indistinguishable from one that authored nothing
+and is retagged. Newton accepts the same ambiguity for its own ``2500 / 100``
+MuJoCo-default sentinels. It is acceptable here because the mask fails toward
+MuJoCo's default rather than toward an arbitrary value, and because a joint that
+really wants that force-space pair can express it as the equivalent authored
+``solreflimit`` instead.
 """
 
 from __future__ import annotations
@@ -71,6 +80,7 @@ import logging
 import numpy as np
 from newton import Model, ModelBuilder
 from newton._src.solvers.mujoco.constants import (
+    DEFAULT_LIMIT_GAIN_RTOL,
     DEFAULT_LIMIT_SOLREF,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_RAW,
@@ -116,8 +126,10 @@ def apply_mujoco_default_joint_limit_solref(model: Model) -> int:
     solref_np = solref.numpy()
     unauthored = (
         (mode_np == SOLREF_MODE_FORCE_SPACE)
-        & np.isclose(model.joint_limit_ke.numpy(), _NEWTON_DEFAULT_LIMIT_KE, rtol=1.0e-5, atol=0.0)
-        & np.isclose(model.joint_limit_kd.numpy(), _NEWTON_DEFAULT_LIMIT_KD, rtol=1.0e-5, atol=0.0)
+        # Same sentinel-detection tolerance Newton uses for its own MuJoCo
+        # default gains, so the two cannot drift apart.
+        & np.isclose(model.joint_limit_ke.numpy(), _NEWTON_DEFAULT_LIMIT_KE, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
+        & np.isclose(model.joint_limit_kd.numpy(), _NEWTON_DEFAULT_LIMIT_KD, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
         # A raw pair authored while the mode field was absent (legacy assets)
         # is inferred from a non-zero ``solreflimit`` by Newton's kernel.
         & ~np.any(solref_np != 0.0, axis=-1)

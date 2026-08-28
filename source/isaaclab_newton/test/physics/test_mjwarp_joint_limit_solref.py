@@ -27,7 +27,7 @@ import pytest
 import warp as wp
 from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, NewtonManager
 from isaaclab_newton.physics.mjwarp_joint_limits import apply_mujoco_default_joint_limit_solref
-from newton import Model, ModelBuilder
+from newton import Model, ModelBuilder, ModelFlags
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
     SOLREF_MODE_FORCE_SPACE,
@@ -183,6 +183,40 @@ def test_default_limit_solref_is_mujoco_critically_damped():
     # interpretation changes.
     ke = model.joint_limit_ke.numpy()
     assert np.allclose(ke[ke > 0.0], _NEWTON_DEFAULT_LIMIT_KE)
+
+
+def test_default_limit_solref_survives_mass_randomization():
+    """The retagged pair stays exact when a mass event re-runs the conversion.
+
+    Mass randomization refreshes ``dof_invweight0`` and re-launches Newton's
+    conversion kernel, which is why authored force-space gains cannot hold a
+    fitted damping ratio. The raw-``solref`` route is only correct if it is
+    immune to that, so pin both halves: the legacy rows drift, the retagged rows
+    do not move at all.
+    """
+    legacy_model = _build_light_chain("cpu")
+    legacy_solver = _make_solver(legacy_model)
+    fixed_model = _build_light_chain("cpu")
+    apply_mujoco_default_joint_limit_solref(fixed_model)
+    fixed_solver = _make_solver(fixed_model)
+
+    hinges = _hinge_joints(legacy_solver)
+    legacy_before = legacy_solver.mjw_model.jnt_solref.numpy()[0].copy()
+    invweight_before = legacy_solver.mjw_model.dof_invweight0.numpy()[0].copy()
+
+    for model, solver in ((legacy_model, legacy_solver), (fixed_model, fixed_solver)):
+        model.body_mass.assign(model.body_mass.numpy() * 3.0)
+        model.body_inv_mass.assign(model.body_inv_mass.numpy() / 3.0)
+        solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+    # The conversion input really did change, so the pins below are meaningful.
+    assert not np.allclose(legacy_solver.mjw_model.dof_invweight0.numpy()[0], invweight_before)
+
+    legacy_after = legacy_solver.mjw_model.jnt_solref.numpy()[0]
+    fixed_after = fixed_solver.mjw_model.jnt_solref.numpy()[0]
+    for mjc_jnt in hinges:
+        assert not np.allclose(legacy_after[mjc_jnt], legacy_before[mjc_jnt])
+        np.testing.assert_array_equal(fixed_after[mjc_jnt], np.asarray(DEFAULT_LIMIT_SOLREF, dtype=np.float32))
 
 
 def test_authored_limit_gains_keep_force_space_conversion():

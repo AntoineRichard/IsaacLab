@@ -125,8 +125,12 @@ class MJWarpSolverCfg(NewtonSolverCfg):
     When ``True`` (default), every joint DOF that still carries Newton's generic
     ``limit_ke=1e4`` / ``limit_kd=1e1`` defaults is tagged with MuJoCo's
     critically damped ``solreflimit = (0.02, 1.0)``, matching how the same asset
-    behaves in MuJoCo. Joints that author their own limit gains (USD drive
-    limits, MJCF ``solreflimit``, or explicit force-space gains) are untouched.
+    behaves in MuJoCo. Joints that author their own limit gains (USD limit
+    stiffness/damping, MJCF ``solreflimit``, or explicit force-space gains) are
+    untouched. Those defaults act as a sentinel, so a joint that deliberately
+    authors exactly ``1e4`` / ``1e1`` is indistinguishable from one that authored
+    nothing and is retagged as well; author the equivalent ``solreflimit`` to
+    keep such a pair.
 
     Setting this to ``False`` restores the legacy behavior, where Newton's
     generic defaults are converted force-space through ``dof_invweight0`` into a
