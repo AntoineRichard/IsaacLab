@@ -97,3 +97,66 @@ def randomize_encoder_bias(
         bias[env_ids] = samples
     else:
         bias[env_ids[:, None], torch.as_tensor(joint_ids, device=env.device)] = samples
+
+
+def randomize_bam_friction(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    scale_range: tuple[float, float] = (0.9, 1.1),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Randomize the friction budget of an articulation's BAM servo groups.
+
+    Draws one ``U(scale_range)`` multiplier per environment and applies it to the whole
+    velocity-independent friction budget -- the Coulomb, Stribeck and load-dependent terms
+    together -- of every :class:`~isaaclab.actuators.BamActuatorCfg` group on the asset. Upstream
+    runs this on **reset** (reference section 2.6, ``randomize_joint_friction``), which makes a
+    worn or freshly greased gearbox an episode-scale disturbance rather than a fixed property.
+
+    The stock :func:`~isaaclab.envs.mdp.randomize_actuator_gains` does not cover this model: its
+    filter admits implicit, ``IdealPDActuator`` and Newton-native groups only, and its explicit
+    branch writes ``stiffness``/``damping``, which BAM never reads.
+
+    Both execution paths are covered, and the group is discovered from the *configuration* rather
+    than from the runtime object, because only the configuration is the same on both. With
+    ``use_newton_actuators=False`` the mapping entry is a
+    :class:`~isaaclab.actuators.BamActuator` and the scale is written through its public
+    randomization hook; with ``use_newton_actuators=True`` it is a Newton actuator object holding
+    the Warp-side controller, whose ``friction_scale`` carries the same name and meaning and is
+    reached through :func:`~isaaclab.actuators.newton.write_group_parameter`.
+
+    The scale is one number per environment, matching the reference implementation and
+    :attr:`~isaaclab.actuators.BamActuator.friction_scale`, so ``asset_cfg`` selects the
+    articulation only -- its joint selection is not used.
+
+    Args:
+        env: The environment holding the articulation.
+        env_ids: The environments to resample. Defaults to None, which resamples all of them.
+        scale_range: The ``(low, high)`` bounds [-] of the friction-budget multiplier.
+        asset_cfg: The articulation whose BAM groups are randomized. Only its name is used.
+    """
+    from isaaclab.actuators import BamActuator, BamActuatorCfg  # noqa: PLC0415
+    from isaaclab.actuators.newton import read_group_parameter, write_group_parameter  # noqa: PLC0415
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    for name, actuator_cfg in asset.cfg.actuators.items():
+        if not isinstance(actuator_cfg, BamActuatorCfg):
+            continue
+        scales = torch.empty(len(env_ids), 1, device=env.device).uniform_(*scale_range)
+        actuator = asset.actuators[name]
+        if isinstance(actuator, BamActuator):
+            actuator.set_friction_scale(env_ids, scales)
+        else:
+            # the native controller stores the scale per driven joint, so the per-environment
+            # draw is broadcast across the group's columns
+            num_group_joints = read_group_parameter(asset.actuators, name, "controller", "friction_scale").shape[1]
+            write_group_parameter(
+                asset.actuators,
+                name,
+                "controller",
+                "friction_scale",
+                values=scales.expand(len(env_ids), num_group_joints),
+                env_ids=env_ids,
+            )

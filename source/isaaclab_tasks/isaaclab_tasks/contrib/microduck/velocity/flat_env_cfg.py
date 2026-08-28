@@ -25,6 +25,11 @@ class MicroDuckVelocityFlatEnvCfg(MicroDuckVelocityRoughEnvCfg):
         # + 14 joint limits = 54. ``nconmax`` is a per-environment share of one shared contact
         # buffer and so cannot overflow at the structural peak; ``njmax`` is a hard per-environment
         # cap and carries margin above it.
+        #
+        # Both numbers rest on that geometry count, so if more geoms become collidable -- most
+        # likely because the MJCF importer regains collision-group support and the shins and the
+        # battery holder stop being disabled -- re-profile before trusting them. The probe is
+        # ``artifacts/microduck/profile_microduck_contacts.py``.
         newton_mjwarp = self.sim.physics.newton_mjwarp
         newton_mjwarp.solver_cfg.njmax = 64
         newton_mjwarp.solver_cfg.nconmax = 10

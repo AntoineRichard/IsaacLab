@@ -36,6 +36,7 @@ __all__ = [
     "head_pose_tracking",
     "pose_mode_switch",
     "projected_gravity_imu_misaligned",
+    "randomize_bam_friction",
     "randomize_encoder_bias",
     "reward_weight_stages",
     "robot_state_is_nan",
@@ -54,7 +55,7 @@ from .commands import (
     UniformPoseDeltaCommandCfg,
 )
 from .curriculums import command_range_stages, event_range_stages, reward_weight_stages, standing_envs_stages
-from .events import encoder_bias, randomize_encoder_bias
+from .events import encoder_bias, randomize_bam_friction, randomize_encoder_bias
 from .observations import (
     base_ang_vel_imu_misaligned,
     delayed_observation,
