@@ -30,6 +30,7 @@ import torch
 
 import isaaclab.sim as sim_utils
 from isaaclab.managers import ObservationTermCfg, SceneEntityCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim import SimulationContext
 
 import isaaclab_tasks  # noqa: F401
@@ -41,6 +42,7 @@ from isaaclab_tasks.contrib.microduck.standup.standup_env_cfg import (
     MICRODUCK_STAND_HEIGHT,
     MicroDuckStandUpFlatEnvCfg,
 )
+from isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg import MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 from isaaclab_assets.robots.microduck import MICRODUCK_ALLCOLLISIONS_USD_PATH
@@ -292,7 +294,7 @@ EXPECTED_REWARDS = {
     "dof_pos_limits": (-1.0, {}),
     "action_rate_l2": (-0.1, {}),
     "joint_torque_rate_l2": (0.0, {}),
-    "self_collisions": (-1.0, {}),
+    "self_collisions": (-1.0, {"saturate": True}),
 }
 """Upstream's reward recipe (addendum section 3.3), keyed by term name, at its initial weights.
 
@@ -865,16 +867,52 @@ def test_the_task_runs_the_all_collisions_robot_on_a_plane():
 
 
 @pytest.mark.unit
-def test_the_self_collision_sensor_senses_one_body_against_the_robots_colliders():
-    """``self_collision_cost`` counts sensing bodies, so one sensing body reproduces upstream's 0/1."""
-    scene = MicroDuckStandUpFlatEnvCfg().scene
+def test_the_self_collision_sensor_senses_every_collider_against_every_other():
+    """Upstream's sensor is the trunk subtree against itself, which is many-to-many, not one-to-many.
 
-    assert scene.self_collision.filter_prim_paths_expr
-    assert scene.self_collision.prim_path.endswith("trunk_base")
-    filter_expr = scene.self_collision.filter_prim_paths_expr[0]
-    for body in ("jaw_soft", "hip_l", "hip_l_2", "leg", "leg_2", "ankle_left", "ankle_right"):
-        assert body in filter_expr, body
+    Body-level filtering cannot express it -- a force matrix needs a ``prim_path`` matching one prim
+    per environment -- so this is the Newton backend's shape-level pair of expressions, both set to
+    the same collider set.
+    """
+    cfg = MicroDuckStandUpFlatEnvCfg()
+    scene = cfg.scene
+
+    assert scene.self_collision.sensor_shape_prim_expr == [MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR]
+    assert scene.self_collision.filter_shape_prim_expr == [MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR]
+    # the two are mutually exclusive on the backend, and the shape pair is the one that is wired
+    assert not scene.self_collision.filter_prim_paths_expr
     assert not scene.contact_forces.filter_prim_paths_expr
+    # sensing both sides of a contact reports it twice, so the reward has to saturate to stay on
+    # upstream's 0/1 scale
+    assert cfg.rewards.self_collisions.params["saturate"] is True
+
+
+@pytest.mark.unit
+def test_the_collider_expression_names_the_models_ten_enabled_colliders():
+    """The expression is the port's stand-in for the collision groups the importer cannot carry.
+
+    Eight Xform names for ten colliders: ``leg_1`` and ``hip_l_1`` appear once per leg, and the three
+    head entries all hang off ``jaw_soft``. Spelled out here rather than derived from the constant so
+    that a regenerated asset renaming a collider fails instead of agreeing with itself.
+    """
+    for xform in (
+        "left_foot_collision",
+        "right_foot_collision",
+        "leg_1",
+        "hip_l_1",
+        "top_head_shell_1",
+        "jaw_1",
+        "bottom_head_shell_1",
+        "np_f970_1",
+    ):
+        assert xform in MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR, xform
+    # ``power_support`` is the trunk's self-collision-only shell, which the conversion disables
+    # outright; a sensor cannot see a collider that is not there
+    assert "power_support" not in MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR
+    # shape expressions full-match shape paths, so the trailing token is what reaches the collider
+    # prim below its Xform -- an expression stopping at the Xform selects nothing
+    assert MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR.endswith(")/[^/]*")
+    assert MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR.startswith("{ENV_REGEX_NS}/Robot/Geometry/trunk_base/")
 
 
 @pytest.mark.unit
@@ -997,6 +1035,109 @@ def test_the_reset_spawns_every_ground_pose_the_mix_asks_for():
         # only the sitting bucket folds the knees, and it folds them far past the stand pose
         default_knee = robot.data.default_joint_pos.torch[0, knee_ids[0]].item()
         assert (knee - default_knee).abs().max().item() > 1.0, "no sitting spawn folded its knees"
+    finally:
+        if env is not None:
+            env.close()
+        SimulationContext.clear_instance()
+
+
+@pytest.mark.integration
+@requires_microduck_allcollisions_usd
+def test_the_self_collision_sensor_fires_on_a_fold_and_stays_quiet_on_a_stand():
+    """The regression for the widening: a folded robot costs, a standing one does not.
+
+    Three poses are held against the sensor, and the *narrow* body-level sensor the port used before
+    is built alongside it so the comparison is measured rather than asserted from the changelog:
+
+    * **standing on the floor** -- the term's whole safety requirement. Ground contact is not
+      self-contact, and a sensor that confused the two would tax every episode uniformly.
+    * **folded in mid-air** -- both knees driven through their range, which puts each shin into the
+      hip shell on its own side. Neither end of that contact is the trunk, so it is exactly what the
+      narrow sensor could not see.
+    * **the same fold, one leg only** -- an asymmetric tuck, checked because the symmetric one could
+      be produced by a sensor that only ever fires on both sides at once.
+
+    A left-against-right contact is not tested because the model cannot make one: hip yaw is capped
+    at about 0.5 rad and hip roll at 0.38, so the legs cannot cross. Shin-against-hip is the whole
+    reachable limb-against-limb set on this robot.
+    """
+    sim_utils.create_new_stage()
+    env = None
+    try:
+        env_cfg = parse_env_cfg(TASK_NAME, device="cuda", num_envs=3)
+        # the sensor this replaced, kept alongside for the comparison below
+        env_cfg.scene.narrow_self_collision = ContactSensorCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base",
+            filter_prim_paths_expr=[
+                "{ENV_REGEX_NS}/Robot/Geometry/trunk_base/.*/(jaw_soft|hip_l|hip_l_2|leg|leg_2|ankle_left|ankle_right)"
+            ],
+            update_period=env_cfg.sim.dt,
+        )
+        env = gym.make(TASK_NAME, cfg=env_cfg)
+        env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
+        unwrapped = env.unwrapped
+        env.reset()
+
+        robot = unwrapped.scene["robot"]
+        names = list(robot.joint_names)
+        limits = robot.data.joint_pos_limits.torch[0]
+        joint_pos = robot.data.default_joint_pos.torch.clone()
+
+        # env 0 stays at the stand pose; env 1 folds both legs, env 2 folds only the left and swings
+        # it inward as far as the hip allows. Clamped to the joint limits, so a pose the servos could
+        # not hold is not what the sensor is being shown.
+        folds = {
+            1: {"left_hip_pitch": -1.5, "left_knee": 1.5, "right_hip_pitch": 1.5, "right_knee": -1.5},
+            2: {"left_hip_pitch": -1.5, "left_knee": 1.5, "left_hip_roll": 0.4, "left_hip_yaw": 0.6},
+        }
+        for env_id, pose_angles in folds.items():
+            for joint, angle in pose_angles.items():
+                index = names.index(joint)
+                joint_pos[env_id, index] = min(max(angle, limits[index, 0].item()), limits[index, 1].item())
+
+        # env 0 stands on the floor at the settled standing height -- the *spawn* height is 1 cm
+        # above it and would leave the robot hovering, since holding the pose skips the drop -- and
+        # the folded two are held well clear of the floor
+        pose = torch.zeros((3, 7), device=unwrapped.device)
+        pose[:, :3] = unwrapped.scene.env_origins
+        pose[0, 2] += MICRODUCK_STAND_HEIGHT
+        pose[1:, 2] += 1.0
+        pose[:, 6] = 1.0  # xyzw identity
+        velocity = torch.zeros((3, 6), device=unwrapped.device)
+        joint_vel = torch.zeros_like(joint_pos)
+        action = torch.zeros(unwrapped.action_space.shape, device=unwrapped.device)
+
+        wide = unwrapped.scene.sensors["self_collision"]
+        narrow = unwrapped.scene.sensors["narrow_self_collision"]
+        assert wide.num_sensors == 10, wide.sensor_names
+        assert wide.num_filter_objects == 10, wide.filter_object_names
+        # the narrow sensor resolved too, so the zero it reports below is a miss and not a
+        # mis-resolved expression that could never have fired at all
+        assert (narrow.num_sensors, narrow.num_filter_objects) == (1, 7), narrow.filter_object_names
+
+        # hold each pose against the solver rather than letting it fall, and read the settled contact
+        with torch.inference_mode():
+            for _ in range(12):
+                robot.write_root_link_pose_to_sim_index(root_pose=pose)
+                robot.write_root_com_velocity_to_sim_index(root_velocity=velocity)
+                robot.write_joint_state_to_sim_index(position=joint_pos, velocity=joint_vel)
+                env.step(action)
+
+            sensor_cfg = SceneEntityCfg("self_collision")
+            cost = mdp.self_collision_cost(unwrapped, sensor_cfg=sensor_cfg, saturate=True)
+            narrow_cost = mdp.self_collision_cost(
+                unwrapped, sensor_cfg=SceneEntityCfg("narrow_self_collision"), saturate=True
+            )
+            ground = wide.data.net_forces_w.torch.norm(dim=-1).max(dim=-1).values
+
+        # standing costs nothing even though it is very much in contact with the floor
+        assert cost[0].item() == 0.0, "a standing robot was charged for touching itself"
+        assert ground[0].item() > 1.0, "the standing robot never reached the floor"
+        # both folds are seen, and neither is seen by the sensor this replaced
+        torch.testing.assert_close(cost[1:], torch.ones(2, device=cost.device))
+        torch.testing.assert_close(narrow_cost, torch.zeros(3, device=cost.device))
+        # the folds are airborne, so what the sensor found is self-contact and nothing else
+        assert ground[1:].max().item() > 1.0
     finally:
         if env is not None:
             env.close()

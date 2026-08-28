@@ -52,6 +52,7 @@ from isaaclab.visualizers import VisualizerCfg
 
 import isaaclab_tasks.contrib.microduck.mdp as mdp
 from isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg import (
+    MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR,
     MICRODUCK_FOOT_BODY_NAMES,
     MICRODUCK_HEAD_BODY_NAMES,
     MICRODUCK_HEAD_JOINT_NAMES,
@@ -267,23 +268,20 @@ class MicroDuckStandUpSceneCfg(InteractiveSceneCfg):
     # Self-collision sensor. Upstream filters the trunk subtree against itself and reports whether
     # its single contact slot found anything, i.e. a 0/1 "is the robot touching itself" signal.
     #
-    # This sensor senses the **trunk** and filters it against every other body that carries a
-    # collider on this model, so it reports the same 0 or 1 through
-    # :func:`~isaaclab_tasks.contrib.microduck.mdp.rewards.self_collision_cost`, which counts
-    # sensing bodies. One sensing body is also a hard requirement: Isaac Lab resolves a per-partner
-    # force matrix only for a ``prim_path`` that matches a single prim per environment.
+    # This is that sensor: the model's ten enabled colliders against each other, many-to-many, on
+    # the Newton backend's shape-level expressions. It sees every self-contact the robot can make,
+    # including the ones between two limbs -- shin against hip shell on either side is the pair the
+    # joint limits actually let this model reach, and neither end of it is the trunk.
     #
-    # That covers a limb or the head folded back onto the trunk, which is the self-collision class
-    # a curled-up robot produces. Not covered, and a documented narrowing of upstream's subtree
-    # sensor: sole against sole, shin against shin, and head against leg. Widening to those needs
-    # the shape-level many-to-many filtering the Newton backend offers through
-    # ``sensor_shape_prim_expr`` / ``filter_shape_prim_expr``, and the reward would then have to
-    # saturate its count to stay on upstream's 0/1 scale.
+    # ``prim_path`` is ignored for the sensing objects once ``sensor_shape_prim_expr`` is set, but
+    # the base sensor still requires one; the trunk is the cheapest expression that resolves.
+    #
+    # The reward saturates (``saturate=True`` below). Sensing both sides of a pair reports one
+    # contact twice, so counting would put a leg fold at 2 where upstream's contact slot reports 1.
     self_collision = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base",
-        filter_prim_paths_expr=[
-            "{ENV_REGEX_NS}/Robot/Geometry/trunk_base/.*/(jaw_soft|hip_l|hip_l_2|leg|leg_2|ankle_left|ankle_right)"
-        ],
+        sensor_shape_prim_expr=[MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR],
+        filter_shape_prim_expr=[MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR],
     )
 
     sky_light = AssetBaseCfg(
@@ -786,10 +784,12 @@ class RewardsCfg:
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
     # Weight 0.0, ramped to -1e-3 from iteration 3000. Penalizes torque *change*, not magnitude.
     joint_torque_rate_l2 = RewTerm(func=mdp.joint_torque_rate_l2, weight=0.0, params={"asset_cfg": _SERVO_JOINT_CFG})
+    # ``saturate`` keeps the many-to-many sensor on upstream's 0/1 scale, so the weight is the
+    # penalty for touching yourself at all rather than a per-collider tariff.
     self_collisions = RewTerm(
         func=mdp.self_collision_cost,
         weight=-1.0,
-        params={"sensor_cfg": _SELF_COLLISION_SENSOR_CFG},
+        params={"sensor_cfg": _SELF_COLLISION_SENSOR_CFG, "saturate": True},
     )
 
 

@@ -14,17 +14,18 @@ Added
   :data:`~isaaclab_assets.MICRODUCK_ALLCOLLISIONS_CFG`, whose three ``jaw_soft`` head shells are the
   surface the whole task pivots on.
 
-  Two of its four contact sensors are **narrower than upstream's**, which matches its bodies against
-  the terrain specifically. ``head_ground_contact`` senses the head body and ``robot_ground_contact``
-  senses the eight bodies that carry a world collider, and both report a non-zero net contact force
-  rather than a terrain contact, so a *self*-contact reads the same as a ground contact. For the
-  head sensor that is guarded downstream, because the over-the-head latch it feeds also requires the
-  head top to point at the floor inside a rotation window; for the support gate it is the permissive
-  direction, so a deeply tucked airborne robot would read as supported. Isaac Lab resolves a
-  per-partner force matrix only for a sensor whose ``prim_path`` matches a single prim per
-  environment, so filtering the support sensor against the terrain needs the Newton backend's
-  shape-level ``sensor_shape_prim_expr`` / ``filter_shape_prim_expr`` filtering, and is tracked as
-  separate work together with the same widening of the shared self-collision sensor.
+  ``robot_ground_contact``, the sensor behind the anti-breakdance support gate, matches the model's
+  ten world colliders against the terrain specifically, as upstream's does, using the Newton
+  backend's shape-level ``sensor_shape_prim_expr`` and ``filter_shape_prim_expr``; the accumulator
+  reads its per-partner force matrix rather than its net force. That distinction is the gate's whole
+  job: a net force cannot tell the floor from the robot's own shin, so a deeply tucked airborne robot
+  would read as supported and earn the rotation the gate exists to deny.
+
+  ``head_ground_contact`` remains **narrower than upstream's**: it senses the head body and reports a
+  non-zero net contact force rather than a terrain contact, so a knee driven into the head shell
+  reads as a head plant. That is guarded downstream, because the over-the-head latch it feeds also
+  requires the head top to point at the floor inside a rotation window, so a spurious latch needs the
+  robot to be mid-roll with its head already aimed at the ground.
 * Added ``RouladeRollState``, ``roulade_roll_state`` and ``reset_roulade_state`` under
   ``contrib/microduck/mdp``. The roll is a stateful task -- nothing in a single frame says how far
   around the robot has come -- so the forward pitch rate is integrated into a per-environment

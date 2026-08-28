@@ -128,6 +128,49 @@ this port differs from it in two ways, both deliberate:
   only in the all-collisions variants, which this task does not use.
 """
 
+MICRODUCK_ALLCOLLISIONS_COLLIDER_XFORMS = [
+    "left_foot_collision",
+    "right_foot_collision",
+    "leg_1",
+    "hip_l_1",
+    "top_head_shell_1",
+    "jaw_1",
+    "bottom_head_shell_1",
+    "np_f970_1",
+]
+"""Xforms holding the ten enabled colliders of the all-collisions model, by disambiguated name.
+
+The MJCF names only the two soles, so ``convert_microduck.py`` identifies the rest by the mesh the
+importer names their prim after and the importer appends a ``_1`` suffix wherever that name is
+already taken by the visual mesh. Four of these names cover two colliders each -- ``leg_1`` and
+``hip_l_1`` appear once per leg, and the three head entries all hang off ``jaw_soft`` -- which is why
+the list has eight entries for ten colliders.
+
+This is the all-collisions model's world-contact set, which on that model is also its self-collision
+set: the converter disables every other collider, and the only geometry it leaves out of world
+contact, the trunk's ``power_support`` shell, is disabled outright because the importer cannot
+represent the MJCF's ``contype``/``conaffinity`` masks.
+"""
+
+MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR = (
+    "{ENV_REGEX_NS}/Robot/Geometry/trunk_base/(.*/)?(" + "|".join(MICRODUCK_ALLCOLLISIONS_COLLIDER_XFORMS) + ")/[^/]*"
+)
+"""Shape-level prim expression selecting those ten colliders, for the Newton contact sensor.
+
+Shape expressions full-match against shape paths rather than body paths, so the trailing ``/[^/]*``
+is what reaches the collider prim below its Xform, and the optional ``(.*/)?`` spans the bodies
+between the trunk and each collider -- including none at all, for the battery pack bolted to the
+trunk itself.
+
+Used as *both* the sensing and the filter expression, this is the many-to-many self-collision sensor
+upstream has: every enabled collider against every other one, rather than the trunk against a list
+of bodies. It is a Newton-backend capability
+(:attr:`~isaaclab.sensors.ContactSensorCfg.sensor_shape_prim_expr` and
+:attr:`~isaaclab.sensors.ContactSensorCfg.filter_shape_prim_expr`); the body-level
+:attr:`~isaaclab.sensors.ContactSensorCfg.filter_prim_paths_expr` resolves a force matrix only for a
+``prim_path`` matching one prim per environment, which is what forced the narrower sensor before.
+"""
+
 _SERVO_JOINT_CFG = SceneEntityCfg("robot", joint_names=MICRODUCK_JOINT_NAMES, preserve_order=True)
 _LEG_JOINT_CFG = SceneEntityCfg("robot", joint_names=MICRODUCK_LEG_JOINT_NAMES, preserve_order=True)
 _HEAD_JOINT_CFG = SceneEntityCfg("robot", joint_names=MICRODUCK_HEAD_JOINT_NAMES, preserve_order=True)
@@ -382,13 +425,18 @@ class MicroDuckSceneCfg(InteractiveSceneCfg):
     # contact set. They have no collision role left, so this sensor cannot see them.
     #
     # LOST GUARD-RAIL: shin-versus-battery-holder and shin-versus-shin contacts are unpenalized
-    # here. If the converter ever regains collision-group support and re-enables those geometries,
-    # widen this sensor back to the trunk subtree against itself -- and expect the reward to jump,
-    # since it counts sensing bodies rather than contact slots.
+    # here. This is a *collider* gap, not a sensing one: those geometries have no collision role on
+    # this model, so no sensor can see them. If the converter ever regains collision-group support
+    # and re-enables them, widen this sensor the way the stand-up and roulade tasks are widened --
+    # ``sensor_shape_prim_expr``/``filter_shape_prim_expr`` over
+    # :data:`MICRODUCK_ALLCOLLISIONS_COLLIDER_SHAPE_EXPR`, with ``saturate=True`` on the reward --
+    # rather than by growing this body-level pair.
     #
-    # One sensing body against one filter body, not both feet against both: it reports 0 or 1 as
-    # upstream's single contact slot does, where sensing both would count the one contact twice,
-    # once from each side.
+    # Until then this sensor stays exactly as it is. Its one-against-one shape is not a workaround
+    # for a missing capability, it is the whole reachable signal on the walking model, and its
+    # recipe is validated: one sensing body against one filter body reports 0 or 1 as upstream's
+    # single contact slot does, where sensing both would count the one contact twice, once from
+    # each side.
     self_collision = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base/.*/ankle_left",
         filter_prim_paths_expr=["{ENV_REGEX_NS}/Robot/Geometry/trunk_base/.*/ankle_right"],
