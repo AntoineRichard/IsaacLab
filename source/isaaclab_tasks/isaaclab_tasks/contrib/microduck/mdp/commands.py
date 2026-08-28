@@ -102,6 +102,11 @@ class UniformPoseDeltaCommand(CommandTerm):
         r = torch.empty(num_envs, device=self.device)
         for dim, (low, high) in enumerate(self.cfg.ranges):
             self._command[env_ids, dim] = r.uniform_(low, high)
+        if self.cfg.zero_command_prob > 0.0:
+            zeroed = torch.as_tensor(env_ids, device=self.device)[
+                torch.rand(num_envs, device=self.device) < self.cfg.zero_command_prob
+            ]
+            self._command[zeroed] = 0.0
 
 
 @configclass
@@ -118,6 +123,14 @@ class UniformPoseDeltaCommandCfg(CommandTermCfg):
 
     Left as a plain tuple rather than a structured range class because a curriculum reassigns it
     wholesale as the training progresses.
+    """
+
+    zero_command_prob: float = 0.0
+    """Probability that a resample yields the exact all-zero command. Defaults to 0.0.
+
+    Independent uniform sampling of several dimensions essentially never produces the all-zero
+    command, so without this bucket the deployment idle case -- "hold the nominal pose, no request"
+    -- is absent from training and the policy only holds still when it is asked to.
     """
 
 

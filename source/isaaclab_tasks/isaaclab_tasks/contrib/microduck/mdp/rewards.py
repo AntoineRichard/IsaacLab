@@ -118,6 +118,58 @@ def _command_magnitude(env: ManagerBasedRLEnv, command_name: str) -> torch.Tenso
     return torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
 
 
+def _root_height_above_ground(env: ManagerBasedRLEnv, asset: Articulation) -> torch.Tensor:
+    """Height of the articulation's root link above the ground its environment sits on [m].
+
+    Upstream measures this as ``root_link_pos_w[:, 2] - terrain.env_origins[:, 2]`` and guards it
+    against non-finite values, because a diverged solver would otherwise poison every term that
+    reads it before the NaN termination gets to fire.
+
+    The stand-up terms that use this are configured upstream with ``body_names=("trunk_base",)``,
+    but their kernels read the *root link* and ignore that selection. On MicroDuck the trunk is the
+    root, so the two are the same body and the selection is inert; this port drops it rather than
+    carry a parameter nothing reads.
+    """
+    return torch.nan_to_num(asset.data.root_link_pos_w.torch[:, 2] - env.scene.env_origins[:, 2], nan=0.0)
+
+
+def _trunk_tilt_squared(quat: torch.Tensor) -> torch.Tensor:
+    """Upstream's ``2 * (q_x^2 + q_y^2)`` tilt measure, which is ``1 - cos(tilt)``.
+
+    Zero when the body frame is upright, 1 when it is horizontal and 2 when it is inverted.
+
+    Note:
+        Upstream's quaternions are ``(w, x, y, z)`` and Isaac Lab's are ``(x, y, z, w)``, so the two
+        components read here are columns 0 and 1 rather than upstream's 1 and 2. Every stand-up term
+        that reads an orientation goes through this helper for that reason.
+
+    Args:
+        quat: Root link orientation in (x, y, z, w). Shape is (num_envs, 4).
+
+    Returns:
+        The squared tilt in ``[0, 2]``. Shape is (num_envs,).
+    """
+    return 2.0 * (torch.square(quat[:, 0]) + torch.square(quat[:, 1]))
+
+
+def _smoothstep(t: torch.Tensor) -> torch.Tensor:
+    """Upstream's ``t^2 (3 - 2t)`` smoothstep on an already-normalized, unclamped ratio."""
+    t = torch.clamp(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _height_gate(z: torch.Tensor, height_low: float, height_high: float) -> torch.Tensor:
+    """Smoothstep gate that opens as the trunk rises from ``height_low`` [m] to ``height_high`` [m]."""
+    return _smoothstep((z - height_low) / max(height_high - height_low, 1e-6))
+
+
+def _tilt_gate(quat: torch.Tensor, tilt_full_deg: float, tilt_zero_deg: float) -> torch.Tensor:
+    """Smoothstep gate that closes as the trunk tilts from ``tilt_full_deg`` to ``tilt_zero_deg``."""
+    cos_tilt = 1.0 - _trunk_tilt_squared(quat)
+    tilt_deg = torch.rad2deg(torch.acos(cos_tilt.clamp(-1.0, 1.0)))
+    return _smoothstep((tilt_zero_deg - tilt_deg) / max(tilt_zero_deg - tilt_full_deg, 1e-6))
+
+
 def _feet_height_above_ground(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Height of the selected foot bodies above the ground [m], shape (num_envs, num_feet).
 
@@ -371,6 +423,12 @@ class head_pose_bias_penalty(ManagerTermBase):
     Where upstream clears the average whenever ``episode_length_buf <= 1``, this port clears it from
     :meth:`reset`, which the manager calls with exactly the environments that restarted. The two
     are equivalent and the hook is the Isaac Lab convention.
+
+    An optional **upright gate** suppresses the term while the robot is low or tilted, for the
+    recovery tasks whose episodes start on the ground. It multiplies both the error entering the
+    average and the returned penalty, so a prone episode accumulates nothing and pays nothing --
+    without it the term would tax the head-first phase of a stand-up, which is the motion it needs
+    to discover. The velocity task leaves it off.
     """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
@@ -406,6 +464,10 @@ class head_pose_bias_penalty(ManagerTermBase):
         command_name: str,
         tau_s: float,
         asset_cfg: SceneEntityCfg,
+        gate_height_low: float | None = None,
+        gate_height_high: float = 0.11,
+        gate_tilt_full_deg: float = 20.0,
+        gate_tilt_zero_deg: float = 45.0,
     ) -> torch.Tensor:
         """Advance the moving average and return the penalty.
 
@@ -416,6 +478,14 @@ class head_pose_bias_penalty(ManagerTermBase):
             asset_cfg: The articulation and the head joints to track. Mandatory: the term sizes its
                 state from the selection at construction time, and the command columns are paired
                 with the joints positionally.
+            gate_height_low: Trunk height [m] below which the upright gate is fully closed. Defaults
+                to None, which disables the gate entirely and leaves the other three unread.
+            gate_height_high: Trunk height [m] above which the height half of the gate is fully
+                open. Defaults to 0.11.
+            gate_tilt_full_deg: Trunk tilt [deg] below which the tilt half of the gate is fully
+                open. Defaults to 20.0.
+            gate_tilt_zero_deg: Trunk tilt [deg] above which the tilt half of the gate is fully
+                closed. Defaults to 45.0.
 
         Returns:
             The penalty in ``(-inf, 0]``. Shape is (num_envs,).
@@ -425,9 +495,17 @@ class head_pose_bias_penalty(ManagerTermBase):
         measured = asset.data.joint_pos.torch[:, asset_cfg.joint_ids]
         error = (measured - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]) - command
 
+        gate = None
+        if gate_height_low is not None:
+            quat = asset.data.root_link_quat_w.torch
+            gate = _height_gate(_root_height_above_ground(env, asset), gate_height_low, gate_height_high)
+            gate = gate * _tilt_gate(quat, gate_tilt_full_deg, gate_tilt_zero_deg)
+            error = error * gate.unsqueeze(-1)
+
         alpha = min(1.0, float(env.step_dt) / max(tau_s, 1e-6))
         self._error_ema = (1.0 - alpha) * self._error_ema + alpha * error
-        return -self._error_ema.abs().mean(dim=-1)
+        penalty = -self._error_ema.abs().mean(dim=-1)
+        return penalty if gate is None else penalty * gate
 
 
 def body_pose_tracking_6d(
@@ -438,6 +516,7 @@ def body_pose_tracking_6d(
     z_std: float,
     angle_std: float,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    axis_weights: tuple[float, float, float, float, float, float] = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
 ) -> torch.Tensor:
     """Reward tracking of a six-dimensional trunk-pose command, averaged over the six axes.
 
@@ -450,6 +529,16 @@ def body_pose_tracking_6d(
     :func:`~isaaclab.envs.mdp.orientation_command_error` measure a pose command as an unbounded
     error norm against a pose command term, not as a per-axis Gaussian around a nominal stand.
 
+    Note:
+        Upstream ships a second kernel, ``body_pose_tracking_locomotion``, which differs only in
+        measuring ``x``/``y`` against the feet-site centroid and ``yaw`` against the mean foot-site
+        yaw, so that those axes stay meaningful while the robot walks away from its spawn. The
+        stand-up task selects it but weights those three axes **zero**, so the two kernels agree
+        exactly there and this one is used with :attr:`axis_weights` instead. Reviving the
+        horizontal axes for a task that does weight them needs the foot *sites*, which Isaac Lab
+        has no equivalent of: the ankle bodies this port measures feet with sit 16 mm outboard of
+        the sites and, on the left side, with a 180-degree yaw flip.
+
     Args:
         env: The environment instance.
         command_name: Name of the six-dimensional body-pose command term.
@@ -458,6 +547,8 @@ def body_pose_tracking_6d(
         z_std: Width of the Gaussian kernel on the height [m].
         angle_std: Width of the Gaussian kernel on each Euler angle [rad].
         asset_cfg: The articulation whose root link carries the trunk pose.
+        axis_weights: Relative weight of each axis, ordered ``(x, y, z, roll, pitch, yaw)``. The
+            reward is their weighted mean. Defaults to equal weights, which is the plain average.
 
     Returns:
         The reward in ``(0, 1]``. Shape is (num_envs,).
@@ -477,13 +568,14 @@ def body_pose_tracking_6d(
     pitch_error = pitch - command[:, 4]
     yaw_error = math_utils.wrap_to_pi(yaw - command[:, 5])
 
-    reward = torch.exp(-((x_error / xy_std) ** 2))
-    reward = reward + torch.exp(-((y_error / xy_std) ** 2))
-    reward = reward + torch.exp(-((z_error / z_std) ** 2))
-    reward = reward + torch.exp(-((roll_error / angle_std) ** 2))
-    reward = reward + torch.exp(-((pitch_error / angle_std) ** 2))
-    reward = reward + torch.exp(-((yaw_error / angle_std) ** 2))
-    return reward / 6.0
+    weight_x, weight_y, weight_z, weight_roll, weight_pitch, weight_yaw = axis_weights
+    reward = weight_x * torch.exp(-((x_error / xy_std) ** 2))
+    reward = reward + weight_y * torch.exp(-((y_error / xy_std) ** 2))
+    reward = reward + weight_z * torch.exp(-((z_error / z_std) ** 2))
+    reward = reward + weight_roll * torch.exp(-((roll_error / angle_std) ** 2))
+    reward = reward + weight_pitch * torch.exp(-((pitch_error / angle_std) ** 2))
+    reward = reward + weight_yaw * torch.exp(-((yaw_error / angle_std) ** 2))
+    return reward / max(sum(axis_weights), 1e-6)
 
 
 """
@@ -796,3 +888,390 @@ def self_collision_cost(
     forces = force_matrix_w.torch[:, sensor_cfg.body_ids]
     in_contact = torch.linalg.norm(forces, dim=-1) > force_threshold
     return in_contact.any(dim=-1).sum(dim=-1).float()
+
+
+"""
+Standing up: posture, height and orientation terms.
+"""
+
+
+def joint_pose_gaussian(env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Reward holding selected joints at the stand pose, with a single Gaussian tolerance.
+
+    Ported from addendum section 3.3 (``pose_target_match``). Unlike
+    :class:`pose_mode_switch`, which selects a per-joint tolerance vector from the commanded speed,
+    this is one scalar width applied to every selected joint -- the stand-up task has no walking
+    regime to switch into.
+
+    Upstream additionally accepts a ``target_overrides`` mapping that shifts individual targets off
+    the stand pose. Every stand-up slot passes ``None``, so it is not ported.
+
+    Args:
+        env: The environment instance.
+        std: Width of the per-joint Gaussian kernel [m or rad, depending on joint type].
+        asset_cfg: The articulation and the joints to hold at the stand pose.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    error = (
+        asset.data.joint_pos.torch[:, asset_cfg.joint_ids] - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
+    )
+    return torch.exp(-((error / std) ** 2)).mean(dim=-1)
+
+
+def joint_pose_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Penalize the mean absolute deviation of selected joints from the stand pose.
+
+    Ported from addendum section 3.3 (``pose_l1_penalty``). It is the constant-gradient companion
+    to :func:`joint_pose_gaussian`, which saturates once the pose error grows past its width and
+    then stops pulling. The stock :func:`isaaclab.envs.mdp.joint_deviation_l1` sums rather than
+    averages, so its scale follows the number of selected joints.
+
+    The term **negates itself** and is therefore configured with a *positive* weight.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the joints to hold at the stand pose.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    error = (
+        asset.data.joint_pos.torch[:, asset_cfg.joint_ids] - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
+    )
+    return -torch.abs(error).mean(dim=-1)
+
+
+def root_height_gaussian(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward holding the trunk at a target height above the ground, using a Gaussian kernel.
+
+    Ported from addendum section 3.3 (``height_target_gaussian``). The stand-up task instantiates it
+    twice, at a wide width that pulls all the way up from the sitting keyframe and at a narrow one
+    that only has gradient in the last centimetre; the wide layer alone saturates before the robot
+    is standing. The stock :func:`isaaclab.envs.mdp.base_height_l2` is an unbounded penalty around
+    the same target, so it neither saturates nor stacks.
+
+    Args:
+        env: The environment instance.
+        target_height: Trunk height to hold [m], measured above the environment origin.
+        std: Width of the Gaussian kernel [m].
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.exp(-(((_root_height_above_ground(env, asset) - target_height) / std) ** 2))
+
+
+def root_height_l1(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize the absolute distance of the trunk from a target height above the ground.
+
+    Ported from addendum section 3.3 (``height_l1_penalty``). It is what makes staying seated cost
+    something: the Gaussian layers are near zero down there and give the policy nothing to descend,
+    whereas this one charges a constant gradient all the way from the sitting height.
+
+    The term **negates itself** and is therefore configured with a *positive* weight.
+
+    Args:
+        env: The environment instance.
+        target_height: Trunk height to hold [m], measured above the environment origin.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    return -torch.abs(_root_height_above_ground(env, asset) - target_height)
+
+
+def com_upward_velocity(
+    env: ManagerBasedRLEnv,
+    max_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward rising: the trunk's upward speed, paid only while it is below a ceiling.
+
+    Ported from addendum section 3.3 (``com_upward_velocity``). This is the term that pays for the
+    *motion* of standing up rather than for arriving: with destination rewards alone, sitting still
+    and collecting most of the posture and upright terms is the dominant local optimum. The ceiling
+    stops the policy farming the reward by bobbing once it is up. Downward motion is free, not
+    penalized -- :func:`trunk_vertical_accel_penalty` is what keeps the rise smooth.
+
+    Upstream also accepts a ``max_vz`` cap on the rewarded speed, which the stand-up task
+    deliberately leaves unset after two runs in which capping it suppressed the noisy recovery
+    attempts the policy has to make before it can flip; it is not ported.
+
+    Args:
+        env: The environment instance.
+        max_height: Trunk height [m] above which the reward is switched off.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    below_target = (_root_height_above_ground(env, asset) < max_height).float()
+    vertical_speed = torch.nan_to_num(asset.data.root_link_lin_vel_w.torch[:, 2], nan=0.0)
+    return torch.clamp(vertical_speed, min=0.0) * below_target
+
+
+class trunk_vertical_accel_penalty(ManagerTermBase):
+    """Penalize the magnitude of the trunk's vertical acceleration.
+
+    Ported from addendum section 3.3 (``trunk_vertical_accel_penalty``). Paired with
+    :func:`com_upward_velocity` it selects a smooth, constant-speed rise: a constant upward velocity
+    collects the speed reward *and* has zero acceleration, so the two pressures agree only on that
+    trajectory. There is no stock counterpart; the closest term,
+    :func:`isaaclab.envs.mdp.lin_vel_z_l2`, penalizes the speed itself, which would fight the rise
+    rather than smooth it.
+
+    Being a finite difference the term is stateful, so it is a class. The step after a reset is
+    charged nothing: the previous velocity then belongs to the previous episode, and differencing
+    across the discontinuity would charge every environment a spurious impulse on its first step.
+
+    The term **negates itself** and is therefore configured with a *positive* weight. Upstream
+    documents a historical sign bug here, where the doubly negated form paid a *reward* for vertical
+    shocks.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Allocate the previous-velocity buffer.
+
+        Args:
+            cfg: The term configuration.
+            env: The environment instance.
+        """
+        super().__init__(cfg, env)
+
+        self._previous_speed = torch.zeros(env.num_envs, device=env.device)
+        self._is_fresh = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Mark the environments that restarted, so their next difference is not charged.
+
+        Args:
+            env_ids: The environment ids. Defaults to None, in which case all are marked.
+        """
+        if env_ids is None:
+            self._is_fresh[:] = True
+        else:
+            self._is_fresh[env_ids] = True
+
+    def __call__(self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+        """Difference the vertical velocity and return the penalty.
+
+        Args:
+            env: The environment instance.
+            asset_cfg: The articulation whose root link carries the trunk.
+
+        Returns:
+            The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+        """
+        asset: Articulation = env.scene[asset_cfg.name]
+        vertical_speed = torch.nan_to_num(asset.data.root_link_lin_vel_w.torch[:, 2], nan=0.0)
+        acceleration = (vertical_speed - self._previous_speed) / env.step_dt
+        acceleration = torch.where(self._is_fresh, torch.zeros_like(acceleration), acceleration)
+        self._previous_speed = vertical_speed.clone()
+        self._is_fresh[:] = False
+        return -torch.abs(acceleration)
+
+
+def body_ang_vel_at_height(
+    env: ManagerBasedRLEnv,
+    height_low: float,
+    height_high: float,
+    tilt_full_deg: float,
+    tilt_zero_deg: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize the roll and pitch rate of a body, but only once the robot is up and near vertical.
+
+    Ported from addendum section 3.3 (``body_ang_vel_at_height``). It is
+    :func:`body_ang_vel_xy_l2` behind a height-times-tilt smoothstep gate, and the gate is the whole
+    point: an ungated rotation penalty is an attempt tax on exactly the thrashing a robot has to do
+    to flip itself off its back, and upstream measured that taxing it makes "do nothing" win. Above
+    the gate it damps the overshoot-and-tip loop at the top of the rise instead.
+
+    Args:
+        env: The environment instance.
+        height_low: Trunk height [m] below which the gate is fully closed.
+        height_high: Trunk height [m] above which the height half of the gate is fully open.
+        tilt_full_deg: Trunk tilt [deg] below which the tilt half of the gate is fully open.
+        tilt_zero_deg: Trunk tilt [deg] above which the tilt half of the gate is fully closed.
+        asset_cfg: The articulation and the bodies to measure.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    ang_vel_xy = asset.data.body_link_ang_vel_w.torch[:, asset_cfg.body_ids, :2]
+    cost = torch.sum(torch.square(ang_vel_xy), dim=(1, 2))
+
+    gate = _height_gate(_root_height_above_ground(env, asset), height_low, height_high)
+    gate = gate * _tilt_gate(asset.data.root_link_quat_w.torch, tilt_full_deg, tilt_zero_deg)
+    return cost * gate
+
+
+def body_upright_linear(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Reward the cosine of the trunk's tilt from vertical.
+
+    Ported from addendum section 3.3 (``body_upright_linear``). Returns +1 upright, 0 horizontal and
+    -1 inverted, so unlike the Gaussian :func:`upright` it keeps a strong gradient at large tilt --
+    which is where a robot on its back starts. :func:`upright_gaussian_at_height` is its
+    near-vertical counterpart, and the stand-up task carries both layers.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[-1, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    return 1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch)
+
+
+def upright_gaussian_at_height(
+    env: ManagerBasedRLEnv,
+    std: float,
+    height_low: float,
+    height_high: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward a near-vertical trunk, paid in proportion to how far the robot has risen.
+
+    Ported from addendum section 3.3 (``upright_gaussian_at_height``). The height gate is what
+    closes the "crouch low and vertical" exploit that an ungated upright reward opens, and the
+    Gaussian has its gradient exactly where :func:`body_upright_linear` runs out of steam.
+
+    Args:
+        env: The environment instance.
+        std: Width of the Gaussian kernel, in units of ``1 - cos(tilt)``.
+        height_low: Trunk height [m] below which the gate is fully closed.
+        height_high: Trunk height [m] above which the gate is fully open.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    upright_score = torch.exp(-_trunk_tilt_squared(asset.data.root_link_quat_w.torch) / std**2)
+    return upright_score * _height_gate(_root_height_above_ground(env, asset), height_low, height_high)
+
+
+def standing_composite_score(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    height_std: float,
+    upright_std: float,
+    pose_std: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward the goal state as one multiplicative score over height, uprightness and pose.
+
+    Ported from addendum section 3.3 (``standing_composite_score``). The product of the three
+    Gaussians -- rather than their sum, which the separate height, upright and posture terms already
+    provide -- is what makes "standing" a single attractor: two out of three earns almost nothing,
+    so the policy cannot settle on a tall crouch or an upright sit. The widths are deliberately
+    broad, because a tight product scores numerically zero everywhere except at the goal and has no
+    gradient to follow there.
+
+    Args:
+        env: The environment instance.
+        target_height: Trunk height of the goal state [m].
+        height_std: Width of the Gaussian kernel on the height [m].
+        upright_std: Width of the Gaussian kernel on the tilt, in units of ``1 - cos(tilt)``.
+        pose_std: Width of the Gaussian kernel on the joint-position RMS error [rad].
+        asset_cfg: The articulation and the joints scored against the stand pose. Its root link
+            carries the trunk height and orientation.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    height_score = torch.exp(-(((_root_height_above_ground(env, asset) - target_height) / height_std) ** 2))
+    upright_score = torch.exp(-_trunk_tilt_squared(asset.data.root_link_quat_w.torch) / upright_std**2)
+    pose_error = (
+        asset.data.joint_pos.torch[:, asset_cfg.joint_ids] - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
+    )
+    pose_score = torch.exp(-torch.square(pose_error).mean(dim=-1) / pose_std**2)
+    return height_score * upright_score * pose_score
+
+
+class joint_torque_rate_l2(ManagerTermBase):
+    """Penalize the squared change in applied joint torque between two control steps.
+
+    Ported from addendum section 3.3 (``joint_torque_rate_l2``). It prices jitter rather than
+    effort: the stock :func:`isaaclab.envs.mdp.joint_torques_l2` charges the torque itself, which a
+    0.74 kg robot pushing itself off the floor cannot avoid, whereas the *rate* is what a chattering
+    policy spends and a smooth one does not.
+
+    Being a finite difference the term is stateful, so it is a class.
+
+    Note:
+        Upstream caches its previous torques on the environment with no reset hook, so the first
+        step of every episode is charged against the last step of the previous one (addendum section
+        7.18). This port clears the state on reset, as its sibling
+        :class:`trunk_vertical_accel_penalty` does upstream. The weight is zero until late in the
+        schedule, so the two behaviours are indistinguishable in practice.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Allocate the previous-torque buffer.
+
+        Args:
+            cfg: The term configuration, whose ``params`` carry the driven joints.
+            env: The environment instance.
+
+        Raises:
+            ValueError: If ``asset_cfg`` is missing or selects no joints by name.
+        """
+        super().__init__(cfg, env)
+
+        asset_cfg = _required_entity_cfg(cfg, "asset_cfg", self.__name__)
+        joint_ids = _required_joint_ids(asset_cfg, "asset_cfg", self.__name__)
+        self._previous_torque = torch.zeros(env.num_envs, len(joint_ids), device=env.device)
+        self._is_fresh = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Mark the environments that restarted, so their next difference is not charged.
+
+        Args:
+            env_ids: The environment ids. Defaults to None, in which case all are marked.
+        """
+        if env_ids is None:
+            self._is_fresh[:] = True
+        else:
+            self._is_fresh[env_ids] = True
+
+    def __call__(self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+        """Difference the applied torque and return the cost.
+
+        Args:
+            env: The environment instance.
+            asset_cfg: The articulation and the driven joints. Mandatory: the term sizes its state
+                from the selection at construction time.
+
+        Returns:
+            The cost in ``[0, inf)``. Shape is (num_envs,).
+        """
+        asset: Articulation = env.scene[asset_cfg.name]
+        torque = asset.data.applied_torque.torch[:, asset_cfg.joint_ids]
+        rate = torque - self._previous_torque
+        rate = torch.where(self._is_fresh.unsqueeze(-1), torch.zeros_like(rate), rate)
+        self._previous_torque = torque.clone()
+        self._is_fresh[:] = False
+        return torch.sum(torch.square(rate), dim=1)

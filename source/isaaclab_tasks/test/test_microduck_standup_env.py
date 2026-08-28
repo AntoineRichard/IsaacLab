@@ -1,0 +1,808 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Smoke and recipe-parity tests for the contributed MicroDuck stand-up environment.
+
+The smoke tests spawn :data:`~isaaclab_assets.MICRODUCK_ALLCOLLISIONS_CFG`, whose USD is generated
+rather than committed, so they skip when that asset is absent. Generate it with
+``uv run --extra importers python scripts/tools/convert_microduck.py --model allcollisions``.
+
+The parity tests need neither the asset nor the simulator: they read the assembled configuration and
+compare it against the upstream recipe, transcribed here from
+``artifacts/microduck/upstream_reference_tasks2.md`` section 3. The expected values are spelled out
+rather than imported from the configuration under test, so that a drifting value fails rather than
+agrees with itself.
+"""
+
+import math
+import os
+
+# TODO: Remove once usd-core>=26.5 is the minimum. Earlier releases can corrupt
+# the heap while parsing Newton payloads concurrently, so disable USD concurrency
+# before importing modules that may initialize OpenUSD.
+os.environ["PXR_WORK_THREAD_LIMIT"] = "1"
+
+import gymnasium as gym
+import pytest
+import torch
+
+import isaaclab.sim as sim_utils
+from isaaclab.managers import ObservationTermCfg, SceneEntityCfg
+from isaaclab.sim import SimulationContext
+
+import isaaclab_tasks  # noqa: F401
+import isaaclab_tasks.contrib.microduck.mdp as mdp
+from isaaclab_tasks.contrib.microduck.standup.agents.rsl_rl_ppo_cfg import MicroDuckStandUpPPORunnerCfg
+from isaaclab_tasks.contrib.microduck.standup.standup_env_cfg import (
+    MICRODUCK_SIT_HEIGHT,
+    MICRODUCK_SITTING_JOINT_POS,
+    MICRODUCK_STAND_HEIGHT,
+    MicroDuckStandUpFlatEnvCfg,
+)
+from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+
+from isaaclab_assets.robots.microduck import MICRODUCK_ALLCOLLISIONS_USD_PATH
+
+# Local imports should be imported last
+from env_test_utils import _run_environments  # isort: skip
+
+requires_microduck_allcollisions_usd = pytest.mark.skipif(
+    not os.path.isfile(MICRODUCK_ALLCOLLISIONS_USD_PATH),
+    reason=(
+        f"MicroDuck all-collisions USD asset is missing: {MICRODUCK_ALLCOLLISIONS_USD_PATH}. Generate it with"
+        " 'uv run --extra importers python scripts/tools/convert_microduck.py --model allcollisions'."
+    ),
+)
+"""Skips the tests that spawn the robot. The parity tests do not need the asset."""
+
+TASK_NAME = "IsaacContrib-StandUp-Flat-MicroDuck"
+
+ACTOR_OBSERVATION_TERMS = [
+    ("base_ang_vel", 3),
+    ("projected_gravity", 3),
+    ("joint_pos", 14),
+    ("joint_vel", 14),
+    ("actions", 14),
+    ("velocity_commands", 3),
+    ("head_pose_commands", 4),
+    ("body_pose_commands", 6),
+]
+"""The deployed MicroDuck observation layout, which is shared across the whole policy family.
+
+Addendum section 6.1: all of upstream's MicroDuck tasks present the same 61-wide vector, because one
+runtime on the robot feeds every policy from the same buffer. A stand-up policy that read a
+different layout could not be swapped in for a walking one, so this table is deliberately a copy of
+the velocity task's rather than a reference to it -- if the two drift apart, both suites fail.
+"""
+
+ACTOR_OBSERVATION_DIM = 61
+"""Actor observation width the deployed MicroDuck policy expects."""
+
+CRITIC_OBSERVATION_TERMS = [
+    ("base_lin_vel", 3),
+    ("base_ang_vel", 3),
+    ("projected_gravity", 3),
+    ("joint_pos", 14),
+    ("joint_vel", 14),
+    ("actions", 14),
+    ("velocity_commands", 3),
+    ("foot_air_time", 2),
+    ("foot_contact", 2),
+    ("foot_contact_forces", 6),
+    ("head_pose_commands", 4),
+    ("body_pose_commands", 6),
+]
+"""The privileged critic layout (addendum section 6.2), which is not a deploy contract.
+
+It is the velocity task's critic minus its two ``foot_height`` columns, which upstream deletes here:
+the stand-up scene carries no height sensor and no foot-height reward that would justify one.
+"""
+
+CRITIC_OBSERVATION_DIM = 74
+"""Critic observation width, measured from the assembled group.
+
+The extraction derives 74 by hand from upstream's term list (addendum section 6.2); this pins the
+number the port actually produces against it.
+"""
+
+STEPS_PER_ITERATION = 24
+"""Environment steps per PPO iteration, upstream's ``num_steps_per_env``."""
+
+_SIT_TO_STAND_HEIGHT_GAP = 0.055
+"""Distance [m] the trunk has to travel from the seated equilibrium to the standing keyframe."""
+
+
+def _scalar_params(term_cfg) -> dict:
+    """Drop the entity selections, which are compared separately and are not upstream's values."""
+    return {key: value for key, value in term_cfg.params.items() if not isinstance(value, SceneEntityCfg)}
+
+
+def _observation_terms(group) -> dict[str, ObservationTermCfg]:
+    """The group's terms in declaration order, which is the order the manager concatenates them."""
+    return {name: term for name, term in vars(group).items() if isinstance(term, ObservationTermCfg)}
+
+
+##
+# Recipe parity against upstream (addendum section 3)
+##
+
+EXPECTED_REWARDS = {
+    # name: (weight, scalar params)
+    "pose_stand_legs": (2.0, {"std": 0.5}),
+    "pose_stand_l1": (1.25, {}),
+    "head_pose_tracking": (0.75, {"command_name": "head_pose", "std": 0.5}),
+    "head_pose_bias": (
+        0.0,
+        {
+            "command_name": "head_pose",
+            "tau_s": 1.0,
+            "gate_height_low": 0.09,
+            "gate_height_high": 0.11,
+            "gate_tilt_full_deg": 20.0,
+            "gate_tilt_zero_deg": 45.0,
+        },
+    ),
+    "height_stand": (1.0, {"std": 0.04, "target_height": 0.115}),
+    "height_stand_sharp": (1.0, {"std": 0.015, "target_height": 0.115}),
+    "height_stand_l1": (7.5, {"target_height": 0.115}),
+    "com_upward_velocity": (0.75, {"max_height": 0.125}),
+    "gentle_rise": (0.005, {}),
+    "arrival_damping": (
+        0.0,
+        {"height_low": 0.09, "height_high": 0.11, "tilt_full_deg": 20.0, "tilt_zero_deg": 45.0},
+    ),
+    "upright_linear": (1.5, {}),
+    "upright_sharp": (1.5, {"std": 0.3, "height_low": 0.060, "height_high": 0.115}),
+    "standing_composite": (
+        3.75,
+        {"target_height": 0.115, "height_std": 0.04, "upright_std": 0.40, "pose_std": 0.40},
+    ),
+    "body_pose_tracking": (
+        0.0,
+        {
+            "command_name": "body_pose",
+            "nominal_height": 0.115,
+            "z_std": 0.01,
+            "angle_std": math.radians(5.0),
+            "xy_std": 0.02,
+            "axis_weights": (0.0, 0.0, 1.0, 1.0, 1.0, 0.0),
+        },
+    ),
+    "body_ang_vel": (-0.05, {}),
+    "angular_momentum": (-0.02, {}),
+    "dof_pos_limits": (-1.0, {}),
+    "action_rate_l2": (-0.1, {}),
+    "joint_torque_rate_l2": (0.0, {}),
+    "self_collisions": (-1.0, {}),
+}
+"""Upstream's reward recipe (addendum section 3.3), keyed by term name, at its initial weights.
+
+Six of these are ramped by curricula and are listed here at the weight the configuration ships, not
+at the one they reach: ``action_rate_l2``, ``arrival_damping``, ``head_pose_bias``,
+``joint_torque_rate_l2``, ``body_pose_tracking`` and the three relaxed attractors.
+
+``dof_pos_limits`` is upstream's silently inherited regularizer -- it is never mentioned in the
+stand-up configuration and survives only because it is not in the deletion list (addendum section
+7.13), so a port that enumerated the terms upstream *writes* would miss it.
+"""
+
+EXPECTED_EVENTS = {
+    # name: (mode, scalar params)
+    "foot_friction": (
+        "startup",
+        {
+            "static_friction_range": (0.7, 1.3),
+            # Newton samples one coefficient per shape, so the dynamic range is supplied only
+            # because the signature requires it; upstream sets the friction outright
+            "dynamic_friction_range": (0.7, 1.3),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 64,
+        },
+    ),
+    "encoder_bias": ("startup", {"bias_range": (-0.015, 0.015)}),
+    "mass_inertia": (
+        "startup",
+        # ``recompute_inertia`` reproduces upstream's single log-Cholesky scale, which moves mass
+        # and inertia together
+        {"mass_distribution_params": (0.95, 1.05), "operation": "scale", "recompute_inertia": True},
+    ),
+    "reset_base": ("reset", {"pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}, "velocity_range": {}}),
+    "reset_robot_joints": ("reset", {"position_range": (0.0, 0.0), "velocity_range": (0.0, 0.0)}),
+    "set_ground_state": (
+        "reset",
+        {
+            "face_down_prob": 0.20,
+            "face_up_prob": 0.00,
+            "sitting_prob": 0.40,
+            "standing_prob": 0.40,
+            "prone_z_range": (0.05, 0.09),
+            "sitting_z_range": (0.05, 0.09),
+            "standing_z_range": (0.11, 0.12),
+            "sitting_joint_pos": MICRODUCK_SITTING_JOINT_POS,
+            "sitting_joint_noise_std": 0.12,
+            "sitting_tilt_max": math.radians(10.0),
+            "face_up_roll_max": math.radians(90.0),
+        },
+    ),
+    "randomize_com": ("reset", {"com_range": {axis: (-0.003, 0.003) for axis in "xyz"}}),
+    "randomize_head_com": ("reset", {"com_range": {axis: (-0.003, 0.003) for axis in "xyz"}}),
+    "randomize_armature": ("reset", {"armature_distribution_params": (0.9, 1.1), "operation": "scale"}),
+    "randomize_joint_friction": ("reset", {"scale_range": (0.9, 1.1)}),
+    "push_robot": ("interval", {"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}}),
+}
+"""Upstream's event suite (addendum section 3.7), keyed by term name.
+
+Upstream's ``base_com`` is absent because it selects zero bodies there; its
+``expand_bam_friction_fields`` and ``reset_action_history`` are absent because Isaac Lab's actuator
+storage and action manager already do their jobs; and ``randomize_motor_gains`` is absent because
+upstream ships it disabled.
+
+Upstream's ``reset_base`` additionally randomizes the base height and yaw, which ``set_ground_state``
+then overwrites wholesale (addendum section 7.11). Only the horizontal spread is live, so only the
+horizontal spread is configured -- and the ordering test below is what keeps that true.
+"""
+
+EXPECTED_RESET_EVENT_ORDER = [
+    "reset_base",
+    "reset_robot_joints",
+    "set_ground_state",
+    "randomize_com",
+    "randomize_head_com",
+    "randomize_armature",
+    "randomize_joint_friction",
+]
+"""Upstream's reset chain, in the order it fires (addendum section 3.4).
+
+This is behaviour, not housekeeping: ``set_ground_state`` overwrites the root height and orientation
+that ``reset_base`` wrote, and folds the legs the joint reset had just straightened. Moving it ahead
+of either one changes the spawn distribution outright.
+"""
+
+EXPECTED_TERMINATIONS = {
+    # name: (time_out flag, scalar params)
+    "time_out": (True, {}),
+    "nan_state": (False, {"sensor_names": ("contact_forces",)}),
+}
+"""Upstream's terminations (addendum section 3.6), keyed by term name.
+
+The velocity task's tilt termination is deleted upstream -- the robot starts on the ground here.
+Upstream's inherited terrain-bounds termination is not carried over: it returns all-false on a
+ground plane and this task has no rough variant (addendum section 7.24).
+"""
+
+EXPECTED_CURRICULUM_TERMS = {
+    "ground_state_mix",
+    "com_range",
+    "head_com_range",
+    "push_magnitude",
+    "head_pose_range",
+    "action_rate_weight",
+    "body_pose_tracking_weight",
+    "body_pose_range",
+    "height_stand_sharp_weight",
+    "upright_sharp_weight",
+    "standing_composite_weight",
+    "arrival_damping_weight",
+    "head_pose_bias_weight",
+    "torque_rate_weight",
+}
+"""Upstream's curriculum term names (addendum section 3.8).
+
+``terrain_levels`` and ``command_vel`` are absent because upstream deletes both: this is a flat task
+and its velocity command is inert.
+"""
+
+EXPECTED_WEIGHT_STAGES = {
+    "action_rate_weight": ([-0.1, -0.2, -0.4, -0.6, -0.8, -1.0], [0, 500, 750, 1000, 1250, 1500]),
+    "arrival_damping_weight": ([0.0, -0.025, -0.05], [0, 3000, 4000]),
+    "head_pose_bias_weight": ([0.0, 0.5, 1.5], [0, 3000, 4000]),
+    "torque_rate_weight": ([0.0, -1e-3], [0, 3000]),
+    "body_pose_tracking_weight": ([0.0, 1.5, 3.0, 4.0], [0, 2500, 3000, 4000]),
+    "height_stand_sharp_weight": ([1.0, 0.5, 0.2], [0, 3000, 4000]),
+    "upright_sharp_weight": ([1.5, 1.0, 0.5], [0, 3000, 4000]),
+    "standing_composite_weight": ([3.75, 2.5, 1.5], [0, 3000, 4000]),
+}
+"""Upstream's reward-weight ramps: payloads and PPO-iteration boundaries."""
+
+EXPECTED_RANGE_STAGES = {
+    "com_range": ([0.003, 0.005, 0.01, 0.015], [0, 500, 1000, 1500]),
+    "head_com_range": ([0.003, 0.005, 0.01], [0, 500, 1000]),
+}
+"""Upstream's centre-of-mass range ramps, matched to the velocity task's."""
+
+EXPECTED_GROUND_STATE_STAGES = [
+    (0, {"standing_prob": 0.40, "sitting_prob": 0.40, "face_down_prob": 0.20, "face_up_prob": 0.00}),
+    (600, {"standing_prob": 0.25, "sitting_prob": 0.30, "face_down_prob": 0.35, "face_up_prob": 0.10}),
+    (1500, {"standing_prob": 0.20, "sitting_prob": 0.25, "face_down_prob": 0.30, "face_up_prob": 0.25}),
+    (2500, {"standing_prob": 0.15, "sitting_prob": 0.20, "face_down_prob": 0.30, "face_up_prob": 0.35}),
+]
+"""Upstream's reset-distribution ramp (addendum section 3.8), easy mix to hard mix."""
+
+EXPECTED_PUSH_STAGES = [
+    (0, {"x": (0.0, 0.0), "y": (0.0, 0.0)}),
+    (500, {"x": (-0.08, 0.08), "y": (-0.08, 0.08)}),
+    (1000, {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}),
+]
+"""Upstream's push ramp. Unlike the velocity task, which pushes at full strength from step 0."""
+
+EXPECTED_HEAD_POSE_STAGES = [
+    (0, ((-0.05, 0.05), (-0.05, 0.05), (-0.07, 0.07), (-0.015, 0.015))),
+    (500, ((-0.17, 0.17), (-0.17, 0.17), (-0.21, 0.21), (-0.047, 0.047))),
+    (1000, ((-0.39, 0.39), (-0.39, 0.39), (-0.49, 0.49), (-0.11, 0.11))),
+    (1500, ((-0.72, 0.72), (-0.72, 0.72), (-0.91, 0.91), (-0.20, 0.20))),
+    (2000, ((-1.10, 1.10), (-1.10, 1.10), (-1.40, 1.40), (-0.31, 0.31))),
+]
+"""Upstream's head-pose range ramp, identical to the velocity task's."""
+
+_ALIVE_XY = (-0.005, 0.005)
+_ALIVE_ANGLE = (-0.05, 0.05)
+
+EXPECTED_BODY_POSE_STAGES = [
+    (0, (_ALIVE_XY, _ALIVE_XY, (-0.005, 0.005), _ALIVE_ANGLE, _ALIVE_ANGLE, _ALIVE_ANGLE)),
+    (
+        2500,
+        (
+            _ALIVE_XY,
+            _ALIVE_XY,
+            (-0.010, 0.005),
+            (-math.radians(8.0), math.radians(8.0)),
+            (-math.radians(8.0), math.radians(8.0)),
+            _ALIVE_ANGLE,
+        ),
+    ),
+    (
+        3000,
+        (
+            _ALIVE_XY,
+            _ALIVE_XY,
+            (-0.018, 0.008),
+            (-math.radians(12.0), math.radians(12.0)),
+            (-math.radians(12.0), math.radians(12.0)),
+            _ALIVE_ANGLE,
+        ),
+    ),
+    (
+        4000,
+        (
+            _ALIVE_XY,
+            _ALIVE_XY,
+            (-0.04, 0.030),
+            (-math.radians(15.0), math.radians(15.0)),
+            (-math.radians(15.0), math.radians(15.0)),
+            _ALIVE_ANGLE,
+        ),
+    ),
+]
+"""Upstream's body-pose range ramp. The height range is asymmetric because the stand pose already
+sits near the model's maximum leg extension, so there is far more room to crouch than to rise."""
+
+EXPECTED_ACTOR_NOISE = {
+    "base_ang_vel": 0.03,
+    "projected_gravity": 0.01,
+    "joint_pos": 0.001,
+    "joint_vel": 0.25,
+}
+"""Half-width of the uniform noise on each corrupted actor term, matched to the velocity task."""
+
+
+@pytest.mark.unit
+def test_the_reward_recipe_matches_upstream_term_for_term():
+    """Every reward slot upstream trains with is present, with its weight and its parameters."""
+    rewards = MicroDuckStandUpFlatEnvCfg().rewards
+
+    # two-sided, so a walking term left behind by the port also fails
+    assert set(vars(rewards)) == set(EXPECTED_REWARDS)
+    for name, (weight, params) in EXPECTED_REWARDS.items():
+        term = getattr(rewards, name)
+        assert term.weight == pytest.approx(weight), name
+        actual = _scalar_params(term)
+        assert set(actual) == set(params), name
+        for key, value in params.items():
+            assert actual[key] == pytest.approx(value), f"{name}.{key}"
+
+
+@pytest.mark.unit
+def test_the_self_negating_reward_terms_carry_positive_weights():
+    """Four terms return a non-positive value, so a negative weight would pay for what it prices."""
+    rewards = MicroDuckStandUpFlatEnvCfg().rewards
+
+    for name in ("pose_stand_l1", "height_stand_l1", "gentle_rise"):
+        assert getattr(rewards, name).weight > 0.0, name
+    # head_pose_bias ships at zero and is ramped, so its schedule is what has to stay positive
+    stages = MicroDuckStandUpFlatEnvCfg().curriculum.head_pose_bias_weight.params["weight_stages"]
+    assert all(stage["weight"] >= 0.0 for stage in stages)
+
+
+@pytest.mark.unit
+def test_the_walking_reward_terms_are_gone():
+    """Upstream deletes every locomotion term; a stand-up policy has no gait to shape."""
+    rewards = MicroDuckStandUpFlatEnvCfg().rewards
+
+    for name in ("track_lin_vel", "track_ang_vel", "air_time", "foot_clearance", "foot_swing_height", "foot_slip"):
+        assert not hasattr(rewards, name), name
+    # the base template's own Gaussian upright is replaced by the two-layer pair
+    assert not hasattr(rewards, "upright")
+    assert hasattr(rewards, "upright_linear") and hasattr(rewards, "upright_sharp")
+
+
+@pytest.mark.unit
+def test_the_two_layer_attractors_are_a_wide_and_a_narrow_copy_of_one_target():
+    """The sharp layer only earns its slot by being sharper than the layer it stacks on."""
+    rewards = MicroDuckStandUpFlatEnvCfg().rewards
+
+    assert rewards.height_stand.func is rewards.height_stand_sharp.func
+    assert rewards.height_stand.params["target_height"] == rewards.height_stand_sharp.params["target_height"]
+    assert rewards.height_stand_sharp.params["std"] < rewards.height_stand.params["std"]
+    # the sharp height layer must still resolve the last centimetre of the rise
+    assert rewards.height_stand_sharp.params["std"] < 0.02
+    # the upright gate opens across exactly the seated-to-standing travel
+    assert rewards.upright_sharp.params["height_low"] == pytest.approx(MICRODUCK_SIT_HEIGHT)
+    assert rewards.upright_sharp.params["height_high"] == pytest.approx(MICRODUCK_STAND_HEIGHT)
+    assert pytest.approx(_SIT_TO_STAND_HEIGHT_GAP) == MICRODUCK_STAND_HEIGHT - MICRODUCK_SIT_HEIGHT
+
+
+@pytest.mark.unit
+def test_the_body_pose_command_is_trained_here_rather_than_kept_alive():
+    """The velocity task zero-weights this slot forever; the stand-up task ramps it to 4.0."""
+    cfg = MicroDuckStandUpFlatEnvCfg()
+
+    # only the three axes the deployed runtime exposes are weighted
+    assert cfg.rewards.body_pose_tracking.params["axis_weights"] == (0.0, 0.0, 1.0, 1.0, 1.0, 0.0)
+    stages = cfg.curriculum.body_pose_tracking_weight.params["weight_stages"]
+    assert stages[-1]["weight"] == pytest.approx(4.0)
+    # the command widens at the same iteration the weight first becomes non-zero
+    weight_start = next(stage["step"] for stage in stages if stage["weight"] > 0.0)
+    range_stages = cfg.curriculum.body_pose_range.params["range_stages"]
+    assert range_stages[1]["step"] == weight_start
+    # the untracked axes never widen; the tracked ones do
+    for index in (0, 1, 5):
+        assert {stage["ranges"][index] for stage in range_stages} == {range_stages[0]["ranges"][index]}, index
+    for index in (2, 3, 4):
+        assert range_stages[-1]["ranges"][index] != range_stages[0]["ranges"][index], index
+    # the exact-zero bucket, which this task is the first in the family to use
+    assert cfg.commands.body_pose.zero_command_prob == pytest.approx(0.3)
+
+
+@pytest.mark.unit
+def test_the_event_suite_matches_upstream_term_for_term():
+    """Every event upstream fires is present, in its mode, with its ranges."""
+    events = MicroDuckStandUpFlatEnvCfg().events
+
+    assert set(vars(events)) == set(EXPECTED_EVENTS)
+    for name, (mode, params) in EXPECTED_EVENTS.items():
+        term = getattr(events, name)
+        assert term.mode == mode, name
+        actual = _scalar_params(term)
+        assert set(actual) == set(params), name
+        for key, value in params.items():
+            assert actual[key] == value, f"{name}.{key}"
+    assert events.push_robot.interval_range_s == (3.0, 6.0)
+
+
+@pytest.mark.unit
+def test_the_ground_state_reset_runs_after_the_resets_it_overwrites():
+    """Isaac Lab fires reset events in declaration order, and this order is the spawn distribution."""
+    events = MicroDuckStandUpFlatEnvCfg().events
+
+    reset_terms = [name for name, term in vars(events).items() if getattr(term, "mode", None) == "reset"]
+    assert reset_terms == EXPECTED_RESET_EVENT_ORDER
+
+
+@pytest.mark.unit
+def test_the_sitting_keyframe_is_the_sit_policy_hand_off_pose():
+    """The keyframe folds the legs and leaves the head alone, and is sampled with noise."""
+    params = MicroDuckStandUpFlatEnvCfg().events.set_ground_state.params
+
+    # legs only: the neck and head stay at the stand pose so the head-pose command steers them
+    assert set(MICRODUCK_SITTING_JOINT_POS) == {
+        "left_hip_roll",
+        "left_hip_pitch",
+        "left_knee",
+        "left_ankle",
+        "right_hip_roll",
+        "right_hip_pitch",
+        "right_knee",
+        "right_ankle",
+    }
+    # mirrored left and right, as the two legs' joint axes are
+    for joint in ("hip_roll", "hip_pitch", "knee", "ankle"):
+        left = MICRODUCK_SITTING_JOINT_POS[f"left_{joint}"]
+        right = MICRODUCK_SITTING_JOINT_POS[f"right_{joint}"]
+        assert left == pytest.approx(-right), joint
+    # about 77 degrees of knee fold is what puts the trunk at the seated height
+    assert abs(MICRODUCK_SITTING_JOINT_POS["left_knee"]) == pytest.approx(1.35)
+    # the hand-off from a real sit policy never reproduces the keyframe exactly
+    assert params["sitting_joint_noise_std"] > 0.0
+    assert params["sitting_tilt_max"] > 0.0
+    # the sitting height band brackets the seated equilibrium
+    low, high = params["sitting_z_range"]
+    assert low <= MICRODUCK_SIT_HEIGHT <= high
+    # the standing band brackets the target the whole recipe is built around
+    low, high = params["standing_z_range"]
+    assert low <= MICRODUCK_STAND_HEIGHT <= high
+
+
+@pytest.mark.unit
+def test_the_terminations_match_upstream_and_drop_the_tilt_check():
+    """A task that starts on the ground cannot end an episode on tilt."""
+    terminations = MicroDuckStandUpFlatEnvCfg().terminations
+
+    assert set(vars(terminations)) == set(EXPECTED_TERMINATIONS)
+    for name, (time_out, params) in EXPECTED_TERMINATIONS.items():
+        term = getattr(terminations, name)
+        assert term.time_out is time_out, name
+        assert _scalar_params(term) == params, name
+
+
+@pytest.mark.unit
+def test_the_curricula_reproduce_upstream_stage_tables():
+    """The staged schedules carry upstream's payloads at upstream's iteration boundaries."""
+    curriculum = MicroDuckStandUpFlatEnvCfg().curriculum
+
+    # two-sided, so an unexpected extra schedule quietly rewriting a weight or a range also fails
+    assert set(vars(curriculum)) == EXPECTED_CURRICULUM_TERMS
+
+    for name, (weights, iterations) in EXPECTED_WEIGHT_STAGES.items():
+        stages = getattr(curriculum, name).params["weight_stages"]
+        assert [stage["step"] for stage in stages] == [it * STEPS_PER_ITERATION for it in iterations], name
+        assert [stage["weight"] for stage in stages] == pytest.approx(weights), name
+
+    for name, (ranges, iterations) in EXPECTED_RANGE_STAGES.items():
+        stages = getattr(curriculum, name).params["range_stages"]
+        assert [stage["step"] for stage in stages] == [it * STEPS_PER_ITERATION for it in iterations], name
+        assert [stage["range"] for stage in stages] == pytest.approx(ranges), name
+
+
+@pytest.mark.unit
+def test_the_ground_state_curriculum_walks_the_reset_mix_from_easy_to_hard():
+    """Recovery is discovered in the order the reset distribution introduces it."""
+    stages = MicroDuckStandUpFlatEnvCfg().curriculum.ground_state_mix.params["param_stages"]
+
+    assert len(stages) == len(EXPECTED_GROUND_STATE_STAGES)
+    for stage, (iteration, params) in zip(stages, EXPECTED_GROUND_STATE_STAGES):
+        assert stage["step"] == iteration * STEPS_PER_ITERATION
+        assert stage["params"] == params
+    # face-up is the hardest recovery and is withheld until the second stage
+    assert stages[0]["params"]["face_up_prob"] == 0.0
+    # and the mix ends up dominated by the two prone poses
+    final = stages[-1]["params"]
+    assert final["face_down_prob"] + final["face_up_prob"] > final["standing_prob"] + final["sitting_prob"]
+
+
+@pytest.mark.unit
+def test_the_push_curriculum_ramps_from_nothing_on_upstreams_exclusive_comparison():
+    """A robot still learning to rise cannot be shoved; upstream also switches step operator here."""
+    push = MicroDuckStandUpFlatEnvCfg().curriculum.push_magnitude
+
+    stages = push.params["param_stages"]
+    assert len(stages) == len(EXPECTED_PUSH_STAGES)
+    for stage, (iteration, velocity_range) in zip(stages, EXPECTED_PUSH_STAGES):
+        assert stage["step"] == iteration * STEPS_PER_ITERATION
+        assert stage["params"] == {"velocity_range": velocity_range}
+    # upstream's push helper compares with ``>`` where its event-parameter helper uses ``>=``
+    # (addendum section 7.6); the inconsistency is reproduced rather than smoothed over
+    assert push.params["inclusive"] is False
+    assert "inclusive" not in MicroDuckStandUpFlatEnvCfg().curriculum.ground_state_mix.params
+
+
+@pytest.mark.unit
+def test_the_pose_command_curricula_reproduce_upstream_stage_tables():
+    """The head command opens as the velocity task's does; the body command opens later and less."""
+    curriculum = MicroDuckStandUpFlatEnvCfg().curriculum
+
+    for name, expected in (
+        ("head_pose_range", EXPECTED_HEAD_POSE_STAGES),
+        ("body_pose_range", EXPECTED_BODY_POSE_STAGES),
+    ):
+        stages = getattr(curriculum, name).params["range_stages"]
+        assert len(stages) == len(expected), name
+        for stage, (iteration, ranges) in zip(stages, expected):
+            assert stage["step"] == iteration * STEPS_PER_ITERATION, name
+            assert stage["ranges"] == ranges, name
+
+
+@pytest.mark.unit
+def test_the_commands_are_registered_at_their_initial_ranges():
+    """Both pose commands start at their schedules' first stage, and the twist is inert."""
+    commands = MicroDuckStandUpFlatEnvCfg().commands
+
+    assert commands.head_pose.ranges == EXPECTED_HEAD_POSE_STAGES[0][1]
+    assert commands.head_pose.resampling_time_range == (2.0, 5.0)
+    assert commands.head_pose.zero_command_prob == 0.0
+    assert commands.body_pose.ranges == EXPECTED_BODY_POSE_STAGES[0][1]
+    assert commands.body_pose.resampling_time_range == (2.0, 5.0)
+
+    # the twist survives only so the deployed vector keeps its three-wide slot: no reward reads it,
+    # its ranges are a hundredth of the velocity task's, and it resamples at most once per episode
+    twist = commands.base_velocity
+    assert twist.ranges.lin_vel_x == (-0.01, 0.01)
+    assert twist.ranges.lin_vel_y == (-0.01, 0.01)
+    assert twist.ranges.ang_vel_z == (-0.05, 0.05)
+    assert twist.resampling_time_range[0] >= MicroDuckStandUpFlatEnvCfg().episode_length_s
+    assert twist.heading_command is False
+    assert twist.rel_standing_envs == 0.0
+    assert twist.rel_turn_in_place_envs == 0.0
+    # inherited from upstream's base template and never overridden there (addendum section 7.22)
+    assert twist.rel_forward_envs == pytest.approx(0.2)
+
+
+@pytest.mark.unit
+def test_the_actor_observation_layout_is_the_shared_deploy_contract():
+    """The stand-up policy reads the same 61-wide vector every other MicroDuck policy does."""
+    observations = MicroDuckStandUpFlatEnvCfg().observations
+    terms = _observation_terms(observations.policy)
+
+    assert list(terms) == [name for name, _ in ACTOR_OBSERVATION_TERMS]
+    assert sum(width for _, width in ACTOR_OBSERVATION_TERMS) == ACTOR_OBSERVATION_DIM
+    assert observations.policy.concatenate_terms
+    assert observations.policy.enable_corruption
+    for name, term in terms.items():
+        magnitude = EXPECTED_ACTOR_NOISE.get(name)
+        if magnitude is None:
+            assert term.noise is None, name
+        else:
+            assert (term.noise.n_min, term.noise.n_max) == (-magnitude, magnitude), name
+    # distinct configuration objects: an alias would share one delay term's buffer between them
+    assert terms["base_ang_vel"] is not terms["projected_gravity"]
+
+
+@pytest.mark.unit
+def test_the_critic_group_drops_foot_height_and_guards_its_sensor_reads():
+    """This is the one task in the family upstream NaN-guards, and it says why in its own comments."""
+    observations = MicroDuckStandUpFlatEnvCfg().observations
+    terms = _observation_terms(observations.critic)
+
+    assert list(terms) == [name for name, _ in CRITIC_OBSERVATION_TERMS]
+    assert not observations.critic.enable_corruption
+    # upstream deletes foot_height here: no height sensor, and no foot-height reward to need one
+    assert "foot_height" not in terms
+    assert terms["foot_air_time"].func is mdp.foot_air_time_safe
+    assert terms["foot_contact_forces"].func is mdp.foot_contact_forces_safe
+    # a privileged group the runner never reads is dead weight
+    assert MicroDuckStandUpPPORunnerCfg().obs_groups == {"actor": ["policy"], "critic": ["critic"]}
+
+
+@pytest.mark.unit
+def test_the_task_runs_the_all_collisions_robot_on_a_plane():
+    """A robot that pushes itself off the floor needs colliders the walking model does not have."""
+    scene = MicroDuckStandUpFlatEnvCfg().scene
+
+    assert scene.robot.spawn.usd_path == MICRODUCK_ALLCOLLISIONS_USD_PATH
+    assert scene.terrain.terrain_type == "plane"
+    assert scene.terrain.terrain_generator is None
+    # ten world colliders instead of two need a wider contact budget than the walking task's ten
+    solver = MicroDuckStandUpFlatEnvCfg().sim.physics.default.solver_cfg
+    assert solver.nconmax >= 27
+    assert solver.njmax >= 82
+
+
+@pytest.mark.unit
+def test_the_self_collision_sensor_senses_one_body_against_the_robots_colliders():
+    """``self_collision_cost`` counts sensing bodies, so one sensing body reproduces upstream's 0/1."""
+    scene = MicroDuckStandUpFlatEnvCfg().scene
+
+    assert scene.self_collision.filter_prim_paths_expr
+    assert scene.self_collision.prim_path.endswith("trunk_base")
+    filter_expr = scene.self_collision.filter_prim_paths_expr[0]
+    for body in ("jaw_soft", "hip_l", "hip_l_2", "leg", "leg_2", "ankle_left", "ankle_right"):
+        assert body in filter_expr, body
+    assert not scene.contact_forces.filter_prim_paths_expr
+
+
+@pytest.mark.unit
+def test_the_runner_differs_from_the_velocity_one_in_two_fields():
+    """Upstream's stand-up runner is its velocity runner with a new log tree and a shorter budget."""
+    runner = MicroDuckStandUpPPORunnerCfg()
+
+    assert runner.experiment_name == "microduck_stand"
+    assert runner.max_iterations == 15000
+    assert runner.num_steps_per_env == STEPS_PER_ITERATION
+    assert runner.save_interval == 250
+    assert runner.algorithm.learning_rate == pytest.approx(1.0e-3)
+    assert runner.algorithm.desired_kl == pytest.approx(0.01)
+
+
+@pytest.mark.unit
+def test_the_episode_and_simulation_rates_match_upstream():
+    """A 6 s episode is a gentle rise plus a moment to stabilize, a third of the walking window."""
+    cfg = MicroDuckStandUpFlatEnvCfg()
+
+    assert cfg.decimation == 4
+    assert cfg.sim.dt == pytest.approx(0.005)
+    assert cfg.episode_length_s == pytest.approx(6.0)
+    # the joint damping the asset restores is only stable with MuJoCo's default limit solref
+    assert cfg.sim.physics.default.solver_cfg.use_mujoco_default_joint_limit_solref is True
+
+
+##
+# Environment smoke tests
+##
+
+
+@pytest.mark.integration
+@requires_microduck_allcollisions_usd
+def test_the_observation_groups_are_the_widths_their_contracts_name():
+    """The actor group is the deployed 61-vector, term for term, and the critic measures 74."""
+    sim_utils.create_new_stage()
+    env = None
+    try:
+        env_cfg = parse_env_cfg(TASK_NAME, device="cuda", num_envs=2)
+        env = gym.make(TASK_NAME, cfg=env_cfg)
+        env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
+        obs, _ = env.reset()
+
+        assert obs["policy"].shape[-1] == ACTOR_OBSERVATION_DIM
+        assert obs["critic"].shape[-1] == CRITIC_OBSERVATION_DIM
+        # per-term widths as well as the total, so two compensating drifts cannot agree on 61
+        manager = env.unwrapped.observation_manager
+        for group, expected in (("policy", ACTOR_OBSERVATION_TERMS), ("critic", CRITIC_OBSERVATION_TERMS)):
+            measured = [
+                (name, dim[0]) for name, dim in zip(manager.active_terms[group], manager.group_obs_term_dim[group])
+            ]
+            assert measured == expected, group
+    finally:
+        if env is not None:
+            env.close()
+        SimulationContext.clear_instance()
+
+
+@pytest.mark.integration
+@requires_microduck_allcollisions_usd
+def test_the_reset_spawns_every_ground_pose_the_mix_asks_for():
+    """The four buckets are what the task trains on, so a reset that collapses to one is a failure."""
+    sim_utils.create_new_stage()
+    env = None
+    try:
+        env_cfg = parse_env_cfg(TASK_NAME, device="cuda", num_envs=4)
+        # every bucket equally likely, so four environments are very unlikely to miss all but one,
+        # and the curriculum is switched off because it rewrites these probabilities at step 0
+        env_cfg.curriculum.ground_state_mix = None
+        for name in ("face_down_prob", "face_up_prob", "sitting_prob", "standing_prob"):
+            env_cfg.events.set_ground_state.params[name] = 0.25
+
+        env = gym.make(TASK_NAME, cfg=env_cfg)
+        env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
+        env.reset()
+        robot = env.unwrapped.scene["robot"]
+        origins = env.unwrapped.scene.env_origins
+
+        heights, tilts, knees = [], [], []
+        knee_ids, _ = robot.find_joints(["left_knee"], preserve_order=True)
+        # cloned, not referenced: the articulation's data tensors are written in place on every
+        # reset, so keeping the views would collapse all twelve samples onto the last one
+        for _ in range(12):
+            env.unwrapped.reset()
+            heights.append((robot.data.root_link_pos_w.torch[:, 2] - origins[:, 2]).clone())
+            quat = robot.data.root_link_quat_w.torch
+            tilts.append((1.0 - 2.0 * (quat[:, 0] ** 2 + quat[:, 1] ** 2)).clone())
+            knees.append(robot.data.joint_pos.torch[:, knee_ids[0]].clone())
+        height = torch.cat(heights)
+        tilt = torch.cat(tilts)
+        knee = torch.cat(knees)
+
+        # every spawn lands inside one of the three configured height bands
+        params = env_cfg.events.set_ground_state.params
+        assert height.min().item() >= min(params["prone_z_range"][0], params["sitting_z_range"][0]) - 1e-4
+        assert height.max().item() <= params["standing_z_range"][1] + 1e-4
+        # prone spawns are the ones lying down: cos(tilt) near zero rather than near one
+        assert (tilt.abs() < 0.2).any(), "no face-down or face-up spawn"
+        # upright spawns cover both the standing band and the lower sitting one
+        upright = tilt > 0.9
+        assert (height[upright] > params["standing_z_range"][0] - 1e-4).any(), "no standing spawn"
+        assert (height[upright] < params["sitting_z_range"][1] + 1e-4).any(), "no sitting spawn"
+        # only the sitting bucket folds the knees, and it folds them far past the stand pose
+        default_knee = robot.data.default_joint_pos.torch[0, knee_ids[0]].item()
+        assert (knee - default_knee).abs().max().item() > 1.0, "no sitting spawn folded its knees"
+    finally:
+        if env is not None:
+            env.close()
+        SimulationContext.clear_instance()
+
+
+@pytest.mark.integration
+@requires_microduck_allcollisions_usd
+def test_environment_steps_with_random_actions():
+    """The registered task builds, resets, and steps without producing invalid signals."""
+    _run_environments(TASK_NAME, device="cuda", num_envs=2, num_steps=10)
