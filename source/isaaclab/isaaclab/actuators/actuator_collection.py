@@ -24,11 +24,18 @@ from isaaclab.utils.warp.launch_cache import _WarpLaunchCache
 from . import actuator_kernels
 from ._compat import _resolve_limit_aliases
 from .actuator_base import ActuatorBase, resolve_joint_parameter
-from .actuator_base_cfg import ActuatorBaseCfg, _is_implicit_actuator_cfg
+from .actuator_base_cfg import ActuatorBaseCfg, _applies_joint_friction_cfg, _is_implicit_actuator_cfg
 from .actuator_control import ActuatorControl
 from .actuator_pd import IdealPDActuator, ImplicitActuator
 
 logger = logging.getLogger(__name__)
+
+_MODEL_APPLIED_FRICTION_KEYS = ("friction", "dynamic_friction")
+"""Solver dry-friction properties an actuator model can own instead of the solver.
+
+The viscous coefficient is not one of them: it is a passive damping term the solver
+integrates, which a torque-level model still needs the solver to apply.
+"""
 
 
 class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
@@ -329,6 +336,8 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
                 joint_defaults,
                 joint_names,
                 actuator_joint_ids,
+                group_name=actuator_name,
+                native_managed=native_managed,
             )
             if native_managed:
                 # placeholder keeps configuration order; replaced by the Newton actuator
@@ -404,14 +413,20 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
         defaults: dict[str, torch.Tensor],
         joint_names: list[str],
         joint_ids: torch.Tensor | slice,
+        *,
+        group_name: str,
+        native_managed: bool,
     ) -> tuple[dict[str, torch.Tensor], dict[str, tuple[tuple[object, ...], ...]]]:
         """Resolve fresh construction-only joint properties for one actuator group.
 
         The solver keeps the authored joint limits unless the configuration overrides
-        them; explicit actuator models no longer widen the solver effort limit.
+        them; explicit actuator models no longer widen the solver effort limit. An Isaac
+        Lab-executed model that applies the joint dry friction itself resolves to zero
+        solver friction, so the friction is not applied twice.
         """
         values: dict[str, torch.Tensor] = {}
         resolution_rows: dict[str, tuple[tuple[object, ...], ...]] = {}
+        model_applies_friction = _applies_joint_friction_cfg(cfg) and not native_managed
         for cfg_name in (
             "stiffness",
             "damping",
@@ -424,6 +439,17 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
         ):
             default_value = defaults[cfg_name]
             cfg_value = getattr(cfg, cfg_name)
+            if model_applies_friction and cfg_name in _MODEL_APPLIED_FRICTION_KEYS:
+                if cfg_value is not None:
+                    warnings.warn(
+                        f"Actuator group '{group_name}' configures '{cfg_name}', but"
+                        f" {cfg.class_type.__name__} applies the joint friction itself: the value is"
+                        " ignored and the group's solver friction is set to zero, so the model's own"
+                        " budget is not applied twice.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                cfg_value = 0.0
             value = self._resolve_joint_property(cfg_value, default_value, joint_names)
             values[cfg_name] = value
             if self._debug_value_resolution:

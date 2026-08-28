@@ -20,6 +20,7 @@ import isaaclab.actuators as actuator_api
 from isaaclab.actuators import (
     ActuatorCollection,
     ActuatorControl,
+    BamActuatorCfg,
     DCMotor,
     DCMotorCfg,
     DelayedPDActuatorCfg,
@@ -720,6 +721,68 @@ def test_native_explicit_groups_zero_solver_drives_and_build_no_lab_model(monkey
     torch.testing.assert_close(articulation.data.joint_damping.torch, torch.zeros((2, 3)))
     assert articulation.calls[-2][1]["stiffness"] == 0.0
     assert articulation.calls[-1][1]["damping"] == 0.0
+
+
+def _friction_seeded_control() -> FakeActuatorControl:
+    """Control object whose authored joints carry MicroDuck's dry and viscous friction."""
+    control = FakeActuatorControl(joint_names=["joint_0", "joint_1", "joint_2", "joint_3"])
+    control._current_joint_properties["friction"].fill_(0.0048)
+    control._current_joint_properties["dynamic_friction"].fill_(0.0021)
+    control._current_joint_properties["viscous_friction"].fill_(0.00536)
+    return control
+
+
+def _bam_cfg(joints: list[str], **kwargs) -> BamActuatorCfg:
+    """Create a BAM configuration that does not need a running simulation for its timestep."""
+    return BamActuatorCfg(joint_names_expr=joints, dt=0.005, **kwargs)
+
+
+def test_lab_executed_model_owned_friction_is_zeroed_on_the_solver():
+    """A Lab-executed model that applies joint dry friction itself gets zero solver dry friction."""
+    control = _friction_seeded_control()
+
+    ActuatorCollection(
+        {
+            "servos": _bam_cfg(["joint_0", "joint_1"]),
+            "passive": _ideal_cfg(["joint_2", "joint_3"], stiffness=1.0, damping=1.0, effort_limit=10.0),
+        },
+        control,
+    )
+
+    servos, passive = (properties for properties, _, _, _ in control.written_properties)
+    # The model clips the torque against its own budget, so the solver must not apply the
+    # authored dry friction on top of it -- the same reason an explicit model zeros the drives.
+    torch.testing.assert_close(servos["friction"], torch.zeros((2, 2)))
+    torch.testing.assert_close(servos["dynamic_friction"], torch.zeros((2, 2)))
+    # The viscous coefficient stays: it is the solver-side stand-in for the coefficient the
+    # reference implementation republishes into MuJoCo's ``dof_damping`` every step.
+    torch.testing.assert_close(servos["viscous_friction"], torch.full((2, 2), 0.00536))
+    # A group driven by another model in the same articulation keeps its authored friction.
+    torch.testing.assert_close(passive["friction"], torch.full((2, 2), 0.0048))
+    torch.testing.assert_close(passive["dynamic_friction"], torch.full((2, 2), 0.0021))
+
+
+def test_configured_friction_of_a_model_owned_group_warns_and_is_still_zeroed():
+    """Configuring friction on a model that owns it warns and is dropped, as its gains are."""
+    control = _friction_seeded_control()
+
+    with pytest.warns(UserWarning, match=r"'servos'.*BamActuator applies the joint friction itself"):
+        ActuatorCollection({"servos": _bam_cfg([".*"], friction=0.01)}, control)
+
+    properties, _, _, _ = control.written_properties[0]
+    torch.testing.assert_close(properties["friction"], torch.zeros((2, 4)))
+
+
+def test_native_model_owned_groups_keep_their_authored_friction():
+    """The Newton-executed path publishes the budget itself, so its seed rows are left alone."""
+    control = NativeFakeActuatorControl(joint_names=["joint_0", "joint_1", "joint_2", "joint_3"])
+    control._current_joint_properties["friction"].fill_(0.0048)
+
+    ActuatorCollection({"servos": _bam_cfg([".*"])}, control)
+
+    properties, _, _, native_managed = control.written_properties[0]
+    assert native_managed
+    torch.testing.assert_close(properties["friction"], torch.full((2, 4), 0.0048))
 
 
 def test_native_group_parameters_route_through_the_collection_door():

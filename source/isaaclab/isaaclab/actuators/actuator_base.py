@@ -111,6 +111,16 @@ class ActuatorBase(ABC):
     If a class inherits from :class:`ImplicitActuator`, then this flag should be set to :obj:`True`.
     """
 
+    applies_joint_friction: ClassVar[bool] = False
+    """Flag indicating if the model applies the joint dry friction itself.
+
+    When :obj:`True`, an Isaac Lab-executed group of this model resolves to zero solver static
+    and dynamic joint friction, the way an explicit model resolves to zero solver stiffness and
+    damping. The model's own friction would otherwise be applied twice, once at the torque level
+    and once by the solver's friction constraint. The joint viscous friction is left alone: it is
+    a passive damping term the solver integrates, not a dry-friction budget.
+    """
+
     computed_effort: torch.Tensor
     """The computed effort [N or N·m, depending on joint type] for the actuator group.
 

@@ -338,9 +338,12 @@ where the load comes from:
       - :class:`~isaaclab.actuators.BamActuator`, in Python during ``write_data_to_sim()``
       - :class:`~isaaclab.actuators.newton.ControllerBam`, as Warp kernels inside the solver
     * - Static friction
-      - Clipped at the torque level by the model
+      - Clipped at the torque level by the model. The group's joints resolve to zero solver static
+        and dynamic friction so the budget is not applied twice, and a configured ``friction``
+        warns and is dropped. ``viscous_friction`` is kept, because the solver still damps the joint
       - Published into MuJoCo's ``dof_frictionloss``; the solver's friction-loss constraint clips,
-        jointly with every other constraint
+        jointly with every other constraint. A configured ``friction`` is a seed the controller
+        overwrites on every physics step
     * - External load
       - Estimated from the rotor's momentum balance, ``armature * ddq - tau_prev``
       - Read from the solver's generalized forces, exact but one physics step old
