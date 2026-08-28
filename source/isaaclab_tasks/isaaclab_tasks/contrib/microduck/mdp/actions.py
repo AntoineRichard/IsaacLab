@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
+
 from isaaclab.envs.mdp.actions.actions_cfg import JointPositionActionCfg
 from isaaclab.envs.mdp.actions.joint_actions import JointPositionAction
 from isaaclab.managers import SceneEntityCfg
@@ -65,7 +67,7 @@ class BiasedJointPositionAction(JointPositionAction):
         self._encoder_bias = encoder_bias(env, SceneEntityCfg(cfg.asset_name))
 
     @property
-    def joint_ids(self) -> list[int] | slice:
+    def joint_ids(self) -> torch.Tensor | slice:
         """Indices of the joints this term drives, in ``asset_cfg.joint_ids`` order.
 
         Public accessor for the base class's ``_joint_ids``: this task family's reward terms need
