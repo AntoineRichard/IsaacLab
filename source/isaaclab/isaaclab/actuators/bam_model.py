@@ -32,6 +32,9 @@ from pathlib import Path
 
 import torch
 
+BAM_XL330_M6_PARAMS_FILE: str = str(Path(__file__).parent / "data" / "bam_xl330_m6.json")
+"""Path of the BAM parameters vendored with Isaac Lab (Dynamixel XL330, ``m6`` model)."""
+
 # Friction-model flags of the BAM model family, mirroring ``bam/model.py`` (``models``).
 # Only the models Isaac Lab supports are listed; see :meth:`BamMotorParams.from_json`.
 _BAM_MODEL_FLAGS: dict[str, dict[str, bool]] = {
