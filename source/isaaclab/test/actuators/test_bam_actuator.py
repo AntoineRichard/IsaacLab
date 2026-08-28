@@ -21,9 +21,8 @@ import pytest
 import torch
 
 import isaaclab.actuators as actuators
-from isaaclab.actuators import (
-    BAM_XL330_M6_PARAMS_FILE,
-    BamActuatorCfg,
+from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg
+from isaaclab.actuators.bam_model import (
     BamMotorParams,
     apply_stiction_clip,
     compute_duty,
@@ -126,7 +125,7 @@ def test_torque_domain_gains_warn_when_set():
     """Configuring the unused PD gains warns instead of silently doing nothing."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        make_actuator()  # left at MISSING: nothing to warn about
+        make_actuator()  # gains left unset: nothing to warn about
     with pytest.warns(UserWarning, match="stiffness and damping is ignored"):
         make_actuator(stiffness=10.0, damping=1.0)
 

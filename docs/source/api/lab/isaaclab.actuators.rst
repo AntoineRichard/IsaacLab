@@ -36,12 +36,6 @@
   .. autosummary::
 
     resolve_joint_parameter
-    compute_duty
-    compute_motor_torque
-    compute_stribeck_coeff
-    compute_friction_budget
-    apply_stiction_clip
-    battery_sag
 
 Actuator Base
 -------------
@@ -196,17 +190,20 @@ BAM Servo Model
 .. autodata:: BAM_XL330_M6_PARAMS_FILE
   :no-value:
 
-.. autofunction:: compute_duty
+The stateless equations both BAM implementations share are not re-exported at the package root;
+their canonical home is :mod:`isaaclab.actuators.bam_model`:
 
-.. autofunction:: compute_motor_torque
+.. autofunction:: isaaclab.actuators.bam_model.compute_duty
 
-.. autofunction:: compute_stribeck_coeff
+.. autofunction:: isaaclab.actuators.bam_model.compute_motor_torque
 
-.. autofunction:: compute_friction_budget
+.. autofunction:: isaaclab.actuators.bam_model.compute_stribeck_coeff
 
-.. autofunction:: apply_stiction_clip
+.. autofunction:: isaaclab.actuators.bam_model.compute_friction_budget
 
-.. autofunction:: battery_sag
+.. autofunction:: isaaclab.actuators.bam_model.apply_stiction_clip
+
+.. autofunction:: isaaclab.actuators.bam_model.battery_sag
 
 Newton Actuator Access
 ----------------------

@@ -18,12 +18,6 @@ __all__ = [
     "BamActuator",
     "BamActuatorCfg",
     "BamMotorParams",
-    "apply_stiction_clip",
-    "battery_sag",
-    "compute_duty",
-    "compute_friction_budget",
-    "compute_motor_torque",
-    "compute_stribeck_coeff",
     "DCMotor",
     "DelayedPDActuator",
     "IdealPDActuator",
@@ -59,13 +53,4 @@ from .actuator_pd_cfg import (
     ImplicitActuatorCfg,
     RemotizedPDActuatorCfg,
 )
-from .bam_model import (
-    BAM_XL330_M6_PARAMS_FILE,
-    BamMotorParams,
-    apply_stiction_clip,
-    battery_sag,
-    compute_duty,
-    compute_friction_budget,
-    compute_motor_torque,
-    compute_stribeck_coeff,
-)
+from .bam_model import BAM_XL330_M6_PARAMS_FILE, BamMotorParams

@@ -22,7 +22,7 @@ import pytest
 import torch
 
 import isaaclab.actuators as actuators
-from isaaclab.actuators import (
+from isaaclab.actuators.bam_model import (
     BamMotorParams,
     apply_stiction_clip,
     battery_sag,
@@ -46,6 +46,14 @@ PARAMS_FILE = Path(actuators.__file__).parent / "data" / "bam_xl330_m6.json"
 # noise; a parameter error large enough to matter (1e-4 relative) still fails by ~600x.
 RTOL = 1e-5
 ATOL = 1e-6
+
+ARMATURE = 0.0018
+"""Reflected rotor inertia the hand-built stiction cases size their stopping torque with [kg.m^2].
+
+Rounded from the vendored XL330 fit. Both cases are built so that the result does not depend on
+the value -- one sits at rest, the other far above break-away -- but the parameter is required,
+because in general it sets how close to rest a joint must be to count as static.
+"""
 
 
 @pytest.fixture(scope="module")
@@ -219,6 +227,8 @@ def test_apply_stiction_clip_holds_static_joint() -> None:
         frictionloss=torch.full((1, 2), frictionloss),
         viscous=viscous,
         dt=dt,
+        # The joint is at rest, so the inertia drops out of the stopping torque entirely.
+        inertia=ARMATURE,
     )
     # The returned effort excludes the external load, so cancelling the net torque means
     # applying exactly the opposite of it.
@@ -235,6 +245,9 @@ def test_apply_stiction_clip_breaks_away_and_opposes_motion() -> None:
         frictionloss=torch.full((1, 2), frictionloss),
         viscous=viscous,
         dt=dt,
+        # At 1 rad/s the stopping torque dwarfs the budget for any plausible inertia, so the
+        # saturated result below does not depend on this value.
+        inertia=ARMATURE,
     )
     # At rest: only the Coulomb budget is subtracted. Moving: the viscous term adds to it.
     expected = torch.tensor([[0.02 - frictionloss, 0.02 - (frictionloss + viscous * 1.0)]])

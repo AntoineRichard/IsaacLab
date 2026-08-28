@@ -673,7 +673,7 @@ def test_native_bam_actuators_are_captured_in_the_cuda_graph(native_sim, device,
     The decimation is even on purpose. A captured loop with an odd number of actuator steps
     drops the last update of the double-buffered actuator state on every replay -- a Newton
     backend property that predates this actuator and that
-    ``NewtonManager._warn_on_unbalanced_actuator_state_capture`` reports.
+    ``NewtonManager._check_actuator_state_capture_balance`` reports.
     """
     robot = _build_native_pendulum(native_sim, pendulum_usd)
     load = _gravity_load(robot, native_sim)
@@ -748,11 +748,11 @@ def test_two_articulations_with_matching_settings_bind_once(native_sim, device, 
     assert controller.solver_applies_friction
     assert controller.external_torque is not None
 
-    # One publish hook, not one per articulation: a second registration would write the same
-    # budget twice per step and, worse, hide a scoping mistake.
-    publish_hooks = [cb for cb in NewtonManager._post_actuator_callbacks if "publish_dof_friction" in repr(cb)]
+    # One binding, not one per articulation: a second registration would write the same budget
+    # twice per step and, worse, hide a scoping mistake. The gather hook is the countable half
+    # of the pair -- the publish hook is registered as a lambda, so it cannot be told apart from
+    # any other post-actuator callback -- and both are registered together or not at all.
     assert len(NewtonManager._pre_actuator_callbacks) == 1
-    assert len(publish_hooks) <= 1
 
     for robot in (robot_a, robot_b):
         assert "servo" in robot.actuators._native_group_names
@@ -829,7 +829,6 @@ def test_each_articulation_configures_only_its_own_actuator(native_sim, device, 
     with whichever articulation initialized first winning. Differing ``max_delay`` puts the two
     robots in different Newton actuators; only the scoping decides which one each configures.
     """
-    plain = BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)
     delayed = BamActuatorCfg(
         joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW, max_delay=2, friction_scale_range=(3.0, 3.0)
     )
@@ -838,7 +837,7 @@ def test_each_articulation_configures_only_its_own_actuator(native_sim, device, 
         "the two robots must not merge, or the test cannot tell the configurations apart"
     )
 
-    del plain
+    # robot_a keeps ``_build_two_native_pendulums``'s default cfg (no start-up range, so 1.0).
     for robot, expected in ((robot_a, 1.0), (robot_b, 3.0)):
         friction_scale = read_group_parameter(robot.actuators, "servo", "controller", "friction_scale")
         torch.testing.assert_close(friction_scale, torch.full_like(friction_scale, expected), atol=1e-6, rtol=0.0)

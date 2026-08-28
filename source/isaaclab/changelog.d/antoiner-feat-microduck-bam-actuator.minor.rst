@@ -2,10 +2,16 @@ Added
 ^^^^^
 
 * Added the backend-agnostic math core of the BAM voltage-domain servo model:
-  :class:`~isaaclab.actuators.BamMotorParams` and the stateless functions
-  :func:`~isaaclab.actuators.compute_duty`, :func:`~isaaclab.actuators.compute_motor_torque`,
-  :func:`~isaaclab.actuators.compute_stribeck_coeff`, :func:`~isaaclab.actuators.compute_friction_budget`,
-  :func:`~isaaclab.actuators.apply_stiction_clip` and :func:`~isaaclab.actuators.battery_sag`.
+  :class:`~isaaclab.actuators.BamMotorParams` and, in :mod:`isaaclab.actuators.bam_model`, the
+  stateless functions :func:`~isaaclab.actuators.bam_model.compute_duty`,
+  :func:`~isaaclab.actuators.bam_model.compute_motor_torque`,
+  :func:`~isaaclab.actuators.bam_model.compute_stribeck_coeff`,
+  :func:`~isaaclab.actuators.bam_model.compute_friction_budget`,
+  :func:`~isaaclab.actuators.bam_model.apply_stiction_clip` and
+  :func:`~isaaclab.actuators.bam_model.battery_sag`. They are reached through that module rather
+  than the package root, which re-exports only the configuration-facing
+  :class:`~isaaclab.actuators.BamMotorParams` and
+  :data:`~isaaclab.actuators.BAM_XL330_M6_PARAMS_FILE`.
   The identified parameters of the Dynamixel XL330 are vendored in
   ``isaaclab/actuators/data/bam_xl330_m6.json``, and the port is checked against reference
   outputs generated from the upstream BAM package.
@@ -49,8 +55,8 @@ Added
   rather than the whole joint torque, and ``data.joint_friction`` reports the value authoring
   seeded rather than the live budget; read the live budget with
   :func:`~isaaclab.actuators.newton.read_group_parameter`. For the same reason the native path
-  requires the Newton backend: a backend that steps native actuators through the shared host
-  adapter now rejects the configuration rather than silently degrading to the Isaac Lab-executed
-  clip without its start-up randomization. Both execution paths, the vendored parameters'
-  provenance, the randomization hooks and the measured parity against the upstream reference
-  simulator are documented in the actuator concepts page.
+  requires the Newton backend; a backend that steps native actuators through the shared host
+  adapter (PhysX, OVPhysX) rejects the configuration and points at the Isaac Lab-executed model,
+  which runs everywhere. Both execution paths, the vendored parameters' provenance, the
+  randomization hooks and the measured parity against the upstream reference simulator are
+  documented in the actuator concepts page.
