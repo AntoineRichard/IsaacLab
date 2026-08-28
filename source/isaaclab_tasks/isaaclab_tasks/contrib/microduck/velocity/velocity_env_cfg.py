@@ -198,13 +198,17 @@ to upstream's rather than 4.5x weaker.
 # by PPO iteration and collects ``num_steps_per_env`` of them per iteration.
 ##
 
-_STEPS_PER_ITERATION = 24
-"""Environment steps per PPO iteration, matching ``MicroDuckPPORunnerCfg.num_steps_per_env``."""
+MICRODUCK_STEPS_PER_ITERATION = 24
+"""Environment steps per PPO iteration, matching ``MicroDuckPPORunnerCfg.num_steps_per_env``.
+
+Imported by ``MicroDuckPPORunnerCfg`` so the two cannot drift apart; a runner change here would
+otherwise silently desynchronize every curriculum boundary from "iteration N".
+"""
 
 
 def _iterations(count: int) -> int:
     """Convert an upstream iteration count into the global environment-step count."""
-    return count * _STEPS_PER_ITERATION
+    return count * MICRODUCK_STEPS_PER_ITERATION
 
 
 ##

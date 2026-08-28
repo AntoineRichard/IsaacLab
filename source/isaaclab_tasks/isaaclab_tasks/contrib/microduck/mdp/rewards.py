@@ -211,11 +211,19 @@ def upright(env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg = Scen
 
     Returns:
         The reward in ``(0, 1]``. Shape is (num_envs,).
+
+    Raises:
+        ValueError: If ``asset_cfg`` selects more than one body.
     """
     asset: Articulation = env.scene[asset_cfg.name]
     if asset_cfg.body_names is None:
         projected_gravity_b = asset.data.projected_gravity_b.torch
     else:
+        if len(asset_cfg.body_ids) != 1:
+            raise ValueError(
+                f"'upright' measures a single body's tilt; 'asset_cfg' selected"
+                f" {len(asset_cfg.body_ids)} bodies: {asset_cfg.body_names}."
+            )
         body_quat_w = asset.data.body_link_quat_w.torch[:, asset_cfg.body_ids]
         gravity_dir_w = torch.nn.functional.normalize(asset.data.GRAVITY_VEC_W.torch, dim=-1).unsqueeze(1)
         projected_gravity_b = math_utils.quat_apply_inverse(body_quat_w, gravity_dir_w).squeeze(1)

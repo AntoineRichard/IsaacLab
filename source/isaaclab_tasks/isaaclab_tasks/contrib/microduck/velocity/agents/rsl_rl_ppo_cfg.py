@@ -13,12 +13,15 @@ from isaaclab.utils.configclass import configclass
 
 from isaaclab_rl.rsl_rl import RslRlMLPModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
+from ..velocity_env_cfg import MICRODUCK_STEPS_PER_ITERATION
+
 
 @configclass
 class MicroDuckPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """PPO runner for the MicroDuck velocity-tracking tasks."""
 
-    num_steps_per_env = 24
+    # tied to the curriculum stage tables' step math, not restated as its own literal
+    num_steps_per_env = MICRODUCK_STEPS_PER_ITERATION
     max_iterations = 50000
     save_interval = 250
     experiment_name = "microduck_velocity"
