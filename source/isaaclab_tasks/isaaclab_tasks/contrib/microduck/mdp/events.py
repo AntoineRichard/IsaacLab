@@ -562,3 +562,46 @@ def reset_roulade_state(
     state.frontier[env_ids] = spawn_angle
     state.paid[env_ids] = spawn_angle
     state.head_latch[env_ids] = is_midroll
+
+
+def randomize_joint_dry_friction(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    friction_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Set the dry (Coulomb) friction of selected joints to a value drawn per environment and joint.
+
+    Ported from addendum section 5.6 (``randomize_wheel_friction``, upstream's stock
+    ``dr.dof_frictionloss`` at ``operation="abs"``). The roller task drives it on the four passive
+    wheel hinges, whose MJCF friction is zero for trainability, and ramps it in by curriculum: a real
+    bearing has drag, and a policy that has only ever skated on frictionless wheels overestimates how
+    far it coasts.
+
+    The stock :func:`isaaclab.envs.mdp.randomize_joint_parameters` is **not** reusable here. Its
+    ``friction_distribution_params`` writes the sampled value into the joint's dry friction *and*
+    into its viscous friction, and the wheel bearings have no authored viscous term: at the top of
+    upstream's ramp the extra viscous coefficient would brake a wheel spinning at skating speed an
+    order of magnitude harder than the dry friction it is meant to model.
+
+    The passive wheels are outside the BAM servo group's ``^(?!passive_).*`` selection, so nothing
+    republishes over this write -- unlike the driven joints, whose solver friction the actuator owns
+    on both execution paths.
+
+    Args:
+        env: The environment holding the articulation.
+        env_ids: The environments to resample. Defaults to None, which resamples all of them.
+        friction_range: The ``(low, high)`` bounds [N*m] of the dry friction torque.
+        asset_cfg: The articulation and the joints to write.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    joint_ids = None if isinstance(asset_cfg.joint_ids, slice) else asset_cfg.joint_ids
+    num_joints = asset.num_joints if joint_ids is None else len(joint_ids)
+    samples = torch.empty(len(env_ids), num_joints, device=env.device).uniform_(*friction_range)
+    asset.write_joint_friction_coefficient_to_sim_index(
+        joint_friction_coeff=samples,
+        joint_ids=joint_ids,
+        env_ids=env_ids,
+    )

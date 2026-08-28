@@ -5,12 +5,15 @@
 
 """Command terms MicroDuck needs that have no stock Isaac Lab counterpart.
 
-Both terms are ported from ``pollen-robotics/microduck_rl``; see section 6 of
-``artifacts/microduck/upstream_reference.md`` for the verbatim upstream formulas.
+Every term is ported from ``pollen-robotics/microduck_rl``; see section 6 of
+``artifacts/microduck/upstream_reference.md`` for the verbatim upstream formulas of the two velocity
+and pose-delta terms, and section 5.4 of ``artifacts/microduck/upstream_reference_tasks2.md`` for the
+roller task's relative-heading one.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -19,6 +22,7 @@ import torch
 from isaaclab.envs.mdp.commands import UniformVelocityCommand
 from isaaclab.envs.mdp.commands.commands_cfg import UniformVelocityCommandCfg
 from isaaclab.managers import CommandTerm, CommandTermCfg
+from isaaclab.utils import math as math_utils
 from isaaclab.utils.configclass import configclass
 
 if TYPE_CHECKING:
@@ -237,3 +241,94 @@ class MicroDuckVelocityCommandCfg(UniformVelocityCommandCfg):
     Such an environment gets a zero linear command and a yaw rate of ``±U(0.4 * max, max)``
     [rad/s], where ``max`` is the larger magnitude of :attr:`Ranges.ang_vel_z`.
     """
+
+
+class RelativeHeadingVelocityCommand(MicroDuckVelocityCommand):
+    """Velocity command whose yaw slot carries a *heading error* rather than a yaw rate.
+
+    Ported from addendum section 5.4 (``RelativeHeadingVelocityCommand``), the roller task's command.
+    Two things change relative to :class:`MicroDuckVelocityCommand`:
+
+    * a **target heading** in the world frame is drawn uniformly on every resample, and the yaw slot
+      of the command is filled every step with the wrapped error between it and the robot's current
+      heading, clamped to the configured yaw range. The stock heading controller cannot express this:
+      it multiplies the error by a stiffness to produce a yaw *rate*, and it only drives the fraction
+      of environments in its heading bucket;
+    * the surge slot is a **throttle**, not a velocity target -- ``0`` coasts, positive pushes,
+      negative brakes -- which is what the roller reward set reads it as.
+
+    On the shipped configuration the yaw range is ``(0.0, 0.0)``, so the heading error is computed
+    and then clamped away and the yaw slot is identically zero (addendum section 7.21): heading is
+    disabled while upstream focuses on straight-line skating, and
+    :class:`~isaaclab_tasks.contrib.microduck.mdp.rewards.heading_hold_reward` is what keeps the
+    robot straight instead. The machinery is carried across anyway, because it is what re-enabling
+    turning consists of.
+
+    Note:
+        Upstream's override *replaces* the base ``_update_command`` and therefore drops its
+        standing-environment zeroing. That is inert at ``rel_standing_envs = 0.0``, which is what the
+        roller task ships, so this port keeps the zeroing and stays correct if the fraction is ever
+        raised.
+    """
+
+    cfg: RelativeHeadingVelocityCommandCfg
+    """Configuration for the command term."""
+
+    def __init__(self, cfg: RelativeHeadingVelocityCommandCfg, env: ManagerBasedRLEnv):
+        """Initialize the command term.
+
+        Args:
+            cfg: The configuration parameters for the command term.
+            env: The environment object.
+        """
+        super().__init__(cfg, env)
+
+        self.target_heading_w = torch.zeros(self.num_envs, device=self.device)
+        """Heading [rad] each environment is steered toward, in the world frame."""
+
+        self._heading_max = float(cfg.ranges.ang_vel_z[1]) if cfg.ranges.ang_vel_z else 1.0
+        # Upstream reports no velocity-tracking metrics here, because the surge slot is a throttle
+        # and the yaw slot is an angle: the inherited error metrics would compare a command against a
+        # quantity it does not name. Clearing them drops the metrics rather than logging a perfect
+        # score for a comparison that was never made.
+        self.metrics.clear()
+
+    def __str__(self) -> str:
+        msg = super().__str__().replace("MicroDuckVelocityCommand:", "RelativeHeadingVelocityCommand:", 1)
+        msg += f"\n\tHeading error clamp: {self._heading_max}"
+        return msg
+
+    """
+    Implementation specific functions.
+    """
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
+        # skips ``UniformVelocityCommand.reset``, whose only extra work is finalizing the tracking
+        # metrics cleared in ``__init__``
+        return CommandTerm.reset(self, env_ids)
+
+    def _update_metrics(self):
+        pass
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        super()._resample_command(env_ids)
+        env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        heading = torch.empty(len(env_ids), device=self.device)
+        self.target_heading_w[env_ids] = heading.uniform_(-math.pi, math.pi)
+        # the sampled yaw *rate* is meaningless here; ``_update_command`` overwrites the slot anyway
+        self.vel_command_b[env_ids, 2] = 0.0
+
+    def _update_command(self):
+        super()._update_command()
+        error = math_utils.wrap_to_pi(self.target_heading_w - self.robot.data.heading_w.torch)
+        self.vel_command_b[:, 2] = error.clamp(-self._heading_max, self._heading_max)
+
+
+@configclass
+class RelativeHeadingVelocityCommandCfg(MicroDuckVelocityCommandCfg):
+    """Configuration for the relative-heading velocity command term.
+
+    Please refer to the :class:`RelativeHeadingVelocityCommand` class for more details.
+    """
+
+    class_type: type[RelativeHeadingVelocityCommand] = RelativeHeadingVelocityCommand

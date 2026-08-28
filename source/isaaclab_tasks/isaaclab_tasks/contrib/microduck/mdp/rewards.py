@@ -44,6 +44,7 @@ from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.utils import math as math_utils
 from isaaclab.utils.string import resolve_matching_names_values
 
+from . import observations as _observations
 from .events import roulade_roll_state
 
 if TYPE_CHECKING:
@@ -1842,3 +1843,607 @@ def roulade_lateral_velocity_penalty(
     """
     asset: Articulation = env.scene[asset_cfg.name]
     return torch.nan_to_num(asset.data.root_link_lin_vel_b.torch[:, 1].pow(2), nan=0.0)
+
+
+"""
+Roller skating: the wheel, gait and lean terms.
+"""
+
+
+def com_height_target(
+    env: ManagerBasedRLEnv,
+    target_height_min: float,
+    target_height_max: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward holding the trunk inside a height band, and charge the squared miss outside it.
+
+    Ported from addendum section 5.3 (``com_height_target``). Unlike the stand-up task's
+    :func:`root_height_gaussian`, which peaks at a single height, this pays a flat ``1`` anywhere
+    inside the band and falls away quadratically outside it, so the band is a *tolerance* rather than
+    a target. There is no stock counterpart: :func:`isaaclab.envs.mdp.base_height_l2` charges the
+    squared distance from one height everywhere.
+
+    Args:
+        env: The environment instance.
+        target_height_min: Lower edge of the rewarded band [m], above the environment origin.
+        target_height_max: Upper edge of the rewarded band [m].
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``(-inf, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    height = _root_height_above_ground(env, asset)
+    below = height < target_height_min
+    above = height > target_height_max
+    penalty = torch.square(height - target_height_min) * below.float()
+    penalty += torch.square(height - target_height_max) * above.float()
+    return (~(below | above)).float() - penalty
+
+
+def feet_flat_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    normal_axis: tuple[float, float, float] = (0.0, 0.0, 1.0),
+    bodies_per_foot: int = 1,
+) -> torch.Tensor:
+    """Penalize a loaded foot whose sole is not parallel to the ground.
+
+    Ported from addendum section 5.3 (``feet_flat_penalty``). Upstream projects the gravity direction
+    into each foot **site**'s frame and charges the squared components orthogonal to the site's
+    ``z`` axis, gated by that foot's own contact time -- so the stance blade is asked to lie flat and
+    the swing blade is free to tilt. The stock :func:`isaaclab.envs.mdp.flat_orientation_l2` measures
+    the same quantity on the articulation root and has no per-body or per-contact gating.
+
+    Isaac Lab has no site concept, so this port measures the foot **body** frame and takes the sole
+    normal as a parameter. On the converted roller model the ``left_foot`` and ``right_foot`` sites
+    are rotated relative to their ankle bodies -- by 180 degrees about ``(0, 1, 1)/sqrt(2)`` on the
+    left and by -90 degrees about ``x`` on the right -- and both rotations carry the site ``z`` axis
+    onto the ankle body's ``+y`` axis, so ``normal_axis=(0.0, 1.0, 0.0)`` reproduces upstream's
+    measurement on both feet. The axis is squared, so its sign is immaterial.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the foot bodies to measure, in the sensor's foot order.
+        sensor_cfg: The contact sensor and the bodies whose contact gates each foot.
+        normal_axis: Sole normal in the foot body frame [-]. Defaults to the body ``z`` axis.
+        bodies_per_foot: Contact bodies making up one foot. Defaults to 1.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    foot_quat_w = asset.data.body_link_quat_w.torch[:, asset_cfg.body_ids]
+    gravity_dir_w = torch.nn.functional.normalize(asset.data.GRAVITY_VEC_W.torch, dim=-1)
+    gravity_dir_w = gravity_dir_w.unsqueeze(1).expand(-1, foot_quat_w.shape[1], -1)
+    gravity_dir_b = math_utils.quat_apply_inverse(foot_quat_w, gravity_dir_w)
+    normal = torch.tensor(normal_axis, dtype=gravity_dir_b.dtype, device=gravity_dir_b.device)
+    normal = torch.nn.functional.normalize(normal, dim=-1)
+    # 1 - cos^2 between the sole normal and gravity, which is upstream's sum of the two components
+    # of gravity orthogonal to the site's z axis
+    tilt = 1.0 - torch.square(torch.sum(gravity_dir_b * normal, dim=-1))
+
+    contact_time = _observations.fold_bodies_into_feet(
+        contact_sensor.data.current_contact_time.torch[:, sensor_cfg.body_ids], bodies_per_foot
+    ).amax(dim=2)
+    return torch.sum(tilt * (contact_time > 0.0).float(), dim=1)
+
+
+class joint_action_rate_l2(ManagerTermBase):
+    """Penalize the squared change of the raw actions driving a subset of the joints.
+
+    Ported from addendum section 5.3 (``neck_action_rate_l2``). It is the stock
+    :func:`isaaclab.envs.mdp.action_rate_l2` restricted to part of the action vector, which upstream
+    uses to price head jitter separately from -- and on top of -- the whole-body action rate. The
+    stock term takes no selection, so it cannot express that.
+
+    Upstream hard-codes the action columns ``5..8``, which are the four head servos in its
+    actuator-ordered action vector. That arithmetic does not survive the port: the converted asset
+    resolves joints in Newton's order, so the columns are resolved from the action term's own joint
+    names instead.
+
+    Note:
+        Upstream caches the previous head actions on the environment with no reset hook, so the first
+        step of every episode is charged against the last step of the previous one (addendum section
+        7.18). This term reads the action manager's own ``prev_action`` buffer, which the manager
+        clears on reset -- the same buffer, and the same episode-boundary behaviour, as the
+        whole-body ``action_rate_l2`` this task also carries.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Resolve the action columns the selected joints are driven through.
+
+        Args:
+            cfg: The term configuration, whose ``params`` carry the action term and the joints.
+            env: The environment instance.
+
+        Raises:
+            ValueError: If ``asset_cfg`` is missing, selects no joints by name, or selects a joint
+                the named action term does not drive.
+        """
+        super().__init__(cfg, env)
+
+        asset_cfg = _required_entity_cfg(cfg, "asset_cfg", self.__name__)
+        joint_ids = _required_joint_ids(asset_cfg, "asset_cfg", self.__name__)
+        asset: Articulation = env.scene[asset_cfg.name]
+        action_name = cfg.params["action_name"]
+        action_term = env.action_manager.get_term(action_name)
+        driven_ids = [int(index) for index in action_term._joint_ids]
+        columns = []
+        for joint_id in joint_ids:
+            if joint_id not in driven_ids:
+                raise ValueError(
+                    f"The reward term '{self.__name__}' selects joint '{asset.joint_names[joint_id]}', which the"
+                    f" action term '{action_name}' does not drive."
+                )
+            columns.append(driven_ids.index(joint_id))
+        # the term's slice of the concatenated action vector the manager stores
+        active_terms = list(env.action_manager.active_terms)
+        start = sum(env.action_manager.action_term_dim[: active_terms.index(action_name)])
+        self._columns = torch.tensor(columns, dtype=torch.long, device=env.device) + start
+
+    def __call__(self, env: ManagerBasedRLEnv, action_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+        """Difference the selected action columns and return the cost.
+
+        Args:
+            env: The environment instance.
+            action_name: Name of the joint-position action term. Mandatory: the term resolves its
+                columns from it at construction time.
+            asset_cfg: The articulation and the joints to charge. Mandatory, and selected by name.
+
+        Returns:
+            The cost in ``[0, inf)``. Shape is (num_envs,).
+        """
+        del action_name, asset_cfg
+        rate = env.action_manager.action[:, self._columns] - env.action_manager.prev_action[:, self._columns]
+        return torch.sum(torch.square(rate), dim=1)
+
+
+def joint_pose_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Penalize the squared deviation of selected joints from the stand pose.
+
+    Ported from addendum section 5.3 (``neck_joint_pos_l2``). It is the squared sibling of
+    :func:`joint_pose_l1`, and it *sums* rather than averages, as upstream does. There is no stock
+    counterpart: :func:`isaaclab.envs.mdp.joint_deviation_l1` is the absolute-value form.
+
+    Upstream re-resolves the joint names on every call and force-anchors a ``^(?!passive_)`` prefix
+    onto the pattern so that a passive hinge can never enter the sum. This port selects the joints
+    by name once, in the configuration, which cannot pick one up in the first place.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the joints to hold at the stand pose.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    error = (
+        asset.data.joint_pos.torch[:, asset_cfg.joint_ids] - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
+    )
+    return torch.sum(torch.square(error), dim=1)
+
+
+def action_over_limit_penalty(
+    env: ManagerBasedRLEnv,
+    action_name: str,
+    overshoot: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize a joint *command* driven past its hard stop by more than a tolerance.
+
+    Ported from addendum section 5.3 (``action_over_limit_penalty``). It reads the commanded target
+    rather than the achieved position, which is the whole point: MicroDuck's servos are soft enough
+    that a policy can park a command far beyond a joint stop and lean on the limit at full torque, a
+    trick that does not survive contact with the hardware. Charging the command teaches the policy
+    not to issue it, and that lesson exports with the network -- upstream rejected an environment-side
+    action clip precisely because the deployed runtime does not clip.
+
+    The **hard** joint limits are used, not the soft ones the articulation derives from
+    ``soft_joint_pos_limit_factor``, as upstream does. There is no stock counterpart:
+    :func:`isaaclab.envs.mdp.joint_pos_limits` charges the achieved position against the soft limits.
+
+    Args:
+        env: The environment instance.
+        action_name: Name of the joint-position action term whose target is charged.
+        overshoot: Tolerance [rad] the command may exceed a hard stop by before it is charged.
+        asset_cfg: The articulation the action term drives.
+
+    Returns:
+        The total overshoot [rad] in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    term = env.action_manager.get_term(action_name)
+    # ``processed_actions`` is upstream's ``raw_action * scale + offset``; the encoder-bias
+    # compensation that follows it is applied when the target is written, not here, so this is the
+    # command the policy issued rather than the one a miscalibrated servo receives
+    target = term.processed_actions
+    limits = asset.data.joint_pos_limits.torch[:, term._joint_ids]
+    over = (target - (limits[..., 1] + overshoot)).clamp(min=0.0)
+    over += ((limits[..., 0] - overshoot) - target).clamp(min=0.0)
+    return torch.sum(over, dim=-1)
+
+
+def wheel_speed_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    vel_scale: float,
+    wheel_radius: float,
+    bidirectional: bool = False,
+) -> torch.Tensor:
+    """Reward spinning the passive wheels forward, in proportion to the commanded throttle.
+
+    Ported from addendum section 5.3 (``wheel_speed_reward``). This is the roller task's **only**
+    positive task reward: nothing else pays for going anywhere, so a policy that does not turn its
+    wheels earns nothing. The reward is ``clamp(cmd_x, min=0) * tanh(clamp(w_mean, min=0) / w_scale)``
+    with ``w_scale = vel_scale / wheel_radius``, i.e. a saturating function of the mean wheel rate
+    scaled by the throttle. There is no stock counterpart -- the stock velocity terms track a base
+    velocity, and on this task ``cmd_x`` is a throttle rather than a velocity target.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command term whose first column is the throttle.
+        asset_cfg: The articulation and the passive wheel joints to average.
+        vel_scale: Ground speed [m/s] the ``tanh`` is scaled to saturate near.
+        wheel_radius: Rolling radius [m] the ground speed is converted to a wheel rate with.
+        bidirectional: Whether a negative throttle pays for spinning backwards. Defaults to False,
+            which is what upstream ships.
+
+    Returns:
+        The reward in ``[0, |cmd_x|]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command_x = env.command_manager.get_command(command_name)[:, 0]
+    forward_omega = torch.mean(asset.data.joint_vel.torch[:, asset_cfg.joint_ids], dim=1)
+    omega_scale = vel_scale / wheel_radius
+    if bidirectional:
+        aligned = torch.sign(command_x) * forward_omega
+        return torch.abs(command_x) * torch.tanh(torch.clamp(aligned, min=0.0) / omega_scale)
+    return torch.clamp(command_x, min=0.0) * torch.tanh(torch.clamp(forward_omega, min=0.0) / omega_scale)
+
+
+def braking_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    vel_std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward coming to a stop, in proportion to a negative throttle.
+
+    Ported from addendum section 5.3 (``braking_reward``). Silent whenever the throttle is
+    non-negative, so it never competes with :func:`wheel_speed_reward`; below zero it pays a Gaussian
+    in the *forward* speed only, so rolling backwards is neither rewarded nor charged.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command term whose first column is the throttle.
+        vel_std: Width [m/s] of the Gaussian on the residual forward speed.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, |cmd_x|]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    braking_strength = torch.clamp(-env.command_manager.get_command(command_name)[:, 0], min=0.0)
+    forward_vel = asset.data.root_link_lin_vel_b.torch[:, 0]
+    stopped = torch.exp(-torch.square(forward_vel.clamp(min=0.0)) / vel_std**2)
+    return braking_strength * stopped
+
+
+def _forward_progress_gate(
+    env: ManagerBasedRLEnv, vel_ref: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor | None:
+    """Upstream's ``clamp(v_fwd, min=0) / v_ref`` gate, clipped to 1 and None when disabled.
+
+    Ported from addendum section 5.3 (``_forward_progress_gate``). Three of the gait rewards multiply
+    themselves by it, which is what stops a policy farming them by fluttering its feet on the spot.
+    """
+    if vel_ref <= 0.0:
+        return None
+    asset: Articulation = env.scene[asset_cfg.name]
+    forward_vel = asset.data.root_link_lin_vel_b.torch[:, 0]
+    return (forward_vel.clamp(min=0.0) / vel_ref).clamp(max=1.0)
+
+
+def skating_air_time_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str,
+    threshold_min: float,
+    threshold_max: float,
+    vel_gate_ref: float,
+    bodies_per_foot: int = 1,
+) -> torch.Tensor:
+    """Reward feet whose air time lies inside a window, scaled by throttle and by forward progress.
+
+    Ported from addendum section 5.3 (``skating_air_time_reward``). It is
+    :func:`feet_air_time_windowed` with two changes upstream makes for skating: the count is
+    *scaled* by the throttle rather than gated by a command threshold, and it is additionally
+    multiplied by the forward-progress gate, so a fast in-place flutter earns nothing.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The contact sensor and the bodies to read, in per-foot order. The sensor must
+            track air time.
+        command_name: Name of the velocity command term whose first column is the throttle.
+        threshold_min: Lower edge of the rewarded air-time window [s], exclusive.
+        threshold_max: Upper edge of the rewarded air-time window [s], exclusive.
+        vel_gate_ref: Forward speed [m/s] at which the progress gate is fully open.
+        bodies_per_foot: Contact bodies making up one foot. Defaults to 1.
+
+    Returns:
+        The reward in ``[0, num_feet * cmd_x]``. Shape is (num_envs,).
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    air_time = _observations.fold_bodies_into_feet(
+        contact_sensor.data.current_air_time.torch[:, sensor_cfg.body_ids], bodies_per_foot
+    ).amin(dim=2)
+    in_range = (air_time > threshold_min) & (air_time < threshold_max)
+    reward = torch.sum(in_range.float(), dim=1)
+    reward = reward * torch.clamp(env.command_manager.get_command(command_name)[:, 0], min=0.0)
+    gate = _forward_progress_gate(env, vel_gate_ref)
+    return reward if gate is None else reward * gate
+
+
+def _feet_in_contact(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, bodies_per_foot: int) -> torch.Tensor:
+    """Number of feet currently loaded, from the sensor's per-body contact time."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = _observations.fold_bodies_into_feet(
+        contact_sensor.data.current_contact_time.torch[:, sensor_cfg.body_ids], bodies_per_foot
+    ).amax(dim=2)
+    return torch.sum((contact_time > 0.0).float(), dim=1)
+
+
+def single_support_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str,
+    vel_gate_ref: float,
+    double_penalty: float = 0.25,
+    bodies_per_foot: int = 1,
+) -> torch.Tensor:
+    """Reward standing on exactly one foot while pushing, and charge standing on both.
+
+    Ported from addendum section 5.3 (``single_support_reward``). This is the core anti-swizzle
+    signal: the degenerate skating gait keeps both blades down and waddles, which this term prices
+    directly. There is no stock counterpart.
+
+    The double-support charge is **not** speed-gated, deliberately, so it also applies to a robot
+    that is commanded forward and standing still on both feet.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The contact sensor and the bodies to read, in per-foot order.
+        command_name: Name of the velocity command term whose first column is the throttle.
+        vel_gate_ref: Forward speed [m/s] at which the progress gate is fully open.
+        double_penalty: Fraction of the throttle charged for standing on both feet. Defaults to 0.25,
+            which is upstream's default.
+        bodies_per_foot: Contact bodies making up one foot. Defaults to 1.
+
+    Returns:
+        The reward in ``[-double_penalty * cmd_x, cmd_x]``. Shape is (num_envs,).
+    """
+    num_in_contact = _feet_in_contact(env, sensor_cfg, bodies_per_foot)
+    single = (num_in_contact == 1).float()
+    double = (num_in_contact >= 2).float()
+
+    command_x = torch.clamp(env.command_manager.get_command(command_name)[:, 0], min=0.0)
+    single_reward = single * command_x
+    gate = _forward_progress_gate(env, vel_gate_ref)
+    if gate is not None:
+        single_reward = single_reward * gate
+    return single_reward - double_penalty * double * command_x
+
+
+def glide_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    vel_ref: float,
+    stillness_std: float = 5.0,
+    bodies_per_foot: int = 1,
+) -> torch.Tensor:
+    """Reward coasting on one foot with quiet legs, in proportion to the forward progress.
+
+    Ported from addendum section 5.3 (``glide_reward``). Where
+    :func:`skating_air_time_reward` pays for each swing and therefore drives swing *frequency*, this
+    pays for holding a single-support glide with still legs and therefore drives *commitment* to each
+    stroke. Upstream weights it above the air-time term for exactly that reason. There is no stock
+    counterpart.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The contact sensor and the bodies to read, in per-foot order.
+        command_name: Name of the velocity command term whose first column is the throttle.
+        asset_cfg: The articulation and the leg joints whose stillness is measured.
+        vel_ref: Forward speed [m/s] at which the progress gate is fully open.
+        stillness_std: Width [rad/s] of the Gaussian on the summed squared leg joint velocity.
+            Defaults to 5.0, which is upstream's default.
+        bodies_per_foot: Contact bodies making up one foot. Defaults to 1.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    single = (_feet_in_contact(env, sensor_cfg, bodies_per_foot) == 1).float()
+
+    gate = _forward_progress_gate(env, vel_ref)
+    if gate is None:
+        gate = torch.ones(env.num_envs, device=env.device)
+
+    joint_vel_squared = torch.sum(torch.square(asset.data.joint_vel.torch[:, asset_cfg.joint_ids]), dim=1)
+    stillness = torch.exp(-joint_vel_squared / stillness_std**2)
+    active = (env.command_manager.get_command(command_name)[:, 0] >= 0.0).float()
+    return single * gate * stillness * active
+
+
+class gait_symmetry_penalty(ManagerTermBase):
+    """Penalize an episode that has spent much more swing time on one foot than on the other.
+
+    Ported from addendum section 5.3 (``gait_symmetry_penalty``). With the family's symmetry
+    machinery off on this task, nothing else stops a lopsided stride that pushes with one leg and
+    veers; the cost is the cumulative imbalance ``|L - R| / (L + R + 1e-3)``, so the instantaneous
+    asymmetry of a real stride -- one foot swinging at a time -- is free. Being an accumulator it is
+    stateful, so it is a class. There is no stock counterpart.
+
+    Upstream clears its accumulator when ``episode_length_buf <= 1``; this term clears it from the
+    reward manager's reset hook, which is the same episode boundary.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Allocate the per-foot swing-time accumulator.
+
+        Args:
+            cfg: The term configuration, whose ``params`` carry the tracked feet.
+            env: The environment instance.
+
+        Raises:
+            ValueError: If ``sensor_cfg`` is missing, or if the feet do not come in a left/right
+                pair -- the imbalance is defined between exactly two of them.
+        """
+        super().__init__(cfg, env)
+
+        sensor_cfg = _required_entity_cfg(cfg, "sensor_cfg", self.__name__)
+        contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+        num_bodies = len(contact_sensor.data.current_air_time.torch[0, sensor_cfg.body_ids])
+        num_feet = num_bodies // int(cfg.params.get("bodies_per_foot", 1))
+        if num_feet != 2:
+            raise ValueError(
+                f"The reward term '{self.__name__}' compares the swing time of a left and a right"
+                f" foot; 'sensor_cfg' resolved to {num_feet} feet."
+            )
+        self._swing_time = torch.zeros(env.num_envs, num_feet, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Forget the accumulated swing time of the environments that restarted.
+
+        Args:
+            env_ids: The environment ids. Defaults to None, in which case all are cleared.
+        """
+        if env_ids is None:
+            self._swing_time[:] = 0.0
+        else:
+            self._swing_time[env_ids] = 0.0
+
+    def __call__(self, env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, bodies_per_foot: int = 1) -> torch.Tensor:
+        """Accumulate this step's swing time and return the normalized imbalance.
+
+        Args:
+            env: The environment instance.
+            sensor_cfg: The contact sensor and the bodies to read, in per-foot order. Mandatory: the
+                term sizes its state from the selection at construction time.
+            bodies_per_foot: Contact bodies making up one foot. Defaults to 1.
+
+        Returns:
+            The cost in ``[0, 1)``. Shape is (num_envs,).
+        """
+        contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+        air_time = _observations.fold_bodies_into_feet(
+            contact_sensor.data.current_air_time.torch[:, sensor_cfg.body_ids], bodies_per_foot
+        ).amin(dim=2)
+        self._swing_time += (air_time > 0.0).float() * env.step_dt
+        left, right = self._swing_time[:, 0], self._swing_time[:, 1]
+        return torch.abs(left - right) / (left + right + 1e-3)
+
+
+def forward_lean_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    target_pitch: float,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward leaning into the push, in proportion to the commanded throttle.
+
+    Ported from addendum section 5.3 (``forward_lean_reward``). A skating stroke pushes the trunk
+    backwards, and the lean is what upstream found the policy needed to be told to hold against it.
+
+    The lean is measured as the **forward** component of the projected gravity direction,
+    ``projected_gravity_b[:, 0]``, which is positive when the trunk pitches nose-down: a pitch of
+    ``theta`` about the body ``y`` axis puts ``sin(theta)`` on that component, so upstream's
+    ``target_pitch = 0.262`` asks for a 15.2 degree forward lean.
+
+    Note:
+        Upstream's docstring says the quantity is ``-gravity_b[:, 0]`` and its code computes
+        ``+gravity_b[:, 0]`` (addendum section 7.17). The **code** is ported, because it is the sign
+        that makes ``target_pitch = +0.262`` a forward lean rather than a 15 degree backward one, and
+        because it is what the deployed policies trained against.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command term whose first column is the throttle.
+        target_pitch: Rewarded value [-] of the forward gravity component, i.e. ``sin`` of the lean.
+        std: Width [-] of the Gaussian around it.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, cmd_x]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    forward_lean = asset.data.projected_gravity_b.torch[:, 0]
+    push = torch.clamp(env.command_manager.get_command(command_name)[:, 0], min=0.0)
+    return push * torch.exp(-torch.square(forward_lean - target_pitch) / std**2)
+
+
+class heading_hold_reward(ManagerTermBase):
+    """Reward holding the heading the episode started with.
+
+    Ported from addendum section 5.3 (``heading_hold_reward``). The roller task disables turning
+    entirely -- its heading command is computed and then clamped to zero (addendum section 7.21) --
+    so this is the only thing keeping a straight-line skater from veering. It is *corrective* rather
+    than a yaw-rate penalty, which upstream tried and reverted: freezing the yaw rate made the drift
+    worse, because the policy could then not steer back.
+
+    Being anchored to a per-episode reference heading it is stateful, so it is a class. There is no
+    stock counterpart: :func:`isaaclab.envs.mdp.heading_command_error_abs` tracks a *commanded*
+    heading, which this task has none of.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Allocate the per-environment reference heading.
+
+        Args:
+            cfg: The term configuration.
+            env: The environment instance.
+        """
+        super().__init__(cfg, env)
+
+        self._reference_heading = torch.zeros(env.num_envs, device=env.device)
+        self._is_fresh = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Mark the environments that restarted, so their next call re-anchors the reference.
+
+        Args:
+            env_ids: The environment ids. Defaults to None, in which case all are marked.
+        """
+        if env_ids is None:
+            self._is_fresh[:] = True
+        else:
+            self._is_fresh[env_ids] = True
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    ) -> torch.Tensor:
+        """Anchor the reference on the first call of an episode and score the drift from it.
+
+        Args:
+            env: The environment instance.
+            std: Width [rad] of the Gaussian on the heading error.
+            asset_cfg: The articulation whose root link carries the trunk.
+
+        Returns:
+            The reward in ``(0, 1]``. Shape is (num_envs,).
+        """
+        asset: Articulation = env.scene[asset_cfg.name]
+        heading = asset.data.heading_w.torch
+        self._reference_heading = torch.where(self._is_fresh, heading, self._reference_heading)
+        self._is_fresh[:] = False
+        error = math_utils.wrap_to_pi(heading - self._reference_heading)
+        return torch.exp(-torch.square(error) / std**2)
