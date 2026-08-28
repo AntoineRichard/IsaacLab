@@ -94,8 +94,9 @@ _XL330_MAX_CURRENT = 1.75
 _XL330_ERROR_GAIN = (4096.0 / (2.0 * math.pi)) / (256.0 * 885.0)
 """Duty cycle per radian of position error, per unit of firmware P-gain [1/rad].
 
-BAM's ``XL330Actuator``: encoder counts per revolution over the firmware's P-gain divisor times its
-PWM limit. It converts a firmware gain into the fraction of the bus voltage the servo applies.
+BAM's ``XL330Actuator``: encoder counts per *radian* -- the 4096 counts per revolution divided by
+2 pi -- over the firmware's P-gain divisor times its PWM limit. It converts a firmware gain into the
+fraction of the bus voltage the servo applies.
 """
 
 _FIRMWARE_KP = 200.0
@@ -147,9 +148,9 @@ MICRODUCK_CFG = ArticulationCfg(
         articulation_props=sim_utils.NewtonArticulationRootPropertiesCfg(self_collision_enabled=True),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        # midpoint of the (0.12, 0.13) base height upstream resets to. The converted USD bakes the
-        # MJCF home height into its own root transform, so this offsets the initial spawn rather
-        # than setting it; it is the height a reset to the default root state produces.
+        # midpoint of the (0.12, 0.13) base height upstream resets to. The conversion clears the
+        # MJCF home height the importer bakes into the root transform, so this sets the spawn
+        # height rather than offsetting it.
         pos=(0.0, 0.0, 0.125),
         # upstream HOME_FRAME (STAND2): the trunk leans forward so the CoM sits over the ankle axis
         joint_pos={

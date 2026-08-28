@@ -31,10 +31,10 @@ a local cache. Pass a path to a `robot_walk.xml` to convert a different copy.
 
 `scripts/tools/convert_microduck.py` runs the Isaac Sim MJCF importer through
 `isaaclab.sim.converters.MjcfConverter`, selects the `"physx"` entry of the generated `"Physics"`
-variant set, flattens the layered result into this single binary USD, and repairs the two contact
-properties the importer loses to scene-graph instancing. The `"physx"` variant is the one Isaac Lab's
-Newton importer reads the MJCF joint armature from, and unlike the `"mujoco"` variant it keeps the
-actuator force range.
+variant set, flattens the layered result into this single binary USD, repairs the two contact
+properties the importer loses to scene-graph instancing, and clears the articulation root transform.
+The `"physx"` variant is the one Isaac Lab's Newton importer reads the MJCF joint armature from, and
+unlike the `"mujoco"` variant it keeps the actuator force range.
 
 The base is left free: the model is a floating-base articulation.
 
@@ -42,8 +42,8 @@ The base is left free: the model is a floating-base articulation.
 
 The conversion is verified by `source/isaaclab_assets/test/test_microduck_asset.py`, which compares
 the asset against the source MJCF. Carried over: the 14 hinge joints and their names, the per-joint
-position limits, the body masses and inertias, the root spawn height, the joint armature and effort
-limits, the world-contact collider set, and the foot friction.
+position limits, the body masses and inertias, the joint armature and effort limits, the
+world-contact collider set, and the foot friction.
 
 Two of those need the conversion script's help, because the importer loses them to scene-graph
 instancing and the script repairs them on the flattened stage:
@@ -58,6 +58,12 @@ instancing and the script repairs them on the flattened stage:
   world colliders. The script disables them, leaving the MJCF's world-contact set: the two foot
   soles. Self-collision is not re-created in exchange — the asset is converted with
   `self_collision=False`, so those geoms have no collision role left.
+
+A third property is deliberately dropped rather than repaired: the importer bakes the MJCF's home
+pose (`qpos0`, 0.12 m of trunk height) into the articulation root's own transform. Spawning applies
+an asset configuration's initial position to the prim the asset is referenced under, so that
+transform would compose with it and double the spawn height. The script clears it, and the home
+height becomes `MICRODUCK_CFG`'s to own.
 
 Not carried over, and therefore owned by the task's actuator configuration:
 

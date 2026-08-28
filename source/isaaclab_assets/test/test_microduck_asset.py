@@ -34,14 +34,14 @@ import numpy as np
 import pytest
 from isaaclab_newton.physics import NewtonCfg
 
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.sim import SimulationCfg, SimulationContext
 
 from isaaclab_assets import MICRODUCK_CFG
-from isaaclab_assets.robots.microduck import MICRODUCK_USD_PATH
+from isaaclab_assets.robots.microduck import MICRODUCK_REGENERATE_COMMAND, MICRODUCK_USD_PATH
 
 pytestmark = [pytest.mark.integration, pytest.mark.kitless]
 
@@ -78,6 +78,9 @@ HOME_POSE = {
 The configuration expresses it with regular expressions, so spelling it out one joint at a time is
 what makes the check meaningful: a pattern that matches nothing leaves the joint at zero.
 """
+
+UPSTREAM_RESET_HEIGHT_RANGE = (0.12, 0.13)
+"""Base height [m] upstream's ``reset_base`` event samples, from ``microduck_rl``."""
 
 
 @pytest.fixture(scope="module")
@@ -185,6 +188,10 @@ def newton_articulations():
     configured one is what a task instantiates. Both share one simulation because
     :class:`~isaaclab.sim.SimulationContext` is a singleton; the configured robot is offset in x so
     the two do not overlap.
+
+    The bare articulation has no initial state, and the conversion clears the root transform, so it
+    spawns with its feet below the origin. That is harmless here: none of these tests steps the
+    simulation, and the stage carries no ground plane.
     """
     if not os.path.isfile(MICRODUCK_USD_PATH):
         pytest.skip(
@@ -254,16 +261,22 @@ def test_resolve_source_mjcf_requests_the_pinned_revision(converter, monkeypatch
     assert kwargs == {"rev": converter.MICRODUCK_REV}
 
 
-def test_flatten_repairs_contacts_lost_to_instancing(converter, tmp_path):
-    """``flatten_to_single_file`` binds the foot colliders and disables the rest.
+def test_flatten_repairs_what_the_importer_loses(converter, tmp_path):
+    """``flatten_to_single_file`` binds the foot colliders, disables the rest, and clears the root.
 
-    The MJCF importer loses both properties to scene-graph instancing (see the script's docstring),
-    and the fix has to survive the case that makes it hard: one prototype shared between a collider
-    that must stay enabled and one that must not. That is reproduced here rather than relying on the
-    generated asset, so this runs without any converted USD present.
+    The MJCF importer loses the contact properties to scene-graph instancing and bakes the MJCF home
+    height into the articulation root (see the script's docstring). The contact fix has to survive
+    the case that makes it hard: one prototype shared between a collider that must stay enabled and
+    one that must not. All of it is reproduced here rather than read off the generated asset, so this
+    runs without any converted USD present.
     """
     source_path = tmp_path / "layered.usda"
     stage = Usd.Stage.CreateNew(str(source_path))
+
+    root = UsdGeom.Xform.Define(stage, "/Model")
+    UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+    root.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.12))
+    root.AddOrientOp().Set(Gf.Quatf(1.0, Gf.Vec3f(0.0, 0.0, 0.0)))
 
     material = UsdShade.Material.Define(stage, "/Model/Physics/PhysicsMaterial")
     UsdPhysics.MaterialAPI.Apply(material.GetPrim())
@@ -292,6 +305,10 @@ def test_flatten_repairs_contacts_lost_to_instancing(converter, tmp_path):
     assert UsdPhysics.CollisionAPI(shell).GetCollisionEnabledAttr().Get() is False
     bound_material, _ = UsdShade.MaterialBindingAPI(foot).ComputeBoundMaterial("physics")
     assert bound_material.GetPrim().GetPath() == material.GetPrim().GetPath()
+
+    flattened_root = UsdGeom.Xformable(flattened.GetPrimAtPath("/Model"))
+    assert flattened_root.ComputeLocalToWorldTransform(Usd.TimeCode.Default()) == Gf.Matrix4d(1.0)
+    assert not [name for name in flattened.GetPrimAtPath("/Model").GetPropertyNames() if name.startswith("xformOp:")]
 
 
 def test_actuated_joint_names_match_mjcf(usd_articulation, mj_joints):
@@ -358,8 +375,14 @@ def test_total_mass_matches_mjcf(usd_articulation, mj_model):
     assert float(robot.data.body_mass.torch[0].sum()) == pytest.approx(expected_mass, rel=0.01)
 
 
-def test_root_body_height_matches_mjcf(usd_articulation, mj_model):
-    """The root body keeps the MJCF home height, so the task can reuse the upstream spawn pose."""
+def test_root_transform_lets_the_configuration_set_the_spawn_height(usd_articulation, mj_model):
+    """The MJCF home height is owned by the configuration, not baked into the root transform.
+
+    The importer writes the MJCF's ``qpos0`` into the articulation root's own transform. Spawning
+    applies a configuration's initial position to the prim the asset is referenced under, so a baked
+    transform composes with it and doubles the spawn height. The conversion clears it; the height
+    moves to :data:`~isaaclab_assets.MICRODUCK_CFG`, which must still cover the MJCF's.
+    """
     _, stage = usd_articulation
     root_prim = next(
         prim
@@ -367,7 +390,11 @@ def test_root_body_height_matches_mjcf(usd_articulation, mj_model):
         if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
     )
     transform = UsdGeom.Xformable(root_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-    assert float(transform.ExtractTranslation()[2]) == pytest.approx(float(mj_model.qpos0[2]), abs=1e-3)
+    assert transform == Gf.Matrix4d(1.0), "the articulation root must spawn at its parent's origin"
+
+    low, high = UPSTREAM_RESET_HEIGHT_RANGE
+    assert low <= float(mj_model.qpos0[2]) <= high
+    assert MICRODUCK_CFG.init_state.pos[2] == pytest.approx((low + high) / 2.0)
 
 
 def test_floating_base(usd_articulation):
@@ -460,18 +487,38 @@ def test_microduck_cfg_restores_the_joint_dynamics_the_asset_drops(microduck_art
         assert armature[index] == pytest.approx(mj_joints[name]["armature"], rel=1e-4), name
 
 
-def test_microduck_cfg_clips_effort_at_the_firmware_current_limit(microduck_articulation, mj_actuators):
-    """The servo model clips below the MJCF force range, without loosening the solver limit.
+def test_microduck_cfg_servo_model_matches_the_mjcf_actuator(microduck_articulation, mj_actuators):
+    """The stand-in servo model lands on the MJCF actuator, and clips below its force range.
 
-    The firmware current limiter binds before the winding voltage does, so the actuator's rated
-    torque is tighter than the ``forcerange`` the MJCF declares. The solver clamp must stay at the
-    authored value: only the actuator model is rated down.
+    The gains are derived from the published XL330 parameters rather than from the MJCF, so the
+    MJCF's own ``kp`` is an independent cross-check: upstream evidently derived it the same way, and
+    a slip in the derivation would show up here. The firmware current limiter binds before the
+    winding voltage does, so the rated torque is tighter than the declared ``forcerange`` -- but only
+    the actuator model is rated down, the solver clamp stays at the authored value.
     """
     robot = microduck_articulation
-    rated = robot.actuators["servos"].actuator_effort_limit
+    servos = robot.actuators["servos"]
     solver_limit = robot.data.joint_effort_limits.torch[0].cpu().numpy()
 
     for index, name in enumerate(robot.joint_names):
         authored = mj_actuators[name]["effort_limit"]
-        assert float(rated[0, index]) < authored
+        assert float(servos.stiffness[0, index]) == pytest.approx(mj_actuators[name]["stiffness"], rel=0.01), name
+        assert float(servos.actuator_effort_limit[0, index]) < authored
         assert solver_limit[index] == pytest.approx(authored, rel=1e-5), name
+
+
+def test_microduck_cfg_reports_a_missing_asset_with_the_command_that_makes_it(tmp_path):
+    """A missing asset fails with the command that regenerates it, rather than a bare USD error.
+
+    The asset is generated rather than committed, so this is the first thing a fresh checkout hits.
+    The check lives on the spawner instead of at import time, which keeps the configuration
+    inspectable without the asset -- the condition the fidelity fixtures skip on.
+    """
+    spawn = copy.deepcopy(MICRODUCK_CFG.spawn)
+    spawn.usd_path = str(tmp_path / "microduck_walk.usd")
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        spawn.func("/World/Robot", spawn)
+
+    assert MICRODUCK_REGENERATE_COMMAND in str(excinfo.value)
+    assert "convert_microduck.py" in MICRODUCK_REGENERATE_COMMAND
