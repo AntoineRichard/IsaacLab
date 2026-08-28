@@ -44,3 +44,10 @@ Added
   a composed clamping component, because Newton resolves an actuator prim's components from
   USD's *composed* schema list and would drop the unregistered ``NewtonBamControlAPI`` token as
   soon as a registered one were authored beside it.
+  Because the solver owns the friction on that path,
+  :attr:`~isaaclab.actuators.ActuatorCollection.applied_effort` reports the **motor** torque
+  rather than the whole joint torque, and ``data.joint_friction`` reports the value authoring
+  seeded rather than the live budget; read the live budget with
+  :func:`~isaaclab.actuators.newton.read_group_parameter`. Both execution paths, the vendored
+  parameters' provenance, the randomization hooks and the measured parity against the upstream
+  reference simulator are documented in the actuator concepts page.
