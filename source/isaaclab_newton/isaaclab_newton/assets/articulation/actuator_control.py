@@ -40,6 +40,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             articulation: Newton articulation that owns backend simulation handles.
         """
         super().__init__(articulation)
+        self._native_actuator_cfgs: dict = {}
 
     def prepare_native_actuators(self, collection: ActuatorCollection, actuator_cfgs: dict) -> set[str]:
         articulation = self._articulation
@@ -51,6 +52,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             return set()
 
         _validate_newton_native_actuator_cfgs(actuator_cfgs)
+        self._native_actuator_cfgs = dict(actuator_cfgs)
         # Activate the Newton path even without explicit native groups: implicit-only
         # articulations still rely on it for the solver telemetry fast path.
         self._native_actuator_path_active = True
@@ -114,6 +116,8 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             )
 
         SimulationManager.register_post_actuator_callback(_post_actuator)
+        # The solver does not exist yet: assets initialize while the model is being built.
+        SimulationManager.register_solver_init_callback(self._bind_bam_actuators)
 
         if adapter is None:
             return None
@@ -180,6 +184,80 @@ class NewtonActuatorControl(ArticulationActuatorControl):
     def reset_native_actuators(self, env_ids: Sequence[int] | slice) -> None:
         if self._native_actuator_path_active and SimulationManager._adapter is not None:
             SimulationManager._adapter.reset(env_ids)
+
+    def _bind_bam_actuators(self) -> None:
+        """Give every BAM group of this articulation its per-step MuJoCo Warp channel.
+
+        The BAM servo model needs two things the actuator component interface does not carry:
+        it publishes a load-dependent dry-friction budget so the solver performs the stiction
+        clipping natively, and it reads the true generalized load on the gearbox. Both go
+        through :class:`~isaaclab_newton.physics.MjWarpActuatorBridge`, on the in-graph pre-
+        and post-actuator hooks, so that the load is the previous solve's and the budget
+        reaches the substeps of the same iteration.
+
+        Runs on the solver-init hook, which is the first point at which the MuJoCo Warp model
+        exists and still precedes CUDA graph capture. The hooks are registered once per Newton
+        actuator: the sim-level adapter is shared, so a second articulation reaching the same
+        actuator finds it already bound.
+
+        Raises:
+            ValueError: If the articulation's BAM groups disagree on their start-up
+                randomization ranges or on ``stiff_frictionloss``. Those settings are not part
+                of Newton's actuator-grouping key, so they cannot be resolved per group.
+        """
+        from isaaclab.actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
+        from isaaclab.actuators.newton import ControllerBam, apply_bam_startup_sampling  # noqa: PLC0415
+
+        from isaaclab_newton.physics.mjwarp_actuator_bridge import MjWarpActuatorBridge  # noqa: PLC0415
+
+        adapter = SimulationManager._adapter
+        bam_cfgs = [cfg for cfg in self._native_actuator_cfgs.values() if isinstance(cfg, BamActuatorCfg)]
+        if adapter is None or not bam_cfgs:
+            return
+        shared_settings = {
+            (cfg.vin_range, cfg.vin_drop_gain_range, cfg.friction_scale_range, cfg.stiff_frictionloss)
+            for cfg in bam_cfgs
+        }
+        if len(shared_settings) > 1:
+            raise ValueError(
+                "BAM actuator groups on one articulation must agree on 'vin_range',"
+                " 'vin_drop_gain_range', 'friction_scale_range' and 'stiff_frictionloss'; these are"
+                " applied per Newton actuator, which may span several groups."
+            )
+        cfg = bam_cfgs[0]
+        solver = SimulationManager._solver
+        if getattr(solver, "mjw_model", None) is None:
+            # Only MuJoCo's solver can apply joint dry friction, so on any other solver the
+            # controller keeps the torque-level stiction clip -- the Isaac Lab-executed model's
+            # own behaviour. Documented backend fidelity difference, not a failure.
+            logger.warning(
+                "BAM actuators run with in-controller stiction clipping: the active solver does not"
+                " expose the MuJoCo Warp model needed to publish a per-step joint friction budget."
+            )
+            return
+        num_newton_dofs = SimulationManager._model.joint_dof_count
+
+        for actuator in adapter.actuators:
+            controller = actuator.controller
+            # A bound external-torque array is the marker: it is what the bridge fills.
+            if not isinstance(controller, ControllerBam) or controller.external_torque is not None:
+                continue
+            bridge = MjWarpActuatorBridge(solver, actuator.indices, num_newton_dofs, self.device)
+            external_torque = wp.zeros(actuator.num_actuators, dtype=wp.float32, device=self.device)
+            controller.external_torque = external_torque
+            controller.solver_applies_friction = True
+            if cfg.stiff_frictionloss:
+                bridge.stiffen_friction_constraint()
+            apply_bam_startup_sampling(controller, cfg)
+
+            SimulationManager.register_pre_actuator_callback(
+                lambda bridge=bridge, out=external_torque: bridge.gather_external_torque(out)
+            )
+            SimulationManager.register_post_actuator_callback(
+                lambda bridge=bridge, ctrl=controller: bridge.publish_dof_friction(
+                    ctrl.friction_budget, ctrl.viscous_damping
+                )
+            )
 
     def _joint_dof_offset(self) -> int:
         """Return the first selected joint DOF's model offset within an environment."""

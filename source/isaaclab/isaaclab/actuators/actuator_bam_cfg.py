@@ -107,6 +107,16 @@ class BamActuatorCfg(ActuatorBaseCfg):
     so that the resamples are staggered rather than synchronized across environments.
     """
 
+    stiff_frictionloss: bool = True
+    """Stiffen the joint friction constraint on a solver that applies the friction itself [-].
+
+    Only used on the Newton-native path (``use_newton_actuators=True``) with the MuJoCo Warp
+    solver, which has no noslip solver: its friction-loss constraint stays soft and a
+    statically held joint creeps. Setting this replaces the constraint's solver reference with
+    the stiff, timestep-independent form the reference implementation uses. Ignored by the
+    Isaac Lab-executed model, whose stiction clip acts at the torque level.
+    """
+
     dt: float | None = None
     """Physics timestep the actuator is stepped at [s].
 
