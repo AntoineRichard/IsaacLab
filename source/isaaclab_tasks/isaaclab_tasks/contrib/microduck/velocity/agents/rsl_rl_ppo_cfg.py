@@ -22,8 +22,10 @@ class MicroDuckPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 50000
     save_interval = 250
     experiment_name = "microduck_velocity"
-    # The critic sees the actor group until the privileged group lands.
-    obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+    # Asymmetric actor-critic, as upstream trains it: the actor reads the corrupted 61-wide deploy
+    # vector and the critic reads the privileged group, which adds the base linear velocity and the
+    # foot terms the robot has no sensor for.
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
     actor = RslRlMLPModelCfg(
         hidden_dims=[512, 256, 128],
         activation="elu",
