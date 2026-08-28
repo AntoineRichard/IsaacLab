@@ -27,6 +27,8 @@
     ActuatorNetMLPCfg
     ActuatorNetLSTM
     ActuatorNetLSTMCfg
+    BamActuator
+    BamActuatorCfg
     BamMotorParams
 
   .. rubric:: Functions
@@ -176,9 +178,23 @@ LSTM Network Actuator
 BAM Servo Model
 ---------------
 
+.. autoclass:: BamActuator
+  :members:
+  :inherited-members:
+  :show-inheritance:
+
+.. autoclass:: BamActuatorCfg
+  :members:
+  :inherited-members:
+  :show-inheritance:
+  :exclude-members: __init__, class_type
+
 .. autoclass:: BamMotorParams
   :members:
   :exclude-members: __init__
+
+.. autodata:: BAM_XL330_M6_PARAMS_FILE
+  :no-value:
 
 .. autofunction:: compute_duty
 

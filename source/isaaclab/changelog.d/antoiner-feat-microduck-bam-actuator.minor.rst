@@ -9,3 +9,11 @@ Added
   The identified parameters of the Dynamixel XL330 are vendored in
   ``isaaclab/actuators/data/bam_xl330_m6.json``, and the port is checked against reference
   outputs generated from the upstream BAM package.
+* Added :class:`~isaaclab.actuators.BamActuator` and
+  :class:`~isaaclab.actuators.BamActuatorCfg`, an explicit actuator model that runs the BAM
+  servo pipeline from Isaac Lab and returns a pure effort command. It supports per-environment
+  supply-voltage, load-sag, friction-budget and firmware-gain randomization, and a command
+  delay with a configurable resample period and hold probability. Because the actuator
+  interface exposes no generalized forces, the load-dependent friction terms use an
+  external-torque estimate derived from the rotor's momentum balance; see the module
+  documentation for what that approximates.
