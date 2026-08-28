@@ -18,10 +18,15 @@ class MicroDuckVelocityFlatEnvCfg(MicroDuckVelocityRoughEnvCfg):
         super().__post_init__()
 
         # physics -- a plane and a two-footed 0.74 kg robot need far fewer constraint and contact
-        # slots than rough terrain. These are the flat-humanoid starting values; profiling the
-        # task decides where they end up.
+        # slots than rough terrain. Profiling 2048 and 4096 environments under random actions --
+        # including a worst case with the tilt termination removed so the robots sprawl -- peaks at
+        # 10 contacts and 54 constraints per environment. Only three geometries collide (the ground
+        # plane and the two foot soles), so that peak is structural: 4 pyramidal rows x 10 contacts
+        # + 14 joint limits = 54. ``nconmax`` is a per-environment share of one shared contact
+        # buffer and so cannot overflow at the structural peak; ``njmax`` is a hard per-environment
+        # cap and carries margin above it.
         newton_mjwarp = self.sim.physics.newton_mjwarp
-        newton_mjwarp.solver_cfg.njmax = 95
+        newton_mjwarp.solver_cfg.njmax = 64
         newton_mjwarp.solver_cfg.nconmax = 10
         # upstream's flat solver profile (reference section 1); its rough profile raises them
         newton_mjwarp.solver_cfg.iterations = 10

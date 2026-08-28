@@ -59,3 +59,7 @@ Added
 * Added observation-contract tests to ``test/test_microduck_env.py``, which measure both group
   widths term by term against the deploy layout and check that each block of the flat actor vector
   carries the signal the layout names, including the servo order inside the joint block.
+* Sized the MuJoCo Warp solver budget of ``IsaacContrib-Velocity-Flat-MicroDuck`` from profiling
+  rather than from the humanoid defaults it started at: ``njmax`` is 64 and ``nconmax`` is 10,
+  against a measured peak of 54 constraints and 10 contacts per environment. The rough task keeps
+  upstream's wider budget, which its terrain needs.
