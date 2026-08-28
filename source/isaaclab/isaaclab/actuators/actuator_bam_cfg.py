@@ -28,6 +28,15 @@ class BamActuatorCfg(ActuatorBaseCfg):
         :attr:`~isaaclab.actuators.ActuatorBaseCfg.damping` are unused by this model. Its
         position loop runs in the firmware domain, parameterized by :attr:`kp_fw`, and its
         damping is the physical back-EMF of the motor.
+
+    Note:
+        The model owns the joint dry friction on both paths, so the Isaac Lab-executed path
+        resolves the group's joints to zero solver static and dynamic friction and warns if
+        :attr:`~isaaclab.actuators.ActuatorBaseCfg.friction` or
+        :attr:`~isaaclab.actuators.ActuatorBaseCfg.dynamic_friction` is configured. Only
+        :attr:`~isaaclab.actuators.ActuatorBaseCfg.viscous_friction` is left to the solver,
+        because a torque-level model still needs it to damp the joint the way the reference
+        implementation's per-step ``dof_damping`` does.
     """
 
     class_type: type["BamActuator"] | str = "{DIR}.actuator_bam:BamActuator"

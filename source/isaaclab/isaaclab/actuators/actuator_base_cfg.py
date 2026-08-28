@@ -19,6 +19,15 @@ def _is_implicit_actuator_cfg(cfg: ActuatorBaseCfg) -> bool:
     return bool(getattr(cfg.class_type, "is_implicit_model", False))
 
 
+def _applies_joint_friction_cfg(cfg: ActuatorBaseCfg) -> bool:
+    """Return whether an actuator configuration resolves to a class that applies joint friction.
+
+    Reads the :attr:`~isaaclab.actuators.ActuatorBase.applies_joint_friction` class flag.
+    Lazily resolving string references participate through attribute forwarding.
+    """
+    return bool(getattr(cfg.class_type, "applies_joint_friction", False))
+
+
 @configclass
 class ActuatorBaseCfg:
     """Configuration for default actuators in an articulation."""
