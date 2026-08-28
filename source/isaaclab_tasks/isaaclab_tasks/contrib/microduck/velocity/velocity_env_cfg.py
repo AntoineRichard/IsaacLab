@@ -286,6 +286,13 @@ class MicroDuckPhysicsCfg(PresetCfg):
     MicroDuck is trained on MuJoCo upstream, so MJWarp is the reference backend. The solver limits
     are upstream's rough-terrain profile (reference section 1): ``njmax`` 1500, ``nconmax`` 200,
     30 solver iterations and 50 line-search iterations. The flat variant tightens them.
+
+    MJWarp is also the only backend that can run this task as configured. The environment sets
+    ``sim.use_newton_actuators = True``, and the BAM model is solver-hosted: it publishes its
+    friction budget into the solver's joint dry friction and reads the external load back out, which
+    the PhysX family's host adapter provides neither of and rejects with a ``ValueError``. A PhysX
+    preset would therefore also have to force ``use_newton_actuators = False`` and accept the
+    Isaac Lab-executed model, which is a different plant -- so it is deliberately not offered here.
     """
 
     newton_mjwarp = NewtonCfg(
@@ -1128,6 +1135,12 @@ class MicroDuckVelocityRoughEnvCfg(ManagerBasedRLEnvCfg):
         self.decimation = 4
         self.episode_length_s = 20.0
         self.sim.dt = 0.005
+        # Run the BAM servos through the backend-native path, which is what upstream does: the
+        # controller executes inside the MJWarp step and republishes the live friction budget and
+        # viscous coefficient into ``dof_frictionloss``/``dof_damping`` every physics step, instead
+        # of clipping the torque Lab-side once per control step. The decimation above is even, which
+        # is what lets the stateful servo delay line be CUDA-graph-captured.
+        self.sim.use_newton_actuators = True
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         if self.scene.contact_forces is not None:

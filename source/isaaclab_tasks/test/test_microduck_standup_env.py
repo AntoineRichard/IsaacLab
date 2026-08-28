@@ -902,6 +902,22 @@ def test_the_episode_and_simulation_rates_match_upstream():
     assert cfg.sim.physics.default.solver_cfg.use_mujoco_default_joint_limit_solref is True
 
 
+@pytest.mark.unit
+def test_the_servos_run_on_the_backend_native_path():
+    """The stand-up task runs the BAM servos where the walking task does, on the Newton-native path.
+
+    The two tasks share one robot and one servo deployment, so a policy trained on one plant and
+    evaluated against the other would silently compare different robots. The decimation is checked
+    alongside because it is a precondition: the BAM delay line is actuator state, and
+    :class:`~isaaclab_newton.physics.NewtonManager` refuses to CUDA-graph-capture stateful Newton
+    actuators at a decimation of one and warns at an odd one.
+    """
+    cfg = MicroDuckStandUpFlatEnvCfg()
+
+    assert cfg.sim.use_newton_actuators is True
+    assert cfg.decimation % 2 == 0
+
+
 ##
 # Environment smoke tests
 ##

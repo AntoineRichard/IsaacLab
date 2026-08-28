@@ -698,6 +698,26 @@ def test_the_physics_preset_keeps_the_mujoco_parity_joint_limits():
 
 
 @pytest.mark.unit
+def test_the_servos_run_on_the_backend_native_path():
+    """MicroDuck trains on the Newton-native BAM path, which needs an even decimation to capture.
+
+    Upstream executes its servo model inside the MuJoCo step, republishing the live friction budget
+    and viscous coefficient into ``dof_frictionloss``/``dof_damping`` every physics tick; the
+    Isaac Lab-executed path instead clips the torque once per control step and never writes to the
+    solver. The two are different plants, so which one the task selects is part of the recipe.
+
+    The decimation is asserted here as well as with the rates it belongs to, because it is a
+    *precondition* of this choice and not just a control rate: the BAM delay line is actuator state,
+    and :class:`~isaaclab_newton.physics.NewtonManager` refuses to CUDA-graph-capture stateful
+    Newton actuators at a decimation of one and warns that an odd decimation drops the last state
+    update of every replay. Four is even, so the capture is balanced.
+    """
+    for cfg in (MicroDuckVelocityRoughEnvCfg(), MicroDuckVelocityFlatEnvCfg()):
+        assert cfg.sim.use_newton_actuators is True
+        assert cfg.decimation % 2 == 0
+
+
+@pytest.mark.unit
 def test_the_runner_iteration_size_is_tied_to_the_curriculum_step_constant():
     """A runner change would otherwise silently desync every curriculum boundary from 'iteration N'.
 
