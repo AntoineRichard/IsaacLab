@@ -26,12 +26,15 @@ os.environ["PXR_WORK_THREAD_LIMIT"] = "1"
 
 import gymnasium as gym
 import pytest
+import torch
 
 import isaaclab.sim as sim_utils
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ObservationTermCfg, SceneEntityCfg
 from isaaclab.sim import SimulationContext
 
 import isaaclab_tasks  # noqa: F401
+import isaaclab_tasks.contrib.microduck.mdp as mdp
+from isaaclab_tasks.contrib.microduck.velocity.agents.rsl_rl_ppo_cfg import MicroDuckPPORunnerCfg
 from isaaclab_tasks.contrib.microduck.velocity.flat_env_cfg import MicroDuckVelocityFlatEnvCfg
 from isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg import MicroDuckVelocityRoughEnvCfg
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
@@ -50,29 +53,90 @@ requires_microduck_usd = pytest.mark.skipif(
 TASK_NAMES = ["IsaacContrib-Velocity-Flat-MicroDuck", "IsaacContrib-Velocity-Rough-MicroDuck"]
 """The registered MicroDuck velocity tasks."""
 
+ACTOR_OBSERVATION_TERMS = [
+    ("base_ang_vel", 3),
+    ("projected_gravity", 3),
+    ("joint_pos", 14),
+    ("joint_vel", 14),
+    ("actions", 14),
+    ("velocity_commands", 3),
+    ("head_pose_commands", 4),
+    ("body_pose_commands", 6),
+]
+"""The deployed MicroDuck observation layout: each block of the flat actor vector, in order.
+
+Reference section 7. This is a **deploy contract**: the runtime on the robot rebuilds this vector
+by hand from its own sensor reads, so a term that moves or changes width silently invalidates every
+trained checkpoint. The two IMU blocks come first -- the design doc's ordering, which puts the
+joint blocks first, is wrong and section 7 corrects it.
+"""
+
 ACTOR_OBSERVATION_DIM = 61
 """Actor observation width the deployed MicroDuck policy expects.
 
-48 proprioception values plus the 13-wide command block ``[twist(3), head_pose(4), body_pose(6)]``;
-see ``artifacts/microduck/upstream_reference.md`` section 7. The head and body pose commands are
-not part of the task skeleton yet, so this is the contract the port is being built towards.
+48 proprioception values plus the 13-wide command block ``[twist(3), head_pose(4), body_pose(6)]``.
+"""
+
+CRITIC_OBSERVATION_TERMS = [
+    ("base_lin_vel", 3),
+    ("base_ang_vel", 3),
+    ("projected_gravity", 3),
+    ("joint_pos", 14),
+    ("joint_vel", 14),
+    ("actions", 14),
+    ("velocity_commands", 3),
+    ("foot_height", 2),
+    ("foot_air_time", 2),
+    ("foot_contact", 2),
+    ("foot_contact_forces", 6),
+    ("head_pose_commands", 4),
+    ("body_pose_commands", 6),
+]
+"""The privileged critic layout (reference section 7), which is not a deploy contract.
+
+Upstream's critic is the actor's terms with the corruption removed, plus the base linear velocity
+it deletes from the actor and four sensor-derived foot terms. The sensor widths follow from two
+feet, so the total is measured here rather than taken from upstream's own count.
+"""
+
+CRITIC_OBSERVATION_DIM = 76
+"""Critic observation width, measured from the assembled group."""
+
+
+def _term_slices(terms: list[tuple[str, int]]) -> dict[str, slice]:
+    """Lay a term table out into the column ranges its blocks occupy once concatenated."""
+    slices, start = {}, 0
+    for name, width in terms:
+        slices[name] = slice(start, start + width)
+        start += width
+    return slices
+
+
+ACTOR_OBSERVATION_SLICES = _term_slices(ACTOR_OBSERVATION_TERMS)
+"""Column range of each actor block in the flat 61-vector."""
+
+_TWIST_COMMAND_CONSTANT = 0.25
+_BODY_COMMAND_CONSTANT = 0.5
+"""Distinct constants the command blocks are pinned to, so a block read at the wrong offset fails.
+
+The head block is pinned to exactly zero, which is the third distinct value.
+"""
+
+_DISPLACED_JOINTS = [(7, "head_yaw", 0.5), (9, "right_hip_yaw", -0.3)]
+"""``(column, joint, displacement [rad])`` the joint-block order is probed with.
+
+Upstream's servo layout (reference section 7) is indices 0-4 left leg, 5-8 neck/head, 9-13 right
+leg. ``head_yaw`` at 7 and ``right_hip_yaw`` at 9 straddle the neck/right-leg boundary, so any
+regrouping of the blocks -- Isaac Lab resolves joints in USD order, which is not this one -- moves
+at least one of them.
 """
 
 
 @pytest.mark.integration
 @requires_microduck_usd
 @pytest.mark.parametrize("task_name", TASK_NAMES)
-def test_environment_steps_with_random_actions(task_name):
-    """Each registered task builds, resets, and steps without producing invalid signals."""
-    _run_environments(task_name, device="cuda", num_envs=2, num_steps=10)
-
-
-@pytest.mark.integration
-@requires_microduck_usd
-@pytest.mark.xfail(reason="obs contract lands in Task 9", strict=False)
-@pytest.mark.parametrize("task_name", TASK_NAMES)
-def test_actor_observation_width_matches_the_deploy_contract(task_name):
-    """The actor group is as wide as the policy deployed on the robot expects."""
+def test_the_observation_groups_are_the_widths_their_contracts_name(task_name):
+    """The actor group is the deployed 61-vector, term for term, and the critic is privileged."""
     sim_utils.create_new_stage()
     env = None
     try:
@@ -82,10 +146,86 @@ def test_actor_observation_width_matches_the_deploy_contract(task_name):
         obs, _ = env.reset()
 
         assert obs["policy"].shape[-1] == ACTOR_OBSERVATION_DIM
+        assert obs["critic"].shape[-1] == CRITIC_OBSERVATION_DIM
+        # per-term widths as well as the total, so two compensating drifts cannot agree on 61
+        manager = env.unwrapped.observation_manager
+        for group, expected in (("policy", ACTOR_OBSERVATION_TERMS), ("critic", CRITIC_OBSERVATION_TERMS)):
+            measured = [
+                (name, dim[0]) for name, dim in zip(manager.active_terms[group], manager.group_obs_term_dim[group])
+            ]
+            assert measured == expected, group
     finally:
         if env is not None:
             env.close()
         SimulationContext.clear_instance()
+
+
+@pytest.mark.integration
+@requires_microduck_usd
+def test_the_actor_observation_blocks_hold_the_terms_the_layout_names():
+    """Every block of the flat actor vector carries the signal the deploy layout puts there."""
+    sim_utils.create_new_stage()
+    env = None
+    try:
+        env_cfg = parse_env_cfg(TASK_NAMES[0], device="cuda", num_envs=4)
+        # pin each command block to its own constant. The curricula are switched off wholesale
+        # because several of them write command ranges back at step 0.
+        for name in vars(env_cfg.curriculum):
+            setattr(env_cfg.curriculum, name, None)
+        env_cfg.commands.head_pose.ranges = ((0.0, 0.0),) * 4
+        env_cfg.commands.body_pose.ranges = ((_BODY_COMMAND_CONSTANT, _BODY_COMMAND_CONSTANT),) * 6
+        # every bucket off and no heading controller, so the twist is the sampled constant
+        env_cfg.commands.base_velocity.heading_command = False
+        env_cfg.commands.base_velocity.rel_standing_envs = 0.0
+        env_cfg.commands.base_velocity.rel_forward_envs = 0.0
+        env_cfg.commands.base_velocity.rel_turn_in_place_envs = 0.0
+        for axis in ("lin_vel_x", "lin_vel_y", "ang_vel_z"):
+            setattr(env_cfg.commands.base_velocity.ranges, axis, (_TWIST_COMMAND_CONSTANT,) * 2)
+
+        env = gym.make(TASK_NAMES[0], cfg=env_cfg)
+        env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
+        obs, _ = env.reset()
+        policy = obs["policy"]
+
+        # command blocks: no noise rides on them, so these are exact
+        assert policy[:, ACTOR_OBSERVATION_SLICES["head_pose_commands"]].abs().max().item() == 0.0
+        for name, constant in (
+            ("velocity_commands", _TWIST_COMMAND_CONSTANT),
+            ("body_pose_commands", _BODY_COMMAND_CONSTANT),
+        ):
+            block = policy[:, ACTOR_OBSERVATION_SLICES[name]]
+            assert torch.equal(block, torch.full_like(block, constant)), name
+
+        # joint block: displace two joints that straddle a block boundary and read the columns back
+        robot = env.unwrapped.scene["robot"]
+        joint_names = [name for _, name, _ in _DISPLACED_JOINTS]
+        joint_ids, _ = robot.find_joints(joint_names, preserve_order=True)
+        displacement = torch.tensor([[value for _, _, value in _DISPLACED_JOINTS]], device=env.unwrapped.device).repeat(
+            env.unwrapped.num_envs, 1
+        )
+        robot.write_joint_position_to_sim_index(
+            position=robot.data.default_joint_pos.torch[:, joint_ids] + displacement,
+            joint_ids=joint_ids,
+        )
+
+        joint_block = env.unwrapped.observation_manager.compute()["policy"][:, ACTOR_OBSERVATION_SLICES["joint_pos"]]
+        expected = torch.zeros_like(joint_block)
+        for column, _, value in _DISPLACED_JOINTS:
+            expected[:, column] = value
+        # the encoder bias (+/-0.015 rad) and the observation noise (+/-0.001 rad) ride on top
+        assert torch.allclose(joint_block, expected, atol=0.02)
+    finally:
+        if env is not None:
+            env.close()
+        SimulationContext.clear_instance()
+
+
+@pytest.mark.integration
+@requires_microduck_usd
+@pytest.mark.parametrize("task_name", TASK_NAMES)
+def test_environment_steps_with_random_actions(task_name):
+    """Each registered task builds, resets, and steps without producing invalid signals."""
+    _run_environments(task_name, device="cuda", num_envs=2, num_steps=10)
 
 
 ##
@@ -254,9 +394,153 @@ STEPS_PER_ITERATION = 24
 """Environment steps per PPO iteration, upstream's ``num_steps_per_env``."""
 
 
+EXPECTED_ACTOR_NOISE = {
+    "base_ang_vel": 0.03,
+    "projected_gravity": 0.01,
+    "joint_pos": 0.001,
+    "joint_vel": 0.25,
+}
+"""Half-width of the uniform noise on each corrupted actor term (reference section 2.3).
+
+These are MicroDuck's own overrides of the mjlab base template, which is an order of magnitude
+noisier throughout.
+"""
+
+EXPECTED_IMU_MISALIGNMENT_DEG = 6.0
+"""Upper bound on the IMU mounting-misalignment angle (reference section 6)."""
+
+EXPECTED_SERVO_JOINT_NAMES = [
+    "left_hip_yaw",
+    "left_hip_roll",
+    "left_hip_pitch",
+    "left_knee",
+    "left_ankle",
+    "neck_pitch",
+    "head_pitch",
+    "head_yaw",
+    "head_roll",
+    "right_hip_yaw",
+    "right_hip_roll",
+    "right_hip_pitch",
+    "right_knee",
+    "right_ankle",
+]
+"""The 14 servos in upstream's MJCF actuator order: 0-4 left leg, 5-8 neck/head, 9-13 right leg."""
+
+
 def _scalar_params(term_cfg) -> dict:
     """Drop the entity selections, which are compared separately and are not upstream's values."""
     return {key: value for key, value in term_cfg.params.items() if not isinstance(value, SceneEntityCfg)}
+
+
+def _observation_terms(group) -> dict[str, ObservationTermCfg]:
+    """The group's terms in declaration order, which is the order the manager concatenates them."""
+    return {name: term for name, term in vars(group).items() if isinstance(term, ObservationTermCfg)}
+
+
+@pytest.mark.unit
+def test_the_actor_observation_layout_is_the_deploy_contract():
+    """The actor group is upstream's term order at upstream's noise levels, with corruption on."""
+    observations = MicroDuckVelocityRoughEnvCfg().observations
+    terms = _observation_terms(observations.policy)
+
+    assert list(terms) == [name for name, _ in ACTOR_OBSERVATION_TERMS]
+    assert sum(width for _, width in ACTOR_OBSERVATION_TERMS) == ACTOR_OBSERVATION_DIM
+    assert observations.policy.concatenate_terms
+    # the deployed policy is trained against corrupted observations; the critic is not
+    assert observations.policy.enable_corruption
+    for name, term in terms.items():
+        magnitude = EXPECTED_ACTOR_NOISE.get(name)
+        if magnitude is None:
+            assert term.noise is None, name
+        else:
+            assert (term.noise.n_min, term.noise.n_max) == (-magnitude, magnitude), name
+
+
+@pytest.mark.unit
+def test_the_actor_reads_its_sensors_through_the_upstream_imperfections():
+    """The actor sees a biased encoder, a misaligned IMU and a bus latency, as the robot does."""
+    cfg = MicroDuckVelocityRoughEnvCfg()
+    terms = _observation_terms(cfg.observations.policy)
+
+    for name, wrapped in (
+        ("base_ang_vel", mdp.base_ang_vel_imu_misaligned),
+        ("projected_gravity", mdp.projected_gravity_imu_misaligned),
+    ):
+        params = terms[name].params
+        assert terms[name].func is mdp.delayed_observation, name
+        assert params["term_func"] is wrapped, name
+        assert params["term_params"]["max_angle_deg"] == EXPECTED_IMU_MISALIGNMENT_DEG, name
+        assert (params["min_lag"], params["max_lag"], params["update_period"]) == (0, 1, 64), name
+    # both terms read one shared rotation, so they have to agree on its bound or the accessor raises
+    assert (
+        terms["base_ang_vel"].params["term_params"]["max_angle_deg"]
+        == terms["projected_gravity"].params["term_params"]["max_angle_deg"]
+    )
+    # distinct configuration objects: an alias would share one delay term's buffer between them
+    assert terms["base_ang_vel"] is not terms["projected_gravity"]
+
+    # the servo bus derives velocity from the previous position-sample window: a constant one-step lag
+    joint_vel = terms["joint_vel"].params
+    assert terms["joint_vel"].func is mdp.delayed_observation
+    assert joint_vel["term_func"] is mdp.joint_vel_rel
+    assert (joint_vel["min_lag"], joint_vel["max_lag"], joint_vel["update_period"]) == (1, 1, 0)
+
+    # the encoder bias is a closed loop: the observation adds what the action term subtracts. The
+    # biased observation without the biased action trains a permanent joint-space offset instead.
+    assert terms["joint_pos"].func is mdp.joint_pos_rel_biased
+    assert terms["joint_pos"].params["biased"] is True
+    assert isinstance(cfg.actions.joint_pos, mdp.BiasedJointPositionActionCfg)
+
+
+@pytest.mark.unit
+def test_the_critic_group_is_privileged_and_reads_the_true_state():
+    """The critic sees what the robot cannot: the true sensors, plus the foot and velocity terms."""
+    cfg = MicroDuckVelocityRoughEnvCfg()
+    terms = _observation_terms(cfg.observations.critic)
+
+    assert list(terms) == [name for name, _ in CRITIC_OBSERVATION_TERMS]
+    assert cfg.observations.critic.concatenate_terms
+    assert not cfg.observations.critic.enable_corruption
+    # ``enable_corruption`` strips the noise, but neither the delay nor the misalignment is gated by
+    # it, so the critic has to be wired to the stock terms rather than to the actor's wrapped ones
+    for name, term in terms.items():
+        assert term.noise is None, name
+        assert term.func is not mdp.delayed_observation, name
+    assert terms["base_ang_vel"].func is mdp.base_ang_vel
+    assert terms["projected_gravity"].func is mdp.projected_gravity
+    assert terms["joint_vel"].func is mdp.joint_vel_rel
+    assert terms["joint_pos"].params["biased"] is False
+    # the privileged half: the base velocity upstream deletes from the actor, and the foot terms
+    assert terms["base_lin_vel"].func is mdp.base_lin_vel
+    assert terms["foot_height"].func is mdp.foot_height_safe
+    assert terms["foot_air_time"].func is mdp.foot_air_time_safe
+    assert terms["foot_contact"].func is mdp.foot_contact
+    assert terms["foot_contact_forces"].func is mdp.foot_contact_forces_safe
+    # a privileged group the runner never reads is dead weight
+    assert MicroDuckPPORunnerCfg().obs_groups == {"actor": ["policy"], "critic": ["critic"]}
+
+
+@pytest.mark.unit
+def test_both_observation_groups_read_the_servos_in_the_deploy_order():
+    """Isaac Lab resolves joints in USD order; the deployed vector is in MJCF actuator order."""
+    observations = MicroDuckVelocityRoughEnvCfg().observations
+    actor = _observation_terms(observations.policy)
+    critic = _observation_terms(observations.critic)
+
+    selections = {
+        "actor.joint_pos": actor["joint_pos"].params["asset_cfg"],
+        "actor.joint_vel": actor["joint_vel"].params["term_params"]["asset_cfg"],
+        "critic.joint_pos": critic["joint_pos"].params["asset_cfg"],
+        "critic.joint_vel": critic["joint_vel"].params["asset_cfg"],
+    }
+    for name, asset_cfg in selections.items():
+        # spelling the servos out also reproduces upstream's ``^(?!passive_).*`` exclusion
+        assert asset_cfg.joint_names == EXPECTED_SERVO_JOINT_NAMES, name
+        assert asset_cfg.preserve_order, name
+    # the columns the integration test probes are the ones the layout names
+    for column, joint, _ in _DISPLACED_JOINTS:
+        assert EXPECTED_SERVO_JOINT_NAMES[column] == joint
 
 
 @pytest.mark.unit

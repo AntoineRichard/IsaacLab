@@ -141,6 +141,25 @@ _FOOT_MATERIAL_CFG = SceneEntityCfg("robot", body_names=MICRODUCK_FOOT_BODY_NAME
 _SELF_COLLISION_SENSOR_CFG = SceneEntityCfg("self_collision")
 
 ##
+# Sensor imperfections the actor is trained against
+##
+
+_IMU_MISALIGNMENT_DEG = 6.0
+"""Upper bound [deg] on the IMU mounting-misalignment angle (reference section 6).
+
+The angle is drawn once per robot and never resampled, so this bounds a fixed mounting error rather
+than a disturbance. Both misaligned terms read the *same* rotation, so they must be configured with
+this same bound -- the shared accessor raises rather than serve two different ones.
+"""
+
+_IMU_DELAY_UPDATE_PERIOD = 64
+"""Control steps between two draws of the IMU latency (reference section 8).
+
+The lag itself is 0 or 1 step. Re-drawing it every step would give a flicker the policy can filter
+out; holding it for tens of steps makes it a latency regime the policy has to tolerate instead.
+"""
+
+##
 # Foot-height targets
 ##
 
@@ -439,7 +458,13 @@ class ActionsCfg:
     # Reference sections 3 and 9: the target is ``default_joint_pos + action * scale``, and
     # MicroDuck raises the base template's 0.5 scale to 1.0, so an action is a joint-space offset
     # from the stand pose in radians.
-    joint_pos = mdp.JointPositionActionCfg(
+    #
+    # The biased variant additionally subtracts the encoder bias the actor's ``joint_pos``
+    # observation adds, which is the loop a real servo closes on its own miscalibrated encoder: the
+    # policy commands ``a``, reads ``a`` back, and the joint actually settles at
+    # ``default + a - bias``. Wiring only one half of that loop would train a permanent joint-space
+    # offset into the policy instead of a calibration error it has to tolerate.
+    joint_pos = mdp.BiasedJointPositionActionCfg(
         asset_name="robot",
         joint_names=MICRODUCK_JOINT_NAMES,
         preserve_order=True,
@@ -450,42 +475,128 @@ class ActionsCfg:
 
 @configclass
 class ObservationsCfg:
-    """Observation specifications for the MDP."""
+    """Observation specifications for the MDP.
+
+    The actor reads the robot the way the deployed runtime does -- through a miscalibrated encoder,
+    a misaligned IMU, a bus latency and per-step noise -- while the critic reads the true state plus
+    the privileged quantities the robot has no sensor for.
+    """
 
     @configclass
     class PolicyCfg(ObsGroup):
-        """Observations for the policy group.
+        """Observations for the policy group: the 61-wide deploy contract.
 
-        Term order is the deployed observation layout (reference section 7), which the runtime
-        rebuilds by hand: base angular velocity, projected gravity, joint positions, joint
-        velocities, the previous action, then the command block. The head-pose and body-pose
-        commands that complete the 61-wide contract are appended after the twist command.
+        Term order **is** the deployed observation layout (reference section 7), which the runtime
+        on the robot rebuilds by hand from its own sensor reads: base angular velocity (3),
+        projected gravity (3), joint positions (14), joint velocities (14), the previous action
+        (14), then the command block ``[twist(3), head_pose(4), body_pose(6)]``. Moving a term or
+        changing its width silently invalidates every trained checkpoint, so the layout is pinned by
+        a test rather than left to term declaration order alone.
 
-        Noise magnitudes are MicroDuck's own overrides of the base template (reference section
-        2.3). The IMU misalignment, observation delays and encoder bias upstream also applies are
-        not modelled yet.
+        Noise magnitudes are MicroDuck's own overrides of the base template (reference section 2.3),
+        an order of magnitude tighter throughout. On top of the noise the actor carries the three
+        systematic corruptions per-step noise cannot express (reference sections 2.3, 6 and 8):
+
+        * a constant per-robot **encoder bias** on ``joint_pos``, closed against
+          :class:`~isaaclab_tasks.contrib.microduck.mdp.actions.BiasedJointPositionAction`;
+        * a constant per-robot **IMU mounting misalignment** on the two IMU terms, which share one
+          rotation and therefore must agree on ``max_angle_deg``;
+        * a stochastic **bus latency**: 0 or 1 control step on the IMU, re-drawn at most every 64
+          steps, and a constant 1 step on ``joint_vel``, whose firmware derives velocity from the
+          previous position-sample window.
+
+        Isaac Lab applies the noise to the delayed value, where mjlab delays the already-noised one.
+        Both give a stale signal plus an independent uniform draw, so the observation distribution
+        is the same; see
+        :class:`~isaaclab_tasks.contrib.microduck.mdp.observations.delayed_observation`.
         """
 
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.03, n_max=0.03))
-        projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.01, n_max=0.01))
+        base_ang_vel = ObsTerm(
+            func=mdp.delayed_observation,
+            params={
+                "term_func": mdp.base_ang_vel_imu_misaligned,
+                "term_params": {"max_angle_deg": _IMU_MISALIGNMENT_DEG},
+                "min_lag": 0,
+                "max_lag": 1,
+                "update_period": _IMU_DELAY_UPDATE_PERIOD,
+            },
+            noise=Unoise(n_min=-0.03, n_max=0.03),
+        )
+        projected_gravity = ObsTerm(
+            func=mdp.delayed_observation,
+            params={
+                "term_func": mdp.projected_gravity_imu_misaligned,
+                "term_params": {"max_angle_deg": _IMU_MISALIGNMENT_DEG},
+                "min_lag": 0,
+                "max_lag": 1,
+                "update_period": _IMU_DELAY_UPDATE_PERIOD,
+            },
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+        )
         joint_pos = ObsTerm(
-            func=mdp.joint_pos_rel,
-            params={"asset_cfg": _SERVO_JOINT_CFG},
+            func=mdp.joint_pos_rel_biased,
+            params={"asset_cfg": _SERVO_JOINT_CFG, "biased": True},
             noise=Unoise(n_min=-0.001, n_max=0.001),
         )
         joint_vel = ObsTerm(
-            func=mdp.joint_vel_rel,
-            params={"asset_cfg": _SERVO_JOINT_CFG},
+            func=mdp.delayed_observation,
+            params={
+                "term_func": mdp.joint_vel_rel,
+                "term_params": {"asset_cfg": _SERVO_JOINT_CFG},
+                "min_lag": 1,
+                "max_lag": 1,
+                "update_period": 0,
+            },
             noise=Unoise(n_min=-0.25, n_max=0.25),
         )
         actions = ObsTerm(func=mdp.last_action)
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
+        head_pose_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "head_pose"})
+        body_pose_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "body_pose"})
 
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
 
+    @configclass
+    class CriticCfg(ObsGroup):
+        """Privileged observations for the value function (reference sections 2.2 and 2.3).
+
+        Upstream's critic is the actor's term dictionary with every corruption removed, plus what
+        the robot has no sensor for: the base linear velocity -- which MicroDuck deletes from the
+        actor because the deployed runtime cannot measure it -- and four foot terms read off the
+        contact sensor. The command block is appended to both groups, so it ends this one too.
+
+        ``enable_corruption=False`` strips the noise, but it gates neither the delay nor the
+        misalignment, so the terms here are the stock, undelayed, unmisaligned ones rather than
+        references to the actor's. This group is not a deploy contract, so its width is measured
+        rather than declared.
+
+        ``foot_height`` measures the body height above the environment origin, which is the
+        clearance over the ground on flat terrain only; on the rough task the critic's foot heights
+        follow the trunk over the terrain instead of the terrain under the foot.
+        """
+
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
+        projected_gravity = ObsTerm(func=mdp.projected_gravity)
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel_biased, params={"asset_cfg": _SERVO_JOINT_CFG, "biased": False})
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, params={"asset_cfg": _SERVO_JOINT_CFG})
+        actions = ObsTerm(func=mdp.last_action)
+        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
+        foot_height = ObsTerm(func=mdp.foot_height_safe, params={"asset_cfg": _FOOT_BODY_CFG})
+        foot_air_time = ObsTerm(func=mdp.foot_air_time_safe, params={"sensor_cfg": _FOOT_SENSOR_CFG})
+        foot_contact = ObsTerm(func=mdp.foot_contact, params={"sensor_cfg": _FOOT_SENSOR_CFG})
+        foot_contact_forces = ObsTerm(func=mdp.foot_contact_forces_safe, params={"sensor_cfg": _FOOT_SENSOR_CFG})
+        head_pose_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "head_pose"})
+        body_pose_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "body_pose"})
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
     policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
 
 
 @configclass

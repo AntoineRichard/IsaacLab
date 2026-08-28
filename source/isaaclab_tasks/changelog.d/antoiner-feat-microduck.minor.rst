@@ -47,3 +47,15 @@ Added
 * Added recipe-parity tests to ``test/test_microduck_env.py``, which compare the assembled
   configuration term by term against the upstream reward, randomization, curriculum, command and
   terrain tables without launching the simulator.
+* Completed the MicroDuck observation contract. The actor group is now the 61-wide vector the
+  deployed policy expects -- base angular velocity, projected gravity, joint positions, joint
+  velocities, the previous action, then the ``[twist(3), head_pose(4), body_pose(6)]`` command
+  block -- read through the encoder bias, the IMU misalignment and the bus latency the robot's own
+  sensors have, with the joint blocks pinned to upstream's servo order. The velocity tasks also
+  gained a privileged ``critic`` group carrying the same terms uncorrupted plus the base linear
+  velocity and the four foot terms, which the RSL-RL configuration now feeds to the value function.
+  The action term is ``BiasedJointPositionActionCfg``, which closes the encoder-bias loop the
+  biased observation opens.
+* Added observation-contract tests to ``test/test_microduck_env.py``, which measure both group
+  widths term by term against the deploy layout and check that each block of the flat actor vector
+  carries the signal the layout names, including the servo order inside the joint block.
