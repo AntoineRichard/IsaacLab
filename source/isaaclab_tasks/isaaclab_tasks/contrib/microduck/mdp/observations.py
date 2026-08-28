@@ -339,6 +339,25 @@ class delayed_observation(ManagerTermBase):
         self._step_count += 1
 
 
+def zero_command_padding(env: ManagerBasedEnv, dim: int) -> torch.Tensor:
+    """A block of zeros, standing in for a command the task does not have.
+
+    Ported from addendum section 4.10 (``zero_command_padding``). The deployed MicroDuck observation
+    is a single 61-wide vector shared by every policy in the family, so a task that drops one of the
+    two pose commands cannot simply shorten it: the runtime on the robot would then feed a walking
+    policy and a trick policy different layouts. Upstream keeps the slot and sends zeros, which is
+    also what the deployed runtime does for that task.
+
+    Args:
+        env: The environment instance.
+        dim: Width of the slot to pad.
+
+    Returns:
+        Zeros. Shape is (num_envs, dim).
+    """
+    return torch.zeros(env.num_envs, dim, device=env.device)
+
+
 """
 NaN-safe critic terms.
 """

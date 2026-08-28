@@ -12,12 +12,13 @@ formulas are quoted in sections 2.6 and 5 of ``artifacts/microduck/upstream_refe
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
 
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils.math import quat_from_angle_axis, quat_from_euler_xyz, quat_mul
+from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_from_euler_xyz, quat_mul
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -30,6 +31,9 @@ _ENCODER_BIAS_ATTR = "_microduck_encoder_bias"
 
 _GROUND_STATE_JOINT_IDS_ATTR = "_microduck_ground_state_joint_ids"
 """Attribute the resolved sitting-pose joint indices are cached under on the environment."""
+
+_ROULADE_STATE_ATTR = "_microduck_roulade_state"
+"""Attribute the forward-roll bookkeeping is cached under on the environment."""
 
 
 def encoder_bias(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
@@ -168,8 +172,8 @@ def randomize_bam_friction(
             )
 
 
-def _sitting_joint_ids(env: ManagerBasedEnv, asset: Articulation, joint_names: tuple[str, ...]) -> list[int]:
-    """Resolve, and cache on the environment, the indices of the joints the sitting pose overrides.
+def _keyframe_joint_ids(env: ManagerBasedEnv, asset: Articulation, joint_names: tuple[str, ...]) -> list[int]:
+    """Resolve, and cache on the environment, the indices of the joints a keyframe overrides.
 
     A reset event runs every episode, so the name resolution is done once per articulation and
     selection rather than per reset. The cache mirrors upstream's own memoized servo-index lookup.
@@ -322,7 +326,7 @@ def reset_ground_state(
     if len(sitting_env_ids) == 0:
         return
     joint_pos = asset.data.default_joint_pos.torch[sitting_env_ids].clone()
-    override_ids = _sitting_joint_ids(env, asset, tuple(sitting_joint_pos))
+    override_ids = _keyframe_joint_ids(env, asset, tuple(sitting_joint_pos))
     angles = torch.tensor(list(sitting_joint_pos.values()), device=env.device)
     joint_pos[:, override_ids] = angles
     if sitting_joint_noise_std > 0.0:
@@ -331,3 +335,230 @@ def reset_ground_state(
     asset.write_joint_state_to_sim_index(
         position=joint_pos, velocity=torch.zeros_like(joint_pos), env_ids=sitting_env_ids
     )
+
+
+class RouladeRollState:
+    """Per-environment bookkeeping of the forward roll, shared by the roll's rewards and its reset.
+
+    Ported from addendum section 4.3, where it lives as five loose attributes on the environment
+    (``_roulade_accum``, ``_roulade_max``, ``_roulade_paid``, ``_roulade_head_latch`` and
+    ``_roulade_last_update_step``). The roll is a *stateful* task: nothing in the instantaneous
+    physics says how far around the robot has come, so the rotation is integrated by hand and the
+    completion gates read the integral rather than a clock. Every consumer therefore has to agree on
+    one object, which is why it is stored on the environment rather than inside a term.
+
+    The four buffers mean different things and all four are load-bearing:
+
+    * :attr:`accumulated_angle` is the running integral. It can go **down**, because rocking
+      backwards integrates a negative rate, and it is what the head latch and the head-pivot reward
+      window are measured against.
+    * :attr:`frontier` is the maximum of that integral so far, which is what the completion gates
+      read: backward rocking may not un-open a gate the robot has already earned.
+    * :attr:`paid` is the part of the frontier :func:`~..rewards.roulade_progress` has already paid
+      out, so the reward is an increment rather than a level.
+    * :attr:`head_latch` records that the robot went over the flat top of its head, which the
+      landing rewards require.
+
+    :attr:`last_update_step` is the step guard: several rewards read the state in one control step
+    and the integral must advance exactly once.
+    """
+
+    def __init__(self, num_envs: int, device: str) -> None:
+        """Allocate the per-environment buffers.
+
+        Args:
+            num_envs: Number of environments.
+            device: Device the buffers live on.
+        """
+        self.accumulated_angle = torch.zeros(num_envs, device=device)
+        """Supported, sagittal-gated integral of the forward pitch rate [rad]. Shape is (num_envs,)."""
+        self.frontier = torch.zeros(num_envs, device=device)
+        """Largest :attr:`accumulated_angle` reached this episode [rad]. Shape is (num_envs,)."""
+        self.paid = torch.zeros(num_envs, device=device)
+        """Part of :attr:`frontier` already paid out as progress reward [rad]. Shape is (num_envs,)."""
+        self.head_latch = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        """Whether the roll went over the flat top of the head. Shape is (num_envs,)."""
+        self.last_update_step = -1
+        """Global step count the integral was last advanced on."""
+
+
+def roulade_roll_state(env: ManagerBasedEnv) -> RouladeRollState:
+    """The environment's forward-roll bookkeeping, allocated on first use.
+
+    Args:
+        env: The environment the roll is bookkept for.
+
+    Returns:
+        The shared state. The same object on every call for a given environment.
+    """
+    state: RouladeRollState | None = getattr(env, _ROULADE_STATE_ATTR, None)
+    if state is None:
+        state = RouladeRollState(env.num_envs, env.device)
+        setattr(env, _ROULADE_STATE_ATTR, state)
+    return state
+
+
+def reset_roulade_state(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    standing_prob: float,
+    midroll_prob: float,
+    standing_z_range: tuple[float, float],
+    midroll_z_range: tuple[float, float],
+    midroll_pitch_range: tuple[float, float],
+    standing_tilt_max: float = 0.0,
+    forward_vel_range: tuple[float, float] = (0.0, 0.0),
+    midroll_omega_range: tuple[float, float] = (0.0, 0.0),
+    tuck_joint_pos: Mapping[str, float] | None = None,
+    tuck_factor_range: tuple[float, float] = (0.3, 1.0),
+    joint_noise_std: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Reset an articulation into a standing start or part-way through a forward roll.
+
+    Ported from addendum section 4.5 (``reset_roulade_state``). The two buckets are the roll task's
+    whole episode distribution, and the mid-roll one is a **reverse curriculum**: the second half of
+    a forward roll -- supine, then sitting up, then standing -- is the face-up recovery problem the
+    stand-up task already proves is learnable, so spawning into it gives the policy dense data on
+    the part of the trick a standing start only reaches after it has already solved the flip.
+
+    * **standing** -- upright within :attr:`standing_tilt_max`, at a random yaw, at standing height,
+      with the joints left wherever the joint reset put them. :attr:`forward_vel_range` is
+      upstream's "élan" hook: a forward base velocity that would let the roll be entered out of a
+      walk. The roll task ships it at ``(0.0, 0.0)``, so the branch never runs.
+    * **mid-roll** -- pitched :attr:`midroll_pitch_range` into the roll (90 degrees is balanced on
+      the head, 180 on the back, 340 seated and leaning back), low, with the legs and the neck
+      lerped toward :attr:`tuck_joint_pos` by a per-environment factor, and with optional forward
+      angular momentum.
+
+    This term also **writes the roll bookkeeping** :func:`roulade_roll_state`, and the two halves of
+    that are as load-bearing as the pose (addendum section 4.5):
+
+    * A mid-roll spawn has its rotation accumulator, frontier and paid pointer all pre-set to the
+      **spawn pitch**, so a 170-degree spawn is only paid for the remaining 190 degrees and the
+      completion gates stay consistent with how far around the robot actually is.
+    * A mid-roll spawn is **granted the head latch**, because it never had the chance to earn one;
+      requiring it would keep the landing gate shut for the whole bucket. A standing spawn starts at
+      zero and must earn the latch by rolling over its head.
+
+    The probabilities are normalized and need not sum to one. Only the mid-roll bucket touches the
+    joints.
+
+    This term overwrites the root height, orientation and velocity, so it must run **after** any
+    root reset it shares an episode with, and **after** the joint reset whose pose the tuck lerps
+    from. Isaac Lab fires reset events in configuration declaration order.
+
+    Args:
+        env: The environment holding the articulation.
+        env_ids: The environments to reset. Defaults to None, which resets all of them.
+        standing_prob: Relative probability of the standing bucket.
+        midroll_prob: Relative probability of the mid-roll bucket.
+        standing_z_range: Trunk height band [m] the standing bucket spawns in, above the environment
+            origin.
+        midroll_z_range: Trunk height band [m] the mid-roll bucket spawns in.
+        midroll_pitch_range: Bounds [rad] on how far into the roll the mid-roll bucket spawns.
+        standing_tilt_max: Bound [rad] on the uniform pitch the standing bucket is tilted by.
+            Defaults to 0.0, which spawns it exactly upright. The roll is sampled independently and
+            is at least 5 degrees wide, as upstream's is.
+        forward_vel_range: Bounds [m/s] on the forward base velocity given to standing spawns.
+            Defaults to ``(0.0, 0.0)``, which is a standstill start and skips the branch.
+        midroll_omega_range: Bounds [rad/s] on the forward roll rate given to mid-roll spawns.
+            Defaults to ``(0.0, 0.0)``, which skips the branch.
+        tuck_joint_pos: Joint name to angle [rad] the mid-roll bucket lerps its legs and neck
+            toward. Defaults to None, which leaves the joints at the pose the joint reset wrote.
+        tuck_factor_range: Bounds [-] on the per-environment lerp factor from the reset pose toward
+            :attr:`tuck_joint_pos`. Defaults to ``(0.3, 1.0)``, so the tuck is never fully absent.
+        joint_noise_std: Standard deviation [rad] of the zero-mean noise added to every joint
+            selected by :attr:`asset_cfg` in the mid-roll bucket, on top of the tuck. Defaults to
+            0.0.
+        asset_cfg: The articulation to reset, and the joints the tuck noise reaches. Selecting them
+            by name reproduces upstream's exclusion of passive joints, which are not part of any
+            keyframe.
+
+    Raises:
+        ValueError: If the two probabilities do not sum to a positive number.
+    """
+    total = standing_prob + midroll_prob
+    if total <= 0.0:
+        raise ValueError(
+            "'reset_roulade_state' needs at least one bucket with a positive probability. Received"
+            f" standing={standing_prob}, midroll={midroll_prob}."
+        )
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    num_resets = len(env_ids)
+    if num_resets == 0:
+        return
+
+    is_midroll = torch.rand(num_resets, device=env.device) < (midroll_prob / total)
+
+    def _uniform(bounds: tuple[float, float]) -> torch.Tensor:
+        return torch.empty(num_resets, device=env.device).uniform_(*bounds)
+
+    # orientation. The yaw is shared by both buckets, so an episode's heading does not correlate
+    # with how far into the roll it starts.
+    yaw = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * torch.pi
+    midroll_pitch = _uniform(midroll_pitch_range)
+    pitch = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * standing_tilt_max
+    pitch = torch.where(is_midroll, midroll_pitch, pitch)
+    # upstream floors the roll spread at 5 degrees for both buckets, so a mid-roll spawn is never
+    # perfectly sagittal either -- the flatness penalty has something to correct from step one
+    roll = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * max(standing_tilt_max, math.radians(5.0))
+    quat = quat_from_euler_xyz(roll, pitch, yaw)
+
+    height = torch.where(is_midroll, _uniform(midroll_z_range), _uniform(standing_z_range))
+
+    # The horizontal position is left alone: it is what an earlier root reset spread out. ``cat``
+    # already allocates, so the assignments below cannot reach the articulation's own buffers.
+    pose = torch.cat((asset.data.root_link_pos_w.torch[env_ids], asset.data.root_link_quat_w.torch[env_ids]), dim=-1)
+    pose[:, 2] = env.scene.env_origins[env_ids, 2] + height
+    pose[:, 3:7] = quat
+    asset.write_root_link_pose_to_sim_index(root_pose=pose, env_ids=env_ids)
+
+    velocity = torch.zeros(num_resets, 6, device=env.device)
+    if midroll_omega_range[1] > 0.0:
+        # Upstream writes the free joint's ``qvel[4]``, which MuJoCo expresses in the **body**
+        # frame, so the spin is about the robot's own pitch axis whatever its spawn yaw. Isaac Lab
+        # writes world-frame velocities, so the same body-frame vector is rotated by the spawn
+        # orientation here rather than being handed over as-is.
+        omega_b = torch.zeros(num_resets, 3, device=env.device)
+        omega_b[:, 1] = torch.where(
+            is_midroll, _uniform(midroll_omega_range), torch.zeros(num_resets, device=env.device)
+        )
+        velocity[:, 3:6] = quat_apply(quat, omega_b)
+    if forward_vel_range[1] > 0.0:
+        # élan hook: a forward base velocity for standing spawns, body x mapped through the spawn
+        # yaw. Never runs at the shipped ``(0.0, 0.0)``.
+        forward_speed = torch.where(
+            ~is_midroll, _uniform(forward_vel_range), torch.zeros(num_resets, device=env.device)
+        )
+        velocity[:, 0] = forward_speed * torch.cos(yaw)
+        velocity[:, 1] = forward_speed * torch.sin(yaw)
+    # the link frame rather than the centre of mass, because upstream's ``qvel`` is the free joint's
+    # own frame: at 3 rad/s the two differ by several centimetres per second across the head offset
+    asset.write_root_link_velocity_to_sim_index(root_velocity=velocity, env_ids=env_ids)
+
+    midroll_env_ids = env_ids[is_midroll]
+    if len(midroll_env_ids) > 0 and (tuck_joint_pos or joint_noise_std > 0.0):
+        # lerped from the live pose, which is the one the joint reset wrote a moment ago
+        joint_pos = asset.data.joint_pos.torch[midroll_env_ids].clone()
+        if tuck_joint_pos:
+            tuck_ids = _keyframe_joint_ids(env, asset, tuple(tuck_joint_pos))
+            angles = torch.tensor(list(tuck_joint_pos.values()), device=env.device)
+            factor = torch.empty(len(midroll_env_ids), 1, device=env.device).uniform_(*tuck_factor_range)
+            joint_pos[:, tuck_ids] += factor * (angles - joint_pos[:, tuck_ids])
+        if joint_noise_std > 0.0:
+            noise = torch.randn(len(midroll_env_ids), len(joint_pos[0, asset_cfg.joint_ids]), device=env.device)
+            joint_pos[:, asset_cfg.joint_ids] += noise * joint_noise_std
+        asset.write_joint_state_to_sim_index(
+            position=joint_pos, velocity=torch.zeros_like(joint_pos), env_ids=midroll_env_ids
+        )
+
+    state = roulade_roll_state(env)
+    spawn_angle = torch.where(is_midroll, midroll_pitch, torch.zeros_like(midroll_pitch))
+    state.accumulated_angle[env_ids] = spawn_angle
+    state.frontier[env_ids] = spawn_angle
+    state.paid[env_ids] = spawn_angle
+    state.head_latch[env_ids] = is_midroll
