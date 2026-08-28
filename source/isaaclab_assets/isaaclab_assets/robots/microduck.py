@@ -82,7 +82,14 @@ def _spawn_microduck(
 ##
 
 _XL330_PARAMS = BamMotorParams.from_json(BAM_XL330_M6_PARAMS_FILE)
-"""The identified XL330 ``m6`` parameters, read here so the derived limit below cannot drift."""
+"""The identified XL330 ``m6`` parameters, read here so the derived limit below cannot drift.
+
+The read happens at module import rather than behind a cached accessor because
+:data:`MICRODUCK_SERVO_EFFORT_LIMIT` and :data:`MICRODUCK_CFG` both consume it at module scope, so
+deferring it would buy nothing. The module is lazily exported (``isaaclab_assets.robots`` calls
+:func:`~isaaclab.utils.module.lazy_export`), so the file is only imported when something reaches for
+:data:`MICRODUCK_CFG` -- which needs these parameters anyway.
+"""
 
 MICRODUCK_SERVO_VIN_RANGE = (6.5, 8.2)
 """Per-robot bus voltage range [V] the battery is drawn from (upstream ``_BAM_ACTUATOR_KWARGS``)."""
@@ -93,8 +100,27 @@ MICRODUCK_SERVO_EFFORT_LIMIT = max(MICRODUCK_SERVO_VIN_RANGE) * _XL330_PARAMS.kt
 Upstream's own bound on the BAM output (``bam/mjlab.py``: ``force_limit`` is derived from
 ``max(vin_range)``). The model's firmware current limiter already shapes the duty cycle, but it
 sizes a *current* window that a large back-EMF can push outside the achievable PWM range, so the
-torque is not bounded by ``kt * i_max``; this is. It sits above the MJCF's ``forcerange`` of
-0.96 N·m, which survives conversion as the solver-side clamp and therefore binds first.
+torque is not bounded by ``kt * i_max``; this is.
+
+**Known parity gap, ~11 % in peak torque.** Upstream does not merely *add* this bound: its
+``edit_spec`` (``bam/mjlab.py:263-265``) overwrites the MJCF's ``forcerange`` with
+``±1.0676 N·m``, so 1.0676 is the only ceiling its actuators ever see. This port leaves the
+authored ``forcerange`` of ``±0.96 N·m`` in place, and the conversion carries it through as the
+solver-side joint effort limit -- so the two bounds bind on opposite sides:
+
+* **upstream:** the 1.0676 N·m actuator bound binds, and there is no tighter solver clamp;
+* **here:** the 0.96 N·m solver clamp binds first, and this 1.0676 N·m actuator limit is a
+  backstop that only shows up in the actuator's own telemetry.
+
+MicroDuck therefore trains against a peak joint torque about 11 % below upstream's, which matters
+for a robot whose walking gait is torque-limited at the ankles.
+
+The 0.96 is kept deliberately. It is the value the MJCF authors, and reproducing the MJCF is what
+the asset-fidelity tests assert of the conversion (``test_joint_effort_limits_match_mjcf``);
+overriding it from an actuator configuration would make the spawned articulation stop matching its
+source while the conversion tests still passed, which is the failure mode those tests exist to
+prevent. Closing the gap belongs in the converter or in an explicit, tested override of
+``joint_effort_limit``, not as a silent side effect of the servo model.
 """
 
 MICRODUCK_JOINT_DAMPING = 0.053
@@ -187,6 +213,21 @@ twenty control steps at 2048 environments (the joint velocities run away while t
 stays at its clamp), and the divergence is what a reward NaN then reports. That makes the dry
 friction slightly double-counted on this path, by 0.0048 N·m against a ~1 N·m stall torque, which
 is the price of a stable integration.
+
+**Known backend sim gap, 10x in joint damping.** The deployed upstream model does *not* run at
+0.053: its BAM binding republishes the fitted ``friction_viscous`` into ``dof_damping`` every step,
+so upstream integrates MicroDuck at ~0.0054 N·m·s/rad (0.005360 in the vendored ``m6`` fit, measured
+on the Newton-native path in this tree). Restoring the MJCF's 0.053 therefore buys stability at the
+cost of an order of magnitude more joint damping than the robot upstream trains and deploys, and any
+sim-to-sim comparison against upstream has to account for it.
+
+That is a property of this plant on this stack rather than of the BAM model. The Task-11 review
+adjudicated it as a plant-level instability of the MJCF -> USD -> Newton -> MJWarp path: the
+previous ``DelayedPDActuatorCfg`` configuration diverges at ~0.0054 too, so the low damping and not
+the servo model is what the integrator cannot carry. The matching fix on the Newton-native path is
+an actuator-workstream follow-up -- have the component publish
+``max(friction_viscous, authored dof_damping)`` instead of ``friction_viscous`` alone -- which would
+let both paths run at the same value and would let this restoration shrink toward upstream's.
 
 The armature is left to the USD, which carries the MJCF's 0.0018 -- the same value the BAM fit
 identifies.
