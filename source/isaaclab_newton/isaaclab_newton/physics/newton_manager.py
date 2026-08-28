@@ -974,7 +974,7 @@ class NewtonManager(PhysicsManager):
 
         if capture_pending:
             NewtonManager._graph_capture_pending = False
-            cls._warn_on_unbalanced_actuator_state_capture()
+            cls._check_actuator_state_capture_balance()
             if cls._usdrt_stage is None:
                 simulate = cls._simulate_full if cls._is_all_graphable() else cls._simulate_physics_only
                 with Timer(name="newton_cuda_graph", msg="CUDA graph took:"):
@@ -2265,7 +2265,7 @@ class NewtonManager(PhysicsManager):
             return
 
         if use_cuda_graph:
-            cls._warn_on_unbalanced_actuator_state_capture()
+            cls._check_actuator_state_capture_balance()
             with Timer(name="newton_cuda_graph", msg="CUDA graph took:", activity="Capturing CUDA graph"):
                 if cls._usdrt_stage is None and not cls._requires_initial_reset_before_graph_capture():
                     simulate = cls._simulate_full if cls._is_all_graphable() else cls._simulate_physics_only
@@ -2291,26 +2291,40 @@ class NewtonManager(PhysicsManager):
             NewtonManager._graph = None
 
     @classmethod
-    def _warn_on_unbalanced_actuator_state_capture(cls) -> None:
-        """Warn when graph capture would discard part of the actuator state ping-pong.
+    def _check_actuator_state_capture_balance(cls) -> None:
+        """Reject or flag a graph capture that would discard the actuator state ping-pong.
 
         Stateful Newton actuators read one state buffer and write the other, and
         :meth:`NewtonActuatorAdapter.step <isaaclab.actuators.newton.NewtonActuatorAdapter.step>`
         swaps the pair host-side. Under capture the swaps happen while the kernels are being
-        recorded, so a replayed graph always starts from the buffer that was current at
-        capture time. That is exact only when the captured loop contains an *even* number of
-        actuator steps; with an odd number the last step's state update is dropped on the next
-        replay, and with a decimation of one the state never advances at all.
+        recorded, so a replayed graph always starts from the buffer that was current at capture
+        time. That is exact only when the captured loop contains an *even* number of actuator
+        steps. With an odd number above one the last step's update is dropped on each replay --
+        a small, warned-about staleness. With a decimation of one nothing is left: the state
+        never advances, so delay buffers stay empty, integral terms stay at zero and a
+        load-dependent friction model reports the budget of a freshly reset joint on every step.
+        That is silently wrong physics, so it is refused rather than warned about.
+
+        Raises:
+            RuntimeError: If a decimation of one would be captured with stateful actuators.
         """
         if not cls._is_all_graphable() or cls._adapter is None or not cls._adapter.is_stateful:
             return
         if cls._decimation % 2 == 0:
             return
+        if cls._decimation == 1:
+            raise RuntimeError(
+                "Stateful Newton actuators cannot be CUDA-graph-captured at a decimation of one:"
+                " their state is double buffered and the buffers are swapped while the graph is"
+                " recorded, so every replay restarts from the same buffer and the state never"
+                " advances. Use an even decimation, or set 'use_cuda_graph=False' on the physics"
+                " configuration."
+            )
         logger.warning(
             "CUDA graph capture with stateful Newton actuators and an odd decimation (%d) discards the"
-            " last actuator-state update of every replay; a decimation of one freezes the state entirely."
-            " Use an even decimation, or disable 'use_cuda_graph', for delay buffers, integral terms and"
-            " other actuator state to advance correctly.",
+            " last actuator-state update of every replay. Use an even decimation, or disable"
+            " 'use_cuda_graph', for delay buffers, integral terms and other actuator state to advance"
+            " exactly.",
             cls._decimation,
         )
 
