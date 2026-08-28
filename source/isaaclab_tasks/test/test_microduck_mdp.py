@@ -5,10 +5,11 @@
 
 """Unit tests for the MicroDuck-specific MDP terms.
 
-The command terms only need ``num_envs``, ``device`` and the commanded asset, so they run against
-an environment double instead of a simulated scene. The bucket fractions are driven to their
-extremes (0.0 or 1.0) so every assertion is exact rather than statistical; the one distributional
-claim -- that the buckets are independent draws rather than a partition -- is pinned with enough
+The command and observation terms only need ``num_envs``, ``device`` and the asset they read, so
+they run against an environment double instead of a simulated scene. The bucket fractions are
+driven to their extremes (0.0 or 1.0) so every assertion is exact rather than statistical; the
+distributional claims -- that the velocity buckets are independent draws rather than a partition,
+and that the IMU misalignment is zero-centred rather than a fixed tilt -- are pinned with enough
 environments that a false negative is impossible in practice.
 """
 
@@ -20,12 +21,14 @@ from typing import TYPE_CHECKING, cast
 import pytest
 import torch
 
+from isaaclab.managers import ObservationTermCfg, SceneEntityCfg
+
 import isaaclab_tasks.contrib.microduck.mdp as mdp
 
 pytestmark = pytest.mark.unit
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
 
 
 HEAD_POSE_RANGES = ((-0.05, 0.05), (-0.05, 0.05), (-0.07, 0.07), (-0.015, 0.015))
@@ -45,25 +48,78 @@ ANG_VEL_Z_RANGE = (-1.0, 1.0)
 """Yaw-rate command range [rad/s] MicroDuck trains with."""
 
 
+JOINT_NAMES = ["hip", "knee", "ankle", "neck"]
+"""Joint names of the articulation double, standing in for the 14 MicroDuck servos."""
+
+BODY_NAMES = ["trunk", "ankle_left", "ankle_right"]
+"""Body names of the articulation double, in the resolved order the real scene reports."""
+
+ENCODER_BIAS_RANGE = (-0.015, 0.015)
+"""Per-joint encoder-bias range [rad] MicroDuck randomizes over (reference section 2.6)."""
+
+IMU_MISALIGNMENT_ANGLE_DEG = 6.0
+"""Upper bound [deg] on the IMU mounting misalignment (reference section 6)."""
+
+
 class _DummyTensorView:
     """Stands in for a ``ProxyArray``, which exposes its contents under ``.torch``."""
 
     def __init__(self, tensor: torch.Tensor) -> None:
         self.torch = tensor
 
+    def __len__(self) -> int:
+        return len(self.torch)
+
 
 class _DummyRobotData:
-    """The articulation state the velocity command reads."""
+    """The articulation state the MicroDuck command, observation and action terms read."""
 
     def __init__(self, num_envs: int, device: str) -> None:
         self.root_lin_vel_b = _DummyTensorView(torch.zeros(num_envs, 3, device=device))
         self.root_ang_vel_b = _DummyTensorView(torch.zeros(num_envs, 3, device=device))
         self.heading_w = _DummyTensorView(torch.zeros(num_envs, device=device))
+        gravity = torch.tensor([0.0, 0.0, -1.0], device=device).expand(num_envs, 3)
+        self.projected_gravity_b = _DummyTensorView(gravity.clone())
+        self.joint_pos = _DummyTensorView(torch.zeros(num_envs, len(JOINT_NAMES), device=device))
+        self.default_joint_pos = _DummyTensorView(torch.zeros(num_envs, len(JOINT_NAMES), device=device))
+        self.body_pos_w = _DummyTensorView(torch.zeros(num_envs, len(BODY_NAMES), 3, device=device))
 
 
 class _DummyRobot:
     def __init__(self, num_envs: int, device: str) -> None:
         self.data = _DummyRobotData(num_envs, device)
+        self.num_joints = len(JOINT_NAMES)
+        self.device = device
+        self.joint_position_target: torch.Tensor | None = None
+
+    def find_joints(self, name_keys, preserve_order: bool = False, *, as_proxy: bool = False):
+        names = list(name_keys)
+        ids = [JOINT_NAMES.index(name) for name in names]
+        indices = torch.tensor(ids, dtype=torch.long, device=self.device)
+        return (_DummyTensorView(indices) if as_proxy else ids), names
+
+    def set_joint_position_target_index(self, target: torch.Tensor, joint_ids) -> None:
+        self.joint_position_target = target.clone()
+
+
+class _DummyContactSensorData:
+    def __init__(self, num_envs: int, device: str) -> None:
+        self.net_forces_w = _DummyTensorView(torch.zeros(num_envs, len(BODY_NAMES), 3, device=device))
+        self.current_air_time = _DummyTensorView(torch.zeros(num_envs, len(BODY_NAMES), device=device))
+
+
+class _DummyContactSensor:
+    def __init__(self, num_envs: int, device: str) -> None:
+        self.data = _DummyContactSensorData(num_envs, device)
+
+
+class _DummyScene(dict):
+    """Scene double: terms index it like a mapping and read the sensors and origins off it."""
+
+    def __init__(self, mapping: dict, num_envs: int, device: str) -> None:
+        super().__init__(mapping)
+        self.sensors = {"contact_forces": _DummyContactSensor(num_envs, device)}
+        self.env_origins = torch.zeros(num_envs, 3, device=device)
 
 
 class _DummyVisMarkerRegistry:
@@ -79,14 +135,15 @@ class _DummySimulation:
 
 
 class _DummyEnv:
-    """Minimal environment double for command terms."""
+    """Minimal environment double for command, observation and action terms."""
 
     def __init__(self, num_envs: int = 8, device: str = "cpu") -> None:
         self.num_envs = num_envs
         self.device = device
         self.extras: dict = {}
+        self.common_step_counter = 0
         self.sim = _DummySimulation()
-        self.scene = {"robot": _DummyRobot(num_envs, device)}
+        self.scene = _DummyScene({"robot": _DummyRobot(num_envs, device)}, num_envs, device)
 
 
 def _make_pose_command(ranges, resampling_time_range=(2.0, 5.0), num_envs=8) -> mdp.UniformPoseDeltaCommand:
@@ -298,3 +355,330 @@ def test_disabled_buckets_leave_the_uniform_sample_alone():
     # a uniform draw over (-0.3, 0.3) practically never lands on the forward-only signature
     assert torch.any(term.command[:, 1] != 0.0)
     assert torch.any(term.command[:, 0] < 0.0)
+
+
+##
+# Encoder bias
+##
+
+
+def _make_obs_env(num_envs: int = 8) -> _DummyEnv:
+    return _DummyEnv(num_envs=num_envs)
+
+
+def _joint_cfg(joint_ids: list[int]) -> SceneEntityCfg:
+    """A resolved joint selection: the manager fills ``joint_ids`` in before a term ever runs."""
+    return SceneEntityCfg("robot", joint_names=[JOINT_NAMES[i] for i in joint_ids], joint_ids=joint_ids)
+
+
+def test_encoder_bias_defaults_to_zero_until_the_randomization_runs():
+    """A task that never wires the startup event still gets the unbiased joint positions."""
+    env = _make_obs_env()
+    asset_cfg = _joint_cfg([0, 1, 2, 3])
+    env.scene["robot"].data.joint_pos.torch[:] = 0.3
+
+    biased = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), asset_cfg, biased=True)
+
+    torch.testing.assert_close(biased, torch.full_like(biased, 0.3))
+
+
+def test_encoder_bias_is_a_constant_per_environment_offset_inside_its_range():
+    """The bias is sampled once and read back identically on every later call."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=512)
+    asset_cfg = _joint_cfg([0, 1, 2, 3])
+    mdp.randomize_encoder_bias(cast("ManagerBasedEnv", env), None, bias_range=ENCODER_BIAS_RANGE)
+
+    first = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), asset_cfg, biased=True)
+    second = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), asset_cfg, biased=True)
+
+    torch.testing.assert_close(first, second)
+    assert torch.all(first >= ENCODER_BIAS_RANGE[0])
+    assert torch.all(first <= ENCODER_BIAS_RANGE[1])
+    # a per-environment draw, not one shared offset
+    assert first[:, 0].std() > 0.0
+    # ... and a per-joint draw, not one offset repeated across the joint block
+    assert torch.any(first[:, 0] != first[:, 1])
+
+
+def test_the_critic_reads_the_true_joint_positions():
+    """``biased=False`` reproduces the stock ``joint_pos_rel``, which is what the critic sees."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=64)
+    asset_cfg = _joint_cfg([0, 1, 2, 3])
+    data = env.scene["robot"].data
+    data.joint_pos.torch[:] = torch.rand_like(data.joint_pos.torch)
+    data.default_joint_pos.torch[:] = 0.1
+    mdp.randomize_encoder_bias(cast("ManagerBasedEnv", env), None, bias_range=ENCODER_BIAS_RANGE)
+
+    truth = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), asset_cfg, biased=False)
+    biased = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), asset_cfg, biased=True)
+
+    expected = data.joint_pos.torch - data.default_joint_pos.torch
+    torch.testing.assert_close(truth, expected)
+    torch.testing.assert_close(biased - truth, mdp.encoder_bias(cast("ManagerBasedEnv", env)))
+
+
+def test_the_bias_follows_the_requested_joint_order():
+    """A reordered joint selection reorders the bias with it, so the blocks stay aligned."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=16)
+    mdp.randomize_encoder_bias(cast("ManagerBasedEnv", env), None, bias_range=ENCODER_BIAS_RANGE)
+    bias = mdp.encoder_bias(cast("ManagerBasedEnv", env))
+
+    reordered = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), _joint_cfg([3, 0]), biased=True)
+
+    torch.testing.assert_close(reordered, bias[:, [3, 0]])
+
+
+def test_the_biased_action_subtracts_the_bias_the_observation_adds():
+    """The two halves of the encoder-bias loop cancel, so the commanded joint lands on target."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=16)
+    robot = env.scene["robot"]
+    robot.data.default_joint_pos.torch[:] = 0.2
+    mdp.randomize_encoder_bias(cast("ManagerBasedEnv", env), None, bias_range=ENCODER_BIAS_RANGE)
+    cfg = mdp.BiasedJointPositionActionCfg(asset_name="robot", joint_names=JOINT_NAMES, scale=1.0)
+    term = mdp.BiasedJointPositionAction(cfg, cast("ManagerBasedEnv", env))
+
+    actions = torch.rand(env.num_envs, len(JOINT_NAMES), device=env.device)
+    term.process_actions(actions)
+    term.apply_actions()
+
+    bias = mdp.encoder_bias(cast("ManagerBasedEnv", env))
+    torch.testing.assert_close(robot.joint_position_target, 0.2 + actions - bias)
+    # the policy commanding ``a`` reads back ``a`` once the joint reaches its target
+    robot.data.joint_pos.torch[:] = robot.joint_position_target
+    read_back = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), _joint_cfg([0, 1, 2, 3]), biased=True)
+    torch.testing.assert_close(read_back, actions)
+
+
+##
+# IMU misalignment
+##
+
+
+def _misalignment_matrix(env: _DummyEnv, max_angle_deg: float) -> torch.Tensor:
+    """The rotation the misaligned terms apply, read one basis column at a time."""
+    columns = []
+    for axis in range(3):
+        env.scene["robot"].data.root_ang_vel_b.torch[:] = 0.0
+        env.scene["robot"].data.root_ang_vel_b.torch[:, axis] = 1.0
+        columns.append(mdp.base_ang_vel_imu_misaligned(cast("ManagerBasedEnv", env), max_angle_deg))
+    return torch.stack(columns, dim=-1)
+
+
+def test_imu_misalignment_stays_within_the_configured_angle():
+    """The rotation magnitude is uniform on ``[0, max_angle_deg]`` about a random axis."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=4096)
+
+    rotation = _misalignment_matrix(env, IMU_MISALIGNMENT_ANGLE_DEG)
+
+    trace = rotation.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+    angle = torch.acos(torch.clamp(0.5 * (trace - 1.0), min=-1.0, max=1.0))
+    bound = math.radians(IMU_MISALIGNMENT_ANGLE_DEG)
+    assert torch.all(angle <= bound + 1e-5)
+    # the whole range is used, and uniformly: a wrongly scaled angle fails both
+    assert angle.max() > 0.95 * bound
+    assert abs(float(angle.mean()) - 0.5 * bound) < 0.05 * bound
+
+
+def test_imu_misalignment_is_zero_centred_rather_than_a_fixed_tilt():
+    """A random axis makes the misalignment a magnitude, not a systematic pitch offset."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=4096)
+
+    gravity = mdp.projected_gravity_imu_misaligned(cast("ManagerBasedEnv", env), IMU_MISALIGNMENT_ANGLE_DEG)
+
+    truth = env.scene["robot"].data.projected_gravity_b.torch
+    # every environment is tilted ...
+    assert torch.all((gravity - truth).norm(dim=-1) > 0.0)
+    # ... but the fleet is not, to well inside the per-environment tilt
+    assert torch.all((gravity.mean(dim=0) - truth[0]).abs() < 0.01)
+
+
+def test_both_imu_terms_share_one_misalignment_that_never_changes():
+    """One mounting error per robot: the same rotation for gravity and rate, for the whole run."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=256)
+    data = env.scene["robot"].data
+    data.root_ang_vel_b.torch[:] = data.projected_gravity_b.torch
+
+    gravity = mdp.projected_gravity_imu_misaligned(cast("ManagerBasedEnv", env), IMU_MISALIGNMENT_ANGLE_DEG)
+    ang_vel = mdp.base_ang_vel_imu_misaligned(cast("ManagerBasedEnv", env), IMU_MISALIGNMENT_ANGLE_DEG)
+
+    torch.testing.assert_close(gravity, ang_vel)
+    # a later step must not redraw it
+    torch.testing.assert_close(
+        gravity, mdp.projected_gravity_imu_misaligned(cast("ManagerBasedEnv", env), IMU_MISALIGNMENT_ANGLE_DEG)
+    )
+
+
+def test_imu_misalignment_is_the_identity_when_disabled():
+    """``max_angle_deg = 0`` turns both terms back into their stock counterparts."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=64)
+    data = env.scene["robot"].data
+    data.root_ang_vel_b.torch[:] = torch.rand_like(data.root_ang_vel_b.torch)
+
+    gravity = mdp.projected_gravity_imu_misaligned(cast("ManagerBasedEnv", env), 0.0)
+    ang_vel = mdp.base_ang_vel_imu_misaligned(cast("ManagerBasedEnv", env), 0.0)
+
+    torch.testing.assert_close(gravity, data.projected_gravity_b.torch)
+    torch.testing.assert_close(ang_vel, data.root_ang_vel_b.torch)
+
+
+##
+# Observation delay
+##
+
+
+def _step_index(env: ManagerBasedEnv) -> torch.Tensor:
+    """A term whose value is the control step it was computed on, so a lag is readable off it."""
+    return torch.full((env.num_envs, 1), float(env.common_step_counter), device=env.device)
+
+
+def _make_delayed_term(env: _DummyEnv, min_lag: int, max_lag: int, update_period: int, hold_prob: float = 0.0):
+    params = {
+        "term_func": _step_index,
+        "min_lag": min_lag,
+        "max_lag": max_lag,
+        "update_period": update_period,
+        "hold_prob": hold_prob,
+    }
+    cfg = ObservationTermCfg(func=mdp.delayed_observation, params=params)
+    term = mdp.delayed_observation(cfg, cast("ManagerBasedEnv", env))
+    return term, params
+
+
+def _advance(env: _DummyEnv, term, params: dict) -> torch.Tensor:
+    """One control step: bump the step counter the way the environment does, then compute."""
+    env.common_step_counter += 1
+    return term(cast("ManagerBasedEnv", env), **params)
+
+
+def test_a_fixed_one_step_lag_returns_the_previous_control_step_value():
+    """MicroDuck's ``joint_vel`` delay: a constant one-step lag once the buffer has filled."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=8)
+    term, params = _make_delayed_term(env, min_lag=1, max_lag=1, update_period=0)
+
+    # the first step has nothing older to return, so it returns itself (reference section 8, rule 6)
+    torch.testing.assert_close(_advance(env, term, params), torch.ones(env.num_envs, 1))
+    for step in range(2, 8):
+        torch.testing.assert_close(_advance(env, term, params), torch.full((env.num_envs, 1), float(step - 1)))
+
+
+def test_the_delay_advances_once_per_control_step_however_often_it_is_computed():
+    """Recomputing an observation inside one step must not push the buffer twice."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=8)
+    term, params = _make_delayed_term(env, min_lag=1, max_lag=1, update_period=0)
+
+    _advance(env, term, params)
+    _advance(env, term, params)
+    repeated = term(cast("ManagerBasedEnv", env), **params)
+
+    torch.testing.assert_close(repeated, torch.ones(env.num_envs, 1))
+    torch.testing.assert_close(_advance(env, term, params), torch.full((env.num_envs, 1), 2.0))
+
+
+def test_the_lag_is_redrawn_only_on_the_update_period_boundary():
+    """MicroDuck's IMU delay: a 0-or-1 step lag re-drawn every 64 steps, staggered per env."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=256)
+    update_period = 64
+    term, params = _make_delayed_term(env, min_lag=0, max_lag=1, update_period=update_period)
+
+    # one warm-up step: with a single frame buffered the lag is clamped to 0 whatever was drawn
+    _advance(env, term, params)
+    lags = []
+    for _ in range(4 * update_period):
+        value = _advance(env, term, params)
+        lags.append(env.common_step_counter - value[:, 0])
+    lags = torch.stack(lags)  # (steps, num_envs)
+
+    assert torch.all((lags == 0) | (lags == 1))
+    # every environment holds its lag for whole periods, and they do not all switch together
+    change_steps = [torch.nonzero(lags[1:, i] != lags[:-1, i]).flatten() for i in range(env.num_envs)]
+    for steps in change_steps:
+        assert torch.all(torch.diff(steps) % update_period == 0)
+    assert len({int(steps[0]) for steps in change_steps if len(steps) > 0}) > 1
+    # both lags are actually drawn
+    assert torch.any(lags == 0) and torch.any(lags == 1)
+
+
+def test_a_reset_environment_gets_the_freshest_frame_and_a_new_phase():
+    """A reset clears only the reset environments' history, lag and phase (reference section 8)."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=4)
+    term, params = _make_delayed_term(env, min_lag=1, max_lag=1, update_period=0)
+    for _ in range(4):
+        _advance(env, term, params)
+
+    term.reset(torch.tensor([0, 2], device=env.device))
+    value = _advance(env, term, params)
+
+    step = float(env.common_step_counter)
+    torch.testing.assert_close(value[:, 0], torch.tensor([step, step - 1.0, step, step - 1.0]))
+
+
+def test_a_delayed_term_rejects_a_lag_window_it_cannot_serve():
+    """A configuration whose lags fall outside the buffer is a configuration error."""
+    env = _make_obs_env()
+
+    with pytest.raises(ValueError):
+        _make_delayed_term(env, min_lag=2, max_lag=1, update_period=0)
+    with pytest.raises(ValueError):
+        _make_delayed_term(env, min_lag=0, max_lag=0, update_period=0)
+    with pytest.raises(ValueError):
+        _make_delayed_term(env, min_lag=0, max_lag=1, update_period=0, hold_prob=1.5)
+
+
+##
+# NaN-safe critic terms
+##
+
+
+def _sensor_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg("contact_forces", body_names=BODY_NAMES[1:], body_ids=[1, 2])
+
+
+def test_the_safe_foot_terms_report_zero_where_the_sensor_reports_a_non_finite_value():
+    """A single non-finite sensor read must not poison a whole training run."""
+    env = _make_obs_env(num_envs=3)
+    sensor_cfg = _sensor_cfg()
+    sensor = env.scene.sensors["contact_forces"]
+    forces = sensor.data.net_forces_w.torch
+    forces[:, 1:] = torch.tensor([0.0, 0.0, 2.0])
+    forces[0, 1, 0] = float("nan")
+    forces[1, 2, 1] = float("inf")
+    air_time = sensor.data.current_air_time.torch
+    air_time[:] = 0.25
+    air_time[2, 1] = float("nan")
+
+    contact_forces = mdp.foot_contact_forces_safe(cast("ManagerBasedEnv", env), sensor_cfg)
+    air = mdp.foot_air_time_safe(cast("ManagerBasedEnv", env), sensor_cfg)
+
+    assert torch.all(torch.isfinite(contact_forces))
+    assert torch.all(torch.isfinite(air))
+    assert contact_forces[0, 0] == 0.0 and contact_forces[1, 4] == 0.0
+    assert air[2, 0] == 0.0
+    # the finite entries keep upstream's signed log compression
+    torch.testing.assert_close(contact_forces[2, 2], torch.tensor(math.log1p(2.0)))
+    torch.testing.assert_close(air[0], torch.full((2,), 0.25))
+
+
+def test_the_safe_foot_height_is_the_sole_clearance_above_the_environment_origin():
+    """Foot height is measured from the terrain the environment sits on, not the world origin."""
+    env = _make_obs_env(num_envs=2)
+    asset_cfg = SceneEntityCfg("robot", body_names=BODY_NAMES[1:], body_ids=[1, 2])
+    body_pos = env.scene["robot"].data.body_pos_w.torch
+    body_pos[:, :, 2] = 0.4
+    env.scene.env_origins[:, 2] = 0.1
+    body_pos[1, 2, 2] = float("nan")
+
+    height = mdp.foot_height_safe(cast("ManagerBasedEnv", env), asset_cfg)
+
+    torch.testing.assert_close(height, torch.tensor([[0.3, 0.3], [0.3, 0.0]]))
