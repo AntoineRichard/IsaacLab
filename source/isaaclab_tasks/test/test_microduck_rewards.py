@@ -111,10 +111,13 @@ class _DummyEnv:
         commands: dict[str, torch.Tensor] | None = None,
         env_origins: torch.Tensor | None = None,
         step_dt: float = 0.02,
+        common_step_counter: int = 0,
     ) -> None:
         self.num_envs = num_envs
         self.device = device
         self.step_dt = step_dt
+        # the forward-roll accumulator integrates once per control step, guarded on this counter
+        self.common_step_counter = common_step_counter
         self.scene = _DummyScene(
             assets or {},
             sensors or {},
@@ -941,3 +944,318 @@ def test_robot_state_is_nan_ignores_sensors_that_are_not_in_the_scene():
     done = mdp.robot_state_is_nan(env.as_env(), sensor_names=("does_not_exist",))
 
     torch.testing.assert_close(done, torch.zeros(4, dtype=torch.bool))
+
+
+##
+# Rolling forward (addendum sections 4.3 and 4.4)
+##
+
+ROULADE_TARGET_ANGLE = 2.0 * math.pi
+"""One full roll [rad], which is what ``roulade_progress`` normalizes its payout against."""
+
+ROULADE_MAX_PAID_RATE = 5.0
+"""Largest rotation rate [rad/s] upstream pays for; faster rotation forfeits the excess."""
+
+# xyzw quaternions with the properties the roll's gates key on
+_LEVEL_QUAT = [0.0, 0.0, 0.0, 1.0]
+_PITCHED_QUAT = [0.0, math.sin(math.pi / 4.0), 0.0, math.cos(math.pi / 4.0)]  # 90 deg about y
+_ROLLED_QUAT = [math.sin(math.pi / 4.0), 0.0, 0.0, math.cos(math.pi / 4.0)]  # 90 deg about x
+_HEAD_DOWN_QUAT = [1.0, 0.0, 0.0, 0.0]  # 180 deg about x, which turns the head top toward the floor
+
+
+def _roulade_env(
+    forward_rate: float = 0.0,
+    quat: list[float] | None = None,
+    head_quat: list[float] | None = None,
+    supported: bool = True,
+    head_contact: bool = False,
+    height: float = 0.0,
+    vertical_speed: float = 0.0,
+    lateral_speed: float = 0.0,
+    roll_rate: float = 0.0,
+    yaw_rate: float = 0.0,
+    step: int = 1,
+) -> _DummyEnv:
+    """One environment posed for the roll terms, with both contact sensors wired.
+
+    The head body is body slot 0 of its own selection, and its orientation is set independently of
+    the trunk's so the head-top test can be exercised on its own.
+    """
+    robot = _DummyAsset(
+        root_link_ang_vel_b=torch.tensor([[roll_rate, forward_rate, yaw_rate]]),
+        root_link_quat_w=torch.tensor([quat if quat is not None else _LEVEL_QUAT]),
+        root_link_pos_w=torch.tensor([[0.0, 0.0, height]]),
+        root_link_lin_vel_w=torch.tensor([[0.0, 0.0, vertical_speed]]),
+        root_link_lin_vel_b=torch.tensor([[0.0, lateral_speed, 0.0]]),
+        body_link_quat_w=torch.tensor([[head_quat if head_quat is not None else _LEVEL_QUAT]]),
+        joint_pos=torch.zeros(1, 2),
+        default_joint_pos=torch.zeros(1, 2),
+    )
+    support_force = torch.tensor([[[0.0, 0.0, 5.0 if supported else 0.0]]])
+    head_force = torch.tensor([[[0.0, 0.0, 5.0 if head_contact else 0.0]]])
+    return _DummyEnv(
+        num_envs=1,
+        assets={"robot": robot},
+        sensors={
+            "robot_ground_contact": _DummySensor(net_forces_w=support_force),
+            "head_ground_contact": _DummySensor(net_forces_w=head_force),
+        },
+        common_step_counter=step,
+    )
+
+
+def _roulade_head_cfg() -> SceneEntityCfg:
+    """The articulation with its single head body selected, as the two accumulator terms take it."""
+    return _entity("robot", body_ids=[0], body_names=["jaw_soft"])
+
+
+def _advance(env: _DummyEnv, steps: int = 1) -> torch.Tensor:
+    """Run ``roulade_progress`` for a number of control steps and return its last payout."""
+    reward = torch.zeros(env.num_envs)
+    for _ in range(steps):
+        reward = mdp.roulade_progress(
+            env.as_env(),
+            target_angle=ROULADE_TARGET_ANGLE,
+            max_paid_rate=ROULADE_MAX_PAID_RATE,
+            support_sensor_cfg=_entity("robot_ground_contact"),
+            head_sensor_cfg=_entity("head_ground_contact"),
+            asset_cfg=_roulade_head_cfg(),
+        )
+        env.common_step_counter += 1
+    return reward
+
+
+def test_roulade_progress_pays_the_rotation_it_integrates():
+    """A supported, sagittal roll pays its increment normalized by one full turn."""
+    env = _roulade_env(forward_rate=1.0)
+
+    reward = _advance(env)
+
+    # 1 rad/s for 0.02 s is 0.02 rad of the 2*pi that a full roll pays for
+    torch.testing.assert_close(reward, torch.tensor([0.02 / (0.02 * ROULADE_TARGET_ANGLE)]))
+    torch.testing.assert_close(mdp.roulade_roll_state(env.as_env()).frontier, torch.tensor([0.02]))
+
+
+def test_roulade_progress_integrates_once_per_control_step():
+    """Several terms read the accumulator in one step, and it may only advance for the first."""
+    env = _roulade_env(forward_rate=1.0)
+
+    mdp.roulade_progress(
+        env.as_env(),
+        target_angle=ROULADE_TARGET_ANGLE,
+        max_paid_rate=ROULADE_MAX_PAID_RATE,
+        support_sensor_cfg=_entity("robot_ground_contact"),
+        head_sensor_cfg=_entity("head_ground_contact"),
+        asset_cfg=_roulade_head_cfg(),
+    )
+    second = mdp.roulade_progress(
+        env.as_env(),
+        target_angle=ROULADE_TARGET_ANGLE,
+        max_paid_rate=ROULADE_MAX_PAID_RATE,
+        support_sensor_cfg=_entity("robot_ground_contact"),
+        head_sensor_cfg=_entity("head_ground_contact"),
+        asset_cfg=_roulade_head_cfg(),
+    )
+
+    torch.testing.assert_close(mdp.roulade_roll_state(env.as_env()).frontier, torch.tensor([0.02]))
+    # the frontier has not moved and the first call already paid it, so the second pays nothing
+    torch.testing.assert_close(second, torch.tensor([0.0]))
+
+
+def test_roulade_progress_forfeits_rotation_faster_than_the_cap():
+    """Upstream's paid pointer jumps to the frontier, so the excess is lost rather than deferred."""
+    env = _roulade_env(forward_rate=10.0)
+
+    fast = _advance(env)
+    # the robot stops dead, so a deferring implementation would pay the held-back rotation now
+    env.scene["robot"].data.root_link_ang_vel_b.torch[:, 1] = 0.0
+    after = _advance(env)
+
+    torch.testing.assert_close(fast, torch.tensor([ROULADE_MAX_PAID_RATE / ROULADE_TARGET_ANGLE]))
+    torch.testing.assert_close(after, torch.tensor([0.0]))
+    # 10 rad/s for 0.02 s: the whole 0.2 rad is on the frontier, only 0.1 of it was ever paid
+    torch.testing.assert_close(mdp.roulade_roll_state(env.as_env()).frontier, torch.tensor([0.2]))
+
+
+def test_roulade_progress_pays_nothing_for_unsupported_rotation():
+    """The support gate is what makes a ballistic flip worthless: a roulade never leaves the floor."""
+    env = _roulade_env(forward_rate=3.0, supported=False)
+
+    reward = _advance(env)
+
+    torch.testing.assert_close(reward, torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.roulade_roll_state(env.as_env()).frontier, torch.tensor([0.0]))
+
+
+def test_roulade_progress_pays_nothing_for_a_roll_over_the_shoulder():
+    """The sagittal gate is zero beyond 60 degrees of lateral tilt, so a side roll is not rotation."""
+    env = _roulade_env(forward_rate=3.0, quat=_ROLLED_QUAT)
+
+    reward = _advance(env)
+
+    torch.testing.assert_close(reward, torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.roulade_roll_state(env.as_env()).frontier, torch.tensor([0.0]))
+
+
+def test_roulade_progress_does_not_pay_rocking_back_below_the_frontier():
+    """The frontier only moves forward, so winding up and unwinding cannot be farmed."""
+    env = _roulade_env(forward_rate=1.0)
+
+    _advance(env)
+    env.scene["robot"].data.root_link_ang_vel_b.torch[:, 1] = -1.0
+    backwards = _advance(env)
+    env.scene["robot"].data.root_link_ang_vel_b.torch[:, 1] = 1.0
+    forwards = _advance(env)
+
+    state = mdp.roulade_roll_state(env.as_env())
+    torch.testing.assert_close(backwards, torch.tensor([0.0]))
+    # back to where the frontier already was, so the recovered rotation is not paid a second time
+    torch.testing.assert_close(forwards, torch.tensor([0.0]))
+    torch.testing.assert_close(state.frontier, torch.tensor([0.02]))
+    torch.testing.assert_close(state.accumulated_angle, torch.tensor([0.02]))
+
+
+def test_the_head_latch_needs_contact_on_the_flat_top_inside_the_rotation_window():
+    """All three conditions are load-bearing: a face-plant or a late touch must not latch."""
+    inside_window = int(math.degrees(0.02 * 30.0))  # 30 control steps at 1 rad/s is about 34 degrees
+
+    latched = _roulade_env(forward_rate=1.0, head_contact=True, head_quat=_HEAD_DOWN_QUAT)
+    _advance(latched, steps=30)
+    face_planted = _roulade_env(forward_rate=1.0, head_contact=True, head_quat=_LEVEL_QUAT)
+    _advance(face_planted, steps=30)
+    no_contact = _roulade_env(forward_rate=1.0, head_contact=False, head_quat=_HEAD_DOWN_QUAT)
+    _advance(no_contact, steps=30)
+    too_early = _roulade_env(forward_rate=1.0, head_contact=True, head_quat=_HEAD_DOWN_QUAT)
+    _advance(too_early, steps=5)
+
+    assert inside_window > 0
+    assert bool(mdp.roulade_roll_state(latched.as_env()).head_latch[0])
+    assert not bool(mdp.roulade_roll_state(face_planted.as_env()).head_latch[0])
+    assert not bool(mdp.roulade_roll_state(no_contact.as_env()).head_latch[0])
+    # 5 steps is 0.1 rad, short of the window's 20 degree lower edge
+    assert not bool(mdp.roulade_roll_state(too_early.as_env()).head_latch[0])
+
+
+def test_the_completion_gated_terms_are_shut_until_the_roll_is_finished_over_the_head():
+    """Six rewards hang off one gate, and both of its conditions have to hold."""
+    gate_lo, gate_hi = math.radians(260.0), math.radians(330.0)
+    env = _roulade_env(quat=_LEVEL_QUAT, height=0.115)
+    state = mdp.roulade_roll_state(env.as_env())
+
+    shut = mdp.roulade_upright_after_roll(env.as_env(), gate_lo=gate_lo, gate_hi=gate_hi)
+    state.frontier[:] = gate_hi
+    without_latch = mdp.roulade_upright_after_roll(env.as_env(), gate_lo=gate_lo, gate_hi=gate_hi)
+    state.head_latch[:] = True
+    open_gate = mdp.roulade_upright_after_roll(env.as_env(), gate_lo=gate_lo, gate_hi=gate_hi)
+    state.frontier[:] = 0.5 * (gate_lo + gate_hi)
+    half_way = mdp.roulade_upright_after_roll(env.as_env(), gate_lo=gate_lo, gate_hi=gate_hi)
+
+    torch.testing.assert_close(shut, torch.tensor([0.0]))
+    torch.testing.assert_close(without_latch, torch.tensor([0.0]))
+    # upright, so the term itself is 1 and what is measured is the gate
+    torch.testing.assert_close(open_gate, torch.tensor([1.0]))
+    # the smoothstep is symmetric, so its midpoint is exactly a half
+    torch.testing.assert_close(half_way, torch.tensor([0.5]))
+
+
+def test_roulade_head_pivot_pays_for_pivoting_rather_than_for_resting_on_the_head():
+    """Contact times the rotation window times the rate, with the tuck worth the last 70 percent."""
+    params = {"angle_lo": math.radians(30.0), "angle_hi": math.radians(240.0), "rate_norm": 2.0}
+    sensor_cfg = _entity("head_ground_contact")
+
+    def pivot(env: _DummyEnv) -> torch.Tensor:
+        return mdp.roulade_head_pivot(env.as_env(), sensor_cfg=sensor_cfg, asset_cfg=_roulade_head_cfg(), **params)
+
+    tucked = _roulade_env(forward_rate=1.0, head_contact=True, head_quat=_HEAD_DOWN_QUAT)
+    _advance(tucked, steps=40)
+    face_planted = _roulade_env(forward_rate=1.0, head_contact=True, head_quat=_LEVEL_QUAT)
+    _advance(face_planted, steps=40)
+    resting = _roulade_env(forward_rate=0.0, head_contact=True, head_quat=_HEAD_DOWN_QUAT)
+    resting.scene["robot"].data.root_link_ang_vel_b.torch[:, 1] = 0.0
+    mdp.roulade_roll_state(resting.as_env()).accumulated_angle[:] = math.radians(90.0)
+
+    # 40 steps at 1 rad/s is 0.8 rad, inside the window; the rate factor is 1/2 of its norm
+    torch.testing.assert_close(pivot(tucked), torch.tensor([0.5]))
+    torch.testing.assert_close(pivot(face_planted), torch.tensor([0.5 * 0.3]))
+    # mid-window, head down, head on the floor -- but not rotating, so nothing is earned
+    torch.testing.assert_close(pivot(resting), torch.tensor([0.0]))
+
+
+def test_roulade_stand_tax_charges_the_shortfall_only_once_the_gate_is_open():
+    """Self-negating, so its positive weight prices the post-roll heap rather than paying for it."""
+    gate_lo, gate_hi = math.radians(260.0), math.radians(330.0)
+    env = _roulade_env(height=0.05)
+    state = mdp.roulade_roll_state(env.as_env())
+
+    during_the_roll = mdp.roulade_stand_tax(env.as_env(), target_height=0.115, gate_lo=gate_lo, gate_hi=gate_hi)
+    state.frontier[:] = gate_hi
+    state.head_latch[:] = True
+    after_the_roll = mdp.roulade_stand_tax(env.as_env(), target_height=0.115, gate_lo=gate_lo, gate_hi=gate_hi)
+
+    torch.testing.assert_close(during_the_roll, torch.tensor([0.0]))
+    torch.testing.assert_close(after_the_roll, torch.tensor([-0.065]))
+
+
+def test_roulade_rise_velocity_pays_only_below_its_ceiling():
+    """Gated one quadrant earlier than the landing, and switched off once the robot is up."""
+    gate_lo, gate_hi = math.radians(180.0), math.radians(260.0)
+    rising = _roulade_env(height=0.08, vertical_speed=0.3)
+    state = mdp.roulade_roll_state(rising.as_env())
+    state.frontier[:] = gate_hi
+    state.head_latch[:] = True
+    hopping = _roulade_env(height=0.2, vertical_speed=0.3)
+    hopping_state = mdp.roulade_roll_state(hopping.as_env())
+    hopping_state.frontier[:] = gate_hi
+    hopping_state.head_latch[:] = True
+
+    torch.testing.assert_close(
+        mdp.roulade_rise_velocity(rising.as_env(), max_height=0.125, gate_lo=gate_lo, gate_hi=gate_hi),
+        torch.tensor([0.3]),
+    )
+    torch.testing.assert_close(
+        mdp.roulade_rise_velocity(hopping.as_env(), max_height=0.125, gate_lo=gate_lo, gate_hi=gate_hi),
+        torch.tensor([0.0]),
+    )
+
+
+def test_roulade_overspeed_penalty_is_quadratic_in_the_excess_only():
+    """A controlled roll never touches it; a whip is charged the square of what it exceeds by."""
+    controlled = _roulade_env(forward_rate=5.0)
+    whipping = _roulade_env(forward_rate=9.0)
+    backwards = _roulade_env(forward_rate=-9.0)
+
+    torch.testing.assert_close(mdp.roulade_overspeed_penalty(controlled.as_env(), omega_max=7.0), torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.roulade_overspeed_penalty(whipping.as_env(), omega_max=7.0), torch.tensor([4.0]))
+    # the magnitude is charged, so spinning backwards is taxed the same
+    torch.testing.assert_close(mdp.roulade_overspeed_penalty(backwards.as_env(), omega_max=7.0), torch.tensor([4.0]))
+
+
+def test_the_straightness_penalties_leave_a_clean_forward_roll_alone():
+    """All three are zero through an arbitrarily deep pure-pitch roll and grow off the plane."""
+    upright = _roulade_env(quat=_LEVEL_QUAT)
+    deep_roll = _roulade_env(quat=_PITCHED_QUAT, forward_rate=4.0)
+    shoulder = _roulade_env(quat=_ROLLED_QUAT, roll_rate=0.5, yaw_rate=0.5, lateral_speed=0.3)
+
+    torch.testing.assert_close(mdp.roulade_flatness_penalty(upright.as_env()), torch.tensor([0.0]))
+    # 90 degrees of pure pitch: the lateral axis is still horizontal, so nothing is charged
+    torch.testing.assert_close(mdp.roulade_flatness_penalty(deep_roll.as_env()), torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.roulade_sagittal_penalty(deep_roll.as_env()), torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.roulade_lateral_velocity_penalty(deep_roll.as_env()), torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.roulade_flatness_penalty(shoulder.as_env()), torch.tensor([1.0]))
+    torch.testing.assert_close(mdp.roulade_sagittal_penalty(shoulder.as_env()), torch.tensor([0.5]))
+    torch.testing.assert_close(mdp.roulade_lateral_velocity_penalty(shoulder.as_env()), torch.tensor([0.09]))
+
+
+def test_the_roll_terms_reject_an_asset_configuration_without_a_single_head_body():
+    """The head-top test is the difference between a roulade and a face-plant, so it may not guess."""
+    env = _roulade_env(head_contact=True)
+
+    with pytest.raises(ValueError, match="single head body"):
+        mdp.roulade_head_pivot(
+            env.as_env(),
+            sensor_cfg=_entity("head_ground_contact"),
+            angle_lo=0.0,
+            angle_hi=1.0,
+            rate_norm=2.0,
+            asset_cfg=_entity("robot"),
+        )

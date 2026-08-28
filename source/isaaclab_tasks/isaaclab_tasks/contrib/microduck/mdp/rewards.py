@@ -34,6 +34,7 @@ with the task's instrumentation pass rather than inside the reward kernels.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,8 @@ import torch
 from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.utils import math as math_utils
 from isaaclab.utils.string import resolve_matching_names_values
+
+from .events import roulade_roll_state
 
 if TYPE_CHECKING:
     from isaaclab.assets import Articulation
@@ -1275,3 +1278,567 @@ class joint_torque_rate_l2(ManagerTermBase):
         self._previous_torque = torque.clone()
         self._is_fresh[:] = False
         return torch.sum(torch.square(rate), dim=1)
+
+
+"""
+Rolling forward (roulade): the rotation accumulator and the terms that read it.
+"""
+
+_ROULADE_FORWARD_SIGN = 1.0
+"""Sign of the body-frame pitch rate that counts as *forward* rotation.
+
+Face down is a +90 degree pitch in this family's reset convention, so a forward roll is a positive
+body-frame ``omega_y`` (addendum section 4.3).
+"""
+
+_ROULADE_HEAD_LATCH_WINDOW = (math.radians(20.0), math.radians(170.0))
+"""Rotation window [rad] inside which head-ground contact latches the roll as over-the-head.
+
+In a real roulade the head plants at 60 to 120 degrees of body rotation; the window is generous
+around that, so contact before the robot has committed and contact once it is already on its back
+do not count (addendum section 4.3).
+"""
+
+_ROULADE_HEAD_TOP_AXIS = (0.882, 0.0, 0.471)
+"""The flat top of the head shell, as a unit vector in the head body's own frame.
+
+Upstream measured it as world-up expressed in ``jaw_soft``'s frame with the robot settled at the
+stand pose (addendum section 4.3).
+"""
+
+_ROULADE_HEAD_TOP_DOWN_MIN = 0.3
+"""How far the head top must point at the floor before a head contact counts, as ``dot(axis, -z)``.
+
+Upstream's measured landmarks at a 110 degree trunk pitch: a passive face-plant with the neck at the
+stand pose reads +0.6, a full chin tuck reads -0.99. The threshold accepts partial tucks while
+staying far away from a face or side-shell contact, which is what stops the policy rolling over its
+shoulder instead of over its head.
+"""
+
+_ROULADE_SAGITTAL_FULL = 0.5
+_ROULADE_SAGITTAL_ZERO = 0.866
+"""Bounds on ``|lateral axis z|`` between which rotation credit fades from full to none.
+
+``sin(30 deg)`` and ``sin(60 deg)``. In a clean forward roll the body's lateral axis stays
+horizontal for *any* amount of pure pitch and its world-z component stays near zero; it grows toward
+one as the roll goes over a shoulder, which upstream's run-5 policy discovered as a lower-energy
+cheat. Above the upper bound a side roll does not count as rotation at all.
+"""
+
+
+def _lateral_axis_z(quat: torch.Tensor) -> torch.Tensor:
+    """World-z component of a body's lateral (y) axis. Zero when the body is sagittally flat.
+
+    Note:
+        Upstream's quaternions are ``(w, x, y, z)`` and Isaac Lab's are ``(x, y, z, w)``, so its
+        ``2 (q_y q_z + q_w q_x)`` reads columns 1, 2, 3 and 0 rather than 2, 3, 0 and 1.
+
+    Args:
+        quat: Body orientation in (x, y, z, w). Shape is (num_envs, 4).
+
+    Returns:
+        The lateral axis' world-z component in ``[-1, 1]``. Shape is (num_envs,).
+    """
+    return 2.0 * (quat[:, 1] * quat[:, 2] + quat[:, 3] * quat[:, 0])
+
+
+def _head_top_is_down(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Whether the flat top of the head shell is pointing at the floor.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the single body carrying the head shells.
+
+    Returns:
+        Whether the head top faces down. Shape is (num_envs,).
+
+    Raises:
+        ValueError: If ``asset_cfg`` does not select exactly one body.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    if asset_cfg.body_names is None or len(asset_cfg.body_ids) != 1:
+        raise ValueError(
+            "The roll's head terms measure the orientation of a single head body; 'asset_cfg' must"
+            f" select exactly one by name. Received: {asset_cfg.body_names}."
+        )
+    head_quat_w = asset.data.body_link_quat_w.torch[:, asset_cfg.body_ids]
+    axis_b = torch.tensor(_ROULADE_HEAD_TOP_AXIS, device=head_quat_w.device).expand_as(head_quat_w[..., :3])
+    axis_world_z = math_utils.quat_apply(head_quat_w, axis_b).squeeze(1)[:, 2]
+    return axis_world_z < -_ROULADE_HEAD_TOP_DOWN_MIN
+
+
+def _any_contact(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Whether any body a contact sensor senses is touching something.
+
+    Upstream reads its sensors' boolean ``found`` field, which is set for every contact the solver
+    keeps. Isaac Lab reports the net contact force per sensing body instead, so "found" is a
+    non-zero force -- the same signal, since the shapes carry no collision margin.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The contact sensor and the bodies to read.
+
+    Returns:
+        Whether at least one selected body is in contact. Shape is (num_envs,).
+    """
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = sensor.data.net_forces_w.torch[:, sensor_cfg.body_ids]
+    return (forces.norm(dim=-1) > 0.0).any(dim=-1)
+
+
+def _update_roulade_state(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    support_sensor_cfg: SceneEntityCfg,
+    head_sensor_cfg: SceneEntityCfg,
+) -> None:
+    """Advance the rotation accumulator and the head latch by one control step.
+
+    Ported verbatim from addendum section 4.3 (``_update_roulade_accum``). Two gates make the
+    integral mean "rotation of a *roulade*" rather than "rotation":
+
+    * **Support gate.** Rotation is integrated only while some part of the robot touches the ground.
+      A roulade is a supported motion, and upstream's first run discovered that without this gate
+      the optimal policy is a ballistic whip that earns the same rotation sooner.
+    * **Sagittal gate.** Rotation is scaled by a smoothstep on how flat the roll is, so going over a
+      shoulder earns little and going over the side earns nothing.
+
+    The frontier only moves forward, so rocking backwards neither pays nor un-pays, and the head
+    latch is set once head-ground contact happens with the flat top of the head pointing down while
+    the accumulated angle is inside :data:`_ROULADE_HEAD_LATCH_WINDOW`.
+
+    The update is guarded by the global step count, so calling it from several terms in one control
+    step integrates once.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation, whose root link carries the trunk and whose single selected
+            body carries the head shells.
+        support_sensor_cfg: The contact sensor reporting whether the robot touches the ground.
+        head_sensor_cfg: The contact sensor reporting whether the head touches the ground.
+    """
+    state = roulade_roll_state(env)
+    step = int(env.common_step_counter)
+    if step == state.last_update_step:
+        return
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    forward_rate = _ROULADE_FORWARD_SIGN * asset.data.root_link_ang_vel_b.torch[:, 1]
+    delta = torch.nan_to_num(forward_rate, nan=0.0) * env.step_dt
+    delta = delta * _any_contact(env, support_sensor_cfg).float()
+    lateral = torch.nan_to_num(_lateral_axis_z(asset.data.root_link_quat_w.torch), nan=1.0).abs()
+    sagittal_gate = _smoothstep((_ROULADE_SAGITTAL_ZERO - lateral) / (_ROULADE_SAGITTAL_ZERO - _ROULADE_SAGITTAL_FULL))
+    # in place throughout, so the buffers stay the ones allocated on the environment: a rollout runs
+    # under ``torch.inference_mode`` and rebinding them there would leave the reset event unable to
+    # write them from outside it
+    state.accumulated_angle.add_(delta * sagittal_gate)
+    torch.maximum(state.frontier, state.accumulated_angle, out=state.frontier)
+
+    latch_lo, latch_hi = _ROULADE_HEAD_LATCH_WINDOW
+    in_window = (state.accumulated_angle > latch_lo) & (state.accumulated_angle < latch_hi)
+    head_contact = _any_contact(env, head_sensor_cfg)
+    state.head_latch.logical_or_(head_contact & in_window & _head_top_is_down(env, asset_cfg))
+    state.last_update_step = step
+
+
+def roulade_completion_gate(
+    env: ManagerBasedRLEnv, gate_lo: float, gate_hi: float, require_head: bool = True
+) -> torch.Tensor:
+    """Smoothstep on the rotation frontier: zero below ``gate_lo``, one above ``gate_hi``.
+
+    Ported from addendum section 4.3 (``_roulade_completion_gate``). This is what replaces a phase
+    clock: the landing rewards can only be opened by *having rotated* -- while supported, and in the
+    sagittal plane -- so a standing spawn cannot farm them by doing nothing and a ballistic flip
+    cannot open them at all.
+
+    It is public because it is the whole landing annuity in one function: a new gated roll reward
+    multiplies by this and nothing else, and a test that wants to know whether completion is
+    *reachable* reads it directly.
+
+    Args:
+        env: The environment instance.
+        gate_lo: Rotation [rad] below which the gate is shut.
+        gate_hi: Rotation [rad] above which the gate is fully open.
+        require_head: Whether the gate additionally requires the over-the-head latch. Defaults to
+            True, which is what every shipped landing reward passes -- "went over the head" is a
+            requirement of the trick rather than a bonus.
+
+    Returns:
+        The gate in ``[0, 1]``. Shape is (num_envs,).
+    """
+    state = roulade_roll_state(env)
+    gate = _smoothstep((state.frontier - gate_lo) / max(gate_hi - gate_lo, 1e-6))
+    if require_head:
+        gate = gate * state.head_latch.float()
+    return gate
+
+
+def roulade_progress(
+    env: ManagerBasedRLEnv,
+    target_angle: float,
+    max_paid_rate: float,
+    support_sensor_cfg: SceneEntityCfg,
+    head_sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Pay increments of the rotation frontier, up to one full roll, at a capped rate.
+
+    Ported from addendum section 4.4 (``roulade_progress``). It is the one dense task signal during
+    the roll, and it is potential-based: a full roll pays ``target_angle`` worth of reward in total
+    however it is spread out, camping anywhere pays zero per step, rocking back below the frontier
+    pays zero, and spinning past the target is clamped.
+
+    The rate cap **forfeits** rather than defers: the paid pointer still jumps to the frontier, so a
+    violent whip collects strictly *less* total progress reward than a controlled roll rather than
+    the same amount sooner.
+
+    This is also the term that advances the accumulator every control step -- see
+    :func:`_update_roulade_state`. The other roll terms only read the frontier it leaves behind, so
+    it has to be **declared first** among them; Isaac Lab evaluates reward terms in declaration
+    order.
+
+    Args:
+        env: The environment instance.
+        target_angle: Rotation [rad] that counts as a complete roll, normally ``2 pi``.
+        max_paid_rate: Largest rotation rate [rad/s] that is paid for. Rotation faster than this
+            forfeits the excess.
+        support_sensor_cfg: The contact sensor reporting whether the robot touches the ground, which
+            gates the accumulator.
+        head_sensor_cfg: The contact sensor reporting whether the head touches the ground, which
+            drives the over-the-head latch.
+        asset_cfg: The articulation, whose root link carries the trunk and whose single selected
+            body carries the head shells.
+
+    Returns:
+        The reward in ``[0, inf)``, normalized so a roll at the cap pays about one per step.
+        Shape is (num_envs,).
+    """
+    _update_roulade_state(env, asset_cfg, support_sensor_cfg, head_sensor_cfg)
+    state = roulade_roll_state(env)
+    new_paid = torch.clamp(state.frontier, max=target_angle)
+    delta = torch.clamp(new_paid - torch.clamp(state.paid, max=target_angle), min=0.0)
+    delta = torch.clamp(delta, max=max_paid_rate * env.step_dt)
+    torch.maximum(state.paid, new_paid, out=state.paid)
+    return delta / (env.step_dt * target_angle)
+
+
+def roulade_head_pivot(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    angle_lo: float,
+    angle_hi: float,
+    rate_norm: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward pivoting over the head: head-ground contact while rotating forward, mid-roll.
+
+    Ported from addendum section 4.4 (``roulade_head_pivot``). The rate factor is the anti-camping
+    guard -- a robot resting face down with its head on the floor is not rotating and earns nothing,
+    so the term pays for pivoting *over* the head rather than for touching it. The head-top factor
+    is the gradient that teaches the chin tuck: any head contact mid-roll pays 30 %, contact on the
+    flat top pays full, which is the same distinction the latch makes but continuous.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The contact sensor reporting whether the head touches the ground.
+        angle_lo: Rotation [rad] below which the term is off.
+        angle_hi: Rotation [rad] above which the term is off.
+        rate_norm: Forward rotation rate [rad/s] at which the rate factor saturates.
+        asset_cfg: The articulation, whose root link carries the trunk and whose single selected
+            body carries the head shells.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    state = roulade_roll_state(env)
+    contact = _any_contact(env, sensor_cfg).float()
+    in_window = ((state.accumulated_angle > angle_lo) & (state.accumulated_angle < angle_hi)).float()
+    forward_rate = _ROULADE_FORWARD_SIGN * asset.data.root_link_ang_vel_b.torch[:, 1]
+    rate = torch.clamp(torch.nan_to_num(forward_rate, nan=0.0) / rate_norm, 0.0, 1.0)
+    head_top = 0.3 + 0.7 * _head_top_is_down(env, asset_cfg).float()
+    return contact * in_window * rate * head_top
+
+
+def roulade_landing_composite(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    height_std: float,
+    upright_std: float,
+    pose_std: float,
+    gate_lo: float,
+    gate_hi: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward standing at the stand pose, but only once the roll has been completed over the head.
+
+    Ported from addendum section 4.4 (``roulade_landing_composite``). It is
+    :func:`standing_composite_score` behind the completion gate, and it is the dominant attractor of
+    the whole recipe: finishing on the feet and staying there pays every step, while a standing
+    spawn that never rolls collects nothing.
+
+    Args:
+        env: The environment instance.
+        target_height: Trunk height of the goal state [m].
+        height_std: Width of the Gaussian kernel on the height [m].
+        upright_std: Width of the Gaussian kernel on the tilt, in units of ``1 - cos(tilt)``.
+        pose_std: Width of the Gaussian kernel on the joint-position RMS error [rad].
+        gate_lo: Rotation [rad] below which the gate is shut.
+        gate_hi: Rotation [rad] above which the gate is fully open.
+        asset_cfg: The articulation and the joints scored against the stand pose. Its root link
+            carries the trunk height and orientation.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    score = standing_composite_score(
+        env,
+        target_height=target_height,
+        height_std=height_std,
+        upright_std=upright_std,
+        pose_std=pose_std,
+        asset_cfg=asset_cfg,
+    )
+    return score * roulade_completion_gate(env, gate_lo, gate_hi)
+
+
+def roulade_upright_after_roll(
+    env: ManagerBasedRLEnv,
+    gate_lo: float,
+    gate_hi: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward a vertical trunk once the roll is complete, linearly in ``cos(tilt)``.
+
+    Ported from addendum section 4.4 (``roulade_upright_after_roll``). It is the bootstrap layer for
+    :func:`roulade_landing_composite`, whose product of Gaussians is numerically zero far from the
+    goal: this one has gradient from any orientation. The gate is what makes it safe -- an
+    always-on upright reward opposes the flip, which is the failure that killed upstream's earlier
+    attempt at this task.
+
+    Args:
+        env: The environment instance.
+        gate_lo: Rotation [rad] below which the gate is shut.
+        gate_hi: Rotation [rad] above which the gate is fully open.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    upright_score = 1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch)
+    return torch.clamp(upright_score, min=0.0) * roulade_completion_gate(env, gate_lo, gate_hi)
+
+
+def roulade_height_after_roll(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    std: float,
+    gate_lo: float,
+    gate_hi: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward standing height once the roll is complete, with a broad Gaussian.
+
+    Ported from addendum section 4.4 (``roulade_height_after_roll``). The second bootstrap layer
+    under the landing composite; see :func:`roulade_upright_after_roll` for why they are gated.
+
+    Args:
+        env: The environment instance.
+        target_height: Trunk height to reach [m], measured above the environment origin.
+        std: Width of the Gaussian kernel [m].
+        gate_lo: Rotation [rad] below which the gate is shut.
+        gate_hi: Rotation [rad] above which the gate is fully open.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    height_score = torch.exp(-(((_root_height_above_ground(env, asset) - target_height) / std) ** 2))
+    return height_score * roulade_completion_gate(env, gate_lo, gate_hi)
+
+
+def roulade_landing_sharp(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    height_std: float,
+    upright_std: float,
+    gate_lo: float,
+    gate_hi: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward the last mile of the landing: tight Gaussians on height and tilt, behind the gate.
+
+    Ported from addendum section 4.4 (``roulade_landing_sharp``). This is the stand-up task's
+    two-layer lesson applied to the landing: upstream's run-3 policies all parked in the same basin
+    a centimetre low and 27 degrees off vertical, where the broad composite already scores about
+    0.5 and has nothing left to pull with. At that pose this layer scores about 0.1 and at vertical
+    it pays about 1, which is the differential that finishes the rise.
+
+    Args:
+        env: The environment instance.
+        target_height: Trunk height of the goal state [m].
+        height_std: Width of the Gaussian kernel on the height [m].
+        upright_std: Width of the Gaussian kernel on the tilt, in units of ``1 - cos(tilt)``.
+        gate_lo: Rotation [rad] below which the gate is shut.
+        gate_hi: Rotation [rad] above which the gate is fully open.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    upright_score = torch.exp(-_trunk_tilt_squared(asset.data.root_link_quat_w.torch) / upright_std**2)
+    height_score = torch.exp(-(((_root_height_above_ground(env, asset) - target_height) / height_std) ** 2))
+    return upright_score * height_score * roulade_completion_gate(env, gate_lo, gate_hi)
+
+
+def roulade_stand_tax(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    gate_lo: float,
+    gate_hi: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Charge every step spent below standing height once the roll is complete.
+
+    Ported from addendum section 4.4 (``roulade_stand_tax``). The gated landing rewards make
+    standing better than lying in a heap, but they leave the heap itself *free*, which is a
+    comfortable basin -- the same static-sit trap the stand-up task had to break. Taxing it makes
+    the basin net negative. The gate keeps the roll itself untaxed and requires the head latch, so
+    an episode that never rolled is never punished into avoidance behaviour.
+
+    The term **negates itself** and is therefore configured with a *positive* weight.
+
+    Args:
+        env: The environment instance.
+        target_height: Trunk height [m] below which the shortfall is charged.
+        gate_lo: Rotation [rad] below which the gate is shut.
+        gate_hi: Rotation [rad] above which the gate is fully open.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    shortfall = torch.clamp(target_height - _root_height_above_ground(env, asset), min=0.0)
+    return -shortfall * roulade_completion_gate(env, gate_lo, gate_hi)
+
+
+def roulade_rise_velocity(
+    env: ManagerBasedRLEnv,
+    max_height: float,
+    gate_lo: float,
+    gate_hi: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward rising out of the roll, gated to its late phase.
+
+    Ported from addendum section 4.4 (``roulade_rise_velocity``). It is :func:`com_upward_velocity`
+    behind a gate that opens around 180 degrees -- on the back -- because from there the rest of a
+    roulade *is* the face-up recovery problem, and the stand-up task proved end-state rewards have
+    no gradient at all at zero motion there. The gate keeps pre-roll bobbing from earning anything
+    and the ceiling keeps hopping from farming it.
+
+    Args:
+        env: The environment instance.
+        max_height: Trunk height [m] above which the reward is switched off.
+        gate_lo: Rotation [rad] below which the gate is shut.
+        gate_hi: Rotation [rad] above which the gate is fully open.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    below_ceiling = (_root_height_above_ground(env, asset) < max_height).float()
+    vertical_speed = torch.nan_to_num(asset.data.root_link_lin_vel_w.torch[:, 2], nan=0.0)
+    reward = torch.clamp(vertical_speed, min=0.0) * below_ceiling
+    return reward * roulade_completion_gate(env, gate_lo, gate_hi)
+
+
+def roulade_overspeed_penalty(
+    env: ManagerBasedRLEnv, omega_max: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize rotating faster than a threshold, quadratically in the excess.
+
+    Ported from addendum section 4.4 (``roulade_overspeed_penalty``). It complements the paid-rate
+    cap in :func:`roulade_progress`: the cap removes the *incentive* to whip, this adds a *cost*, so
+    violent is strictly worse than controlled rather than merely not better. Upstream measured the
+    natural over-the-top transit of this 10 cm robot at 3.5 to 5.5 rad/s and set the threshold above
+    it, so a controlled roll never touches this term.
+
+    Args:
+        env: The environment instance.
+        omega_max: Forward rotation rate [rad/s] above which the excess is charged.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    rate = torch.nan_to_num(asset.data.root_link_ang_vel_b.torch[:, 1], nan=0.0)
+    return torch.clamp(rate.abs() - omega_max, min=0.0).pow(2)
+
+
+def roulade_flatness_penalty(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize tipping out of the sagittal plane, quadratically in the lateral axis' world-z.
+
+    Ported from addendum section 4.4 (``roulade_flatness_penalty``). Zero when standing and zero
+    through an arbitrarily deep *clean* forward roll, because pure pitch keeps the lateral axis
+    horizontal; up to one when tipped fully onto a shoulder. The accumulator's own sagittal gate
+    already makes a side roll unprofitable, and this term is the per-step gradient that steers back
+    toward the plane.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The cost in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.nan_to_num(_lateral_axis_z(asset.data.root_link_quat_w.torch), nan=0.0).pow(2)
+
+
+def roulade_sagittal_penalty(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize body-frame roll and yaw rate, leaving the roll axis free.
+
+    Ported from addendum section 4.4 (``roulade_sagittal_penalty``). The pitch rate is the trick, so
+    unlike :func:`body_ang_vel_xy_l2` -- which the roll task keeps at a 25 times lighter weight for
+    exactly this reason -- this term charges the *other* two axes.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    rate = asset.data.root_link_ang_vel_b.torch
+    return torch.nan_to_num(rate[:, 0].pow(2) + rate[:, 2].pow(2), nan=0.0)
+
+
+def roulade_lateral_velocity_penalty(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize sideways travel, quadratically in the body-frame lateral velocity.
+
+    Ported from addendum section 4.4 (``roulade_lateral_velocity_penalty``). Keeps the roll straight
+    where :func:`roulade_flatness_penalty` keeps it upright.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.nan_to_num(asset.data.root_link_lin_vel_b.torch[:, 1].pow(2), nan=0.0)
