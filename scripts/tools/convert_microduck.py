@@ -18,7 +18,9 @@ drives, and only adds what that script's flags cannot express:
 * it flattens the layered asset the importer emits (an interface layer plus seven payloads) into
   one self-contained binary USD, so the shipped asset is a single file;
 * it repairs the two contact properties the importer loses to scene-graph instancing: the physics
-  material binding on the foot colliders, and the MJCF ``contype``/``conaffinity`` masks.
+  material binding on the foot colliders, and the MJCF ``contype``/``conaffinity`` masks;
+* it clears the MJCF home height the importer bakes into the articulation root transform, so that
+  an ``ArticulationCfg``'s initial state sets the spawn pose instead of offsetting it.
 
 Usage:
 
@@ -31,7 +33,7 @@ See ``ATTRIBUTION.md`` next to the generated asset for the provenance of the sou
 
 import os
 
-from pxr import Usd, UsdPhysics, UsdShade
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 MICRODUCK_REPO_URL = "https://github.com/pollen-robotics/microduck_rl.git"
 """Upstream repository the source MJCF is taken from."""
@@ -184,14 +186,48 @@ def restore_collision_masks(stage: Usd.Stage) -> int:
     return disabled
 
 
+def clear_root_transform(stage: Usd.Stage) -> Gf.Vec3d:
+    """Reset the articulation root's transform to identity, and return the translation it carried.
+
+    The importer bakes the MJCF's home pose -- ``qpos0``, i.e. 0.12 m of trunk height -- into the
+    articulation root's own ``xformOp:translate``. Spawning applies an asset configuration's initial
+    position to the prim the asset is referenced under, so that baked-in transform *composes* with
+    it: a configuration asking for 0.125 m would put the robot at 0.245 m until the first reset
+    writes the default root state. Clearing it makes the initial position mean what it says, and the
+    home height becomes the configuration's to own.
+
+    Args:
+        stage: Flattened stage to edit in place.
+
+    Returns:
+        The translation the root carried before it was cleared.
+
+    Raises:
+        RuntimeError: When the converted asset has no articulation root.
+    """
+    root_prim = next((prim for prim in stage.TraverseAll() if prim.HasAPI(UsdPhysics.ArticulationRootAPI)), None)
+    if root_prim is None:
+        raise RuntimeError("The converted asset has no articulation root to clear the transform of.")
+
+    xformable = UsdGeom.Xformable(root_prim)
+    translation = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+    # Emptying the op order is what makes the prim identity; the now-unused op attributes are
+    # removed with it so nothing is left behind to be re-ordered back in by mistake.
+    xformable.ClearXformOpOrder()
+    for property_name in root_prim.GetPropertyNames():
+        if property_name.startswith("xformOp:"):
+            root_prim.RemoveProperty(property_name)
+    return translation
+
+
 def flatten_to_single_file(layered_usd_path: str, dest_path: str) -> None:
     """Compose the layered asset the MJCF importer emits into one binary USD file.
 
     The importer writes an interface layer that payloads geometry, materials and physics from sibling
     files. Flattening bakes the composed result -- including the selected ``"Physics"`` variant --
     into a single layer, and keeps the mesh prototypes so the instanced visual geometry is not
-    duplicated. The contact properties that instancing cost the importer are repaired on the
-    flattened stage, where the prototypes are ordinary editable prims.
+    duplicated. The contact properties that instancing cost the importer, and the baked-in root
+    transform, are repaired on the flattened stage, where the prototypes are ordinary editable prims.
 
     Args:
         layered_usd_path: Path of the interface layer written by the importer.
@@ -201,6 +237,7 @@ def flatten_to_single_file(layered_usd_path: str, dest_path: str) -> None:
     stage = Usd.Stage.Open(Usd.Stage.Open(layered_usd_path).Flatten())
     bind_foot_collision_material(stage)
     restore_collision_masks(stage)
+    clear_root_transform(stage)
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     stage.GetRootLayer().Export(dest_path)
 
