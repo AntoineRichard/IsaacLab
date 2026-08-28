@@ -32,6 +32,20 @@ class BamActuatorCfg(ActuatorBaseCfg):
 
     class_type: type["BamActuator"] | str = "{DIR}.actuator_bam:BamActuator"
 
+    stiffness: dict[str, float] | float | None = None
+    """Unused by this model. Defaults to None so that a configuration validates unset.
+
+    Configuration validation rejects an object that still holds the inherited ``MISSING``
+    sentinel, so the field is defaulted here rather than left required.
+    Setting it to anything but None warns, since the value would be silently dropped.
+    """
+
+    damping: dict[str, float] | float | None = None
+    """Unused by this model. Defaults to None so that a configuration validates unset.
+
+    See :attr:`stiffness`.
+    """
+
     params_file: str = BAM_XL330_M6_PARAMS_FILE
     """Path of the BAM parameter file to load. Defaults to the vendored Dynamixel XL330 ``m6`` fit."""
 
