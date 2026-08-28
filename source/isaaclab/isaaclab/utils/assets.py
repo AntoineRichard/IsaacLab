@@ -230,7 +230,7 @@ _GIT_SSH_RE = re.compile(r"^[^@/:]+@[^:]+:.+")
 
 
 def retrieve_git_asset_path(
-    git_path: str, local_path: str, cache_dir: str | None = None, force_update: bool = False
+    git_path: str, local_path: str, cache_dir: str | None = None, force_update: bool = False, rev: str | None = None
 ) -> str:
     """Return a local path for an asset stored in a git repository.
 
@@ -242,73 +242,116 @@ def retrieve_git_asset_path(
         local_path: Asset path relative to the git repository, or an absolute path inside it.
         cache_dir: Directory where remote repositories are cached. Defaults to
             :data:`GIT_ASSET_CACHE_DIR`.
-        force_update: Whether to run ``git pull --ff-only`` for an existing checkout.
+        force_update: Whether to run ``git pull --ff-only`` for an existing checkout. Ignored when
+            :paramref:`rev` is given, since a pinned revision has nothing to update to.
+        rev: Revision to pin the checkout to, usually a full commit SHA. Defaults to ``None``, which
+            uses the repository's default branch. A pinned remote repository is cached separately
+            from the same repository at another revision. A pinned local checkout is only verified,
+            never moved, so that a caller cannot silently rewrite someone's working tree.
 
     Returns:
         Local path to the requested asset.
 
     Raises:
         FileNotFoundError: When :paramref:`git_path` points to a missing local directory, or the asset is missing.
-        RuntimeError: When the git repository cannot be cloned or updated.
+        RuntimeError: When the git repository cannot be cloned or updated, or a local checkout is not
+            at :paramref:`rev`.
         ValueError: When :paramref:`local_path` is a URL, resolves outside the git repository, or a cache directory
             cannot be derived from :paramref:`git_path`.
     """
     if _is_git_remote_path(git_path):
-        git_asset_dir = _get_git_asset_cache_dir(git_path, cache_dir)
+        git_asset_dir = _get_git_asset_cache_dir(git_path, cache_dir, rev)
         source_path = _resolve_git_asset_source_path(local_path, git_asset_dir)
         if not force_update and os.path.exists(source_path):
             return source_path
 
-    git_asset_dir = _get_git_asset_dir(git_path, cache_dir, force_update)
+    git_asset_dir = _get_git_asset_dir(git_path, cache_dir, force_update, rev)
     source_path = _resolve_git_asset_source_path(local_path, git_asset_dir)
     if not os.path.exists(source_path):
         raise FileNotFoundError(f"Unable to find git asset: {source_path}")
     return source_path
 
 
-def _get_git_asset_dir(git_path: str, cache_dir: str | None = None, force_update: bool = False) -> str:
+def _get_git_asset_dir(
+    git_path: str, cache_dir: str | None = None, force_update: bool = False, rev: str | None = None
+) -> str:
     """Return a local checkout for a git asset repository.
 
     Args:
         git_path: Git repository URL, SSH path, or existing local checkout directory.
         cache_dir: Directory where remote repositories are cached.
         force_update: Whether to update an existing checkout.
+        rev: Revision to pin the checkout to. Defaults to ``None`` (the default branch).
 
     Returns:
         Path to a local repository checkout.
 
     Raises:
         FileNotFoundError: When a local :paramref:`git_path` does not exist.
-        RuntimeError: When a remote checkout cannot be prepared.
+        RuntimeError: When a remote checkout cannot be prepared, or a local one is not at :paramref:`rev`.
     """
     if not _is_git_remote_path(git_path):
         git_asset_dir = os.path.abspath(os.path.expanduser(git_path))
         if not os.path.isdir(git_asset_dir):
             raise FileNotFoundError(f"Git asset path does not point to an existing directory: {git_asset_dir}")
-        if force_update and os.path.isdir(os.path.join(git_asset_dir, ".git")):
+        if rev is not None:
+            _verify_git_asset_rev(git_asset_dir, rev)
+        elif force_update and os.path.isdir(os.path.join(git_asset_dir, ".git")):
             _run_git_command(["git", "-C", git_asset_dir, "pull", "--ff-only"])
         return git_asset_dir
 
-    git_asset_dir = _get_git_asset_cache_dir(git_path, cache_dir)
+    git_asset_dir = _get_git_asset_cache_dir(git_path, cache_dir, rev)
 
     if os.path.isdir(os.path.join(git_asset_dir, ".git")):
-        if force_update:
+        # a pinned cache directory already holds that exact revision, so there is nothing to update
+        if force_update and rev is None:
             _run_git_command(["git", "-C", git_asset_dir, "pull", "--ff-only"])
     elif os.path.exists(git_asset_dir):
         raise RuntimeError(f"Git asset cache exists but is not a git repository: {git_asset_dir}")
-    else:
+    elif rev is None:
         os.makedirs(os.path.dirname(git_asset_dir), exist_ok=True)
         _run_git_command(["git", "clone", "--depth", "1", git_path, git_asset_dir])
+    else:
+        # ``clone --depth 1`` can only take a branch or tag, so fetch the revision itself. Hosts that
+        # refuse to serve an arbitrary SHA surface as a failed fetch rather than a wrong checkout.
+        os.makedirs(git_asset_dir, exist_ok=True)
+        _run_git_command(["git", "init", "--quiet", git_asset_dir])
+        _run_git_command(["git", "-C", git_asset_dir, "remote", "add", "origin", git_path])
+        _run_git_command(["git", "-C", git_asset_dir, "fetch", "--depth", "1", "origin", rev])
+        _run_git_command(["git", "-C", git_asset_dir, "checkout", "--quiet", "FETCH_HEAD"])
 
     return git_asset_dir
 
 
-def _get_git_asset_cache_dir(git_path: str, cache_dir: str | None = None) -> str:
+def _verify_git_asset_rev(git_asset_dir: str, rev: str) -> None:
+    """Check that a local checkout is at a revision.
+
+    Args:
+        git_asset_dir: Local git repository checkout directory.
+        rev: Revision the checkout is expected to be at.
+
+    Raises:
+        RuntimeError: When the checkout is not a git repository or is at another revision.
+    """
+    if not os.path.isdir(os.path.join(git_asset_dir, ".git")):
+        raise RuntimeError(
+            f"Git asset path is not a git repository, so revision '{rev}' cannot be verified: {git_asset_dir}"
+        )
+    head = _run_git_command_output(["git", "-C", git_asset_dir, "rev-parse", "HEAD"])
+    if not head.startswith(rev) and not rev.startswith(head):
+        raise RuntimeError(
+            f"Git asset checkout '{git_asset_dir}' is at revision '{head}', not the requested '{rev}'."
+            f" Check it out with: git -C {git_asset_dir} checkout {rev}"
+        )
+
+
+def _get_git_asset_cache_dir(git_path: str, cache_dir: str | None = None, rev: str | None = None) -> str:
     """Return the cache directory for a remote git repository.
 
     Args:
         git_path: Git repository URL or SSH path.
         cache_dir: Root cache directory. Defaults to :data:`GIT_ASSET_CACHE_DIR`.
+        rev: Revision the checkout is pinned to. Defaults to ``None`` (the default branch).
 
     Returns:
         Cache checkout path for :paramref:`git_path`.
@@ -316,7 +359,12 @@ def _get_git_asset_cache_dir(git_path: str, cache_dir: str | None = None) -> str
     if cache_dir is None:
         cache_dir = GIT_ASSET_CACHE_DIR
     cache_dir = os.path.abspath(os.path.expanduser(cache_dir))
-    return os.path.join(cache_dir, _get_git_asset_repo_name(git_path))
+    repo_name = _get_git_asset_repo_name(git_path)
+    # a pinned checkout gets its own directory: sharing one with the default branch would hand back
+    # whichever revision happened to be cloned first
+    if rev is not None:
+        repo_name = f"{repo_name}@{rev}"
+    return os.path.join(cache_dir, repo_name)
 
 
 def _is_git_remote_path(git_path: str) -> bool:
@@ -366,13 +414,29 @@ def _run_git_command(command: list[str]) -> None:
     Raises:
         RuntimeError: When git is missing or the command fails.
     """
+    _run_git_command_output(command)
+
+
+def _run_git_command_output(command: list[str]) -> str:
+    """Run a git command and return its standard output.
+
+    Args:
+        command: Git command and arguments.
+
+    Returns:
+        The command's standard output, stripped of surrounding whitespace.
+
+    Raises:
+        RuntimeError: When git is missing or the command fails.
+    """
     try:
-        subprocess.run(command, check=True, capture_output=True)
+        result = subprocess.run(command, check=True, capture_output=True)
     except FileNotFoundError as exc:
         raise RuntimeError("git is required to clone git asset repositories.") from exc
     except subprocess.CalledProcessError as exc:
         command_str = " ".join(command)
         raise RuntimeError(f"Unable to run git asset repository command: {command_str}") from exc
+    return result.stdout.decode("utf-8", errors="replace").strip()
 
 
 def _resolve_git_asset_source_path(local_path: str, git_asset_dir: str) -> str:

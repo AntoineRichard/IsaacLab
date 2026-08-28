@@ -349,6 +349,61 @@ def test_retrieve_git_asset_path_clones_default_repo_cache(tmp_path, monkeypatch
     ]
 
 
+def test_retrieve_git_asset_path_fetches_a_pinned_revision(tmp_path, monkeypatch):
+    """Test that a pinned revision is fetched by SHA and cached apart from the default branch."""
+    git_commands = []
+    git_path = "https://example.com/example-assets.git"
+    rev = "d424a0c899f6b33cbd3daeb279913134349c0b63"
+    cache_dir = tmp_path / "asset_cache"
+    repo_dir = cache_dir / f"example-assets@{rev}"
+
+    def mock_run_git_command(command):
+        git_commands.append(command)
+        asset_dir = repo_dir / "Robots" / "Disney" / "ExampleBot"
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        (repo_dir / ".git").mkdir(exist_ok=True)
+        (asset_dir / "example_bot.usd").write_text("#usda 1.0\n", encoding="utf-8")
+
+    monkeypatch.setattr(assets_utils, "_run_git_command", mock_run_git_command)
+
+    asset_path = Path(
+        assets_utils.retrieve_git_asset_path(git_path, "Robots/Disney/ExampleBot", cache_dir=str(cache_dir), rev=rev)
+    )
+
+    assert asset_path == repo_dir / "Robots" / "Disney" / "ExampleBot"
+    # ``clone --depth 1`` only accepts a branch or tag, so the revision itself is fetched
+    assert ["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin", rev] in git_commands
+    assert not any("clone" in command for command in git_commands)
+    # the unpinned cache directory stays free for the default branch
+    assert not (cache_dir / "example-assets").exists()
+
+
+def test_retrieve_git_asset_path_verifies_a_pinned_local_checkout(tmp_path, monkeypatch):
+    """Test that a local checkout is verified against the pinned revision rather than moved to it."""
+    repo_dir = tmp_path / "example-assets"
+    asset_dir = repo_dir / "Robots" / "Disney" / "ExampleBot"
+    asset_dir.mkdir(parents=True)
+    (repo_dir / ".git").mkdir()
+    (asset_dir / "example_bot.usd").write_text("#usda 1.0\n", encoding="utf-8")
+
+    head = "d424a0c899f6b33cbd3daeb279913134349c0b63"
+    git_commands = []
+
+    def mock_run_git_command_output(command):
+        git_commands.append(command)
+        return head
+
+    monkeypatch.setattr(assets_utils, "_run_git_command_output", mock_run_git_command_output)
+
+    asset_path = Path(assets_utils.retrieve_git_asset_path(str(repo_dir), "Robots/Disney/ExampleBot", rev=head))
+
+    assert asset_path == asset_dir
+    assert git_commands == [["git", "-C", str(repo_dir), "rev-parse", "HEAD"]]
+
+    with pytest.raises(RuntimeError, match="not the requested"):
+        assets_utils.retrieve_git_asset_path(str(repo_dir), "Robots/Disney/ExampleBot", rev="0" * 40)
+
+
 def test_retrieve_git_asset_path_uses_cached_asset_without_git(tmp_path, monkeypatch):
     """Test that cached git assets can be used without running git commands."""
     git_path = "https://example.com/example-assets.git"
