@@ -30,7 +30,7 @@ import math
 import numpy as np
 import pytest
 import torch
-from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, NewtonManager
+from isaaclab_newton.physics import FeatherstoneSolverCfg, MJWarpSolverCfg, NewtonCfg, NewtonManager
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import BamActuator, BamActuatorCfg
@@ -689,3 +689,198 @@ def test_native_bam_actuators_are_captured_in_the_cuda_graph(native_sim, device,
     # replaying it under a per-environment randomization is the real capture evidence: the
     # in-graph publish has to read the controller array a host-side write just changed.
     _settle_with_friction_scales(robot, native_sim, load)
+
+
+def _build_two_native_pendulums(sim, pendulum_usd: str, second_cfg: BamActuatorCfg) -> tuple:
+    """Spawn two BAM articulations per environment and initialize the simulation.
+
+    Both robots are the same asset, so Newton merges their BAM joints into *one* actuator
+    whenever the configurations agree on every grouping-key field -- which is exactly the
+    multi-robot case the per-articulation binding has to get right.
+    """
+    for index in range(NUM_ENVS):
+        sim_utils.create_prim(f"/World/Env_{index}", "Xform", translation=(index * 1.0, 0.0, 1.0))
+    robots = []
+    for name, cfg in (
+        ("RobotA", BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)),
+        ("RobotB", second_cfg),
+    ):
+        robots.append(
+            Articulation(
+                ArticulationCfg(
+                    prim_path=f"/World/Env_[^/]*/{name}",
+                    spawn=sim_utils.UsdFileCfg(usd_path=pendulum_usd),
+                    init_state=ArticulationCfg.InitialStateCfg(joint_pos={"joint": INITIAL_ANGLE}),
+                    actuators={"servo": cfg},
+                )
+            )
+        )
+    sim.reset()
+    return tuple(robots)
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_two_articulations_sharing_one_actuator_must_agree(native_sim, device, pendulum_usd):
+    """Two robots merged into one Newton actuator cannot carry different BAM settings.
+
+    ``vin_range``, ``vin_drop_gain_range``, ``friction_scale_range`` and ``stiff_frictionloss``
+    are not part of Newton's actuator-grouping key, so structurally identical robots share one
+    actuator and one set of parameter arrays. Applying the second articulation's ranges would
+    silently discard the first's randomization, and skipping them would silently ignore the
+    second's configuration, so the conflict has to be refused.
+    """
+    conflicting = BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW, friction_scale_range=(0.5, 2.0))
+    with pytest.raises(ValueError, match="share one Newton actuator"):
+        _build_two_native_pendulums(native_sim, pendulum_usd, conflicting)
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_two_articulations_with_matching_settings_bind_once(native_sim, device, pendulum_usd):
+    """Agreeing robots share the actuator, and neither is left unbound or bound twice."""
+    matching = BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)
+    robot_a, robot_b = _build_two_native_pendulums(native_sim, pendulum_usd, matching)
+
+    bam_actuators = [
+        actuator for actuator in NewtonManager._adapter.actuators if isinstance(actuator.controller, ControllerBam)
+    ]
+    assert len(bam_actuators) == 1, "the identical robots must merge into one Newton actuator"
+    controller = bam_actuators[0].controller
+    assert controller.solver_applies_friction
+    assert controller.external_torque is not None
+
+    # One publish hook, not one per articulation: a second registration would write the same
+    # budget twice per step and, worse, hide a scoping mistake.
+    publish_hooks = [cb for cb in NewtonManager._post_actuator_callbacks if "publish_dof_friction" in repr(cb)]
+    assert len(NewtonManager._pre_actuator_callbacks) == 1
+    assert len(publish_hooks) <= 1
+
+    for robot in (robot_a, robot_b):
+        assert "servo" in robot.actuators._native_group_names
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_startup_ranges_are_sampled_per_environment(native_sim, device, pendulum_usd):
+    """The config's start-up ranges must be drawn even though no solver exists yet.
+
+    Sampling happens while the model is being built, before
+    :meth:`~isaaclab_newton.physics.NewtonManager.initialize_solver` runs, precisely so that it
+    does not depend on which solver the scene uses -- the values feed the controller's kernels,
+    not the solver. Implementation A samples them on every backend and so must this one.
+    """
+    for index in range(NUM_ENVS):
+        sim_utils.create_prim(f"/World/Env_{index}", "Xform", translation=(index * 1.0, 0.0, 1.0))
+    robot = Articulation(
+        ArticulationCfg(
+            prim_path="/World/Env_[^/]*/Robot",
+            spawn=sim_utils.UsdFileCfg(usd_path=pendulum_usd),
+            init_state=ArticulationCfg.InitialStateCfg(joint_pos={"joint": INITIAL_ANGLE}),
+            actuators={
+                "servo": BamActuatorCfg(
+                    joint_names_expr=[".*"],
+                    kp_fw=KP_FW,
+                    vin_range=(6.0, 8.0),
+                    friction_scale_range=(0.5, 1.5),
+                )
+            },
+        )
+    )
+    native_sim.reset()
+    assert robot.is_initialized
+
+    for attr, (low, high) in (("vin", (6.0, 8.0)), ("friction_scale", (0.5, 1.5))):
+        values = read_group_parameter(robot.actuators, "servo", "controller", attr)
+        assert bool(((values >= low) & (values <= high)).all()), f"{attr} outside its configured range"
+        assert len(torch.unique(values)) > 1, f"{attr} drew the same value for every environment"
+    # An unset range keeps the authored nominal.
+    torch.testing.assert_close(
+        read_group_parameter(robot.actuators, "servo", "controller", "sag_gain"),
+        torch.zeros(NUM_ENVS, robot.num_joints, device=robot.device),
+    )
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_graph_capture_is_refused_at_a_decimation_of_one(native_sim, device, pendulum_usd):
+    """Capturing a decimation of one with stateful actuators must fail loudly.
+
+    The actuator state buffers are swapped host-side while the graph is recorded, so every
+    replay restarts from the same buffer and the state never advances: BAM would report the
+    friction budget of a freshly reset joint on every step. Silently wrong physics is worse
+    than a refusal, so the refusal is the contract.
+    """
+    if not device.startswith("cuda"):
+        pytest.skip("CUDA graph capture only happens on a CUDA device")
+    _build_native_pendulum(native_sim, pendulum_usd)
+    assert NewtonManager._adapter.is_stateful
+
+    with pytest.raises(RuntimeError, match="decimation of one"):
+        NewtonManager.set_decimation(1)
+
+    # An even decimation is the documented way out, and it captures.
+    NewtonManager.set_decimation(2)
+    assert NewtonManager._graph is not None
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_each_articulation_configures_only_its_own_actuator(native_sim, device, pendulum_usd):
+    """Two robots that do *not* merge must each get their own configuration.
+
+    The actuator adapter is simulation-global, so an articulation that walked the whole
+    adapter would apply its own start-up ranges to another robot's actuator -- silently, and
+    with whichever articulation initialized first winning. Differing ``max_delay`` puts the two
+    robots in different Newton actuators; only the scoping decides which one each configures.
+    """
+    plain = BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)
+    delayed = BamActuatorCfg(
+        joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW, max_delay=2, friction_scale_range=(3.0, 3.0)
+    )
+    robot_a, robot_b = _build_two_native_pendulums(native_sim, pendulum_usd, delayed)
+    assert len({id(actuator) for actuator in NewtonManager._adapter.actuators}) == 2, (
+        "the two robots must not merge, or the test cannot tell the configurations apart"
+    )
+
+    del plain
+    for robot, expected in ((robot_a, 1.0), (robot_b, 3.0)):
+        friction_scale = read_group_parameter(robot.actuators, "servo", "controller", "friction_scale")
+        torch.testing.assert_close(friction_scale, torch.full_like(friction_scale, expected), atol=1e-6, rtol=0.0)
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_startup_ranges_are_sampled_without_a_mujoco_solver(device, pendulum_usd):
+    """Start-up randomization must not depend on which solver the scene runs.
+
+    The ranges feed the controller's kernels, not the solver, and implementation A samples them
+    on every backend. On a solver that cannot apply joint dry friction the BAM controller falls
+    back to its own stiction clip -- but the randomization is unaffected, which is only true
+    because the sampling happens while the model is built, before any solver exists.
+    """
+    sim_cfg = SimulationCfg(
+        dt=DT,
+        device=device,
+        use_newton_actuators=True,
+        physics=NewtonCfg(solver_cfg=FeatherstoneSolverCfg(), num_substeps=2, debug_mode=False),
+    )
+    with build_simulation_context(
+        device=device, gravity_enabled=True, add_ground_plane=False, sim_cfg=sim_cfg
+    ) as sim_ctx:
+        sim_ctx._app_control_on_stop_handle = None  # noqa: SLF001
+        for index in range(NUM_ENVS):
+            sim_utils.create_prim(f"/World/Env_{index}", "Xform", translation=(index * 1.0, 0.0, 1.0))
+        robot = Articulation(
+            ArticulationCfg(
+                prim_path="/World/Env_[^/]*/Robot",
+                spawn=sim_utils.UsdFileCfg(usd_path=pendulum_usd),
+                init_state=ArticulationCfg.InitialStateCfg(joint_pos={"joint": INITIAL_ANGLE}),
+                actuators={"servo": BamActuatorCfg(joint_names_expr=[".*"], kp_fw=KP_FW, vin_range=(6.0, 8.0))},
+            )
+        )
+        sim_ctx.reset()
+        assert robot.is_initialized
+
+        controller = _native_controller(robot)
+        # No MuJoCo model, so the controller keeps the torque-level clip ...
+        assert not controller.solver_applies_friction
+        assert controller.external_torque is None
+        # ... and the start-up randomization happened anyway.
+        vin = read_group_parameter(robot.actuators, "servo", "controller", "vin")
+        assert bool(((vin >= 6.0) & (vin <= 8.0)).all())
+        assert len(torch.unique(vin)) > 1

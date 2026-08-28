@@ -157,6 +157,19 @@ class MjWarpActuatorBridge:
     STIFF_SOLIMP_FRICTION: tuple[float, float, float, float, float] = (0.99, 0.9999, 0.001, 0.5, 2.0)
     """Friction-constraint impedance profile paired with :attr:`STIFF_SOLREF_FRICTION` [-]."""
 
+    @staticmethod
+    def is_available(solver: object) -> bool:
+        """Return whether *solver* exposes the MuJoCo Warp device model this bridge needs.
+
+        The only solver that can apply joint dry friction is MuJoCo's, and only through its
+        device-side model; the CPU MuJoCo backend does not publish one. Callers use this to
+        select a documented fallback instead of constructing a bridge that would raise.
+
+        Args:
+            solver: The active Newton solver, or ``None``.
+        """
+        return getattr(solver, "mjw_model", None) is not None
+
     def __init__(self, solver: object, dof_indices: wp.array, num_newton_dofs: int, device: str):
         """Bind the bridge to a MuJoCo Warp solver.
 
