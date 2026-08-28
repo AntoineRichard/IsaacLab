@@ -123,16 +123,46 @@ prevent. Closing the gap belongs in the converter or in an explicit, tested over
 ``joint_effort_limit``, not as a silent side effect of the servo model.
 """
 
-MICRODUCK_JOINT_DAMPING = 0.053
-"""Passive joint viscous damping [N·m·s/rad], from the MJCF ``chosen_actuator`` class.
+MICRODUCK_JOINT_DAMPING = 0.00536
+"""Passive joint viscous damping [N·m·s/rad], the value upstream actually deploys.
 
-MuJoCo's ``dof_damping``, which the MJCF-to-USD conversion does not carry (it is written only as
-``mjc:damping``, outside the schema resolvers Isaac Lab passes to Newton).
+This is the vendored ``xl330`` ``m6`` fit's ``friction_viscous`` (``0.005359668274599504`` in
+:data:`~isaaclab.actuators.BAM_XL330_M6_PARAMS_FILE`), rounded to three significant digits.
+Upstream's BAM binding republishes that coefficient into MuJoCo's ``dof_damping`` every
+step, so ~0.0054 -- not the MJCF's ``chosen_actuator`` value of ``0.053`` -- is what the deployed
+robot is trained and identified against.
+
+MuJoCo's ``dof_damping`` is not carried by the MJCF-to-USD conversion (it is written only as
+``mjc:damping``, outside the schema resolvers Isaac Lab passes to Newton), so the configuration has
+to restore it either way; the only question was which value.
+
+.. warning::
+
+    This value requires MJWarp's MuJoCo-parity joint limits to be enabled, i.e.
+    :attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref` left at
+    its default of ``True``. Turning that escape hatch off without also restoring ``0.053`` here
+    reproduces the divergence described below.
+
+**Why it used to be 0.053.** The 10x inflated MJCF value was a workaround for a solver defect, not a
+plant property. Newton's unauthored joint-limit gains (``limit_ke = 1e4`` / ``limit_kd = 1e1``)
+convert to an *underdamped* MuJoCo limit constraint -- ``jnt_solref ~ (0.0072, 0.242)`` on this
+robot instead of MuJoCo's critically damped ``(0.02, 1.0)`` -- so every limit contact of this
+0.74 kg, limit-bounded biped pumped energy that only passive damping could remove. At the true
+0.0054 the state went non-finite within a few hundred steps; ten times more damping masked it. The
+bisection that isolated the limit constraint as necessary and sufficient is in
+``artifacts/microduck/mjlab_repro/report.md`` (E4).
+
+The defect is fixed at the backend layer, by the flag named in the warning above: unauthored joint
+limits now resolve to MuJoCo's default ``solreflimit`` of ``(0.02, 1.0)``. With that in place,
+dropping the damping to upstream's
+value cuts the golden-trajectory joint RMSE against upstream mjlab by **82%** (0.0440 -> 0.0079 rad)
+and the attitude error by 87%, and makes MicroDuck fall on exactly upstream's step -- see
+``artifacts/microduck/golden_trajectories/comparison_report.md``.
 """
 
 MICRODUCK_JOINT_FRICTION = 0.0048
-"""Passive joint dry friction [N·m], the MJCF ``frictionloss``, lost in conversion for the same
-reason as :data:`MICRODUCK_JOINT_DAMPING`."""
+"""Passive joint dry friction [N·m], the MJCF ``frictionloss``, which the conversion drops for the
+same reason it drops MuJoCo's ``dof_damping`` (see :data:`MICRODUCK_JOINT_DAMPING`)."""
 
 
 MICRODUCK_CFG = ArticulationCfg(
@@ -201,8 +231,8 @@ MICRODUCK_CFG = ArticulationCfg(
 No ``stiffness``/``damping``: the BAM model ignores both (its position loop is ``kp_fw`` and its
 damping is the motor's back-EMF) and warns if they are set.
 
-:data:`MICRODUCK_JOINT_DAMPING` and :data:`MICRODUCK_JOINT_FRICTION` are the MJCF's
-``chosen_actuator`` joint dynamics, and what they mean depends on the execution path. With
+:data:`MICRODUCK_JOINT_DAMPING` and :data:`MICRODUCK_JOINT_FRICTION` are the joint dynamics the
+conversion drops, and what they mean depends on the execution path. With
 ``use_newton_actuators=True`` on MJWarp they are seeds only: the native controller republishes the
 live friction budget and viscous coefficient into the solver's ``dof_frictionloss`` /
 ``dof_damping`` every physics step, which is what the reference implementation does. With
@@ -214,20 +244,16 @@ stays at its clamp), and the divergence is what a reward NaN then reports. That 
 friction slightly double-counted on this path, by 0.0048 N·m against a ~1 N·m stall torque, which
 is the price of a stable integration.
 
-**Known backend sim gap, 10x in joint damping.** The deployed upstream model does *not* run at
-0.053: its BAM binding republishes the fitted ``friction_viscous`` into ``dof_damping`` every step,
-so upstream integrates MicroDuck at ~0.0054 N·m·s/rad (0.005360 in the vendored ``m6`` fit, measured
-on the Newton-native path in this tree). Restoring the MJCF's 0.053 therefore buys stability at the
-cost of an order of magnitude more joint damping than the robot upstream trains and deploys, and any
-sim-to-sim comparison against upstream has to account for it.
-
-That is a property of this plant on this stack rather than of the BAM model. The Task-11 review
-adjudicated it as a plant-level instability of the MJCF -> USD -> Newton -> MJWarp path: the
-previous ``DelayedPDActuatorCfg`` configuration diverges at ~0.0054 too, so the low damping and not
-the servo model is what the integrator cannot carry. The matching fix on the Newton-native path is
-an actuator-workstream follow-up -- have the component publish
-``max(friction_viscous, authored dof_damping)`` instead of ``friction_viscous`` alone -- which would
-let both paths run at the same value and would let this restoration shrink toward upstream's.
+**The joint damping now matches upstream's deployment.** Both paths integrate MicroDuck at the
+``m6`` fit's ``friction_viscous``, which is what upstream's BAM binding republishes into
+``dof_damping`` every step. The earlier 10x inflated value (the MJCF's ``0.053``) was a workaround
+for the underdamped joint-limit conversion, now fixed on the backend -- see
+:data:`MICRODUCK_JOINT_DAMPING`, and note that this configuration is only stable while
+:attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref` stays
+enabled. The Task-11 reading of the divergence as a plant-level instability of the
+MJCF -> USD -> Newton -> MJWarp path was correct about the path and wrong about the cause: the
+``DelayedPDActuatorCfg`` configuration diverged at ~0.0054 for the same solver reason, not because
+of the servo model.
 
 The armature is left to the USD, which carries the MJCF's 0.0018 -- the same value the BAM fit
 identifies.
