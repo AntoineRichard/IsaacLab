@@ -571,16 +571,25 @@ def test_a_fixed_one_step_lag_returns_the_previous_control_step_value():
 
 
 def test_the_delay_advances_once_per_control_step_however_often_it_is_computed():
-    """Recomputing an observation inside one step must not push the buffer twice."""
+    """Recomputing an observation inside one step must not push the buffer twice, or recompute it."""
     torch.manual_seed(0)
     env = _make_obs_env(num_envs=8)
     term, params = _make_delayed_term(env, min_lag=1, max_lag=1, update_period=0)
+    calls = 0
+
+    def _counted(env):
+        nonlocal calls
+        calls += 1
+        return _step_index(env)
+
+    params["term_func"] = _counted
 
     _advance(env, term, params)
     _advance(env, term, params)
     repeated = term(cast("ManagerBasedEnv", env), **params)
 
     torch.testing.assert_close(repeated, torch.ones(env.num_envs, 1))
+    assert calls == 2
     torch.testing.assert_close(_advance(env, term, params), torch.full((env.num_envs, 1), 2.0))
 
 
@@ -609,8 +618,8 @@ def test_the_lag_is_redrawn_only_on_the_update_period_boundary():
     assert torch.any(lags == 0) and torch.any(lags == 1)
 
 
-def test_a_reset_environment_gets_the_freshest_frame_and_a_new_phase():
-    """A reset clears only the reset environments' history, lag and phase (reference section 8)."""
+def test_a_reset_environment_gets_the_freshest_frame():
+    """A reset clears only the reset environments' history and lag (reference section 8)."""
     torch.manual_seed(0)
     env = _make_obs_env(num_envs=4)
     term, params = _make_delayed_term(env, min_lag=1, max_lag=1, update_period=0)
@@ -622,6 +631,61 @@ def test_a_reset_environment_gets_the_freshest_frame_and_a_new_phase():
 
     step = float(env.common_step_counter)
     torch.testing.assert_close(value[:, 0], torch.tensor([step, step - 1.0, step, step - 1.0]))
+
+
+def test_a_reset_between_two_computes_of_one_step_does_not_cost_the_others_a_frame():
+    """The compute-final-observation pattern: compute, reset part of the batch, compute again.
+
+    The second compute must not advance the buffer a second time, or every environment that was
+    not reset silently skips a frame -- and its lag-update cadence drifts with it.
+    """
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=4)
+    term, params = _make_delayed_term(env, min_lag=1, max_lag=1, update_period=0)
+    for _ in range(4):
+        _advance(env, term, params)
+    step = float(env.common_step_counter)
+
+    # the environment records a final observation, resets the terminating environments, and
+    # recomputes the group -- all within the same control step
+    term.reset(torch.tensor([0, 2], device=env.device))
+    recomputed = term(cast("ManagerBasedEnv", env), **params)
+
+    # the reset environments have no history left, the others keep the frame they were served
+    torch.testing.assert_close(recomputed[:, 0], torch.tensor([step, step - 1.0, step, step - 1.0]))
+    # ... and the frame from this step is still there to be served on the next one
+    value = _advance(env, term, params)
+    torch.testing.assert_close(value[:, 0], torch.tensor([step + 1.0, step, step + 1.0, step]))
+
+
+def test_a_reset_redraws_the_lag_update_phase():
+    """The phase is re-drawn per environment on reset, so resets do not synchronize the fleet."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=256)
+    update_period = 2
+    term, params = _make_delayed_term(env, min_lag=0, max_lag=1, update_period=update_period)
+
+    def _phase_of_lag_changes(steps: int) -> torch.Tensor:
+        """Recover each environment's update phase from the steps its lag changes on."""
+        # the first two steps are the buffer warm-up, where the lag is clamped to the frames held
+        lags = []
+        for _ in range(steps + 2):
+            value = _advance(env, term, params)
+            lags.append(env.common_step_counter - value[:, 0])
+        lags = torch.stack(lags[2:])
+        changed = lags[1:] != lags[:-1]
+        # a change can only happen on an update step, so any change step reveals the phase
+        step_index = torch.arange(1, len(lags), device=env.device).unsqueeze(-1) % update_period
+        return torch.where(changed, step_index, -torch.ones_like(step_index)).max(dim=0).values
+
+    before = _phase_of_lag_changes(64)
+    term.reset()
+    after = _phase_of_lag_changes(64)
+
+    # every environment must have been observed changing lag at least once in both runs
+    assert torch.all(before >= 0) and torch.all(after >= 0)
+    # a re-drawn phase lands on a different one for half the environments; a kept one for none
+    assert (before != after).float().mean() > 0.2
 
 
 def test_a_delayed_term_rejects_a_lag_window_it_cannot_serve():
@@ -668,6 +732,18 @@ def test_the_safe_foot_terms_report_zero_where_the_sensor_reports_a_non_finite_v
     # the finite entries keep upstream's signed log compression
     torch.testing.assert_close(contact_forces[2, 2], torch.tensor(math.log1p(2.0)))
     torch.testing.assert_close(air[0], torch.full((2,), 0.25))
+
+
+def test_foot_contact_flags_only_the_loaded_feet():
+    """The contact flag follows the net force, and reports the bodies in the requested order."""
+    env = _make_obs_env(num_envs=2)
+    forces = env.scene.sensors["contact_forces"].data.net_forces_w.torch
+    forces[0, 1] = torch.tensor([0.0, 0.0, 3.0])
+    forces[1, 2] = torch.tensor([0.0, 0.0, -3.0])
+
+    contact = mdp.foot_contact(cast("ManagerBasedEnv", env), _sensor_cfg())
+
+    torch.testing.assert_close(contact, torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
 
 
 def test_the_safe_foot_height_is_the_sole_clearance_above_the_environment_origin():

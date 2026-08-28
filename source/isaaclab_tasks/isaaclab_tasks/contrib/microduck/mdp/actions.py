@@ -40,13 +40,20 @@ class BiasedJointPositionAction(JointPositionAction):
     together with the observation-side half,
     :func:`~isaaclab_tasks.contrib.microduck.mdp.observations.joint_pos_rel_biased`: the actor sees
     ``joint_pos + bias`` and the target subtracts ``bias``, so a policy commanding ``a`` reads back
-    ``a`` while the true joint sits at ``default + a``. What the bias then perturbs is the *robot*,
-    not the policy's frame of reference -- the two joints of a leg no longer agree on where zero
-    is, which is exactly the calibration error the term models. Using only one half instead trains
-    a policy against a permanent offset in its own commands.
+    ``a`` while the true joint settles at ``default + a - bias``. What the bias then perturbs is
+    the *robot*, not the policy's frame of reference -- the joints of a leg no longer agree on
+    where zero is, which is exactly the calibration error the term models. Using only one half
+    instead trains a policy against a permanent offset in its own commands.
 
     Both halves read the same tensor, so a task must give this term and the biased observation the
     same asset.
+
+    .. note::
+        Reference section 3 states that outcome the other way round -- true joint at ``HOME + a``,
+        reading ``HOME + a + bias``. The simulator carries no bias of its own, so it tracks the
+        target it is handed: the joint settles on ``default + a - bias`` and the biased observation
+        reports ``q + bias = default + a``. The formulas quoted in that section are right; the one
+        sentence of prose after them is not.
     """
 
     cfg: BiasedJointPositionActionCfg
