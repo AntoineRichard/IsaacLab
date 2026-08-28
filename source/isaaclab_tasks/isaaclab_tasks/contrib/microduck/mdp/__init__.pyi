@@ -4,11 +4,16 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 __all__ = [
-    "JointPoseCommand",
-    "JointPoseCommandCfg",
     "MicroDuckVelocityCommand",
     "MicroDuckVelocityCommandCfg",
+    "UniformPoseDeltaCommand",
+    "UniformPoseDeltaCommandCfg",
 ]
 
-from .commands import JointPoseCommand, JointPoseCommandCfg, MicroDuckVelocityCommand, MicroDuckVelocityCommandCfg
+from .commands import (
+    MicroDuckVelocityCommand,
+    MicroDuckVelocityCommandCfg,
+    UniformPoseDeltaCommand,
+    UniformPoseDeltaCommandCfg,
+)
 from isaaclab.envs.mdp import *
