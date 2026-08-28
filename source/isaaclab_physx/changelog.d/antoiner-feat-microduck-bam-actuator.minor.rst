@@ -1,11 +1,11 @@
-Changed
-^^^^^^^
+Added
+^^^^^
 
-* A :class:`~isaaclab.actuators.BamActuatorCfg` group combined with
-  :attr:`~isaaclab.sim.SimulationCfg.use_newton_actuators` now raises on this backend instead of
-  being accepted. PhysX steps native actuators through the shared host adapter, which has no joint
-  dry-friction channel for the controller to publish its friction budget into and no generalized
-  forces for it to read the external load from, so the model silently degraded to the Isaac
-  Lab-executed friction clip *and* never drew its start-up randomization ranges. The error names
-  the fix: set ``use_newton_actuators=False`` to run
-  :class:`~isaaclab.actuators.BamActuator` on this backend.
+* Native actuator execution now rejects a :class:`~isaaclab.actuators.BamActuatorCfg` group with a
+  message naming the supported configuration. The BAM servo model's native form is written in terms
+  of solver quantities -- it publishes its gearbox friction budget into the solver's joint dry
+  friction and reads the external load back out of the solver's generalized forces -- and PhysX
+  steps native actuators through the shared host adapter, which provides neither. Running BAM on
+  this backend is supported through the Isaac Lab-executed model: leave
+  :attr:`~isaaclab.sim.SimulationCfg.use_newton_actuators` unset (or ``False``). Every other
+  supported actuator configuration is unaffected.

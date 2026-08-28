@@ -293,7 +293,7 @@ def apply_stiction_clip(
     frictionloss: torch.Tensor,
     viscous: float,
     dt: float,
-    inertia: torch.Tensor | float = 1.0,
+    inertia: torch.Tensor | float,
 ) -> torch.Tensor:
     """Apply the friction budget to the motor torque at the torque level.
 
@@ -320,9 +320,12 @@ def apply_stiction_clip(
         viscous: Viscous friction coefficient [N.m.s/rad].
         dt: Control timestep [s].
         inertia: Joint inertia used to size the stopping torque [kg.m^2], broadcastable to
-            ``(num_envs, num_joints)``. The default of 1.0 keeps the reference expression
-            dimensionally consistent while treating the inertia as unknown, which only
-            affects how close to rest a joint must be to count as static.
+            ``(num_envs, num_joints)``. Required, and deliberately so: it sets how close to
+            rest a joint must be to count as static, and a value that is wrong by a factor of
+            ``k`` widens or narrows that window by the same factor. Pass the reflected rotor
+            inertia (``BamMotorParams.armature``) when the actuator only knows its own gearbox,
+            or the full joint inertia when the caller has it -- the reference simulator uses the
+            latter.
 
     Returns:
         Actuator torque to apply [N.m], shape ``(num_envs, num_joints)``.
