@@ -47,6 +47,8 @@ def _resolve_actuator_class(class_type: type | str) -> type:
 def _is_newton_native_actuator_cfg(cfg: Any) -> bool:
     """Return whether an actuator config can be authored as a Newton actuator."""
     from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg  # noqa: PLC0415
+    from isaaclab.actuators.actuator_bam import BamActuator  # noqa: PLC0415
+    from isaaclab.actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_net import ActuatorNetLSTM, ActuatorNetMLP  # noqa: PLC0415
     from isaaclab.actuators.actuator_net_cfg import ActuatorNetLSTMCfg, ActuatorNetMLPCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_pd import (  # noqa: PLC0415
@@ -63,6 +65,7 @@ def _is_newton_native_actuator_cfg(cfg: Any) -> bool:
         (RemotizedPDActuatorCfg, RemotizedPDActuator),
         (DelayedPDActuatorCfg, DelayedPDActuator),
         (DCMotorCfg, DCMotor),
+        (BamActuatorCfg, BamActuator),
         (IdealPDActuatorCfg, IdealPDActuator),
     )
     try:
@@ -233,6 +236,7 @@ def _author_actuator_prims(
     _remove_actuator_prims_for_joints(art_prim, covered_joint_paths)
 
     from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg  # noqa: PLC0415
+    from isaaclab.actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_net_cfg import ActuatorNetLSTMCfg, ActuatorNetMLPCfg  # noqa: PLC0415
     from isaaclab.actuators.actuator_pd_cfg import RemotizedPDActuatorCfg  # noqa: PLC0415
 
@@ -244,6 +248,7 @@ def _author_actuator_prims(
         is_remotized = isinstance(cfg, RemotizedPDActuatorCfg)
         is_dc_motor = isinstance(cfg, DCMotorCfg)
         is_delayed = isinstance(cfg, DelayedPDActuatorCfg)
+        is_bam = isinstance(cfg, BamActuatorCfg)
 
         configured_effort_limit = getattr(cfg, "actuator_effort_limit", None)
         effort_map: dict[str, float] = {}
@@ -265,6 +270,22 @@ def _author_actuator_prims(
 
         raw_delay = getattr(cfg, "max_delay", 0) if is_delayed else 0
         delay_map = resolve_per_dof(raw_delay, joint_names, cast=int) if raw_delay else {}
+
+        bam_attrs: dict[str, float | int] = {}
+        bam_seed_friction: float | None = None
+        bam_control_api = ""
+        if is_bam:
+            # Both construction paths resolve the schema token through Newton's component
+            # registry, and authoring always precedes parsing, so this is the earliest point
+            # at which the BAM controller is guaranteed to be registered.
+            from isaaclab.actuators.newton.bam_component import (  # noqa: PLC0415
+                BAM_CONTROL_API,
+                register_bam_actuator_component,
+            )
+
+            register_bam_actuator_component()
+            bam_control_api = BAM_CONTROL_API
+            bam_attrs, bam_seed_friction = _resolve_bam_attributes(cfg)
 
         patched_model_path: str | None = None
         if is_neural:
@@ -289,6 +310,14 @@ def _author_actuator_prims(
 
             if is_neural:
                 schemas.append("NewtonNeuralControlAPI")
+            elif is_bam:
+                schemas.append(bam_control_api)
+                attrs.update(bam_attrs)
+                # MuJoCo only assembles a DOF-friction constraint row for joints whose
+                # frictionloss is positive, and the initial constraint budget (``njmax``) is
+                # sized from the model as spawned. Seeding a positive friction keeps the row
+                # present from the very first solve; the per-step budget overwrites it.
+                _seed_joint_friction(stage, joint_inventory[jname], bam_seed_friction)
             else:
                 schemas.append("NewtonPDControlAPI")
                 attrs["kp"] = stiffness_map.get(jname, 0.0)
@@ -332,6 +361,11 @@ def _author_actuator_prims(
                     Sdf.AssetPath(patched_model_path)
                 )
 
+            if is_bam:
+                act_prim.CreateAttribute("newton:paramsFile", Sdf.ValueTypeNames.Asset).Set(
+                    Sdf.AssetPath(str(cfg.params_file))
+                )
+
             for attr_name, attr_val in attrs.items():
                 usd_name = f"newton:{_snake_to_camel(attr_name)}"
                 if isinstance(attr_val, int):
@@ -349,6 +383,60 @@ def _author_actuator_prims(
 # ---------------------------------------------------------------------------
 
 _SNAKE_TO_CAMEL_RE = re.compile(r"_([a-z])")
+
+
+def _resolve_bam_attributes(cfg: Any) -> tuple[dict[str, float | int], float]:
+    """Return the ``newton:`` attribute values and the seed friction of a BAM actuator group.
+
+    The identified motor constants are *not* authored: the Newton controller reads them from
+    the same parameter file this config names, which is what keeps the two implementations
+    on identical numbers. Only the deployment settings and the per-environment knobs are
+    written, and the latter carry the config's nominal value -- a USD prim is shared by every
+    clone, so start-up range sampling has to be applied afterwards through
+    :func:`~isaaclab.actuators.newton.write_group_parameter`.
+
+    Args:
+        cfg: The :class:`~isaaclab.actuators.BamActuatorCfg` being authored.
+
+    Returns:
+        The attribute mapping to author on the actuator prim, and the joint friction [N.m] to
+        seed the driven joints with.
+    """
+    from isaaclab.actuators.bam_model import BamMotorParams  # noqa: PLC0415
+
+    params = BamMotorParams.from_json(cfg.params_file)
+    attrs: dict[str, float | int] = {
+        "kp_fw": float(cfg.kp_fw) if cfg.kp_fw is not None else params.kp,
+        "vin": float(cfg.vin) if cfg.vin is not None else params.vin,
+        "sag_gain": 0.0,
+        "friction_scale": 1.0,
+        "kp_scale": 1.0,
+        "kd_scale": 1.0,
+        "min_delay": int(cfg.min_delay),
+        "max_delay": int(cfg.max_delay),
+        "delay_hold_prob": float(cfg.delay_hold_prob),
+        "delay_update_period": int(cfg.delay_update_period),
+    }
+    if cfg.vin_min is not None:
+        attrs["vin_min"] = float(cfg.vin_min)
+    return attrs, params.friction_base
+
+
+def _seed_joint_friction(stage: Usd.Stage, joint_prim_path: str, friction: float | None) -> None:
+    """Author a positive ``newton:friction`` on a joint that has none.
+
+    An authored value is left alone: a task that deliberately tunes its joint friction must
+    win over the seed.
+    """
+    if friction is None or friction <= 0.0:
+        return
+    joint_prim = stage.GetPrimAtPath(joint_prim_path)
+    if not joint_prim.IsValid():
+        return
+    attribute = joint_prim.GetAttribute("newton:friction")
+    if attribute and attribute.HasAuthoredValue() and (attribute.Get() or 0.0) > 0.0:
+        return
+    joint_prim.CreateAttribute("newton:friction", Sdf.ValueTypeNames.Float).Set(float(friction))
 
 
 def _snake_to_camel(name: str) -> str:
