@@ -227,11 +227,14 @@ MICRODUCK_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         # gentle slopes, rise over run: 0.03 to 0.10 is 1.7 to 5.7 degrees by difficulty. The
         # platform is on top and the pyramid is not inverted, so a reset never places the robot at
         # the bottom of a pit -- upstream dropped both inverted variants for exactly that reason.
+        # ``border_width`` is left at 0.0, as upstream leaves it. The stock ROUGH_TERRAINS_CFG rings
+        # its slopes with a 0.25 m flat border, but a pyramid slope is already level with its
+        # neighbours at the patch edge -- the height field is ``height_max * xx * yy`` with
+        # ``xx = yy = 0`` there -- so a border would only shorten the slope for no continuity gain.
         "pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
             proportion=0.20,
             slope_range=(0.03, 0.10),
             platform_width=2.0,
-            border_width=0.25,
         ),
     },
 )
@@ -335,12 +338,27 @@ class MicroDuckSceneCfg(InteractiveSceneCfg):
     # unfiltered and produces no force matrix at all, so ``self_collision_cost`` needs its own
     # sensor.
     #
-    # Left sole against right sole is the *whole* self-collision signal on this robot: the walk
-    # model declares exactly two collidable geometries, the two soles, and every other geometry is
-    # ``contype=0 conaffinity=0`` (visual only). So a one-body sensor filtered against the other
-    # foot reproduces upstream's subtree-against-subtree sensor exactly, and reports a count of
-    # 0 or 1 as upstream's single contact slot does. Sensing both feet instead would double-count
-    # the one contact, once from each side.
+    # Sole against sole is the whole self-collision signal *on the converted asset*, which is
+    # narrower than upstream's. The walk model has five collidable geometries: the two soles, and
+    # ``power_support`` (the battery holder on the trunk) plus the ``leg`` mesh on each shin, all
+    # three in the MJCF's ``self_collision_only`` class (``contype=2 conaffinity=2``) so they
+    # collide with each other but never with the ground. Upstream's subtree sensor therefore also
+    # watched the shins hitting the battery holder and each other, which is the channel that class
+    # exists for.
+    #
+    # The MJCF-to-USD importer cannot represent ``contype`` / ``conaffinity`` masks, so those three
+    # geometries arrive as ordinary *world* colliders that would stub on the ground;
+    # ``convert_microduck.py:restore_collision_masks`` disables them to restore the MJCF's world
+    # contact set. They have no collision role left, so this sensor cannot see them.
+    #
+    # LOST GUARD-RAIL: shin-versus-battery-holder and shin-versus-shin contacts are unpenalized
+    # here. If the converter ever regains collision-group support and re-enables those geometries,
+    # widen this sensor back to the trunk subtree against itself -- and expect the reward to jump,
+    # since it counts sensing bodies rather than contact slots.
+    #
+    # One sensing body against one filter body, not both feet against both: it reports 0 or 1 as
+    # upstream's single contact slot does, where sensing both would count the one contact twice,
+    # once from each side.
     self_collision = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base/.*/ankle_left",
         filter_prim_paths_expr=["{ENV_REGEX_NS}/Robot/Geometry/trunk_base/.*/ankle_right"],
