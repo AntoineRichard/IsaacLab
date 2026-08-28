@@ -16,4 +16,10 @@ Added
   delay with a configurable resample period and hold probability. Because the actuator
   interface exposes no generalized forces, the load-dependent friction terms use an
   external-torque estimate derived from the rotor's momentum balance; see the module
-  documentation for what that approximates.
+  documentation for what that approximates. The inherited
+  :attr:`~isaaclab.actuators.ActuatorBaseCfg.stiffness` and
+  :attr:`~isaaclab.actuators.ActuatorBaseCfg.damping` fields are unused by the model and
+  default to None, so an articulation configuration validates without setting them; the
+  position loop is parameterized by :attr:`~isaaclab.actuators.BamActuatorCfg.kp_fw` instead.
+  The model is validated end to end on a Newton MJWarp articulation, where a settling
+  pendulum comes to rest inside the stiction band its own equations predict.
