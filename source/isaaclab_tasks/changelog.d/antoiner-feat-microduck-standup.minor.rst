@@ -17,9 +17,9 @@ Added
   ``filter_shape_prim_expr``: the model's ten enabled colliders against each other, many-to-many.
   Body-level filtering cannot express that, because Isaac Lab resolves a per-partner force matrix
   only for a sensor whose ``prim_path`` matches a single prim per environment. The sensor therefore
-  sees limb-against-limb contacts with no trunk at either end -- on this model, shin against hip
-  shell on either side, which is the whole limb-against-limb set the joint limits let the robot
-  reach. The reward saturates the result, because sensing both sides of a contact reports it twice.
+  sees limb-against-limb contacts with no trunk at either end -- a deep knee fold drives each shin
+  into the hip shell on its own side, and a crossed pose brings sole against sole. The reward
+  saturates the result, because sensing both sides of a contact reports it twice.
 * Added ``reset_ground_state`` under ``contrib/microduck/mdp``, the reset event that *is* the
   stand-up task's episode distribution: it samples one of four ground keyframes -- face down, face
   up, the sitting keyframe with joint and tilt noise, or standing -- and writes the root height,

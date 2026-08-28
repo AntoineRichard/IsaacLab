@@ -270,8 +270,11 @@ class MicroDuckStandUpSceneCfg(InteractiveSceneCfg):
     #
     # This is that sensor: the model's ten enabled colliders against each other, many-to-many, on
     # the Newton backend's shape-level expressions. It sees every self-contact the robot can make,
-    # including the ones between two limbs -- shin against hip shell on either side is the pair the
-    # joint limits actually let this model reach, and neither end of it is the trunk.
+    # including the ones between two limbs, where neither end is the trunk. Both families are
+    # reachable inside the joint limits: a deep knee fold drives each shin into the hip shell on its
+    # own side, and the sagittal chain -- hip pitch, knee and ankle all +/-1.571 rad -- swings the
+    # feet across the midline, where the narrower hip yaw and roll travel is enough to overlap them
+    # sole against sole.
     #
     # ``prim_path`` is ignored for the sensing objects once ``sensor_shape_prim_expr`` is set, but
     # the base sensor still requires one; the trunk is the cheapest expression that resolves.

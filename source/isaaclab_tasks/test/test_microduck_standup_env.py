@@ -1044,9 +1044,9 @@ def test_the_reset_spawns_every_ground_pose_the_mix_asks_for():
 @pytest.mark.integration
 @requires_microduck_allcollisions_usd
 def test_the_self_collision_sensor_fires_on_a_fold_and_stays_quiet_on_a_stand():
-    """The regression for the widening: a folded robot costs, a standing one does not.
+    """The regression for the widening: a folded or crossed robot costs, a standing one does not.
 
-    Three poses are held against the sensor, and the *narrow* body-level sensor the port used before
+    Four poses are held against the sensor, and the *narrow* body-level sensor the port used before
     is built alongside it so the comparison is measured rather than asserted from the changelog:
 
     * **standing on the floor** -- the term's whole safety requirement. Ground contact is not
@@ -1056,15 +1056,17 @@ def test_the_self_collision_sensor_fires_on_a_fold_and_stays_quiet_on_a_stand():
       narrow sensor could not see.
     * **the same fold, one leg only** -- an asymmetric tuck, checked because the symmetric one could
       be produced by a sensor that only ever fires on both sides at once.
-
-    A left-against-right contact is not tested because the model cannot make one: hip yaw is capped
-    at about 0.5 rad and hip roll at 0.38, so the legs cannot cross. Shin-against-hip is the whole
-    reachable limb-against-limb set on this robot.
+    * **legs crossed** -- both legs swung through the sagittal chain until the feet overlap across
+      the midline. Hip yaw and roll are capped near 0.5 and 0.38 rad, but hip pitch, knee and ankle
+      all range over +/-1.571 rad, and it is that chain rather than the abduction travel that carries
+      a foot across; the modest yaw and roll then only have to close the remaining gap. This case
+      asserts the ``sole_left``-against-``sole_right`` entry of the force matrix by name, so it
+      pins the left-against-right channel specifically rather than any self-contact.
     """
     sim_utils.create_new_stage()
     env = None
     try:
-        env_cfg = parse_env_cfg(TASK_NAME, device="cuda", num_envs=3)
+        env_cfg = parse_env_cfg(TASK_NAME, device="cuda", num_envs=4)
         # the sensor this replaced, kept alongside for the comparison below
         env_cfg.scene.narrow_self_collision = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/Robot/Geometry/trunk_base",
@@ -1084,11 +1086,25 @@ def test_the_self_collision_sensor_fires_on_a_fold_and_stays_quiet_on_a_stand():
         joint_pos = robot.data.default_joint_pos.torch.clone()
 
         # env 0 stays at the stand pose; env 1 folds both legs, env 2 folds only the left and swings
-        # it inward as far as the hip allows. Clamped to the joint limits, so a pose the servos could
-        # not hold is not what the sensor is being shown.
+        # it inward as far as the hip allows, env 3 crosses the legs. Clamped to the joint limits, so
+        # a pose the servos could not hold is not what the sensor is being shown -- the cross in
+        # particular is asked for beyond the limits and lands wherever the clamp puts it, which is
+        # the point: it stays commandable.
         folds = {
             1: {"left_hip_pitch": -1.5, "left_knee": 1.5, "right_hip_pitch": 1.5, "right_knee": -1.5},
             2: {"left_hip_pitch": -1.5, "left_knee": 1.5, "left_hip_roll": 0.4, "left_hip_yaw": 0.6},
+            3: {
+                "left_hip_yaw": 0.524,
+                "left_hip_roll": -0.384,
+                "left_hip_pitch": -1.571,
+                "left_knee": -1.571,
+                "left_ankle": -1.571,
+                "right_hip_yaw": -0.524,
+                "right_hip_roll": 0.384,
+                "right_hip_pitch": 1.571,
+                "right_knee": 1.571,
+                "right_ankle": 1.571,
+            },
         }
         for env_id, pose_angles in folds.items():
             for joint, angle in pose_angles.items():
@@ -1097,13 +1113,13 @@ def test_the_self_collision_sensor_fires_on_a_fold_and_stays_quiet_on_a_stand():
 
         # env 0 stands on the floor at the settled standing height -- the *spawn* height is 1 cm
         # above it and would leave the robot hovering, since holding the pose skips the drop -- and
-        # the folded two are held well clear of the floor
-        pose = torch.zeros((3, 7), device=unwrapped.device)
+        # the other three are held well clear of the floor
+        pose = torch.zeros((4, 7), device=unwrapped.device)
         pose[:, :3] = unwrapped.scene.env_origins
         pose[0, 2] += MICRODUCK_STAND_HEIGHT
         pose[1:, 2] += 1.0
         pose[:, 6] = 1.0  # xyzw identity
-        velocity = torch.zeros((3, 6), device=unwrapped.device)
+        velocity = torch.zeros((4, 6), device=unwrapped.device)
         joint_vel = torch.zeros_like(joint_pos)
         action = torch.zeros(unwrapped.action_space.shape, device=unwrapped.device)
 
@@ -1128,16 +1144,25 @@ def test_the_self_collision_sensor_fires_on_a_fold_and_stays_quiet_on_a_stand():
             narrow_cost = mdp.self_collision_cost(
                 unwrapped, sensor_cfg=SceneEntityCfg("narrow_self_collision"), saturate=True
             )
-            ground = wide.data.net_forces_w.torch.norm(dim=-1).max(dim=-1).values
+            net_force = wide.data.net_forces_w.torch.norm(dim=-1).max(dim=-1).values
+            pair_force = wide.data.force_matrix_w.torch.norm(dim=-1)
 
         # standing costs nothing even though it is very much in contact with the floor
         assert cost[0].item() == 0.0, "a standing robot was charged for touching itself"
-        assert ground[0].item() > 1.0, "the standing robot never reached the floor"
-        # both folds are seen, and neither is seen by the sensor this replaced
-        torch.testing.assert_close(cost[1:], torch.ones(2, device=cost.device))
-        torch.testing.assert_close(narrow_cost, torch.zeros(3, device=cost.device))
-        # the folds are airborne, so what the sensor found is self-contact and nothing else
-        assert ground[1:].max().item() > 1.0
+        assert net_force[0].item() > 1.0, "the standing robot never reached the floor"
+        # every folded and crossed pose is seen, and none of them by the sensor this replaced
+        torch.testing.assert_close(cost[1:], torch.ones(3, device=cost.device))
+        torch.testing.assert_close(narrow_cost, torch.zeros(4, device=cost.device))
+        # those three are airborne, so what the sensor found is self-contact and nothing else
+        assert net_force[1:].min().item() > 1.0
+        # the cross is a left-against-right contact specifically, not just any self-contact: read the
+        # sole-vs-sole entry by name so a reordered shape list cannot make this pass by accident
+        left = wide.sensor_names.index("sole_left")
+        right = wide.filter_object_names.index("sole_right")
+        assert pair_force[3, left, right].item() > 1.0, (
+            "the crossed pose produced no sole-against-sole contact:"
+            f" {pair_force[3, left].tolist()} against {wide.filter_object_names}"
+        )
     finally:
         if env is not None:
             env.close()
