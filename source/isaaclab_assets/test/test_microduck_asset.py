@@ -469,14 +469,22 @@ def test_microduck_cfg_default_joint_pos_is_the_home_pose(microduck_articulation
 
 
 def test_microduck_cfg_restores_the_joint_dynamics_the_asset_drops(microduck_articulation, mj_joints):
-    """The passive dynamics lost in conversion come back through the actuator configuration.
+    """The passive dynamics lost in conversion come back where the plant, not the MJCF, wants them.
 
     ``test_joint_dynamics_not_carried_by_the_asset`` pins that the USD arrives with zero joint
-    damping and friction. The configuration owns them instead, as viscous friction (MuJoCo's
-    ``dof_damping``) and dry friction (``frictionloss``) rather than as PD gains, which the BAM
-    model would never read. On the Isaac Lab-executed path they are the only joint-level
-    dissipation the solver has, and it diverges without them; on the Newton-native path the
-    controller republishes its own budget over them every physics step, so they are seeds there.
+    damping and friction. Two of the three come back, and they come back in different places:
+
+    * **viscous** friction (MuJoCo's ``dof_damping``) is restored on the solver, on both execution
+      paths. On the Isaac Lab-executed path it is the only joint-level dissipation the solver has;
+      on the Newton-native path the controller republishes its own coefficient over it every
+      physics step, so it is a seed there.
+    * **dry** friction (``frictionloss``) is *not* restored on the solver: the BAM model applies it
+      itself, load-dependently, so :class:`~isaaclab.actuators.BamActuator` declares
+      :attr:`~isaaclab.actuators.ActuatorBase.applies_joint_friction` and the collection resolves
+      the group's solver friction to zero. That is upstream's accounting -- its binding zeroes the
+      MJCF's ``frictionloss`` on every joint it drives -- and asserting the zero here is what keeps
+      a re-added ``friction=`` in the configuration from silently resisting these joints twice.
+    * **armature** is left to the USD, which does carry the MJCF value.
 
     The viscous coefficient is deliberately *not* the MJCF's ``dof_damping``: upstream's BAM binding
     overwrites that with the servo fit's ``friction_viscous`` every step, so the fit is what the
@@ -497,7 +505,10 @@ def test_microduck_cfg_restores_the_joint_dynamics_the_asset_drops(microduck_art
     for index, name in enumerate(robot.joint_names):
         # rel=1e-3 because the configured constant is the fit rounded to three significant digits
         assert viscous[index] == pytest.approx(servos.params.friction_viscous, rel=1e-3), name
-        assert friction[index] == pytest.approx(mj_joints[name]["frictionloss"], rel=1e-4), name
+        assert friction[index] == 0.0, name
+        # ... and the dry friction the solver gives up is the model's own: the MJCF's frictionloss
+        # is the vendored fit's unloaded friction budget, which the BAM model applies per step
+        assert mj_joints[name]["frictionloss"] == pytest.approx(servos.params.friction_base, rel=1e-2), name
         # armature is left to the USD, which carries the MJCF value unchanged
         assert armature[index] == pytest.approx(mj_joints[name]["armature"], rel=1e-4), name
         # ... and the BAM fit identifies that same reflected rotor inertia, which the MJCF writes

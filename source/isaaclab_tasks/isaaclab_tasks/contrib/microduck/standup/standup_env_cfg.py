@@ -182,6 +182,11 @@ class MicroDuckStandUpPhysicsCfg(PresetCfg):
     them for this task (addendum section 7.4); this port measures them instead, because the
     all-collisions robot spends most of every episode lying on the floor and upstream's inherited
     ``nconmax`` of 35 was sized for a walking robot on two soles.
+
+    MJWarp is also the only backend that can run this task as configured: the environment sets
+    ``sim.use_newton_actuators = True`` and the solver-hosted BAM model is rejected on the PhysX
+    family's host adapter. See
+    :class:`~isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg.MicroDuckPhysicsCfg`.
     """
 
     newton_mjwarp = NewtonCfg(
@@ -1133,6 +1138,11 @@ class MicroDuckStandUpFlatEnvCfg(ManagerBasedRLEnvCfg):
         self.decimation = 4
         self.episode_length_s = 6.0
         self.sim.dt = 0.005
+        # Run the BAM servos through the backend-native path, as the velocity task does and as
+        # upstream does -- see :class:`~isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg.
+        # MicroDuckVelocityRoughEnvCfg`. The decimation above is even, which is what lets the
+        # stateful servo delay line be CUDA-graph-captured.
+        self.sim.use_newton_actuators = True
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         if self.scene.contact_forces is not None:
