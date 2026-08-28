@@ -53,6 +53,11 @@ if TYPE_CHECKING:
     from isaaclab.sensors import ContactSensor
 
 
+##
+# Velocity-era kernels: shared helpers and the walking/tracking/posture terms.
+##
+
+
 def _required_entity_cfg(cfg: RewardTermCfg, key: str, term_name: str) -> SceneEntityCfg:
     """Fetch a scene entity configuration that a stateful term needs at construction time.
 
@@ -894,6 +899,11 @@ def self_collision_cost(
     return in_contact.any(dim=-1).sum(dim=-1).float()
 
 
+##
+# Standup kernels.
+##
+
+
 """
 Standing up: posture, height and orientation terms.
 """
@@ -1279,6 +1289,11 @@ class joint_torque_rate_l2(ManagerTermBase):
         self._previous_torque = torque.clone()
         self._is_fresh[:] = False
         return torch.sum(torch.square(rate), dim=1)
+
+
+##
+# Roulade kernels.
+##
 
 
 """
@@ -1843,6 +1858,11 @@ def roulade_lateral_velocity_penalty(
     """
     asset: Articulation = env.scene[asset_cfg.name]
     return torch.nan_to_num(asset.data.root_link_lin_vel_b.torch[:, 1].pow(2), nan=0.0)
+
+
+##
+# Rollers kernels.
+##
 
 
 """
