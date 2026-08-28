@@ -11,6 +11,15 @@ Added
   feed either policy from the same buffer, and it spawns
   :data:`~isaaclab_assets.MICRODUCK_ALLCOLLISIONS_CFG` -- a robot that pushes itself off the floor
   needs the trunk, hip, shin and head colliders the walking model does not have.
+
+  Its self-collision sensor is **narrower than upstream's**, which filters the whole trunk subtree
+  against itself. This one senses the trunk and filters it against the seven other bodies that carry
+  a collider on this model, which reports the same 0-or-1 signal upstream's single contact slot
+  does, and is also what the backend supports: Isaac Lab resolves a per-partner force matrix only
+  for a sensor whose ``prim_path`` matches a single prim per environment. Sole against sole, shin
+  against shin and head against leg therefore go unpenalized. Widening the sensor needs the Newton
+  backend's shape-level ``sensor_shape_prim_expr`` / ``filter_shape_prim_expr`` filtering, and is
+  tracked as separate work.
 * Added ``reset_ground_state`` under ``contrib/microduck/mdp``, the reset event that *is* the
   stand-up task's episode distribution: it samples one of four ground keyframes -- face down, face
   up, the sitting keyframe with joint and tilt noise, or standing -- and writes the root height,
