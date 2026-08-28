@@ -74,13 +74,19 @@ The friction budget is lifted verbatim out of the installed ``bam/mjlab.py`` sou
 (see :func:`load_reference_friction_budget`) rather than re-implemented here, so the
 goldens cannot silently drift from the reference. ``bam.mjlab`` itself is never
 imported because it pulls in ``mjlab``/``mujoco_warp``.
+
+The run aborts before generating anything unless the *installed* ``bam`` distribution
+really is :data:`BAM_COMMIT` (see :func:`verify_installed_bam_revision`), so the
+``attr_bam_commit`` stamped into the fixture can never be a stale claim.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import importlib.metadata
 import importlib.util
+import json
 import types
 from pathlib import Path
 
@@ -91,6 +97,8 @@ from bam.model import Model, load_model
 
 # Reference revision the goldens are generated from (Rhoban/bam @ mjlab_frictionloss).
 BAM_COMMIT = "62bd8ce12154340be97e06f7f41a0ca8f116d967"
+# Distribution name of the ``bam`` import package on PyPI / in the git repo metadata.
+BAM_DIST_NAME = "better-actuator-models"
 
 # Actuator under test: Dynamixel XL330 with the m6 (directional + quadratic) friction model.
 MOTOR_NAME = "xl330"
@@ -111,6 +119,56 @@ DQ_RANGE = (-20.0, 20.0)  # joint velocity [rad/s]
 TAU_RANGE = (-1.5, 1.5)  # previous motor torque and external torque [Nm]
 
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[2] / "source/isaaclab/test/actuators/data/bam_xl330_m6_goldens.npz"
+
+
+def _require(condition: bool, message: str) -> None:
+    """Raise :class:`RuntimeError` when ``condition`` is false.
+
+    Used instead of ``assert`` so the checks still run under ``python -O``: a golden
+    fixture that silently skipped its own validation would be worse than no fixture.
+    """
+    if not condition:
+        raise RuntimeError(message)
+
+
+def verify_installed_bam_revision() -> None:
+    """Abort unless the installed ``bam`` distribution is exactly :data:`BAM_COMMIT`.
+
+    ``attr_bam_commit`` is written into the fixture from the :data:`BAM_COMMIT` constant,
+    so without this guard a run against a drifted revision would stamp the fixture with a
+    SHA that did not produce it. ``pip``/``uv`` record the resolved revision of a VCS
+    install in the distribution's ``direct_url.json`` (PEP 610), which is what we read.
+
+    Raises:
+        RuntimeError: If ``bam`` is missing, was not installed from git (e.g. an editable
+            path or a PyPI wheel, neither of which carries a commit id), or was installed
+            from a different commit than :data:`BAM_COMMIT`.
+    """
+    try:
+        distribution = importlib.metadata.distribution(BAM_DIST_NAME)
+    except importlib.metadata.PackageNotFoundError:
+        raise RuntimeError(f"{BAM_DIST_NAME!r} is not installed; see the Usage section of this module's docstring.")
+
+    direct_url = distribution.read_text("direct_url.json")
+    if direct_url is None:
+        raise RuntimeError(
+            f"{BAM_DIST_NAME!r} has no direct_url.json, so its revision cannot be verified against the expected"
+            f" {BAM_COMMIT}. Install it from git as shown in the Usage section of this module's docstring."
+        )
+    installed_commit = json.loads(direct_url).get("vcs_info", {}).get("commit_id")
+    if installed_commit is None:
+        raise RuntimeError(
+            f"{BAM_DIST_NAME!r} was not installed from a VCS (direct_url.json carries no vcs_info.commit_id), so its"
+            f" revision cannot be verified against the expected {BAM_COMMIT}."
+        )
+    _require(
+        installed_commit == BAM_COMMIT,
+        f"Installed {BAM_DIST_NAME!r} revision does not match the reference this generator is pinned to.\n"
+        f"  expected (BAM_COMMIT): {BAM_COMMIT}\n"
+        f"  installed:             {installed_commit}\n"
+        "Either re-run with the expected revision, or update BAM_COMMIT (and this module's docstring) after"
+        " re-verifying that the reference equations still match.",
+    )
 
 
 def load_reference_friction_budget():
@@ -232,6 +290,37 @@ def collect_scalars(model: Model) -> dict[str, float | str | int]:
     return scalars
 
 
+def check_stribeck_against_reference(
+    model: Model, inputs: dict[str, np.ndarray], goldens: dict[str, np.ndarray]
+) -> None:
+    """Tripwire: check the inline Stribeck re-derivation against the reference.
+
+    The Stribeck coefficient is the one quantity :func:`compute_goldens` re-derives by hand,
+    because upstream computes it inline in ``BamActuator.compute`` rather than in an
+    extractable helper. :meth:`bam.model.Model.compute_frictions` computes the same
+    coefficient internally, and for the m6 model it can be read back out exactly: with
+    ``motor_torque = external_torque = 0`` every load-dependent and quadratic term vanishes,
+    leaving ``frictionloss = friction_base + stribeck_coeff * friction_stribeck``.
+
+    So if upstream ever changes the Stribeck law, this fails instead of silently baking a
+    stale formula into the fixture.
+    """
+    friction_base = model.friction_base.value
+    friction_stribeck = model.friction_stribeck.value
+    # A spread of velocities rather than a contiguous slice: the coefficient underflows to
+    # zero well before |dq| = 20, so neighbouring samples would not exercise the curve.
+    probe_indices = np.argsort(np.abs(inputs["dq"]))[:: max(1, NUM_SAMPLES // 16)]
+    for index in probe_indices:
+        frictionloss, _ = model.compute_frictions(0.0, 0.0, inputs["dq"][index])
+        reference_coeff = (frictionloss - friction_base) / friction_stribeck
+        _require(
+            np.isclose(goldens["stribeck_coeff"][index], reference_coeff, rtol=1e-12, atol=1e-15),
+            f"Stribeck re-derivation drifted from the reference at sample {index}"
+            f" (dq={inputs['dq'][index]:.6f}): got {goldens['stribeck_coeff'][index]!r},"
+            f" reference gives {reference_coeff!r}.",
+        )
+
+
 def check_goldens(scalars: dict, inputs: dict[str, np.ndarray], goldens: dict[str, np.ndarray]) -> None:
     """Sanity-check the generated goldens against independently derived bounds."""
     kt = scalars["kt"]
@@ -239,24 +328,24 @@ def check_goldens(scalars: dict, inputs: dict[str, np.ndarray], goldens: dict[st
     max_current = scalars["max_current"]
 
     # Duty cycle can never leave the physical PWM range (clamped last in compute_control).
-    assert np.all(np.abs(goldens["duty"]) <= scalars["max_pwm"] + 1e-12), "duty exceeds max_pwm"
-    assert np.allclose(goldens["volts"], goldens["duty"] * VIN), "volts != duty * vin"
+    _require(np.all(np.abs(goldens["duty"]) <= scalars["max_pwm"] + 1e-12), "duty exceeds max_pwm")
+    _require(np.allclose(goldens["volts"], goldens["duty"] * VIN), "volts != duty * vin")
 
     # Motor torque is kt * I. The firmware limiter targets |I| <= max_current but can only
     # clamp the duty, so at high back-EMF the PWM rail wins: |I| <= (vin + kt*|dq|max) / R.
     max_speed = max(abs(DQ_RANGE[0]), abs(DQ_RANGE[1]))
     torque_bound = kt * max(max_current, (VIN + kt * max_speed) / resistance)
-    assert np.all(np.abs(goldens["motor_torque"]) <= torque_bound + 1e-9), "motor torque exceeds the DC-motor bound"
+    _require(np.all(np.abs(goldens["motor_torque"]) <= torque_bound + 1e-9), "motor torque exceeds the DC-motor bound")
 
     # Every friction term added on top of friction_base is non-negative.
-    assert np.all(goldens["frictionloss_budget"] >= scalars["friction_base"] - 1e-12), "budget below friction_base"
+    _require(np.all(goldens["frictionloss_budget"] >= scalars["friction_base"] - 1e-12), "budget below friction_base")
 
     # Stribeck coefficient is a decaying exponential in |dq|.
-    assert np.all((goldens["stribeck_coeff"] >= 0.0) & (goldens["stribeck_coeff"] <= 1.0)), "stribeck outside [0, 1]"
+    _require(np.all((goldens["stribeck_coeff"] >= 0.0) & (goldens["stribeck_coeff"] <= 1.0)), "stribeck outside [0, 1]")
 
     # Independent recomputation of the torque equation (tau = kt*V/R - kt^2*dq/R).
     expected_torque = kt * goldens["volts"] / resistance - (kt**2) * inputs["dq"] / resistance
-    assert np.allclose(goldens["motor_torque"], expected_torque), "motor torque does not match the DC-motor equation"
+    _require(np.allclose(goldens["motor_torque"], expected_torque), "motor torque does not match the DC-motor equation")
 
 
 def main() -> None:
@@ -264,11 +353,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Path of the .npz fixture to write.")
     args = parser.parse_args()
 
+    verify_installed_bam_revision()
     model = build_reference_model()
     inputs = sample_inputs()
     goldens = compute_goldens(model, inputs)
     scalars = collect_scalars(model)
     check_goldens(scalars, inputs, goldens)
+    check_stribeck_against_reference(model, inputs, goldens)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output, **inputs, **goldens, **{f"attr_{k}": np.asarray(v) for k, v in scalars.items()})
