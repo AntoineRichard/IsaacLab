@@ -48,6 +48,9 @@ Added
   :attr:`~isaaclab.actuators.ActuatorCollection.applied_effort` reports the **motor** torque
   rather than the whole joint torque, and ``data.joint_friction`` reports the value authoring
   seeded rather than the live budget; read the live budget with
-  :func:`~isaaclab.actuators.newton.read_group_parameter`. Both execution paths, the vendored
-  parameters' provenance, the randomization hooks and the measured parity against the upstream
-  reference simulator are documented in the actuator concepts page.
+  :func:`~isaaclab.actuators.newton.read_group_parameter`. For the same reason the native path
+  requires the Newton backend: a backend that steps native actuators through the shared host
+  adapter now rejects the configuration rather than silently degrading to the Isaac Lab-executed
+  clip without its start-up randomization. Both execution paths, the vendored parameters'
+  provenance, the randomization hooks and the measured parity against the upstream reference
+  simulator are documented in the actuator concepts page.
