@@ -54,7 +54,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Sequence
 from dataclasses import MISSING
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
 
@@ -94,6 +94,9 @@ class BamActuator(ActuatorBase):
     episodes), while :attr:`friction_scale`, :attr:`kp_scale` and :attr:`kd_scale` are meant
     to be re-drawn per episode through :meth:`set_friction_scale` and :meth:`set_gains`.
     """
+
+    applies_joint_friction: ClassVar[bool] = True
+    """The stiction clip is the joint's dry friction, so the solver's rows are zeroed."""
 
     cfg: BamActuatorCfg
     """The configuration for the actuator model."""

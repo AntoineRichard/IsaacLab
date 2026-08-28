@@ -60,3 +60,19 @@ Added
   which runs everywhere. Both execution paths, the vendored parameters' provenance, the
   randomization hooks and the measured parity against the upstream reference simulator are
   documented in the actuator concepts page.
+* Added the :attr:`~isaaclab.actuators.ActuatorBase.applies_joint_friction` class flag. An Isaac
+  Lab-executed group whose model sets it resolves its joints to zero solver static and dynamic
+  friction, the way an explicit model resolves them to zero solver stiffness and damping, and
+  warns when :attr:`~isaaclab.actuators.ActuatorBaseCfg.friction` or
+  :attr:`~isaaclab.actuators.ActuatorBaseCfg.dynamic_friction` is configured on it.
+  :class:`~isaaclab.actuators.BamActuator` sets the flag: it clips the torque against its own
+  friction budget, so authored joint friction on the same joints was applied a second time by the
+  solver. On the MicroDuck reference asset that double count was 0.0048 N·m per joint, and
+  removing it moves the Isaac Lab-executed path onto the Newton-native path's trajectory (hold
+  regime, joint RMSE against the upstream reference at 55 control steps: 0.0067 -> 0.0083, which
+  is the Newton-native path's 0.0091 to within the two paths' known residual -- the lower number
+  was the extra friction flattering the comparison, not better fidelity). The Newton-native path
+  is unaffected: its controller republishes the budget into the solver on every physics step and
+  its configured friction stays a seed. Joint viscous friction is left to the solver on both
+  paths, because the reference implementation also damps the joint through MuJoCo's
+  ``dof_damping``.
