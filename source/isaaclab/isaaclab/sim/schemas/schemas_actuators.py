@@ -323,7 +323,13 @@ def _author_actuator_prims(
                 attrs["kp"] = stiffness_map.get(jname, 0.0)
                 attrs["kd"] = damping_map.get(jname, 0.0)
 
-            if is_dc_motor:
+            if is_bam:
+                # No clamping component: BAM applies its own effort limit. Authoring a
+                # USD-registered token beside the unregistered ``NewtonBamControlAPI`` would
+                # hide the controller from Newton's schema discovery entirely.
+                if jname in effort_map:
+                    attrs["max_effort"] = effort_map[jname]
+            elif is_dc_motor:
                 schemas.append("NewtonDCMotorClampingAPI")
                 attrs["saturation_effort"] = sat_effort_map.get(jname, 0.0)
                 if jname in vel_limit_map:

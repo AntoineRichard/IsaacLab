@@ -184,6 +184,29 @@ def test_authored_prim_resolves_to_the_bam_controller():
     assert BAM_CONTROL_API in spec.GetInfo("apiSchemas").prependedItems
 
 
+def test_effort_limit_is_authored_on_the_controller_not_as_a_clamping_component():
+    """A BAM actuator prim must carry no USD-registered API schema beside the BAM token.
+
+    Newton resolves an actuator prim's components from ``Usd.Prim.GetAppliedSchemas``, falling
+    back to the raw ``apiSchemas`` metadata *only when that comes back empty*.
+    ``NewtonBamControlAPI`` has no registered schema definition, so USD drops it from the
+    composed list; a registered sibling such as ``NewtonMaxEffortClampingAPI`` would make the
+    composed list non-empty and the BAM controller would vanish from the parse. The effort
+    limit is therefore a controller parameter, and this test is what stops it going back.
+    """
+    cfg = _make_cfg(actuator_effort_limit=0.05)
+    stage = _make_stage(cfg)
+
+    prim = stage.GetPrimAtPath(f"/World/Robot/servo_{JOINT_NAMES[0]}_actuator")
+    parsed = parse_actuator_prim(prim)
+    assert parsed is not None and parsed.controller_class is ControllerBam
+    assert parsed.component_specs == [], "a BAM prim must compose no clamping or delay component"
+    assert ControllerBam.resolve_arguments(dict(parsed.controller_kwargs))["max_effort"] == pytest.approx(0.05)
+
+    spec = stage.GetRootLayer().GetPrimAtPath(prim.GetPath())
+    assert list(spec.GetInfo("apiSchemas").prependedItems) == [BAM_CONTROL_API]
+
+
 def test_driven_joints_are_seeded_with_a_positive_friction():
     """MuJoCo only builds a DOF-friction row for joints whose frictionloss is positive.
 
@@ -257,8 +280,9 @@ def test_controller_reproduces_the_math_core(device):
     np.testing.assert_allclose(harness.controller.motor_torque.numpy(), motor.numpy().reshape(-1), atol=1e-6, rtol=0.0)
 
 
+@pytest.mark.parametrize("effort_limit", [None, 0.05])
 @pytest.mark.parametrize("device", test_devices())
-def test_cross_check_against_the_lab_executed_actuator(device):
+def test_cross_check_against_the_lab_executed_actuator(device, effort_limit):
     """Implementations A and B must apply the same torque on the same trajectory.
 
     Both are driven by the *identical* recorded state sequence -- a pendulum swinging under
@@ -267,15 +291,20 @@ def test_cross_check_against_the_lab_executed_actuator(device):
     estimate, friction budget and stiction clip) is compared at once. The solver-side friction
     is deliberately not engaged here: with MuJoCo owning the budget, B emits the bare motor
     torque and the comparison would be against a different quantity.
+
+    The parameterization matters beyond the clamp itself. A caches the *clipped* effort and
+    subtracts it in its external-torque estimate, while a Newton controller runs before the
+    clamping stage, so B has to read the applied effort back after the fact; a limit low enough
+    to bite is what pins that.
     """
-    cfg = _make_cfg()
+    cfg = _make_cfg(actuator_effort_limit=effort_limit)
     lab_actuator = BamActuator(
         cfg=cfg,
         joint_names=list(JOINT_NAMES),
         joint_ids=slice(None),
         num_envs=1,
         device=device,
-        actuator_effort_limit=None,
+        actuator_effort_limit=effort_limit,
         actuator_velocity_limit=None,
     )
     harness = _Harness(cfg, num_envs=1, device=device)
@@ -288,8 +317,10 @@ def test_cross_check_against_the_lab_executed_actuator(device):
     velocity = np.zeros((1, len(JOINT_NAMES)))
     target = np.zeros((1, len(JOINT_NAMES)))
 
+    peak_motor_torque = 0.0
     for step in range(CROSS_CHECK_STEPS):
         native = harness.step(position, velocity, target)
+        peak_motor_torque = max(peak_motor_torque, float(np.abs(harness.controller.motor_torque.numpy()).max()))
         lab = lab_actuator.compute(
             ArticulationActions(joint_positions=torch.tensor(target, dtype=torch.float32, device=device)),
             torch.tensor(position, dtype=torch.float32, device=device),
@@ -305,6 +336,9 @@ def test_cross_check_against_the_lab_executed_actuator(device):
 
     # A non-trivial excitation, not a pair of dead actuators agreeing on zero.
     assert np.abs(lab_effort).max() > 1e-3
+    if effort_limit is not None:
+        assert peak_motor_torque > effort_limit, "the effort limit never bit, so the clamp was not exercised"
+        assert np.abs(native).max() <= effort_limit + 1e-6, "the emitted torque escaped the effort limit"
 
 
 @pytest.mark.parametrize("device", test_devices())

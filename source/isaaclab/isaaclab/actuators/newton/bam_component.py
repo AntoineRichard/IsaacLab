@@ -17,7 +17,7 @@ What differs from implementation A, and why
 
 * **Friction is published to the solver, not clipped at the torque level.** When
   :attr:`ControllerBam.solver_applies_friction` is set (the Newton/MJWarp backend does this
-  through :mod:`isaaclab_newton.physics.mjwarp_bam_bridge`), the controller writes the
+  through :mod:`isaaclab_newton.physics.mjwarp_actuator_bridge`), the controller writes the
   velocity-independent friction budget into :attr:`ControllerBam.friction_budget` and the
   viscous coefficient into :attr:`ControllerBam.viscous_damping`, and the backend publishes
   both into MuJoCo's ``dof_frictionloss`` / ``dof_damping`` every physics step. MuJoCo's
@@ -26,11 +26,25 @@ What differs from implementation A, and why
   the reference implementation does (``bam/mjlab.py``). When the flag is clear the controller
   falls back to :func:`~isaaclab.actuators.bam_model.apply_stiction_clip`, which is exactly
   implementation A's behaviour and is what a non-MuJoCo backend gets.
-* **The command delay is owned by the controller.** Newton's
+* **The command delay is owned by the controller, and its lags are per DOF.** Newton's
   :class:`~newton.actuators.Delay` has static per-DOF lags with no resampling, hold
   probability, update period or phase, so BAM's stochastic delay policy cannot be expressed
   by composing it. The ring buffer and the lag policy therefore live in
-  :class:`ControllerBam.State`.
+  :class:`ControllerBam.State`. One consequence is a deliberate divergence from
+  implementation A: :meth:`~newton.actuators.Controller.finalize` hands the controller no
+  environment structure, so the lag is drawn per driven DOF rather than once per environment
+  for a whole joint group. The draw is from the same distribution under the same update
+  policy, so the two agree in distribution but not sample for sample.
+* **The effort limit is applied by the controller, not by a clamping component.** Newton
+  discovers an actuator prim's components through
+  ``pxr.Usd.Prim.GetAppliedSchemas``, falling back to the raw ``apiSchemas`` metadata *only
+  when that returns nothing*. ``NewtonBamControlAPI`` has no registered USD schema definition,
+  so USD drops it from the composed list; authoring a registered token such as
+  ``NewtonMaxEffortClampingAPI`` beside it would make the composed list non-empty and the BAM
+  controller would silently disappear from the parse. Folding the clamp into the control law
+  keeps BAM prims free of registered tokens, and matches
+  :meth:`~isaaclab.actuators.ActuatorBase._clip_effort`, which is where implementation A
+  applies the same limit.
 * **The external torque can come from the solver.** :attr:`ControllerBam.external_torque`,
   when bound, replaces implementation A's rotor-momentum estimator with the true generalized
   forces the load applies to the gearbox.
@@ -187,6 +201,7 @@ def _bam_friction_kernel(
     load_friction_external_stribeck: wp.array[float],
     load_friction_motor_quad: wp.array[float],
     load_friction_external_quad: wp.array[float],
+    max_effort: wp.array[float],
     prev_motor_torque: wp.array[float],
     prev_applied_torque: wp.array[float],
     prev_joint_vel: wp.array[float],
@@ -262,6 +277,11 @@ def _bam_friction_kernel(
         tau_stop = (armature[i] / dt) * joint_vel + net_tau
         clip = budget + friction_viscous[i] * wp.abs(joint_vel)
         applied = motor_tau - wp.sign(tau_stop) * wp.min(wp.abs(tau_stop), clip)
+    # The safety clamp on top of the electrical limit the duty-cycle model already enforces.
+    # Owned here rather than composed as a clamping component, so that the cached previous
+    # effort is the one that was really applied -- and so that the actuator prim carries no
+    # USD-registered schema alongside the unregistered BAM token (see the module docstring).
+    applied = wp.clamp(applied, -max_effort[i], max_effort[i])
     forces[i] = applied
 
     next_prev_motor[i] = motor_tau
@@ -396,6 +416,7 @@ class ControllerBam(Controller):
         "load_friction_external_stribeck",
         "load_friction_motor_quad",
         "load_friction_external_quad",
+        "max_effort",
     )
     """Per-DOF parameter arrays, in the order :meth:`resolve_arguments` fills them."""
 
@@ -547,6 +568,7 @@ class ControllerBam(Controller):
             "load_friction_external_stribeck": params.load_friction_external_stribeck,
             "load_friction_motor_quad": params.load_friction_motor_quad,
             "load_friction_external_quad": params.load_friction_external_quad,
+            "max_effort": math.inf,
         }
         for name in cls._PER_DOF_PARAMS:
             resolved[name] = float(args.get(name, defaults[name]))
@@ -778,6 +800,7 @@ class ControllerBam(Controller):
                 self.load_friction_external_stribeck,
                 self.load_friction_motor_quad,
                 self.load_friction_external_quad,
+                self.max_effort,
                 state.prev_motor_torque,
                 state.prev_applied_torque,
                 state.prev_joint_vel,

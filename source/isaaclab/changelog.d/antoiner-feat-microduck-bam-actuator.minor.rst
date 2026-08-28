@@ -40,4 +40,7 @@ Added
   the torque itself, and the new
   :attr:`~isaaclab.actuators.BamActuatorCfg.stiff_frictionloss` field stiffens that constraint;
   authoring also seeds a positive friction on the driven joints so the solver sizes a friction
-  row for them from the first step.
+  row for them from the first step. The effort limit is applied by the controller rather than by
+  a composed clamping component, because Newton resolves an actuator prim's components from
+  USD's *composed* schema list and would drop the unregistered ``NewtonBamControlAPI`` token as
+  soon as a registered one were authored beside it.
