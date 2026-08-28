@@ -34,6 +34,10 @@ Added
   ``kd_scale`` are reachable through
   :func:`~isaaclab.actuators.newton.write_group_parameter`, and
   :func:`~isaaclab.actuators.newton.apply_bam_startup_sampling` draws the config's start-up
-  ranges once the native actuators are finalized. The command delay is owned by the controller
-  because Newton's delay component has static lags. On a solver that can apply joint dry
-  friction, the controller publishes its friction budget instead of clipping the torque itself.
+  ranges once the actuator exists, since a USD prim is shared by every clone. The command delay
+  is owned by the controller because Newton's delay component has static lags. On a solver that
+  can apply joint dry friction, the controller publishes its friction budget instead of clipping
+  the torque itself, and the new
+  :attr:`~isaaclab.actuators.BamActuatorCfg.stiff_frictionloss` field stiffens that constraint;
+  authoring also seeds a positive friction on the driven joints so the solver sizes a friction
+  row for them from the first step.

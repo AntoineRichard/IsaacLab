@@ -445,8 +445,7 @@ class ControllerBam(Controller):
                     raise ValueError("BAM reset mask must be a one-dimensional Boolean array")
                 if len(mask) != len(self.prev_motor_torque):
                     raise ValueError(
-                        f"BAM reset mask length ({len(mask)}) must match state length"
-                        f" ({len(self.prev_motor_torque)})"
+                        f"BAM reset mask length ({len(mask)}) must match state length ({len(self.prev_motor_torque)})"
                     )
                 if mask.device != self.prev_motor_torque.device:
                     raise ValueError(
@@ -808,24 +807,21 @@ class ControllerBam(Controller):
         wp.copy(next_state.delay_phase, current_state.delay_phase)
 
 
-def apply_bam_startup_sampling(collection: Any, group_name: str, cfg: Any) -> None:
-    """Draw the start-up per-environment BAM quantities of one native actuator group.
+def apply_bam_startup_sampling(controller: ControllerBam, cfg: Any) -> None:
+    """Draw the start-up per-environment quantities of one BAM controller.
 
     A USD prim is shared by every clone, so the ranges
     :class:`~isaaclab.actuators.BamActuatorCfg` exposes (``vin_range``,
     ``vin_drop_gain_range``, ``friction_scale_range``) cannot be authored per environment.
-    They are drawn here instead, right after the native actuators are finalized, which
-    reproduces what :class:`~isaaclab.actuators.BamActuator` does at construction: one value
-    per environment, shared by the group's joints and held constant across resets.
+    They are drawn here instead, once the actuator exists, which reproduces what
+    :class:`~isaaclab.actuators.BamActuator` does at construction: one value per environment,
+    shared by that environment's joints and held constant across resets.
 
     Args:
-        collection: The articulation's actuator collection.
-        group_name: Name of the BAM actuator group to sample.
+        controller: The BAM controller to write, already bound to its environment stride.
         cfg: The group's :class:`~isaaclab.actuators.BamActuatorCfg`.
     """
     import torch  # noqa: PLC0415
-
-    from .adapter import read_group_parameter, write_group_parameter  # noqa: PLC0415
 
     ranges = (
         ("vin", cfg.vin_range),
@@ -835,10 +831,10 @@ def apply_bam_startup_sampling(collection: Any, group_name: str, cfg: Any) -> No
     for attr, value_range in ranges:
         if value_range is None:
             continue
-        current = read_group_parameter(collection, group_name, "controller", attr)
-        samples = torch.empty(current.shape[0], 1, device=current.device, dtype=current.dtype)
+        per_env = wp.to_torch(getattr(controller, attr)).view(-1, controller.env_dof_stride)
+        samples = torch.empty(per_env.shape[0], 1, device=per_env.device, dtype=per_env.dtype)
         samples.uniform_(*value_range)
-        write_group_parameter(collection, group_name, "controller", attr, samples.expand_as(current))
+        per_env.copy_(samples.expand_as(per_env))
 
 
 def register_bam_actuator_component() -> None:
