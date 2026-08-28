@@ -213,13 +213,26 @@ Newton Actuator Access
 
 .. automodule:: isaaclab.actuators.newton
 
+  .. rubric:: Classes
+
+  .. autosummary::
+
+    ControllerBam
+
   .. rubric:: Functions
 
   .. autosummary::
 
     read_group_parameter
     write_group_parameter
+    apply_bam_startup_sampling
+
+.. autoclass:: isaaclab.actuators.newton.ControllerBam
+    :members:
+    :show-inheritance:
 
 .. autofunction:: isaaclab.actuators.newton.read_group_parameter
 
 .. autofunction:: isaaclab.actuators.newton.write_group_parameter
+
+.. autofunction:: isaaclab.actuators.newton.apply_bam_startup_sampling

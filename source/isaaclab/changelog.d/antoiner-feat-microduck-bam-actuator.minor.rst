@@ -23,3 +23,17 @@ Added
   position loop is parameterized by :attr:`~isaaclab.actuators.BamActuatorCfg.kp_fw` instead.
   The model is validated end to end on a Newton MJWarp articulation, where a settling
   pendulum comes to rest inside the stiction band its own equations predict.
+* Added :class:`~isaaclab.actuators.newton.ControllerBam`, the Newton-native counterpart of
+  :class:`~isaaclab.actuators.BamActuator`: the same BAM pipeline as Warp kernels, executed on
+  the Newton actuator fast path. It is selected by the *same*
+  :class:`~isaaclab.actuators.BamActuatorCfg` when
+  :attr:`~isaaclab.sim.SimulationCfg.use_newton_actuators` is enabled, which now authors a
+  ``NewtonBamControlAPI`` actuator prim per driven joint instead of rejecting the config. The
+  identified constants are read from the config's parameter file, so both implementations run
+  the same numbers; per-environment ``vin``, ``sag_gain``, ``friction_scale``, ``kp_scale`` and
+  ``kd_scale`` are reachable through
+  :func:`~isaaclab.actuators.newton.write_group_parameter`, and
+  :func:`~isaaclab.actuators.newton.apply_bam_startup_sampling` draws the config's start-up
+  ranges once the native actuators are finalized. The command delay is owned by the controller
+  because Newton's delay component has static lags. On a solver that can apply joint dry
+  friction, the controller publishes its friction budget instead of clipping the torque itself.
