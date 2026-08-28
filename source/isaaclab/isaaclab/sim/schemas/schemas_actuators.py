@@ -78,20 +78,60 @@ def _is_newton_native_actuator_cfg(cfg: Any) -> bool:
     return False
 
 
-def _validate_newton_native_actuator_cfgs(actuator_cfgs: dict[str, Any]) -> None:
-    """Reject explicit actuator configurations that Newton cannot author."""
+def _is_solver_hosted_actuator_cfg(cfg: Any) -> bool:
+    """Return whether a config's native execution needs Newton's in-solver actuator path.
+
+    A backend that runs native actuators through the shared host adapter executes every other
+    supported config unchanged, but not one whose *model* is written in terms of solver
+    quantities. :class:`~isaaclab.actuators.BamActuatorCfg` is the only such config today: its
+    controller publishes the gearbox friction budget into the solver's joint dry friction and
+    reads the external load back out of the solver's generalized forces, and a host adapter
+    provides neither.
+    """
+    from isaaclab.actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
+
+    return isinstance(cfg, BamActuatorCfg)
+
+
+def _validate_newton_native_actuator_cfgs(actuator_cfgs: dict[str, Any], *, host_adapter: bool = False) -> None:
+    """Reject explicit actuator configurations the native actuator path cannot run.
+
+    Args:
+        actuator_cfgs: Actuator configurations of one articulation, keyed by group name.
+        host_adapter: Whether the backend executes native actuators through the shared host
+            adapter (PhysX, OVPhysX) instead of inside the Newton solver. Such a backend
+            additionally cannot run a solver-hosted config; see
+            :func:`_is_solver_hosted_actuator_cfg`. Defaults to False, which is both the Newton
+            backend and the backend-agnostic USD authoring pass.
+
+    Raises:
+        ValueError: If a group's config cannot be authored as a Newton actuator, or if it needs
+            the Newton solver and ``host_adapter`` is set.
+    """
     unsupported_groups = []
+    solver_hosted_groups = []
     for group_name, cfg in actuator_cfgs.items():
         try:
             is_implicit = _is_implicit_actuator_cfg(cfg)
         except ValueError:
             is_implicit = False
-        if not is_implicit and not _is_newton_native_actuator_cfg(cfg):
+        if is_implicit:
+            continue
+        if not _is_newton_native_actuator_cfg(cfg):
             unsupported_groups.append(f"'{group_name}' ({type(cfg).__name__})")
+        elif host_adapter and _is_solver_hosted_actuator_cfg(cfg):
+            solver_hosted_groups.append(f"'{group_name}' ({type(cfg).__name__})")
     if unsupported_groups:
         raise ValueError(
             "Newton-native actuator execution does not support "
             f"{', '.join(unsupported_groups)}. Disable 'use_newton_actuators' or use a supported actuator config."
+        )
+    if solver_hosted_groups:
+        raise ValueError(
+            f"Native actuator execution of {', '.join(solver_hosted_groups)} requires the Newton backend: the model"
+            " publishes its friction budget into the solver's joint dry friction and reads the external load back"
+            " out of the solver, and this backend runs native actuators through the host adapter, which provides"
+            " neither. Set 'use_newton_actuators=False' to run the Isaac Lab-executed model on this backend."
         )
 
 

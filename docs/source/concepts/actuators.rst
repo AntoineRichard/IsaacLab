@@ -353,7 +353,7 @@ where the load comes from:
       - One lag per driven joint (Newton hands a controller no environment structure)
     * - Backends
       - Every backend
-      - Newton / MJWarp
+      - Newton / MJWarp only; any other backend raises
 
 The native path is the faithful one -- it is what the reference implementation does on GPU, and
 reading the load instead of estimating it removes a modelling error the Isaac Lab path cannot avoid
@@ -362,9 +362,12 @@ constraint is compliant and a torque-level clip is not. :ref:`actuators-bam-pari
 
 .. warning::
 
-    On PhysX and OVPhysX, use the Isaac Lab-executed path. Those backends have no joint dry-friction
-    channel for a component to publish into, so the controller falls back to the torque-level clip
-    and the start-up ranges below are not drawn.
+    On PhysX and OVPhysX, use the Isaac Lab-executed path. Those backends step native actuators
+    through the shared host adapter, which has no joint dry-friction channel to publish into and no
+    generalized forces to read, so the native model cannot run there at all. A BAM group with
+    ``use_newton_actuators=True`` on those backends raises at construction and names the fix
+    (``use_newton_actuators=False``) rather than silently degrading to the torque-level clip
+    without the start-up ranges below.
 
 Randomization hooks
 ^^^^^^^^^^^^^^^^^^^
@@ -423,9 +426,10 @@ Parity with the reference implementation
 Both implementations are validated against ``bam``'s own CPU simulator, which is the code the BAM
 identification is scored with. ``scripts/tools/bam_parity_rollout.py`` drives a 0.1 kg at 0.1 m
 pendulum with a 20 s, 0.1--2 Hz chirp at :math:`dt = 0.005\text{ s}` through both simulators from
-one parameter file, and refuses to report anything unless the installed reference is the pinned
-revision, the two plants agree (measured to 4.7e-9 relative) and the recorded efforts can be
-replayed from the shared math core. ``scripts/tools/generate_bam_goldens.py`` separately pins the
+one parameter file. Every run refuses to report anything unless the installed reference is the
+pinned revision and the recorded efforts replay from the shared math core; the dead-motor ``plant``
+ablation additionally measures both sides' effective joint inertia and aborts unless they agree
+(they do, to 4.7e-9 relative). ``scripts/tools/generate_bam_goldens.py`` separately pins the
 stage-by-stage numbers as a unit fixture.
 
 .. list-table::

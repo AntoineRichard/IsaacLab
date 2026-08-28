@@ -26,7 +26,7 @@ from newton.actuators import parse_actuator_prim
 
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
-from isaaclab.actuators import BamActuator, BamActuatorCfg
+from isaaclab.actuators import BamActuator, BamActuatorCfg, IdealPDActuatorCfg
 from isaaclab.actuators.bam_model import BAM_XL330_M6_PARAMS_FILE, BamMotorParams
 from isaaclab.actuators.newton import (
     BAM_CONTROL_API,
@@ -151,6 +151,24 @@ def test_bam_cfg_is_accepted_by_newton_native_validation():
     cfg = _make_cfg()
     assert _is_newton_native_actuator_cfg(cfg)
     _validate_newton_native_actuator_cfgs({"servo": cfg})
+
+
+def test_bam_cfg_is_rejected_on_a_host_adapter_backend():
+    """A backend without an in-solver actuator path must refuse the BAM config, loudly.
+
+    The model is written in terms of solver quantities: it publishes its friction budget into
+    the solver's joint dry friction and reads the external load back out of the solver's
+    generalized forces. A backend that steps native actuators through the shared host adapter
+    (PhysX, OVPhysX) provides neither, so the controller would silently fall back to
+    implementation A's torque-level clip *and* skip the start-up randomization the Isaac Lab
+    model draws on every backend. Failing the gate instead names the one-line fix.
+    """
+    with pytest.raises(ValueError, match="requires the Newton backend"):
+        _validate_newton_native_actuator_cfgs({"servo": _make_cfg()}, host_adapter=True)
+
+    # The restriction is BAM's alone -- every other supported config still runs there, so the
+    # flag cannot be passing by rejecting the whole native path.
+    _validate_newton_native_actuator_cfgs({"legs": IdealPDActuatorCfg(joint_names_expr=[".*"])}, host_adapter=True)
 
 
 def test_authored_prim_resolves_to_the_bam_controller():
