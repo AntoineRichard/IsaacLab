@@ -12,12 +12,12 @@ Added
   of composing with it and doubling it.
 * Added tests comparing the generated USD against the source MJCF: joint names, position limits,
   armature, effort limits, body masses, root transform, world-contact colliders and foot friction.
-  The actuator gains, joint damping and joint friction are not carried by the conversion and are
-  owned by the servo model instead; the tests pin that too.
+  The actuator gains, joint damping and joint friction are not carried by the conversion and must be
+  supplied by the task's actuator configuration; the tests pin that too.
 * Added :data:`~isaaclab_assets.MICRODUCK_CFG`, the MicroDuck articulation in the upstream stand
   pose, driven by :class:`~isaaclab.actuators.BamActuatorCfg` at upstream's deployment settings: the
   vendored Dynamixel XL330 ``m6`` fit, a firmware gain of 200, a per-robot battery voltage, sag and
-  gearbox-friction draw, and a 3 to 6 physics-step command delay. The MJCF's joint damping and
-  friction are deliberately not restored on the solver, because they belong to the PD path the BAM
-  model replaces and its own budget already carries them. Spawning it without the generated USD
-  raises an error naming the command that regenerates it.
+  gearbox-friction draw, and a 3 to 6 physics-step command delay. It restores the joint damping and
+  friction the conversion drops and bounds the model at the electrical stall torque upstream derives
+  from the top of its battery range. Spawning it without the generated USD raises an error naming
+  the command that regenerates it.

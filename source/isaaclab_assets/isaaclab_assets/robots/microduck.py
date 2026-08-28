@@ -22,7 +22,7 @@ import os
 from pxr import Usd
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg
+from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg, BamMotorParams
 from isaaclab.assets.articulation import ArticulationCfg
 
 from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
@@ -81,6 +81,34 @@ def _spawn_microduck(
 # ``_BAM_ACTUATOR_KWARGS`` (reference section 6) rather than a derived equivalent.
 ##
 
+_XL330_PARAMS = BamMotorParams.from_json(BAM_XL330_M6_PARAMS_FILE)
+"""The identified XL330 ``m6`` parameters, read here so the derived limit below cannot drift."""
+
+MICRODUCK_SERVO_VIN_RANGE = (6.5, 8.2)
+"""Per-robot bus voltage range [V] the battery is drawn from (upstream ``_BAM_ACTUATOR_KWARGS``)."""
+
+MICRODUCK_SERVO_EFFORT_LIMIT = max(MICRODUCK_SERVO_VIN_RANGE) * _XL330_PARAMS.kt / _XL330_PARAMS.R
+"""Electrical stall torque [N·m] at the top of the battery range, ~1.068.
+
+Upstream's own bound on the BAM output (``bam/mjlab.py``: ``force_limit`` is derived from
+``max(vin_range)``). The model's firmware current limiter already shapes the duty cycle, but it
+sizes a *current* window that a large back-EMF can push outside the achievable PWM range, so the
+torque is not bounded by ``kt * i_max``; this is. It sits above the MJCF's ``forcerange`` of
+0.96 N·m, which survives conversion as the solver-side clamp and therefore binds first.
+"""
+
+MICRODUCK_JOINT_DAMPING = 0.053
+"""Passive joint viscous damping [N·m·s/rad], from the MJCF ``chosen_actuator`` class.
+
+MuJoCo's ``dof_damping``, which the MJCF-to-USD conversion does not carry (it is written only as
+``mjc:damping``, outside the schema resolvers Isaac Lab passes to Newton).
+"""
+
+MICRODUCK_JOINT_FRICTION = 0.0048
+"""Passive joint dry friction [N·m], the MJCF ``frictionloss``, lost in conversion for the same
+reason as :data:`MICRODUCK_JOINT_DAMPING`."""
+
+
 MICRODUCK_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         func=_spawn_microduck,
@@ -124,13 +152,18 @@ MICRODUCK_CFG = ArticulationCfg(
             # per-robot battery voltage [V], its sag under load [V/(N·m)] and the floor after the
             # sag [V]. All three are drawn once per environment at construction and held across
             # resets, because a robot does not swap its battery between episodes.
-            vin_range=(6.5, 8.2),
+            vin_range=MICRODUCK_SERVO_VIN_RANGE,
             vin_drop_gain_range=(0.0, 0.2),
             vin_min=6.0,
             # per-robot gearbox friction spread. The ``randomize_joint_friction`` reset event
             # overwrites this every episode; the draw here is what a task without that event gets,
             # and what ``reset_friction_scale`` restores.
             friction_scale_range=(0.9, 1.1),
+            actuator_effort_limit=MICRODUCK_SERVO_EFFORT_LIMIT,
+            # restored here because the conversion drops them; armature is left to the USD, which
+            # does carry the MJCF value
+            viscous_friction=MICRODUCK_JOINT_DAMPING,
+            friction=MICRODUCK_JOINT_FRICTION,
             # upstream delay_min_lag / delay_max_lag, in physics steps
             min_delay=3,
             max_delay=6,
@@ -140,19 +173,21 @@ MICRODUCK_CFG = ArticulationCfg(
 """Configuration for the Pollen Robotics MicroDuck biped.
 
 No ``stiffness``/``damping``: the BAM model ignores both (its position loop is ``kp_fw`` and its
-damping is the motor's back-EMF) and warns if they are set. No ``actuator_effort_limit`` either --
-the model's own firmware current limiter bounds the motor torque, and the MJCF's ``forcerange``
-survives conversion as the solver-side joint effort limit.
+damping is the motor's back-EMF) and warns if they are set.
 
-No ``friction``/``viscous_friction`` either, and that is a deliberate change of ownership rather
-than an omission. The MJCF's ``chosen_actuator`` class declares ``damping = 0.053`` and
-``frictionloss = 0.0048``, which the conversion drops; they are the joint dynamics of the *PD path*
-BAM replaces upstream, and ``frictionloss`` is the fitted ``friction_base`` of the same BAM file
-(0.004771) rounded. Restoring them alongside BAM would count the gearbox friction twice. Which
-component applies it instead depends on the execution path: with ``use_newton_actuators=False`` the
-Isaac Lab-executed model clips the torque against its own budget and the solver sees pure effort,
-while with ``use_newton_actuators=True`` on MJWarp the native controller publishes the live budget
-and viscous coefficient into the solver's ``dof_frictionloss``/``dof_damping`` every physics step,
-which is what the reference implementation does. The armature is left to the USD, which carries the
-MJCF's 0.0018 -- the same value the BAM fit identifies.
+:data:`MICRODUCK_JOINT_DAMPING` and :data:`MICRODUCK_JOINT_FRICTION` are the MJCF's
+``chosen_actuator`` joint dynamics, and what they mean depends on the execution path. With
+``use_newton_actuators=True`` on MJWarp they are seeds only: the native controller republishes the
+live friction budget and viscous coefficient into the solver's ``dof_frictionloss`` /
+``dof_damping`` every physics step, which is what the reference implementation does. With
+``use_newton_actuators=False`` the Isaac Lab-executed model clips the torque against its own budget
+instead and never writes to the solver, so these are the *only* joint-level dissipation the solver
+has -- and it needs them: without any, this 14-DOF biped diverges under an untrained policy within
+twenty control steps at 2048 environments (the joint velocities run away while the applied torque
+stays at its clamp), and the divergence is what a reward NaN then reports. That makes the dry
+friction slightly double-counted on this path, by 0.0048 N·m against a ~1 N·m stall torque, which
+is the price of a stable integration.
+
+The armature is left to the USD, which carries the MJCF's 0.0018 -- the same value the BAM fit
+identifies.
 """
