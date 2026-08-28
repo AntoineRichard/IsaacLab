@@ -179,24 +179,25 @@ class MicroDuckSceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    # Reference section 2.7. The resampling range, heading controller and heading range are
-    # inherited from upstream's base template; the velocity ranges and the standing fraction are
-    # MicroDuck's own. ``rel_heading_envs = 0.0`` leaves the heading controller configured but
-    # inert, which is what upstream ships.
+    # Reference section 2.7. The resampling range, heading controller, heading range and the
+    # forward-only fraction are inherited from upstream's base template; the velocity ranges, the
+    # standing fraction and the turn-in-place fraction are MicroDuck's own. ``rel_heading_envs =
+    # 0.0`` leaves the heading controller configured but inert, which is what upstream ships.
     #
-    # TODO: upstream also inherits ``rel_forward_envs = 0.2`` -- a fifth of the environments get a
-    # forward-only command, ``vx = |vx|.clamp(min=0.3)`` with ``vy = wz = 0``. The stock
-    # configuration has no such field, so it arrives with the MicroDuck command term that also
-    # brings ``rel_turn_in_place_envs``.
-    base_velocity = mdp.UniformVelocityCommandCfg(
+    # The two bucket fractions are what ``MicroDuckVelocityCommand`` adds over the stock term: a
+    # fifth of the environments walk straight forward and 15% turn on the spot. The buckets
+    # overlap, and the term reproduces upstream's precedence.
+    base_velocity = mdp.MicroDuckVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(3.0, 8.0),
         rel_standing_envs=0.02,
         rel_heading_envs=0.0,
+        rel_forward_envs=0.2,
+        rel_turn_in_place_envs=0.15,
         heading_command=True,
         heading_control_stiffness=0.5,
         debug_vis=True,
-        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+        ranges=mdp.MicroDuckVelocityCommandCfg.Ranges(
             lin_vel_x=(-0.4, 0.4),
             lin_vel_y=(-0.3, 0.3),
             ang_vel_z=(-1.0, 1.0),
