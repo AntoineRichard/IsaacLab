@@ -16,11 +16,13 @@ environments that a false negative is impossible in practice.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
 import torch
 
+from isaaclab.actuators import BamActuatorCfg, IdealPDActuatorCfg
 from isaaclab.managers import ObservationTermCfg, SceneEntityCfg
 
 import isaaclab_tasks.contrib.microduck.mdp as mdp
@@ -59,6 +61,9 @@ ENCODER_BIAS_RANGE = (-0.015, 0.015)
 
 IMU_MISALIGNMENT_ANGLE_DEG = 6.0
 """Upper bound [deg] on the IMU mounting misalignment (reference section 6)."""
+
+BAM_FRICTION_SCALE_RANGE = (0.9, 1.1)
+"""Per-episode multiplier [-] of the BAM gearbox friction budget (reference section 2.6)."""
 
 
 class _DummyTensorView:
@@ -451,6 +456,121 @@ def test_the_biased_action_subtracts_the_bias_the_observation_adds():
     robot.data.joint_pos.torch[:] = robot.joint_position_target
     read_back = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), _joint_cfg([0, 1, 2, 3]), biased=True)
     torch.testing.assert_close(read_back, actions)
+
+
+##
+# BAM friction randomization
+##
+
+
+class _ActuatedRobot(_DummyRobot):
+    """Articulation double carrying an actuator collection and the configuration that built it.
+
+    The event resolves its targets from the *configuration*, which is identical on both execution
+    paths, and dispatches on the runtime entry, which is not: a
+    :class:`~isaaclab.actuators.BamActuator` when Isaac Lab executes the model and a Newton actuator
+    object when the solver does.
+    """
+
+    def __init__(self, actuators: dict, actuator_cfgs: dict, num_envs: int, device: str) -> None:
+        super().__init__(num_envs, device)
+        self.actuators = actuators
+        self.cfg = SimpleNamespace(actuators=actuator_cfgs)
+
+
+def _bam_cfg(**kwargs) -> BamActuatorCfg:
+    """Upstream's MicroDuck servo settings, at an explicit ``dt`` so no simulation is needed."""
+    return BamActuatorCfg(joint_names_expr=[".*"], dt=0.005, **kwargs)
+
+
+def _lab_path_env(num_envs: int = 64) -> _DummyEnv:
+    """An environment whose servo group is the Isaac Lab-executed BAM actuator."""
+    env = _DummyEnv(num_envs=num_envs)
+    cfg = _bam_cfg()
+    actuator = cfg.class_type(cfg, joint_names=JOINT_NAMES, joint_ids=slice(None), num_envs=num_envs, device=env.device)
+    env.scene["robot"] = _ActuatedRobot({"servos": actuator}, {"servos": cfg}, num_envs, env.device)
+    return env
+
+
+def test_bam_friction_randomization_draws_one_scale_per_environment():
+    """Every environment gets its own multiplier inside the range, on the Isaac Lab path."""
+    torch.manual_seed(0)
+    env = _lab_path_env()
+    actuator = env.scene["robot"].actuators["servos"]
+
+    mdp.randomize_bam_friction(cast("ManagerBasedEnv", env), None, scale_range=BAM_FRICTION_SCALE_RANGE)
+
+    scale = actuator.friction_scale
+    assert scale.shape == (env.num_envs, 1)
+    assert torch.all(scale >= BAM_FRICTION_SCALE_RANGE[0])
+    assert torch.all(scale <= BAM_FRICTION_SCALE_RANGE[1])
+    # a per-robot draw, not one gearbox shared by the whole batch
+    assert scale.std() > 0.0
+
+
+def test_bam_friction_randomization_leaves_the_environments_it_was_not_given_alone():
+    """A reset resamples the environments that reset, which is what the event mode promises."""
+    torch.manual_seed(0)
+    env = _lab_path_env(num_envs=8)
+    actuator = env.scene["robot"].actuators["servos"]
+    actuator.friction_scale.fill_(1.0)
+    env_ids = torch.tensor([1, 4], device=env.device)
+
+    mdp.randomize_bam_friction(cast("ManagerBasedEnv", env), env_ids, scale_range=(3.0, 4.0))
+
+    scale = actuator.friction_scale
+    assert torch.all(scale[env_ids] >= 3.0)
+    untouched = [index for index in range(env.num_envs) if index not in env_ids.tolist()]
+    torch.testing.assert_close(scale[untouched], torch.ones(len(untouched), 1))
+
+
+def test_bam_friction_randomization_reaches_the_native_path_through_the_group_parameter_api(monkeypatch):
+    """On the Newton-native path the group entry is not a ``BamActuator``, so the write differs.
+
+    The write itself is covered against a live solver by
+    ``isaaclab_newton/test/assets/test_bam_actuator_newton.py``; what is checked here is that the
+    term reaches it at all -- the ``isinstance`` discovery the Isaac Lab path uses finds nothing on
+    this one -- and that a non-BAM group in the same articulation is left alone.
+    """
+    from isaaclab.actuators import newton as newton_actuators
+
+    torch.manual_seed(0)
+    num_envs, num_group_joints = 8, len(JOINT_NAMES)
+    env = _DummyEnv(num_envs=num_envs)
+    env.scene["robot"] = _ActuatedRobot(
+        {"servos": object(), "wheels": object()},
+        {"servos": _bam_cfg(), "wheels": IdealPDActuatorCfg(joint_names_expr=[".*"], stiffness=1.0, damping=0.1)},
+        num_envs,
+        env.device,
+    )
+    writes: list[dict] = []
+    monkeypatch.setattr(
+        newton_actuators,
+        "read_group_parameter",
+        lambda collection, name, component, attr: torch.ones(num_envs, num_group_joints),
+    )
+    monkeypatch.setattr(
+        newton_actuators,
+        "write_group_parameter",
+        lambda collection, name, component, attr, values, env_ids=None, joint_ids=None: writes.append(
+            {"name": name, "component": component, "attr": attr, "values": values, "env_ids": env_ids}
+        ),
+    )
+    env_ids = torch.tensor([0, 2, 5], device=env.device)
+
+    mdp.randomize_bam_friction(cast("ManagerBasedEnv", env), env_ids, scale_range=BAM_FRICTION_SCALE_RANGE)
+
+    assert len(writes) == 1, "only the BAM group is addressed"
+    write = writes[0]
+    assert (write["name"], write["component"], write["attr"]) == ("servos", "controller", "friction_scale")
+    torch.testing.assert_close(write["env_ids"], env_ids)
+    values = write["values"]
+    assert values.shape == (len(env_ids), num_group_joints)
+    assert torch.all(values >= BAM_FRICTION_SCALE_RANGE[0])
+    assert torch.all(values <= BAM_FRICTION_SCALE_RANGE[1])
+    # one scale per environment, broadcast across the group's joints
+    torch.testing.assert_close(values, values[:, :1].expand_as(values))
+    assert values[:, 0].std() > 0.0
 
 
 ##

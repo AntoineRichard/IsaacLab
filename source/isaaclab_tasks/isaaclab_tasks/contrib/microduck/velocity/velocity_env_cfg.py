@@ -605,9 +605,10 @@ class EventsCfg:
 
     Reference section 2.6. Upstream's ``base_com`` term is deliberately absent: it selects zero
     bodies upstream and MicroDuck never fills it in, so it is a documented no-op there (reference
-    section 2.6a). Upstream's ``expand_bam_friction_fields`` and ``randomize_joint_friction`` terms
-    belong to its BAM actuator, which this port does not have yet, and its ``reset_action_history``
-    has no counterpart because Isaac Lab's action manager resets its own buffers.
+    section 2.6a). Its ``expand_bam_friction_fields`` term has no counterpart because it only
+    registers MuJoCo's ``dof_frictionloss``/``dof_damping`` for per-world expansion, which the BAM
+    actuator's per-environment storage already is; its ``reset_action_history`` has none because
+    Isaac Lab's action manager resets its own buffers.
 
     The three randomizations upstream ships disabled -- motor gains, joint damping and base
     orientation -- are not carried over at all, since a term that is never enabled is not part of
@@ -707,6 +708,17 @@ class EventsCfg:
             "asset_cfg": _HEAD_BODY_CFG,
             "com_range": {"x": (-0.003, 0.003), "y": (-0.003, 0.003), "z": (-0.003, 0.003)},
         },
+    )
+
+    # +/-10 % on the BAM servos' gearbox friction budget. Upstream names the term
+    # ``randomize_joint_friction``, but it does not touch the solver's joint friction: it scales the
+    # actuator's own Coulomb, Stribeck and load-dependent budget, which is what a worn or freshly
+    # greased gearbox changes. The stock ``randomize_actuator_gains`` cannot express it -- it writes
+    # PD gains this model never reads.
+    randomize_joint_friction = EventTerm(
+        func=mdp.randomize_bam_friction,
+        mode="reset",
+        params={"scale_range": (0.9, 1.1)},
     )
 
     # +/-10 % on every joint's armature: the reflected rotor inertia of a servo is a fitted quantity,

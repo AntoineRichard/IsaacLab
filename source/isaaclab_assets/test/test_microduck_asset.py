@@ -17,8 +17,9 @@ Three layers of tests live here:
   compare the articulation properties the locomotion task depends on, so a re-conversion that
   silently drops joints, limits, mass, joint dynamics or contact properties is caught. Every
   expected value is measured from the MJCF at test time; nothing is transcribed by hand.
-* Configuration tests, which spawn :data:`~isaaclab_assets.MICRODUCK_CFG` and check that the
-  properties the conversion cannot carry are restored by it.
+* Configuration tests, which spawn :data:`~isaaclab_assets.MICRODUCK_CFG` and check that it pins
+  upstream's servo deployment and leaves the properties the conversion cannot carry to the model
+  that owns them.
 
 The fidelity tests' inputs are not in the repository: USD files are excluded by ``.gitignore``, and
 the MJCF is fetched from the pinned upstream commit into a local cache. They skip unless both are
@@ -350,8 +351,8 @@ def test_joint_dynamics_not_carried_by_the_asset(usd_articulation, mj_joints, mj
     arrays are not in the expected format ... physics drive stiffness and damping will not be
     created") and writes joint damping and friction only as ``mjc:*`` attributes, which are not in
     the schema resolver set Isaac Lab passes to Newton's USD importer. All four therefore arrive as
-    zero and are owned by the task's actuator configuration. Asserting that keeps a future importer
-    that starts authoring them from silently doubling up with the actuator config.
+    zero and are owned by the servo model instead. Asserting that keeps a future importer that
+    starts authoring them from silently doubling up with the actuator.
     """
     robot, _ = usd_articulation
     stiffness = robot.data.joint_stiffness.torch[0].cpu().numpy()
@@ -467,44 +468,65 @@ def test_microduck_cfg_default_joint_pos_is_the_home_pose(microduck_articulation
         assert default_joint_pos[index] == pytest.approx(HOME_POSE[name], abs=1e-6), name
 
 
-def test_microduck_cfg_restores_the_joint_dynamics_the_asset_drops(microduck_articulation, mj_joints):
-    """The passive dynamics lost in conversion come back through the actuator configuration.
+def test_microduck_cfg_leaves_the_joint_dynamics_to_the_bam_model(microduck_articulation, mj_joints):
+    """The gearbox friction is owned by the servo model, not written back onto the solver.
 
     ``test_joint_dynamics_not_carried_by_the_asset`` pins that the USD arrives with zero joint
-    damping and friction. The configuration owns them instead, as viscous friction (MuJoCo's
-    ``dof_damping``) and dry friction (``frictionloss``) rather than as PD gains, which for an
-    explicit actuator model would never reach the solver.
+    damping and friction, and the configuration deliberately leaves them there: the MJCF's
+    ``chosen_actuator`` values belong to the PD path BAM replaces, and its ``frictionloss`` is the
+    same fitted ``friction_base`` the BAM model already applies, so restoring them would count the
+    gearbox friction twice. The armature is the exception -- it is a rotor property rather than a
+    friction one, and the USD carries the MJCF value.
     """
     robot = microduck_articulation
+    servos = robot.actuators["servos"]
     viscous = robot.data.joint_viscous_friction_coeff.torch[0].cpu().numpy()
     friction = robot.data.joint_friction_coeff.torch[0].cpu().numpy()
     armature = robot.data.joint_armature.torch[0].cpu().numpy()
 
+    assert np.all(viscous == 0.0)
+    assert np.all(friction == 0.0)
+    # the MJCF's dry friction is the BAM fit's own Coulomb term, to the digits the MJCF writes
+    assert servos.params.friction_base == pytest.approx(mj_joints[robot.joint_names[0]]["frictionloss"], rel=1e-2)
     for index, name in enumerate(robot.joint_names):
-        assert viscous[index] == pytest.approx(mj_joints[name]["damping"], rel=1e-4), name
-        assert friction[index] == pytest.approx(mj_joints[name]["frictionloss"], rel=1e-4), name
-        # armature is left to the USD, which carries the MJCF value unchanged
         assert armature[index] == pytest.approx(mj_joints[name]["armature"], rel=1e-4), name
+        # the BAM fit identifies the same reflected rotor inertia the MJCF declares, which the
+        # MJCF writes rounded to two significant digits
+        assert servos.params.armature == pytest.approx(mj_joints[name]["armature"], rel=1e-2), name
 
 
-def test_microduck_cfg_servo_model_matches_the_mjcf_actuator(microduck_articulation, mj_actuators):
-    """The stand-in servo model lands on the MJCF actuator, and clips below its force range.
+def test_microduck_cfg_servo_model_is_upstreams_bam_deployment(microduck_articulation, mj_actuators):
+    """The servo group is the BAM model at upstream's deployment settings, cross-checked on the MJCF.
 
-    The gains are derived from the published XL330 parameters rather than from the MJCF, so the
-    MJCF's own ``kp`` is an independent cross-check: upstream evidently derived it the same way, and
-    a slip in the derivation would show up here. The firmware current limiter binds before the
-    winding voltage does, so the rated torque is tighter than the declared ``forcerange`` -- but only
-    the actuator model is rated down, the solver clamp stays at the authored value.
+    Upstream's ``_BAM_ACTUATOR_KWARGS`` (reference section 6) are pinned field by field, because a
+    silent change to any of them retrains a different robot. The gains are then cross-checked
+    against the MJCF: the small-signal stiffness of the firmware loop at the middle of the battery
+    range, ``kp_fw * error_gain * vin * kt / R``, is an independent re-derivation of the ``kp``
+    the MJCF's fallback ``position`` actuator declares. The MJCF's ``forcerange`` survives
+    conversion as the solver clamp, which the model has no limit of its own on top of -- its
+    firmware current limiter bounds the motor torque instead.
     """
     robot = microduck_articulation
     servos = robot.actuators["servos"]
+    cfg = servos.cfg
+    params = servos.params
     solver_limit = robot.data.joint_effort_limits.torch[0].cpu().numpy()
 
+    assert cfg.kp_fw == 200.0
+    assert cfg.vin_range == (6.5, 8.2)
+    assert cfg.vin_drop_gain_range == (0.0, 0.2)
+    assert cfg.vin_min == 6.0
+    assert cfg.friction_scale_range == (0.9, 1.1)
+    assert (cfg.min_delay, cfg.max_delay) == (3, 6)
+    # unused by this model, and set to anything but None they warn
+    assert cfg.stiffness is None and cfg.damping is None
+    assert cfg.actuator_effort_limit is None
+
+    nominal_vin = sum(cfg.vin_range) / 2.0
+    small_signal_stiffness = cfg.kp_fw * params.error_gain * nominal_vin * params.kt / params.R
     for index, name in enumerate(robot.joint_names):
-        authored = mj_actuators[name]["effort_limit"]
-        assert float(servos.stiffness[0, index]) == pytest.approx(mj_actuators[name]["stiffness"], rel=0.01), name
-        assert float(servos.actuator_effort_limit[0, index]) < authored
-        assert solver_limit[index] == pytest.approx(authored, rel=1e-5), name
+        assert small_signal_stiffness == pytest.approx(mj_actuators[name]["stiffness"], rel=0.01), name
+        assert solver_limit[index] == pytest.approx(mj_actuators[name]["effort_limit"], rel=1e-5), name
 
 
 def test_microduck_cfg_reports_a_missing_asset_with_the_command_that_makes_it(tmp_path):

@@ -63,3 +63,13 @@ Added
   rather than from the humanoid defaults it started at: ``njmax`` is 64 and ``nconmax`` is 10,
   against a measured peak of 54 constraints and 10 contacts per environment. The rough task keeps
   upstream's wider budget, which its terrain needs.
+* Added ``randomize_bam_friction`` under ``contrib/microduck/mdp``, wired into both velocity tasks
+  as the ``randomize_joint_friction`` reset event upstream ships. It scales the BAM servo model's
+  gearbox friction budget by a per-environment ``U(0.9, 1.1)`` draw, on both execution paths:
+  through :meth:`~isaaclab.actuators.BamActuator.set_friction_scale` when Isaac Lab runs the model,
+  and through :func:`~isaaclab.actuators.newton.write_group_parameter` when the Newton actuator
+  does. The stock :func:`~isaaclab.envs.mdp.randomize_actuator_gains` cannot express it, because it
+  writes PD gains this model never reads. The robot the tasks spawn now drives its servos with that
+  model, so any reward, observation or termination that reads actuator effort sees the BAM torque
+  rather than the previous PD torque -- and with ``use_newton_actuators=True`` it sees the motor
+  torque alone, since the solver applies the friction.

@@ -322,14 +322,17 @@ EXPECTED_EVENTS = {
     "reset_robot_joints": ("reset", {"position_range": (0.0, 0.0), "velocity_range": (0.0, 0.0)}),
     "randomize_com": ("reset", {"com_range": {axis: (-0.003, 0.003) for axis in "xyz"}}),
     "randomize_head_com": ("reset", {"com_range": {axis: (-0.003, 0.003) for axis in "xyz"}}),
+    "randomize_joint_friction": ("reset", {"scale_range": (0.9, 1.1)}),
     "randomize_armature": ("reset", {"armature_distribution_params": (0.9, 1.1), "operation": "scale"}),
     "push_robot": ("interval", {"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}}),
 }
 """Upstream's domain-randomization suite (reference section 2.6), keyed by term name.
 
-Upstream's ``base_com`` is absent because it selects zero bodies upstream; its BAM friction terms
-are absent because the BAM actuator is not ported yet; and the three terms it ships disabled are
-absent because a term that is never enabled is not part of the recipe.
+Upstream's ``base_com`` is absent because it selects zero bodies upstream; its
+``expand_bam_friction_fields`` is absent because it only registers MuJoCo's
+``dof_frictionloss``/``dof_damping`` for per-world expansion, which the BAM actuator's
+per-environment storage already is; and the three terms it ships disabled are absent because a term
+that is never enabled is not part of the recipe.
 """
 
 EXPECTED_TERMINATIONS = {
