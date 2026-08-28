@@ -23,7 +23,7 @@ class MicroDuckStandUpPPORunnerCfg(MicroDuckPPORunnerCfg):
     wiring and the 24-step rollout are all shared.
     """
 
-    # a separate log tree: the two policies are trained and deployed independently
+    # a separate log tree: the MicroDuck policies are trained and deployed independently
     experiment_name = "microduck_stand"
     # a third of the velocity budget. Standing up is one skill reaching one fixed target, and
     # upstream's schedules have all finished ramping by iteration 4000.

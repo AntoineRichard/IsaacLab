@@ -37,7 +37,7 @@ class MicroDuckRouladePPORunnerCfg(MicroDuckPPORunnerCfg):
     policy that behaves differently on mirrored observations.
     """
 
-    # a separate log tree: the three MicroDuck policies are trained and deployed independently
+    # a separate log tree: the MicroDuck policies are trained and deployed independently
     experiment_name = "microduck_roulade"
     # a fifth of the velocity budget. The roll is one short manoeuvre and upstream's schedules have
     # all finished ramping by iteration 6000.
