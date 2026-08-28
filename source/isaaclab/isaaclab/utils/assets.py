@@ -21,6 +21,7 @@ import ntpath
 import os
 import posixpath
 import re
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -336,6 +337,42 @@ def _get_git_asset_dir(
                 os.replace(temporary_path, git_asset_dir)
 
     return git_asset_dir
+
+
+def _fetch_git_asset_rev(git_path: str, git_asset_dir: str, rev: str) -> None:
+    """Fetch one revision of a remote repository into a cache directory.
+
+    ``clone --depth 1`` only accepts a branch or tag, so the revision is fetched into an
+    already-initialized repository instead. A host that refuses to serve an arbitrary SHA then
+    surfaces as a failed fetch rather than as a checkout of the wrong revision.
+
+    The work happens in a scratch directory that is renamed into place only once every step has
+    succeeded. Assembling it at :paramref:`git_asset_dir` directly would leave a ``.git`` directory
+    behind whenever a fetch failed -- a dropped connection, an interrupt, a revision the host will
+    not serve -- and every later call would take that for a usable cache, never retry the fetch, and
+    report the asset as missing until someone deleted the directory by hand. The unpinned
+    ``git clone`` path has no such trap, because it clones into a directory that does not exist yet.
+
+    Args:
+        git_path: Git repository URL or SSH path.
+        git_asset_dir: Cache directory the finished checkout is placed at.
+        rev: Revision to fetch.
+
+    Raises:
+        RuntimeError: When the repository cannot be fetched.
+    """
+    cache_dir = os.path.dirname(git_asset_dir)
+    os.makedirs(cache_dir, exist_ok=True)
+    scratch_dir = tempfile.mkdtemp(dir=cache_dir, prefix=".partial-")
+    try:
+        _run_git_command(["git", "init", "--quiet", scratch_dir])
+        _run_git_command(["git", "-C", scratch_dir, "remote", "add", "origin", git_path])
+        _run_git_command(["git", "-C", scratch_dir, "fetch", "--depth", "1", "origin", rev])
+        _run_git_command(["git", "-C", scratch_dir, "checkout", "--quiet", "FETCH_HEAD"])
+        os.rename(scratch_dir, git_asset_dir)
+    finally:
+        # a no-op once the rename has moved the directory away
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 def _verify_git_asset_rev(git_asset_dir: str, rev: str) -> None:
