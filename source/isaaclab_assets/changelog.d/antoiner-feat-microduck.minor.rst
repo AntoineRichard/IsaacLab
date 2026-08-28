@@ -21,6 +21,23 @@ Added
   friction the conversion drops and bounds the model at the electrical stall torque upstream derives
   from the top of its battery range. Spawning it without the generated USD raises an error naming
   the command that regenerates it.
+* Added the two remaining upstream MicroDuck robot models to the conversion tooling, selected with
+  ``scripts/tools/convert_microduck.py --model {walk,allcollisions,rollers}`` (``walk`` stays the
+  default, so the existing command is unchanged). ``allcollisions`` adds the trunk, hip, shin and
+  head colliders upstream's stand-up and roulade tasks need; ``rollers`` replaces each foot with two
+  passively rolling wheels. The world-contact set a conversion keeps is re-derived from that model's
+  own MJCF ``contype``/``conaffinity`` rather than shared between models, so the three head shells on
+  ``jaw_soft`` stay collidable -- a task that rolls the robot over its head needs a head that touches
+  the ground.
+* Added :data:`~isaaclab_assets.MICRODUCK_ALLCOLLISIONS_CFG` and
+  :data:`~isaaclab_assets.MICRODUCK_ROLLERS_CFG`, which are :data:`~isaaclab_assets.MICRODUCK_CFG`
+  spawning those two assets. They reuse its servo group unchanged, so the roller model's four
+  ``passive_*_wheel`` hinges are undriven and the action space stays 14-dimensional on all three
+  robots.
+* Added ``test/test_microduck_variant_assets.py``, comparing both new assets against their source
+  MJCF: joint inventory including the passive wheels, per-side position limits, armature, effort
+  limits, body masses, the world-contact collider set and its friction, the cleared root transform,
+  and that each configuration spawns on Newton and drives exactly the 14 servos.
 
 Changed
 ^^^^^^^

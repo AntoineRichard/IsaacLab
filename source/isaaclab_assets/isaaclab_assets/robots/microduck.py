@@ -8,15 +8,21 @@
 MicroDuck is a 0.74 kg, 14-DOF biped driven by Dynamixel XL330 servos: five joints per leg
 (hip yaw/roll/pitch, knee, ankle) plus a four-DOF head (neck pitch, head pitch/yaw/roll).
 
-The following configuration is available:
+Upstream ships three flat-task robot models, which share this skeleton and differ only in geometry:
 
-* :data:`MICRODUCK_CFG`: MicroDuck on the BAM servo model, in the upstream stand pose.
+* :data:`MICRODUCK_CFG`: MicroDuck on the BAM servo model, in the upstream stand pose. The walking
+  model, whose only ground contact is through the two foot soles.
+* :data:`MICRODUCK_ALLCOLLISIONS_CFG`: the same robot with the trunk, hip, shin and head colliders
+  upstream's stand-up and roulade tasks need to reach the ground.
+* :data:`MICRODUCK_ROLLERS_CFG`: the all-collisions robot with each foot replaced by two passively
+  rolling wheels. The four wheel hinges are undriven, so the action space stays 14-dimensional.
 
-The asset it spawns is converted from the upstream MJCF and is generated rather than committed;
-see ``ATTRIBUTION.md`` next to :data:`MICRODUCK_USD_PATH` for its provenance and
+The assets they spawn are converted from the upstream MJCFs and are generated rather than committed;
+see ``ATTRIBUTION.md`` next to :data:`MICRODUCK_USD_PATH` for their provenance and
 ``scripts/tools/convert_microduck.py`` for the conversion.
 """
 
+import copy
 import os
 
 from pxr import Usd
@@ -27,12 +33,37 @@ from isaaclab.assets.articulation import ArticulationCfg
 
 from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
 
-MICRODUCK_USD_PATH = os.path.join(
-    ISAACLAB_ASSETS_DATA_DIR, "Robots", "PollenRobotics", "MicroDuck", "microduck_walk.usd"
-)
-"""Path of the converted MicroDuck asset."""
+_MICRODUCK_DATA_DIR = os.path.join(ISAACLAB_ASSETS_DATA_DIR, "Robots", "PollenRobotics", "MicroDuck")
+"""Directory the converted MicroDuck assets are written to."""
 
-MICRODUCK_REGENERATE_COMMAND = "uv run --extra importers python scripts/tools/convert_microduck.py"
+MICRODUCK_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_walk.usd")
+"""Path of the converted MicroDuck walking asset."""
+
+MICRODUCK_ALLCOLLISIONS_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_allcollisions.usd")
+"""Path of the converted MicroDuck all-collisions asset."""
+
+MICRODUCK_ROLLERS_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_rollers.usd")
+"""Path of the converted MicroDuck roller asset."""
+
+
+def _regenerate_command(usd_path: str) -> str:
+    """Return the conversion command that produces a given MicroDuck asset.
+
+    The converter names its output after the upstream model it converts, so the model selector the
+    command needs is recoverable from the path rather than tracked next to it.
+
+    Args:
+        usd_path: Path of the converted asset.
+
+    Returns:
+        The command to run from the repository root.
+    """
+    command = "uv run --extra importers python scripts/tools/convert_microduck.py"
+    model = os.path.splitext(os.path.basename(usd_path))[0].removeprefix("microduck_")
+    return command if model == "walk" else f"{command} --model {model}"
+
+
+MICRODUCK_REGENERATE_COMMAND = _regenerate_command(MICRODUCK_USD_PATH)
 """Command that regenerates :data:`MICRODUCK_USD_PATH` from the pinned upstream MJCF."""
 
 
@@ -66,7 +97,7 @@ def _spawn_microduck(
     if not os.path.isfile(cfg.usd_path):
         raise FileNotFoundError(
             f"The MicroDuck asset is missing: {cfg.usd_path}. It is generated rather than committed;"
-            f" create it with '{MICRODUCK_REGENERATE_COMMAND}'."
+            f" create it with '{_regenerate_command(cfg.usd_path)}'."
         )
     return sim_utils.spawn_from_usd(prim_path, cfg, translation, orientation, **kwargs)
 
@@ -257,4 +288,52 @@ of the servo model.
 
 The armature is left to the USD, which carries the MJCF's 0.0018 -- the same value the BAM fit
 identifies.
+"""
+
+
+def _microduck_variant_cfg(usd_path: str) -> ArticulationCfg:
+    """Return :data:`MICRODUCK_CFG` respawned from another converted MicroDuck model.
+
+    The upstream models share one skeleton, one home pose, one servo group and one set of joint
+    dynamics, and differ only in which geoms collide and -- for the roller model -- in the passive
+    wheel hinges the servo expression already excludes. Deriving them from one configuration is what
+    keeps a change to the servo deployment from reaching only some of the robots.
+
+    Args:
+        usd_path: Path of the converted asset the configuration spawns.
+
+    Returns:
+        A configuration that is :data:`MICRODUCK_CFG` in everything but the asset it spawns.
+    """
+    cfg = copy.deepcopy(MICRODUCK_CFG)
+    cfg.spawn.usd_path = usd_path
+    return cfg
+
+
+MICRODUCK_ALLCOLLISIONS_CFG = _microduck_variant_cfg(MICRODUCK_ALLCOLLISIONS_USD_PATH)
+"""Configuration for the MicroDuck biped on upstream's all-collisions model.
+
+Upstream's stand-up and roulade tasks run on this model. It has the walking model's joints, bodies,
+sites and sensors, and six more colliders: a second trunk shell, the two hip cheeks, and the three
+head shells on ``jaw_soft``. All six reach world contact in the MJCF, and the conversion keeps them
+there -- the head shells in particular, because a robot that rolls over its head needs a head that
+touches the ground.
+
+Everything else, including the servo group and the joint dynamics the conversion drops, is
+:data:`MICRODUCK_CFG`'s.
+"""
+
+MICRODUCK_ROLLERS_CFG = _microduck_variant_cfg(MICRODUCK_ROLLERS_USD_PATH)
+"""Configuration for the MicroDuck biped on upstream's roller model.
+
+The all-collisions robot with each foot replaced by a two-wheel bogie: the ``ankle_left`` and
+``ankle_right`` bodies become ``ankle_l_v1`` and ``ankle_r_v1``, each carrying two ``tire`` bodies on
+a ``passive_*_wheel`` hinge, and the two soles give way to the four tires as the ground contact.
+
+The 18 hinges are **not** 18 degrees of freedom to drive. The four wheels are passive: the MJCF
+gives them no actuator, no limits and no joint damping or friction, and the servo group's
+``^(?!passive_).*`` expression -- upstream's own, carried by :data:`MICRODUCK_CFG` for exactly this
+model -- leaves them out. The action space is therefore the same 14 servos as on the other models,
+and the wheels roll on the properties the USD carries from the MJCF (an armature of 1e-4 and nothing
+else). Their home position is zero, which is the MJCF's, so they are not listed in the initial state.
 """
