@@ -62,9 +62,11 @@ def joint_pos_rel_biased(
 
     The bias is a *closed loop* with
     :class:`~isaaclab_tasks.contrib.microduck.mdp.actions.BiasedJointPositionAction`, which
-    subtracts the same offset from its position target: a policy commanding ``a`` lands the true
-    joint on ``default + a`` while reading ``default + a`` back. Wiring this term without the
-    matching action term breaks that loop and instead trains a permanent joint-space offset.
+    subtracts the same offset from its position target: a policy commanding ``a`` reads ``a`` back
+    while the true joint settles at ``default + a - bias``. What the bias perturbs is therefore the
+    robot's actual posture, not the policy's frame of reference -- exactly the calibration error it
+    models. Wiring this term without the matching action term breaks that loop and instead trains a
+    permanent offset into the policy's own commands.
 
     Args:
         env: The environment.
@@ -202,6 +204,20 @@ class delayed_observation(ManagerTermBase):
        environment's ``common_step_counter``, and advances on every call for an environment that
        has none.
 
+    Rule 5 is why a reset does not clear the history immediately. An environment that computes a
+    final observation before resetting part of the batch calls the term twice within one control
+    step with a reset in between; clearing the history there and refilling it on the second call
+    would advance the buffer twice, and every environment that was *not* reset would silently skip
+    a frame. The clear is therefore deferred to the next advance, and the second call serves the
+    reset environments the fresh value -- which is what they would read anyway, having no history
+    left to be delayed by -- while the rest keep the frame they were already served.
+
+    One deviation from upstream's pipeline: mjlab orders it compute, noise, then delay, so the
+    stale frame carries the noise sample it was drawn with; here the term wraps the *compute*
+    stage, so Isaac Lab's noise is applied fresh to the stale frame. Both give a stale signal plus
+    an independent uniform draw, so the observation distribution is the same; only the particular
+    noise sample attached to a repeated frame differs.
+
     Isaac Lab's :class:`~isaaclab.utils.buffers.DelayBuffer` resamples its lag only on reset and
     has no ``update_period``, phase or hold concept, so this term keeps its own lag state over the
     same :class:`~isaaclab.utils.buffers.CircularBuffer` that ``DelayBuffer`` wraps. Doing the lag
@@ -232,6 +248,9 @@ class delayed_observation(ManagerTermBase):
         self._lags = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._step_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._phase_offsets = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # environments reset since the last advance; their history is cleared on the next one
+        self._pending_reset = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._has_pending_reset = False
         # the step the buffer was last advanced on, so a recomputed group does not advance it twice
         self._last_step: int | None = None
         self._output: torch.Tensor | None = None
@@ -239,14 +258,15 @@ class delayed_observation(ManagerTermBase):
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
         resolved = slice(None) if env_ids is None else env_ids
-        self._buffer.reset(env_ids)
         self._lags[resolved] = 0
         self._step_count[resolved] = 0
         if self._update_period > 0:
             phases = torch.randint(0, self._update_period, (self.num_envs,), device=self.device)
             self._phase_offsets[resolved] = phases[resolved]
-        # the cleared history must be refilled before the memoized output may be reused again
-        self._last_step = None
+        # the history itself is cleared on the next advance, so that a reset landing between two
+        # computes of one control step cannot cost the untouched environments a frame
+        self._pending_reset[resolved] = True
+        self._has_pending_reset = True
 
     def __call__(
         self,
@@ -275,10 +295,21 @@ class delayed_observation(ManagerTermBase):
         Returns:
             The delayed observation, shaped like the wrapped term's output.
         """
-        obs = term_func(env, **(term_params or {}))
         step = getattr(env, "common_step_counter", None)
         if step is not None and step == self._last_step and self._output is not None:
-            return self._output
+            if not self._has_pending_reset:
+                return self._output
+            # an environment reset since the buffer advanced has no history left to be delayed by,
+            # so it reads the fresh value while the others keep the frame they were already served
+            fresh = term_func(env, **(term_params or {}))
+            mask = self._pending_reset.view(-1, *([1] * (fresh.dim() - 1)))
+            return torch.where(mask, fresh, self._output)
+
+        obs = term_func(env, **(term_params or {}))
+        if self._has_pending_reset:
+            self._buffer.reset(self._pending_reset)
+            self._pending_reset.fill_(False)
+            self._has_pending_reset = False
         self._last_step = step
 
         self._buffer.append(obs)
