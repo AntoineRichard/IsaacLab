@@ -34,15 +34,15 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-def _resolve_stage(
+def _resolve_stage_index(
     env: ManagerBasedRLEnv,
     stages: Sequence[dict[str, Any]],
     key: str,
     term_name: str,
     *,
     inclusive: bool,
-) -> Any | None:
-    """Return the payload of the last stage the run has passed, or None if it has passed none.
+) -> int | None:
+    """Return the index of the last stage the run has passed, or None if it has passed none.
 
     Args:
         env: The environment instance, read for :attr:`common_step_counter`.
@@ -52,7 +52,7 @@ def _resolve_stage(
         inclusive: Whether a stage triggers on the step that equals its boundary.
 
     Returns:
-        The payload of the applicable stage, or None if the run is still before the first boundary.
+        The index of the applicable stage, or None if the run is still before the first boundary.
 
     Raises:
         ValueError: If the stage table is empty, is not ordered by strictly increasing steps, or
@@ -76,11 +76,27 @@ def _resolve_stage(
         previous_step = stage["step"]
 
     resolved = None
-    for stage in stages:
+    for index, stage in enumerate(stages):
         passed = env.common_step_counter >= stage["step"] if inclusive else env.common_step_counter > stage["step"]
         if passed:
-            resolved = stage[key]
+            resolved = index
     return resolved
+
+
+def _resolve_stage(
+    env: ManagerBasedRLEnv,
+    stages: Sequence[dict[str, Any]],
+    key: str,
+    term_name: str,
+    *,
+    inclusive: bool,
+) -> Any | None:
+    """Return the payload of the last stage the run has passed, or None if it has passed none.
+
+    See :func:`_resolve_stage_index` for the arguments and the validation it performs.
+    """
+    index = _resolve_stage_index(env, stages, key, term_name, inclusive=inclusive)
+    return None if index is None else stages[index][key]
 
 
 def reward_weight_stages(
@@ -224,3 +240,48 @@ def event_range_stages(
         half_width = range_stages[0]["range"]
     event_cfg.params[param_name] = {key: (-half_width, half_width) for key in range_keys}
     return half_width
+
+
+def event_param_stages(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    event_name: str,
+    param_stages: Sequence[dict[str, Any]],
+    inclusive: bool = True,
+) -> float:
+    """Rewrite named parameters of an event term through a staged schedule.
+
+    Ported from addendum section 3.8 (``event_param_curriculum`` and ``push_curriculum``, which are
+    the same shallow merge under two names and two comparison operators). The stand-up task drives
+    two schedules with it: the four probabilities of its ground-state reset, which ramp from a mix
+    dominated by standing and sitting to one dominated by the prone poses, and the magnitude of its
+    push disturbance.
+
+    The merge is shallow, so a stage lists only the parameters it changes and the rest of the event
+    term's configuration -- height bands, joint poses -- is left alone.
+
+    :func:`event_range_stages` is the narrower sibling for the common case of one symmetric per-axis
+    range; this one takes the parameter mapping itself.
+
+    Args:
+        env: The environment instance.
+        env_ids: The environments being updated. Unused: the parameters are global.
+        event_name: Name of the event term whose parameters are rewritten.
+        param_stages: Stages of the schedule, each a ``{"step": int, "params": dict}`` mapping,
+            ordered by strictly increasing ``"step"``. Before the first boundary the first stage's
+            parameters apply.
+        inclusive: Whether a stage triggers on the step that equals its boundary. Defaults to True,
+            which is what upstream's ``event_param_curriculum`` does; its ``push_curriculum`` uses
+            the exclusive comparison instead, and that inconsistency is reproduced rather than
+            smoothed over (see the module note).
+
+    Returns:
+        The index of the stage now in force.
+    """
+    del env_ids
+    event_cfg = env.event_manager.get_term_cfg(event_name)
+    index = _resolve_stage_index(env, param_stages, "params", "event_param_stages", inclusive=inclusive)
+    if index is None:
+        index = 0
+    event_cfg.params.update(param_stages[index]["params"])
+    return float(index)

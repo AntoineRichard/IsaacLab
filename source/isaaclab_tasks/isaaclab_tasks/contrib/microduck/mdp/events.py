@@ -17,13 +17,19 @@ from typing import TYPE_CHECKING
 import torch
 
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.math import quat_from_angle_axis, quat_from_euler_xyz, quat_mul
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from isaaclab.assets import Articulation
     from isaaclab.envs import ManagerBasedEnv
 
 _ENCODER_BIAS_ATTR = "_microduck_encoder_bias"
 """Attribute the per-environment encoder bias is cached under on the environment."""
+
+_GROUND_STATE_JOINT_IDS_ATTR = "_microduck_ground_state_joint_ids"
+"""Attribute the resolved sitting-pose joint indices are cached under on the environment."""
 
 
 def encoder_bias(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
@@ -160,3 +166,169 @@ def randomize_bam_friction(
                 values=scales.expand(len(env_ids), num_group_joints),
                 env_ids=env_ids,
             )
+
+
+def _sitting_joint_ids(env: ManagerBasedEnv, asset: Articulation, joint_names: tuple[str, ...]) -> list[int]:
+    """Resolve, and cache on the environment, the indices of the joints the sitting pose overrides.
+
+    A reset event runs every episode, so the name resolution is done once per articulation and
+    selection rather than per reset. The cache mirrors upstream's own memoized servo-index lookup.
+    """
+    cache: dict[tuple[int, tuple[str, ...]], list[int]] = env.__dict__.setdefault(_GROUND_STATE_JOINT_IDS_ATTR, {})
+    key = (id(asset), joint_names)
+    joint_ids = cache.get(key)
+    if joint_ids is None:
+        joint_ids, _ = asset.find_joints(list(joint_names), preserve_order=True)
+        cache[key] = joint_ids
+    return joint_ids
+
+
+def reset_ground_state(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    face_down_prob: float,
+    face_up_prob: float,
+    sitting_prob: float,
+    standing_prob: float,
+    prone_z_range: tuple[float, float],
+    sitting_z_range: tuple[float, float],
+    standing_z_range: tuple[float, float],
+    sitting_joint_pos: Mapping[str, float],
+    sitting_joint_noise_std: float = 0.0,
+    sitting_tilt_max: float = 0.0,
+    face_up_roll_max: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Reset an articulation into one of four ground poses: face-down, face-up, sitting or standing.
+
+    Ported from addendum section 3.4 (``set_random_ground_state``). This single event *is* the
+    stand-up task's episode distribution: which pose an episode starts from decides which skill it
+    exercises, and a curriculum ramps the four probabilities from the easy mix (mostly standing and
+    sitting) to the hard one (mostly prone) as the run progresses. There is no stock counterpart --
+    :func:`isaaclab.envs.mdp.reset_root_state_uniform` samples one continuous band, not a mixture of
+    named keyframes with a matching joint pose.
+
+    The four buckets:
+
+    * **face-down** -- the trunk pitched +90 degrees, belly to the floor, at a random yaw.
+    * **face-up** -- pitched -90 degrees, back to the floor, then rolled by up to
+      :attr:`face_up_roll_max` about the body's long axis. That partial roll is a reverse
+      curriculum: recovering from flat on the back has no reward gradient until the roll completes,
+      so some episodes start part-way along it.
+    * **sitting** -- upright within :attr:`sitting_tilt_max`, low, with the legs folded into
+      :attr:`sitting_joint_pos`. This is the hand-off pose a sit policy leaves the robot in, so it
+      is sampled with joint noise rather than exactly: a policy trained on the exact keyframe does
+      not survive the real hand-off.
+    * **standing** -- the same orientation sampler as sitting but at standing height and with the
+      joints left at the stand pose, so the policy also learns to *hold* a stand.
+
+    The probabilities are normalized and need not sum to one. Only the sitting bucket touches the
+    joints; the other three keep whatever the joint reset wrote.
+
+    This term overwrites the root height and orientation, so it must run **after** any root reset it
+    shares an episode with, and that reset's horizontal spread is what survives. Isaac Lab fires
+    reset events in configuration declaration order.
+
+    Args:
+        env: The environment holding the articulation.
+        env_ids: The environments to reset. Defaults to None, which resets all of them.
+        face_down_prob: Relative probability of the face-down bucket.
+        face_up_prob: Relative probability of the face-up bucket.
+        sitting_prob: Relative probability of the sitting bucket.
+        standing_prob: Relative probability of the standing bucket.
+        prone_z_range: Trunk height band [m] the two prone buckets spawn in, above the environment
+            origin.
+        sitting_z_range: Trunk height band [m] the sitting bucket spawns in.
+        standing_z_range: Trunk height band [m] the standing bucket spawns in.
+        sitting_joint_pos: Joint name to angle [rad] the sitting bucket folds its legs into. Joints
+            left out of it stay at the stand pose, which is how the neck and head are handled.
+        sitting_joint_noise_std: Standard deviation [rad] of the zero-mean noise added to *every*
+            joint selected by :attr:`asset_cfg` in the sitting bucket, on top of the overrides.
+            Defaults to 0.0, which writes the keyframe exactly.
+        sitting_tilt_max: Bound [rad] on the uniform pitch and roll the sitting and standing buckets
+            are tilted by. Defaults to 0.0, which spawns them exactly upright.
+        face_up_roll_max: Bound [rad] on the uniform roll about the body long axis applied to the
+            face-up bucket. Defaults to 0.0, which spawns it flat on its back.
+        asset_cfg: The articulation to reset, and the joints the sitting noise reaches. Selecting
+            them by name reproduces upstream's exclusion of passive joints, which are not part of
+            any keyframe.
+
+    Raises:
+        ValueError: If the four probabilities do not sum to a positive number.
+    """
+    total = face_down_prob + face_up_prob + sitting_prob + standing_prob
+    if total <= 0.0:
+        raise ValueError(
+            "'reset_ground_state' needs at least one bucket with a positive probability. Received"
+            f" face_down={face_down_prob}, face_up={face_up_prob}, sitting={sitting_prob},"
+            f" standing={standing_prob}."
+        )
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    num_resets = len(env_ids)
+    if num_resets == 0:
+        return
+
+    # Bucket assignment from one uniform draw, over the normalized cumulative probabilities.
+    # Face-down needs no mask of its own: it is the first bucket, so it is what the orientation and
+    # the height fall back to when none of the other three masks select an environment.
+    bucket = torch.rand(num_resets, device=env.device) * total
+    is_face_up = (bucket >= face_down_prob) & (bucket < face_down_prob + face_up_prob)
+    is_sitting = (bucket >= face_down_prob + face_up_prob) & (bucket < face_down_prob + face_up_prob + sitting_prob)
+    is_standing = bucket >= face_down_prob + face_up_prob + sitting_prob
+
+    # orientation. The yaw is shared by all four buckets, so an episode's heading does not correlate
+    # with the pose it starts from.
+    yaw = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * torch.pi
+    zeros = torch.zeros_like(yaw)
+    half_pi = torch.full_like(yaw, torch.pi / 2.0)
+    face_down_quat = quat_from_euler_xyz(zeros, half_pi, yaw)
+    face_up_quat = quat_from_euler_xyz(zeros, -half_pi, yaw)
+    if face_up_roll_max > 0.0:
+        roll_angle = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * face_up_roll_max
+        long_axis = torch.tensor([0.0, 0.0, 1.0], device=env.device).expand(num_resets, 3)
+        # right-multiplied, so the roll is about the body's own long axis rather than the world's
+        face_up_quat = quat_mul(face_up_quat, quat_from_angle_axis(roll_angle, long_axis))
+    if sitting_tilt_max > 0.0:
+        tilt = (torch.rand(num_resets, 2, device=env.device) * 2.0 - 1.0) * sitting_tilt_max
+        upright_quat = quat_from_euler_xyz(tilt[:, 1], tilt[:, 0], yaw)
+    else:
+        upright_quat = quat_from_euler_xyz(zeros, zeros, yaw)
+
+    quat = torch.where(is_face_up.unsqueeze(-1), face_up_quat, face_down_quat)
+    quat = torch.where((is_sitting | is_standing).unsqueeze(-1), upright_quat, quat)
+
+    # height, drawn per bucket
+    def _uniform(bounds: tuple[float, float]) -> torch.Tensor:
+        return torch.empty(num_resets, device=env.device).uniform_(*bounds)
+
+    height = _uniform(prone_z_range)
+    height = torch.where(is_sitting, _uniform(sitting_z_range), height)
+    height = torch.where(is_standing, _uniform(standing_z_range), height)
+
+    # the horizontal position is left alone: it is what an earlier root reset spread out
+    pose = torch.cat(
+        (asset.data.root_link_pos_w.torch[env_ids], asset.data.root_link_quat_w.torch[env_ids]), dim=-1
+    ).clone()
+    pose[:, 2] = env.scene.env_origins[env_ids, 2] + height
+    pose[:, 3:7] = quat
+    asset.write_root_link_pose_to_sim_index(root_pose=pose, env_ids=env_ids)
+    asset.write_root_com_velocity_to_sim_index(
+        root_velocity=torch.zeros(num_resets, 6, device=env.device), env_ids=env_ids
+    )
+
+    sitting_env_ids = env_ids[is_sitting]
+    if len(sitting_env_ids) == 0:
+        return
+    joint_pos = asset.data.default_joint_pos.torch[sitting_env_ids].clone()
+    override_ids = _sitting_joint_ids(env, asset, tuple(sitting_joint_pos))
+    angles = torch.tensor(list(sitting_joint_pos.values()), device=env.device)
+    joint_pos[:, override_ids] = angles
+    if sitting_joint_noise_std > 0.0:
+        noise = torch.randn(len(sitting_env_ids), len(joint_pos[0, asset_cfg.joint_ids]), device=env.device)
+        joint_pos[:, asset_cfg.joint_ids] += noise * sitting_joint_noise_std
+    asset.write_joint_state_to_sim_index(
+        position=joint_pos, velocity=torch.zeros_like(joint_pos), env_ids=sitting_env_ids
+    )
