@@ -11,3 +11,8 @@ Added
   armature, effort limits, body masses, root spawn height, world-contact colliders and foot
   friction. The actuator gains, joint damping and joint friction are not carried by the conversion
   and must be supplied by the task's actuator configuration; the tests pin that too.
+* Added :data:`~isaaclab_assets.MICRODUCK_CFG`, the MicroDuck articulation on delayed PD servos in
+  the upstream stand pose. It restores the joint damping and friction the conversion drops, and its
+  servo gains and rated torque are derived from the published Dynamixel XL330 parameters upstream
+  calibrates against, as a documented stand-in until a BAM actuator model is available. Spawning it
+  without the generated USD raises an error naming the command that regenerates it.
