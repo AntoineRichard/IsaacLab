@@ -19,10 +19,12 @@ Changed
 * Changed the MicroDuck stand-up and forward-roll tasks' ``self_collision`` sensor from the trunk
   against seven bodies to the model's ten enabled colliders against each other, many-to-many, which
   is upstream's trunk-subtree-against-itself sensor. The narrower sensor could only see contacts with
-  the trunk at one end; the widened one also sees limb against limb, which on this model is shin
-  against hip shell on either side -- the whole limb-against-limb set the joint limits let the robot
-  reach. Sole against sole and shin against shin remain unreachable because hip yaw is capped at
-  about 0.5 rad and hip roll at 0.38, so the legs cannot cross.
+  the trunk at one end; the widened one also sees limb against limb, with no trunk at either end.
+  Both the folded and the crossed families are reachable inside the joint limits: a deep knee fold
+  puts each shin into the hip shell on its own side, and swinging both legs through the sagittal
+  chain -- hip pitch, knee and ankle all range over plus or minus 1.571 rad -- brings the feet across
+  the midline, where the modest hip yaw and roll travel is enough to overlap them. Sole against sole,
+  sole against shin and shin against shin all register on the widened sensor.
 
   Both tasks' ``self_collisions`` reward now passes ``saturate=True``, which holds the term on
   upstream's 0/1 scale, so the configured weights keep their meaning and are not rescaled by the
