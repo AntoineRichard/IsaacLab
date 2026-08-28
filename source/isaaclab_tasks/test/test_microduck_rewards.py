@@ -1276,7 +1276,7 @@ class _DummyActionTerm:
     """Joint-position action term double: the driven joints and the target it produced."""
 
     def __init__(self, joint_ids: list[int], processed_actions: torch.Tensor) -> None:
-        self._joint_ids = joint_ids
+        self.joint_ids = joint_ids
         self.processed_actions = processed_actions
 
 

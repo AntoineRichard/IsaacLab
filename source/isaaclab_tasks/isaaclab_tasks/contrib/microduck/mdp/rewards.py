@@ -1972,7 +1972,7 @@ class joint_action_rate_l2(ManagerTermBase):
         asset: Articulation = env.scene[asset_cfg.name]
         action_name = cfg.params["action_name"]
         action_term = env.action_manager.get_term(action_name)
-        driven_ids = [int(index) for index in action_term._joint_ids]
+        driven_ids = [int(index) for index in action_term.joint_ids]
         columns = []
         for joint_id in joint_ids:
             if joint_id not in driven_ids:
@@ -2062,7 +2062,7 @@ def action_over_limit_penalty(
     # compensation that follows it is applied when the target is written, not here, so this is the
     # command the policy issued rather than the one a miscalibrated servo receives
     target = term.processed_actions
-    limits = asset.data.joint_pos_limits.torch[:, term._joint_ids]
+    limits = asset.data.joint_pos_limits.torch[:, term.joint_ids]
     over = (target - (limits[..., 1] + overshoot)).clamp(min=0.0)
     over += ((limits[..., 0] - overshoot) - target).clamp(min=0.0)
     return torch.sum(over, dim=-1)
@@ -2403,6 +2403,12 @@ class heading_hold_reward(ManagerTermBase):
     Being anchored to a per-episode reference heading it is stateful, so it is a class. There is no
     stock counterpart: :func:`isaaclab.envs.mdp.heading_command_error_abs` tracks a *commanded*
     heading, which this task has none of.
+
+    Note:
+        Upstream re-anchors the reference heading while ``episode_length_buf <= 1``, i.e. on both
+        the reset step and the one after it; this term anchors once, on the first call after
+        reset. The difference is one step of yaw drift folded into the reference -- immaterial in
+        practice, but it is a real episode-boundary deviation from upstream.
     """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
