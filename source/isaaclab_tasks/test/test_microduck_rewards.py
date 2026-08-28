@@ -1259,3 +1259,406 @@ def test_the_roll_terms_reject_an_asset_configuration_without_a_single_head_body
             rate_norm=2.0,
             asset_cfg=_entity("robot"),
         )
+
+
+##
+# Roller skating (addendum section 5.3)
+##
+
+WHEEL_JOINT_IDS = [0, 1, 2, 3]
+"""Joint slots the roller doubles below fill with the four passive wheels."""
+
+TIRE_SENSOR_IDS = [0, 1, 2, 3]
+"""Sensor slots the roller doubles fill with ``[left-front, left-rear, right-front, right-rear]``."""
+
+
+class _DummyActionTerm:
+    """Joint-position action term double: the driven joints and the target it produced."""
+
+    def __init__(self, joint_ids: list[int], processed_actions: torch.Tensor) -> None:
+        self._joint_ids = joint_ids
+        self.processed_actions = processed_actions
+
+
+class _DummyActionManager:
+    """Action manager double carrying one term and the two action buffers the rate reads."""
+
+    def __init__(self, term: _DummyActionTerm, action: torch.Tensor, prev_action: torch.Tensor) -> None:
+        self._term = term
+        self.action = action
+        self.prev_action = prev_action
+        self.active_terms = ["joint_pos"]
+        self.action_term_dim = [action.shape[1]]
+
+    def get_term(self, name: str) -> _DummyActionTerm:
+        assert name == "joint_pos"
+        return self._term
+
+
+def _roller_sensor(air_time: list[float], contact_time: list[float]) -> _DummySensor:
+    """A four-tire contact sensor double, one environment."""
+    return _DummySensor(
+        current_air_time=torch.tensor([air_time]),
+        current_contact_time=torch.tensor([contact_time]),
+    )
+
+
+def _roller_env(
+    *,
+    command: list[float] | None = None,
+    forward_vel: float = 0.0,
+    air_time: list[float] | None = None,
+    contact_time: list[float] | None = None,
+    wheel_vel: list[float] | None = None,
+    leg_vel: list[float] | None = None,
+    height: float = 0.0,
+    projected_gravity_b: list[float] | None = None,
+    heading: float = 0.0,
+    step_dt: float = 0.02,
+) -> _DummyEnv:
+    """One environment posed for the roller terms."""
+    robot = _DummyAsset(
+        root_link_lin_vel_b=torch.tensor([[forward_vel, 0.0, 0.0]]),
+        root_link_pos_w=torch.tensor([[0.0, 0.0, height]]),
+        projected_gravity_b=torch.tensor([projected_gravity_b or [0.0, 0.0, -1.0]]),
+        joint_vel=torch.tensor([(wheel_vel or [0.0, 0.0, 0.0, 0.0]) + (leg_vel or [0.0, 0.0])]),
+        joint_pos=torch.zeros(1, 6),
+        default_joint_pos=torch.zeros(1, 6),
+        heading_w=torch.tensor([heading]),
+    )
+    sensors = {}
+    if air_time is not None or contact_time is not None:
+        sensors["feet_ground_contact"] = _roller_sensor(air_time or [0.0] * 4, contact_time or [0.0] * 4)
+    return _DummyEnv(
+        num_envs=1,
+        assets={"robot": robot},
+        sensors=sensors,
+        commands={"twist": torch.tensor([command or [0.0, 0.0, 0.0]])},
+        step_dt=step_dt,
+    )
+
+
+def _tire_sensor_cfg() -> SceneEntityCfg:
+    return _entity("feet_ground_contact", body_ids=TIRE_SENSOR_IDS, body_names=["tire", "tire_2", "tire_3", "tire_4"])
+
+
+def test_fold_bodies_into_feet_groups_consecutive_bodies():
+    """A foot is a run of consecutive sensor slots, so the left pair must stay ahead of the right."""
+    values = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+
+    grouped = mdp.fold_bodies_into_feet(values, 2)
+
+    assert grouped.shape == (1, 2, 2)
+    torch.testing.assert_close(grouped, torch.tensor([[[1.0, 2.0], [3.0, 4.0]]]))
+    # a single-collider foot is the identity apart from the inserted axis
+    torch.testing.assert_close(mdp.fold_bodies_into_feet(values, 1).squeeze(2), values)
+
+
+def test_fold_bodies_into_feet_rejects_a_selection_that_is_not_whole_feet():
+    """Three tires cannot be two feet, and silently dropping one would mis-pair left and right."""
+    with pytest.raises(ValueError, match="whole number of feet"):
+        mdp.fold_bodies_into_feet(torch.zeros(1, 3), 2)
+
+
+def test_com_height_target_pays_a_flat_reward_inside_the_band_and_the_squared_miss_outside():
+    """The band is a tolerance, not a target: anywhere inside it scores the same."""
+    inside = _roller_env(height=0.11)
+    low = _roller_env(height=0.0935 - 0.1)
+    high = _roller_env(height=0.1235 + 0.2)
+
+    band = {"target_height_min": 0.0935, "target_height_max": 0.1235}
+    torch.testing.assert_close(mdp.com_height_target(inside.as_env(), **band), torch.tensor([1.0]))
+    torch.testing.assert_close(mdp.com_height_target(low.as_env(), **band), torch.tensor([-0.01]))
+    torch.testing.assert_close(mdp.com_height_target(high.as_env(), **band), torch.tensor([-0.04]))
+
+
+def test_feet_flat_penalty_charges_only_the_loaded_blade():
+    """The stance blade is asked to lie flat; the swing blade is free to tilt."""
+    # the left foot's normal axis is 45 degrees from gravity, the right foot's is aligned with it
+    tilted = [math.sin(math.pi / 4.0), 0.0, 0.0, math.cos(math.pi / 4.0)]  # 90 deg about x
+    level = [0.0, 0.0, 0.0, 1.0]
+    robot = _DummyAsset(
+        body_link_quat_w=torch.tensor([[tilted, level]]),
+        GRAVITY_VEC_W=torch.tensor([[0.0, 0.0, -9.81]]),
+    )
+    asset_cfg = _entity("robot", body_ids=[0, 1], body_names=["ankle_l_v1", "ankle_r_v1"])
+
+    def penalty(contact_time):
+        env = _DummyEnv(
+            num_envs=1,
+            assets={"robot": robot},
+            sensors={"feet_ground_contact": _roller_sensor([0.0] * 4, contact_time)},
+        )
+        return mdp.feet_flat_penalty(
+            env.as_env(),
+            asset_cfg=asset_cfg,
+            sensor_cfg=_tire_sensor_cfg(),
+            normal_axis=(0.0, 1.0, 0.0),
+            bodies_per_foot=2,
+        )
+
+    # a 90 degree roll puts the left blade's +y axis on the world -z, so gravity is *on* its normal
+    # and the tilt term is zero there; the level right blade has its normal horizontal, so it is 1
+    torch.testing.assert_close(penalty([1.0, 1.0, 1.0, 1.0]), torch.tensor([1.0]))
+    # only the left foot loaded: its own tilt of zero is charged and the right foot is ignored
+    torch.testing.assert_close(penalty([1.0, 0.0, 0.0, 0.0]), torch.tensor([0.0]))
+    # only the right foot loaded
+    torch.testing.assert_close(penalty([0.0, 0.0, 0.0, 1.0]), torch.tensor([1.0]))
+    # airborne: nothing is charged
+    torch.testing.assert_close(penalty([0.0, 0.0, 0.0, 0.0]), torch.tensor([0.0]))
+
+
+def test_joint_pose_l2_sums_the_squared_deviation_from_the_stand_pose():
+    """Upstream sums rather than averages, unlike this package's L1 sibling."""
+    robot = _DummyAsset(
+        joint_pos=torch.tensor([[0.3, -0.4]]),
+        default_joint_pos=torch.tensor([[0.1, -0.1]]),
+    )
+    env = _DummyEnv(num_envs=1, assets={"robot": robot})
+
+    cost = mdp.joint_pose_l2(env.as_env(), asset_cfg=_entity("robot", joint_ids=[0, 1]))
+
+    torch.testing.assert_close(cost, torch.tensor([0.2**2 + 0.3**2]))
+
+
+def _action_rate_term(joint_ids, action, prev_action, selected, selected_names):
+    """Build a resolved ``joint_action_rate_l2`` against an action-manager double."""
+    robot = _DummyAsset(joint_pos=torch.zeros(1, 6), default_joint_pos=torch.zeros(1, 6))
+    robot.joint_names = [f"joint_{index}" for index in range(6)]
+    env = _DummyEnv(num_envs=1, assets={"robot": robot})
+    env.action_manager = _DummyActionManager(_DummyActionTerm(joint_ids, torch.zeros_like(action)), action, prev_action)
+    asset_cfg = _entity("robot", joint_ids=selected, joint_names=selected_names)
+    cfg = RewardTermCfg(
+        func=mdp.joint_action_rate_l2,
+        weight=-0.5,
+        params={"action_name": "joint_pos", "asset_cfg": asset_cfg},
+    )
+    return mdp.joint_action_rate_l2(cfg, env.as_env()), env, cfg
+
+
+def test_joint_action_rate_l2_charges_only_the_columns_of_the_selected_joints():
+    """Upstream hard-codes action columns 5..8; the port resolves them from the action term's joints."""
+    # the action term drives joints 4, 2, 0 in that order, so joint 2 is column 1
+    term, env, cfg = _action_rate_term(
+        joint_ids=[4, 2, 0],
+        action=torch.tensor([[1.0, 0.5, -2.0]]),
+        prev_action=torch.tensor([[1.0, 0.2, 0.0]]),
+        selected=[2],
+        selected_names=["joint_2"],
+    )
+
+    cost = term(env.as_env(), **cfg.params)
+
+    torch.testing.assert_close(cost, torch.tensor([0.3**2]))
+
+
+def test_joint_action_rate_l2_rejects_a_joint_the_action_term_does_not_drive():
+    """A passive wheel has no action column, so selecting one has to fail loudly."""
+    with pytest.raises(ValueError, match="does not drive"):
+        _action_rate_term(
+            joint_ids=[0, 1],
+            action=torch.zeros(1, 2),
+            prev_action=torch.zeros(1, 2),
+            selected=[5],
+            selected_names=["joint_5"],
+        )
+
+
+def test_action_over_limit_penalty_charges_the_command_past_the_hard_stop_plus_the_tolerance():
+    """It reads the target, not the achieved position, so it survives export as learned behaviour."""
+    limits = torch.tensor([[[-0.4, 0.4], [-0.4, 0.4], [-0.4, 0.4]]])
+    robot = _DummyAsset(joint_pos_limits=limits)
+    env = _DummyEnv(num_envs=1, assets={"robot": robot})
+    # inside the tolerance, 0.25 past the upper stop plus tolerance, and 0.1 past the lower one
+    target = torch.tensor([[0.6, 0.95, -0.8]])
+    env.action_manager = _DummyActionManager(_DummyActionTerm([0, 1, 2], target), torch.zeros(1, 3), torch.zeros(1, 3))
+
+    cost = mdp.action_over_limit_penalty(env.as_env(), action_name="joint_pos", overshoot=0.3)
+
+    torch.testing.assert_close(cost, torch.tensor([0.25 + 0.1]))
+
+
+def test_wheel_speed_reward_saturates_in_the_mean_wheel_rate_and_scales_with_the_throttle():
+    """The sole positive task reward: no wheel rotation, no reward, whatever else the policy does."""
+    wheel_cfg = _entity("robot", joint_ids=WHEEL_JOINT_IDS, joint_names=["a", "b", "c", "d"])
+    params = {"command_name": "twist", "asset_cfg": wheel_cfg, "vel_scale": 0.3, "wheel_radius": 0.0175}
+    omega_scale = 0.3 / 0.0175
+
+    still = _roller_env(command=[0.5, 0.0, 0.0], wheel_vel=[0.0] * 4)
+    rolling = _roller_env(command=[0.5, 0.0, 0.0], wheel_vel=[omega_scale] * 4)
+    coasting = _roller_env(command=[0.0, 0.0, 0.0], wheel_vel=[omega_scale] * 4)
+    backwards = _roller_env(command=[0.5, 0.0, 0.0], wheel_vel=[-omega_scale] * 4)
+
+    torch.testing.assert_close(mdp.wheel_speed_reward(still.as_env(), **params), torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.wheel_speed_reward(rolling.as_env(), **params), torch.tensor([0.5 * math.tanh(1.0)]))
+    # a zero throttle pays nothing however fast the wheels turn
+    torch.testing.assert_close(mdp.wheel_speed_reward(coasting.as_env(), **params), torch.tensor([0.0]))
+    # and spinning backwards is not rewarded, because ``bidirectional`` is left off
+    torch.testing.assert_close(mdp.wheel_speed_reward(backwards.as_env(), **params), torch.tensor([0.0]))
+
+
+def test_braking_reward_is_silent_unless_the_throttle_is_negative():
+    """It never competes with the wheel-speed reward, which only pays above a zero throttle."""
+    params = {"command_name": "twist", "vel_std": 0.3}
+
+    stopped = _roller_env(command=[-0.4, 0.0, 0.0], forward_vel=0.0)
+    still_rolling = _roller_env(command=[-0.4, 0.0, 0.0], forward_vel=0.3)
+    pushing = _roller_env(command=[0.4, 0.0, 0.0], forward_vel=0.0)
+
+    torch.testing.assert_close(mdp.braking_reward(stopped.as_env(), **params), torch.tensor([0.4]))
+    torch.testing.assert_close(
+        mdp.braking_reward(still_rolling.as_env(), **params), torch.tensor([0.4 * math.exp(-1.0)])
+    )
+    torch.testing.assert_close(mdp.braking_reward(pushing.as_env(), **params), torch.tensor([0.0]))
+
+
+def test_skating_air_time_reward_counts_feet_in_the_window_scaled_by_throttle_and_progress():
+    """A fast flutter on the spot earns nothing: the forward-progress gate is what shuts it down."""
+    params = {
+        "sensor_cfg": _tire_sensor_cfg(),
+        "command_name": "twist",
+        "threshold_min": 0.15,
+        "threshold_max": 0.45,
+        "vel_gate_ref": 0.2,
+        "bodies_per_foot": 2,
+    }
+    # the left foot is airborne inside the window; the right foot's rear tire is down, so it is not
+    swinging = _roller_env(command=[0.5, 0.0, 0.0], forward_vel=0.2, air_time=[0.3, 0.3, 0.3, 0.0])
+    on_the_spot = _roller_env(command=[0.5, 0.0, 0.0], forward_vel=0.0, air_time=[0.3, 0.3, 0.3, 0.0])
+    half_speed = _roller_env(command=[0.5, 0.0, 0.0], forward_vel=0.1, air_time=[0.3, 0.3, 0.3, 0.0])
+    too_short = _roller_env(command=[0.5, 0.0, 0.0], forward_vel=0.2, air_time=[0.1, 0.1, 0.1, 0.0])
+
+    torch.testing.assert_close(mdp.skating_air_time_reward(swinging.as_env(), **params), torch.tensor([0.5]))
+    torch.testing.assert_close(mdp.skating_air_time_reward(on_the_spot.as_env(), **params), torch.tensor([0.0]))
+    torch.testing.assert_close(mdp.skating_air_time_reward(half_speed.as_env(), **params), torch.tensor([0.25]))
+    torch.testing.assert_close(mdp.skating_air_time_reward(too_short.as_env(), **params), torch.tensor([0.0]))
+
+
+def test_single_support_reward_pays_one_blade_down_and_charges_two():
+    """The core anti-swizzle signal, and its double-support charge is deliberately unspeed-gated."""
+    params = {
+        "sensor_cfg": _tire_sensor_cfg(),
+        "command_name": "twist",
+        "vel_gate_ref": 0.2,
+        "bodies_per_foot": 2,
+    }
+    single = _roller_env(command=[0.4, 0.0, 0.0], forward_vel=0.2, contact_time=[0.5, 0.0, 0.0, 0.0])
+    double = _roller_env(command=[0.4, 0.0, 0.0], forward_vel=0.2, contact_time=[0.5, 0.5, 0.5, 0.5])
+    double_still = _roller_env(command=[0.4, 0.0, 0.0], forward_vel=0.0, contact_time=[0.0, 0.5, 0.5, 0.0])
+
+    torch.testing.assert_close(mdp.single_support_reward(single.as_env(), **params), torch.tensor([0.4]))
+    torch.testing.assert_close(mdp.single_support_reward(double.as_env(), **params), torch.tensor([-0.1]))
+    # standing still on both blades under a forward command is charged in full
+    torch.testing.assert_close(mdp.single_support_reward(double_still.as_env(), **params), torch.tensor([-0.1]))
+
+
+def test_glide_reward_pays_a_quiet_single_support_coast():
+    """Cadence and commitment pull against each other; this is the term that pays for committing."""
+    leg_cfg = _entity("robot", joint_ids=[4, 5], joint_names=["hip", "knee"])
+    params = {
+        "sensor_cfg": _tire_sensor_cfg(),
+        "command_name": "twist",
+        "asset_cfg": leg_cfg,
+        "vel_ref": 0.2,
+        "bodies_per_foot": 2,
+    }
+    gliding = _roller_env(command=[0.4, 0.0, 0.0], forward_vel=0.2, contact_time=[0.5, 0.0, 0.0, 0.0])
+    thrashing = _roller_env(
+        command=[0.4, 0.0, 0.0], forward_vel=0.2, contact_time=[0.5, 0.0, 0.0, 0.0], leg_vel=[5.0, 0.0]
+    )
+    double = _roller_env(command=[0.4, 0.0, 0.0], forward_vel=0.2, contact_time=[0.5, 0.0, 0.5, 0.0])
+    braking = _roller_env(command=[-0.4, 0.0, 0.0], forward_vel=0.2, contact_time=[0.5, 0.0, 0.0, 0.0])
+
+    torch.testing.assert_close(mdp.glide_reward(gliding.as_env(), **params), torch.tensor([1.0]))
+    torch.testing.assert_close(mdp.glide_reward(thrashing.as_env(), **params), torch.tensor([math.exp(-1.0)]))
+    torch.testing.assert_close(mdp.glide_reward(double.as_env(), **params), torch.tensor([0.0]))
+    # silent while braking, so it never fights the braking reward
+    torch.testing.assert_close(mdp.glide_reward(braking.as_env(), **params), torch.tensor([0.0]))
+
+
+def _gait_symmetry_term(env: _DummyEnv):
+    cfg = RewardTermCfg(
+        func=mdp.gait_symmetry_penalty,
+        weight=-1.0,
+        params={"sensor_cfg": _tire_sensor_cfg(), "bodies_per_foot": 2},
+    )
+    return mdp.gait_symmetry_penalty(cfg, env.as_env()), cfg
+
+
+def test_gait_symmetry_penalty_accumulates_the_swing_imbalance_over_the_episode():
+    """The instantaneous asymmetry of a real stride is free; a one-legged push is not."""
+    env = _roller_env(air_time=[0.3, 0.3, 0.0, 0.0], step_dt=0.02)
+    term, cfg = _gait_symmetry_term(env)
+
+    # only the left foot ever swings, so the imbalance saturates at 1
+    for _ in range(5):
+        cost = term(env.as_env(), **cfg.params)
+    torch.testing.assert_close(cost, torch.tensor([0.1 / (0.1 + 1e-3)]))
+
+    # the accumulator is cleared for the environments the reward manager resets
+    term.reset()
+    torch.testing.assert_close(term(env.as_env(), **cfg.params), torch.tensor([0.02 / (0.02 + 1e-3)]))
+
+
+def test_gait_symmetry_penalty_is_zero_for_a_balanced_stride():
+    """Equal swing time on both blades costs nothing however it is distributed in time."""
+    left = _roller_env(air_time=[0.3, 0.3, 0.0, 0.0])
+    right = _roller_env(air_time=[0.0, 0.0, 0.3, 0.3])
+    term, cfg = _gait_symmetry_term(left)
+
+    for env in (left, right, left, right):
+        cost = term(env.as_env(), **cfg.params)
+
+    torch.testing.assert_close(cost, torch.tensor([0.0]))
+
+
+def test_gait_symmetry_penalty_rejects_a_sensor_that_is_not_a_pair_of_feet():
+    """The imbalance is defined between exactly two feet, so three has to fail loudly."""
+    env = _roller_env(air_time=[0.0] * 4)
+    cfg = RewardTermCfg(
+        func=mdp.gait_symmetry_penalty,
+        weight=-1.0,
+        params={"sensor_cfg": _tire_sensor_cfg(), "bodies_per_foot": 1},
+    )
+    with pytest.raises(ValueError, match="left and a right"):
+        mdp.gait_symmetry_penalty(cfg, env.as_env())
+
+
+def test_forward_lean_reward_peaks_at_a_nose_down_trunk_and_only_while_pushing():
+    """Upstream's docstring negates the quantity and its code does not; the code is what is ported."""
+    params = {"command_name": "twist", "target_pitch": 0.262, "std": 0.1}
+    # a forward pitch of theta puts sin(theta) on the forward component of projected gravity
+    leaning = _roller_env(command=[0.5, 0.0, 0.0], projected_gravity_b=[0.262, 0.0, -0.965])
+    upright = _roller_env(command=[0.5, 0.0, 0.0], projected_gravity_b=[0.0, 0.0, -1.0])
+    leaning_back = _roller_env(command=[0.5, 0.0, 0.0], projected_gravity_b=[-0.262, 0.0, -0.965])
+    coasting = _roller_env(command=[0.0, 0.0, 0.0], projected_gravity_b=[0.262, 0.0, -0.965])
+
+    torch.testing.assert_close(mdp.forward_lean_reward(leaning.as_env(), **params), torch.tensor([0.5]))
+    assert float(mdp.forward_lean_reward(upright.as_env(), **params)) < 0.5 * math.exp(-6.0)
+    # the reward is not symmetric about zero: leaning back scores far below leaning forward
+    assert float(mdp.forward_lean_reward(leaning_back.as_env(), **params)) < float(
+        mdp.forward_lean_reward(upright.as_env(), **params)
+    )
+    torch.testing.assert_close(mdp.forward_lean_reward(coasting.as_env(), **params), torch.tensor([0.0]))
+
+
+def _heading_hold_term(env: _DummyEnv):
+    cfg = RewardTermCfg(func=mdp.heading_hold_reward, weight=1.0, params={"std": 0.4})
+    return mdp.heading_hold_reward(cfg, env.as_env()), cfg
+
+
+def test_heading_hold_reward_anchors_on_the_first_step_of_an_episode():
+    """The reference is the heading the episode started with, whatever that heading was."""
+    spawned = _roller_env(heading=2.0)
+    term, cfg = _heading_hold_term(spawned)
+
+    torch.testing.assert_close(term(spawned.as_env(), **cfg.params), torch.tensor([1.0]))
+    # drifting 0.4 rad off the spawn heading costs exactly one Gaussian width
+    drifted = _roller_env(heading=2.4)
+    torch.testing.assert_close(term(drifted.as_env(), **cfg.params), torch.tensor([math.exp(-1.0)]))
+    # and the error wraps, so a heading of -pi is next to one of +pi rather than 2 pi away
+    term.reset()
+    at_pi = _roller_env(heading=math.pi)
+    torch.testing.assert_close(term(at_pi.as_env(), **cfg.params), torch.tensor([1.0]))
+    just_past = _roller_env(heading=-math.pi + 0.4)
+    torch.testing.assert_close(term(just_past.as_env(), **cfg.params), torch.tensor([math.exp(-1.0)]))

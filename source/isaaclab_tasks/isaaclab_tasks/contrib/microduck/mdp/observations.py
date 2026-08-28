@@ -368,22 +368,60 @@ def _finite(value: torch.Tensor) -> torch.Tensor:
     return torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def foot_contact(env: ManagerBasedEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Whether each selected body is in contact with anything.
+def fold_bodies_into_feet(values: torch.Tensor, bodies_per_foot: int) -> torch.Tensor:
+    """Group a per-contact-body quantity into consecutive runs of bodies, one run per foot.
+
+    Every foot term in this package is written against upstream's *two-slot, left-first* foot sensor.
+    That holds directly on the walking and all-collisions models, whose foot is one collider, and it
+    does not hold on the roller model, whose foot is a two-wheel bogie: the ankle body carries no
+    collider at all and the two tires hanging off it do (addendum section 2.3). Upstream solves this
+    with a ``mode="subtree"`` sensor that reduces each ankle's subtree to one slot; Isaac Lab's
+    contact sensor reports one slot per body, so the reduction is done here instead and the caller
+    picks the reduction its quantity needs -- ``amin`` for air time, ``amax`` for contact time,
+    ``sum`` for force.
+
+    Args:
+        values: A per-body quantity in sensor-slot order. Shape is (num_envs, num_bodies, ...).
+        bodies_per_foot: Contact bodies making up one foot. ``1`` leaves the tensor untouched apart
+            from the inserted axis.
+
+    Returns:
+        The same values grouped per foot. Shape is
+        (num_envs, num_bodies // bodies_per_foot, bodies_per_foot, ...).
+
+    Raises:
+        ValueError: If the body count is not a multiple of ``bodies_per_foot``.
+    """
+    num_bodies = values.shape[1]
+    if bodies_per_foot < 1 or num_bodies % bodies_per_foot != 0:
+        raise ValueError(
+            f"Cannot group {num_bodies} contact bodies into feet of {bodies_per_foot} bodies each:"
+            " the selection must be a whole number of feet, in per-foot blocks."
+        )
+    return values.unflatten(1, (num_bodies // bodies_per_foot, bodies_per_foot))
+
+
+def foot_contact(env: ManagerBasedEnv, sensor_cfg: SceneEntityCfg, bodies_per_foot: int = 1) -> torch.Tensor:
+    """Whether each selected foot is in contact with anything.
 
     Args:
         env: The environment.
         sensor_cfg: The contact sensor and the bodies to report, in the requested order.
+        bodies_per_foot: Contact bodies making up one foot; a foot is in contact when **any** of them
+            is. Defaults to 1, one collider per foot. See :func:`fold_bodies_into_feet`.
 
     Returns:
-        One per body, 1.0 while in contact. Shape is (num_envs, num_selected_bodies).
+        One per foot, 1.0 while in contact. Shape is (num_envs, num_selected_bodies // bodies_per_foot).
     """
     sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     forces = sensor.data.net_forces_w.torch[:, sensor_cfg.body_ids]
-    return (forces.norm(dim=-1) > 0.0).float()
+    in_contact = (forces.norm(dim=-1) > 0.0).float()
+    return fold_bodies_into_feet(in_contact, bodies_per_foot).amax(dim=2)
 
 
-def foot_contact_forces_safe(env: ManagerBasedEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+def foot_contact_forces_safe(
+    env: ManagerBasedEnv, sensor_cfg: SceneEntityCfg, bodies_per_foot: int = 1
+) -> torch.Tensor:
     """Net contact force on each selected body, log-compressed and guarded against NaNs.
 
     The compression is upstream's ``sign(F) * log1p(|F|)`` (reference section 5), which keeps the
@@ -398,18 +436,22 @@ def foot_contact_forces_safe(env: ManagerBasedEnv, sensor_cfg: SceneEntityCfg) -
     Args:
         env: The environment.
         sensor_cfg: The contact sensor and the bodies to report, in the requested order.
+        bodies_per_foot: Contact bodies making up one foot, whose net forces are **summed** into the
+            force on the foot. Defaults to 1, one collider per foot. See
+            :func:`fold_bodies_into_feet`.
 
     Returns:
-        Compressed contact forces [log1p(N)], flattened per body.
-        Shape is (num_envs, 3 * num_selected_bodies).
+        Compressed contact forces [log1p(N)], flattened per foot.
+        Shape is (num_envs, 3 * num_selected_bodies // bodies_per_foot).
     """
     sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    forces = sensor.data.net_forces_w.torch[:, sensor_cfg.body_ids].flatten(start_dim=1)
+    forces = sensor.data.net_forces_w.torch[:, sensor_cfg.body_ids]
+    forces = fold_bodies_into_feet(forces, bodies_per_foot).sum(dim=2).flatten(start_dim=1)
     return _finite(torch.sign(forces) * torch.log1p(forces.abs()))
 
 
-def foot_air_time_safe(env: ManagerBasedEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Time each selected body has spent in the air since it last left the ground, guarded.
+def foot_air_time_safe(env: ManagerBasedEnv, sensor_cfg: SceneEntityCfg, bodies_per_foot: int = 1) -> torch.Tensor:
+    """Time each selected foot has spent in the air since it last left the ground, guarded.
 
     See :func:`foot_contact_forces_safe` for why the critic's sensor reads are guarded.
 
@@ -417,15 +459,18 @@ def foot_air_time_safe(env: ManagerBasedEnv, sensor_cfg: SceneEntityCfg) -> torc
         env: The environment.
         sensor_cfg: The contact sensor and the bodies to report, in the requested order. The sensor
             must be configured with ``track_air_time``.
+        bodies_per_foot: Contact bodies making up one foot. The foot's air time is the **smallest**
+            of theirs, because the foot stops being airborne as soon as any of them lands. Defaults
+            to 1, one collider per foot. See :func:`fold_bodies_into_feet`.
 
     Returns:
-        Current air time [s] per body. Shape is (num_envs, num_selected_bodies).
+        Current air time [s] per foot. Shape is (num_envs, num_selected_bodies // bodies_per_foot).
     """
     sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     air_time = sensor.data.current_air_time
     if air_time is None:
         raise RuntimeError(f"The contact sensor '{sensor_cfg.name}' does not track air time.")
-    return _finite(air_time.torch[:, sensor_cfg.body_ids])
+    return _finite(fold_bodies_into_feet(air_time.torch[:, sensor_cfg.body_ids], bodies_per_foot).amin(dim=2))
 
 
 def foot_height_safe(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:

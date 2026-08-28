@@ -54,3 +54,22 @@ class MicroDuckPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class MicroDuckRollersPPORunnerCfg(MicroDuckPPORunnerCfg):
+    """PPO runner for the MicroDuck roller-skating task.
+
+    Upstream's roller runner differs from its velocity one in exactly two fields, so everything else
+    -- the network shapes, the optimizer, the asymmetric actor-critic wiring, the 24-step rollout and
+    the 50 000-iteration budget -- is inherited rather than restated. See
+    ``artifacts/microduck/upstream_reference_tasks2.md`` section 5.9.
+    """
+
+    # a separate log tree: the MicroDuck policies are trained and deployed independently
+    experiment_name = "microduck_velocity_rollers"
+    # Three times the family's 0.01, and the only task in the family that raises it. Upstream's
+    # comment calls it "roller-specific: higher exploration than the walk envs": the single positive
+    # task reward pays nothing at all until the wheels turn, so the policy has to find a push before
+    # it gets any gradient toward one.
+    algorithm = MicroDuckPPORunnerCfg().algorithm.replace(entropy_coef=0.03)
