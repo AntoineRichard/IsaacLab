@@ -12,6 +12,7 @@ import contextlib
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 from newton._src.usd.utils import _resolve_material_uv_primvar_name, resolve_material_properties_for_prim
 
@@ -240,9 +241,11 @@ def test_camera_tensor_snapshot_does_not_alias_mutable_renderer_buffer():
     assert torch.count_nonzero(snapshot) == 0
 
 
-def test_thumbnail_frame_is_selected_before_physics_steps():
-    assert capture_renderer_gallery.thumbnail_frame_index(37) == 0
-    assert capture_renderer_gallery.thumbnail_frame_index(2) == 0
+def test_thumbnail_frame_is_selected_after_motion_history_is_available():
+    assert capture_renderer_gallery.thumbnail_frame_index(37) == 2
+    assert capture_renderer_gallery.thumbnail_frame_index(3) == 2
+    with pytest.raises(ValueError, match="At least three"):
+        capture_renderer_gallery.thumbnail_frame_index(2)
 
 
 def test_only_isaac_rtx_capture_launches_kit():

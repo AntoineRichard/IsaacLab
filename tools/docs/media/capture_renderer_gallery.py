@@ -78,9 +78,11 @@ def snapshot_camera_tensor(data: Any) -> Any:
     return data.detach().to(device="cpu", copy=True)
 
 
-def thumbnail_frame_index(_frame_count: int) -> int:
-    """Select the still-image frame before any physics steps."""
-    return 0
+def thumbnail_frame_index(frame_count: int) -> int:
+    """Select the third captured frame so temporal outputs have motion history."""
+    if frame_count < 3:
+        raise ValueError("At least three animation frames are required to capture thumbnails.")
+    return 2
 
 
 def renderer_requires_kit(renderer: str) -> bool:
@@ -126,8 +128,8 @@ def _parse_args() -> argparse.Namespace:
         parser.error(f"Scene does not exist: {args.scene}")
     if args.width < 1 or args.height < 1:
         parser.error("Image width and height must be positive.")
-    if args.frames < 2:
-        parser.error("At least two animation frames are required.")
+    if args.frames < 3:
+        parser.error("At least three animation frames are required.")
     if args.physics_steps_per_frame < 1:
         parser.error("Physics steps per frame must be positive.")
     if args.warmup_steps < 0:
