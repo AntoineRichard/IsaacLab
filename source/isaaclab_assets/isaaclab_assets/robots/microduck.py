@@ -5,17 +5,20 @@
 
 """Configuration for the Pollen Robotics MicroDuck open-source biped.
 
-MicroDuck is a 0.74 kg, 14-DOF biped driven by Dynamixel XL330 servos: five joints per leg
-(hip yaw/roll/pitch, knee, ankle) plus a four-DOF head (neck pitch, head pitch/yaw/roll).
+MicroDuck is a 0.74 kg biped driven by 14 Dynamixel XL330 servos: five joints per leg (hip
+yaw/roll/pitch, knee, ankle) plus a four-DOF head (neck pitch, head pitch/yaw/roll).
 
-Upstream ships three flat-task robot models, which share this skeleton and differ only in geometry:
+Upstream ships three flat-task robot models. All three are driven by those same 14 servos, so the
+action space is 14-dimensional throughout; they differ in geometry, and one of them adds hinges that
+nothing drives:
 
 * :data:`MICRODUCK_CFG`: MicroDuck on the BAM servo model, in the upstream stand pose. The walking
-  model, whose only ground contact is through the two foot soles.
+  model, whose only ground contact is through the two foot soles. 14 joints.
 * :data:`MICRODUCK_ALLCOLLISIONS_CFG`: the same robot with the trunk, hip, shin and head colliders
-  upstream's stand-up and roulade tasks need to reach the ground.
+  upstream's stand-up and roulade tasks need to reach the ground. 14 joints.
 * :data:`MICRODUCK_ROLLERS_CFG`: the all-collisions robot with each foot replaced by two passively
-  rolling wheels. The four wheel hinges are undriven, so the action space stays 14-dimensional.
+  rolling wheels. **18 joints**, of which the four wheel hinges are undriven -- and it stands 2.4 cm
+  taller than the other two, which its configuration does not know (see its own documentation).
 
 The assets they spawn are converted from the upstream MJCFs and are generated rather than committed;
 see ``ATTRIBUTION.md`` next to :data:`MICRODUCK_USD_PATH` for their provenance and
@@ -336,4 +339,22 @@ gives them no actuator, no limits and no joint damping or friction, and the serv
 model -- leaves them out. The action space is therefore the same 14 servos as on the other models,
 and the wheels roll on the properties the USD carries from the MJCF (an armature of 1e-4 and nothing
 else). Their home position is zero, which is the MJCF's, so they are not listed in the initial state.
+
+.. warning::
+
+    **A roller task must override this configuration's** ``init_state.pos``.
+    The spawn height inherited from :data:`MICRODUCK_CFG` is 0.125 m, which is the walking model's:
+    the midpoint of the ``(0.12, 0.13)`` base height upstream resets a *legged* MicroDuck to. Wheels
+    are taller than soles. With this model's joints at the home pose and its lowest collider resting
+    on the ground, ``trunk_base`` sits at a measured **0.14070 m**, so spawning at 0.125 m puts the
+    tires roughly **1.6 cm below the floor**. Upstream's own roller task resets into
+    ``(0.1335, 0.1435)``.
+
+    The height is deliberately *not* corrected here. It is one of a group of roller-specific
+    quantities that upstream sizes against the wheel-less model it used to load by mistake -- the
+    reset band, the ``com_height_target`` band and the reward's ``wheel_radius`` default of 0.0175
+    against a measured tire radius of 0.0150 -- and whether this port reproduces upstream verbatim
+    or re-measures is one decision, taken once, at the task level. This configuration's job is to
+    carry the MJCF faithfully; it deliberately does not guess at the answer by fixing one member of
+    that group in isolation.
 """
