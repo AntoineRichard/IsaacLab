@@ -7,8 +7,9 @@
 
 Every term is ported from ``pollen-robotics/microduck_rl``; see section 6 of
 ``artifacts/microduck/upstream_reference.md`` for the verbatim upstream formulas of the two velocity
-and pose-delta terms, and section 5.4 of ``artifacts/microduck/upstream_reference_tasks2.md`` for the
-roller task's relative-heading one.
+and pose-delta terms, section 5.4 of ``artifacts/microduck/upstream_reference_tasks2.md`` for the
+roller task's relative-heading one, and section 4.3 of
+``artifacts/microduck/upstream_reference_tasks3.md`` for the sit-stand task's posture flag.
 """
 
 from __future__ import annotations
@@ -332,3 +333,162 @@ class RelativeHeadingVelocityCommandCfg(MicroDuckVelocityCommandCfg):
     """
 
     class_type: type[RelativeHeadingVelocityCommand] = RelativeHeadingVelocityCommand
+
+
+class SitStandCommand(UniformVelocityCommand):
+    """Posture flag riding in the twist slot: ``[sit_flag, 0, 0]``, ``sit_flag`` in ``{0, 1}``.
+
+    Ported from addendum section 4.3 (``SitStandCommand``). The sit-stand task has no velocity to
+    track, so its three-wide command slot carries a binary posture request instead -- 0 asks for the
+    stand keyframe, 1 for the sitting one -- and the slot keeps its width because the deployed
+    61-wide observation is shared across the whole MicroDuck policy family. On the robot a button
+    press writes 0 or 1 into that column.
+
+    Two quantities and the distinction between them is the whole design:
+
+    * :attr:`command` is the **raw flag**, and it is what the policy observes. A deployed runtime
+      flips it instantly, so that is what the policy has to be trained on.
+    * :attr:`alpha` is a **slewed blend** of the same request, moving toward the flag at a constant
+      ``1 / ramp_s`` per second, and it is what the posture rewards track. This is the task's
+      anti-crash mechanism. Against the raw flag, arriving early collects the full goal-state
+      payout for every step saved while the speed caps only integrate to a bounded excess-distance
+      cost -- upstream measured an instant drop beating a one-second descent by about sevenfold.
+      Against the moving blend, being *ahead* of the ramp scores about zero on the height and
+      composite stack, so tracking the slow setpoint is the argmax and the caps are left as
+      backstops for overshoot.
+
+    The resample draws a fresh flag with probability :attr:`SitStandCommandCfg.sit_prob`, on the
+    configured dwell time. Combined with a reset that spawns seated or standing with equal
+    probability, the four (start state x request) combinations get equal coverage, which is what
+    trains "hold what you are already doing" alongside the two transitions.
+
+    Note:
+        Upstream re-initializes the blend from the robot's actual trunk height inside ``compute``,
+        guarded on ``episode_length_buf <= 1``, and its own comment explains that this is a
+        workaround: its command manager resets *before* the event that teleports the robot into its
+        spawn pose, so a reset hook would read the pre-teleport height and drag a seated spawn
+        upward. Isaac Lab fires reset-mode events before it resets the command manager, so this port
+        does the same re-initialization from :meth:`reset` -- the hook the manager calls with exactly
+        the environments that restarted, and by then the spawn pose is already written.
+    """
+
+    cfg: SitStandCommandCfg
+    """Configuration for the command term."""
+
+    def __init__(self, cfg: SitStandCommandCfg, env: ManagerBasedRLEnv):
+        """Initialize the command term.
+
+        Args:
+            cfg: The configuration parameters for the command term.
+            env: The environment object.
+        """
+        super().__init__(cfg, env)
+
+        self._alpha = torch.zeros(self.num_envs, device=self.device)
+        # Upstream reports no velocity-tracking metrics here, because the surge slot is a posture
+        # flag: the inherited error metrics would compare a command against a quantity it does not
+        # name, and their success rate would score a comparison that was never made. Clearing them
+        # drops the metrics rather than logging a perfect score, as
+        # :class:`RelativeHeadingVelocityCommand` does for the same reason.
+        self.metrics.clear()
+
+    def __str__(self) -> str:
+        msg = super().__str__().replace("UniformVelocityCommand:", "SitStandCommand:", 1)
+        msg += f"\n\tSit probability: {self.cfg.sit_prob}"
+        msg += f"\n\tTarget ramp: {self.cfg.ramp_s} s"
+        return msg
+
+    """
+    Properties
+    """
+
+    @property
+    def alpha(self) -> torch.Tensor:
+        """Slewed posture blend, 0 at the stand target and 1 at the sit target. Shape is (num_envs,).
+
+        The posture rewards read this rather than :attr:`command`; see the class documentation for
+        why the two differ.
+        """
+        return self._alpha
+
+    """
+    Implementation specific functions.
+    """
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
+        # skips ``UniformVelocityCommand.reset``, whose only extra work is finalizing the tracking
+        # metrics cleared in ``__init__``
+        extras = CommandTerm.reset(self, env_ids)
+        # Seed the blend from the height the robot actually spawned at, not from the flag it was
+        # just handed: a seated spawn under a stand request must start its ramp at the sit end.
+        if env_ids is None:
+            env_ids = slice(None)
+        self._alpha[env_ids] = self._alpha_from_height()[env_ids]
+        return extras
+
+    def _update_metrics(self):
+        pass
+
+    def _update_command(self):
+        pass  # no heading controller and no standing-environment machinery on a posture flag
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        num_envs = len(env_ids)
+        if num_envs == 0:
+            return
+        sit = (torch.rand(num_envs, device=self.device) < self.cfg.sit_prob).float()
+        # the whole slot is rewritten, so the sway and yaw columns stay identically zero
+        self.vel_command_b[env_ids] = 0.0
+        self.vel_command_b[env_ids, 0] = sit
+
+    def compute(self, dt: float):
+        """Resample the flag on the dwell timer, then slew the blend toward it.
+
+        Args:
+            dt: Time [s] since the last call.
+        """
+        super().compute(dt)
+        # Constant-rate slew: a full stand-to-sit traverse takes exactly ``ramp_s`` seconds whatever
+        # the control rate, and the clamp is what keeps the blend from jumping when the flag flips.
+        step = dt / max(self.cfg.ramp_s, 1e-6)
+        delta = self.vel_command_b[:, 0] - self._alpha
+        self._alpha += torch.clamp(delta, -step, step)
+
+    """
+    Helper functions.
+    """
+
+    def _alpha_from_height(self) -> torch.Tensor:
+        """The blend the current trunk height corresponds to, clamped to ``[0, 1]``."""
+        height = torch.nan_to_num(
+            self.robot.data.root_link_pos_w.torch[:, 2] - self._env.scene.env_origins[:, 2],
+            nan=self.cfg.stand_height,
+        )
+        span = max(self.cfg.stand_height - self.cfg.sit_height, 1e-6)
+        return torch.clamp((self.cfg.stand_height - height) / span, 0.0, 1.0)
+
+
+@configclass
+class SitStandCommandCfg(UniformVelocityCommandCfg):
+    """Configuration for the sit-stand posture command term.
+
+    Please refer to the :class:`SitStandCommand` class for more details.
+
+    The inherited velocity ranges are never sampled -- :meth:`SitStandCommand._resample_command`
+    writes the flag directly -- and neither are the heading and standing-environment fractions, which
+    the overridden ``_update_command`` ignores.
+    """
+
+    class_type: type[SitStandCommand] = SitStandCommand
+
+    sit_prob: float = 0.5
+    """Probability that a resample requests the sitting posture. Defaults to 0.5."""
+
+    ramp_s: float = 2.0
+    """Time [s] for the slewed blend to traverse the full stand-to-sit range. Defaults to 2.0."""
+
+    sit_height: float = 0.060
+    """Trunk height [m] of the seated rest, used to seed the blend from a spawn pose."""
+
+    stand_height: float = 0.115
+    """Trunk height [m] of the standing rest, used to seed the blend from a spawn pose."""
