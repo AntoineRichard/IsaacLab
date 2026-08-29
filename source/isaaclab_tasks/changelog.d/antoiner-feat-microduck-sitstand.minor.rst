@@ -50,7 +50,7 @@ Changed
   conventions apart rather than unifying them. Upstream interpolates its stillness gate in
   ``cos(tilt)`` and its penalty gates in the angle; the two agree at their bounds and nowhere in
   between, so a trunk at the angular midpoint of a 25-to-60-degree window scores 0.5 through one and
-  0.64 through the other. Both are now available as ``_tilt_gate`` and ``_cos_tilt_gate``.
+  0.625 through the other. Both are now available as ``_tilt_gate`` and ``_cos_tilt_gate``.
 * Kept the family's NaN-guard norm, which is a deviation from upstream on this task. Upstream
   registers ``nan_state`` with an empty sensor list and reads the raw foot observations; the port
   names the foot contact sensor and uses the two NaN-safe critic terms, as it does on every sibling.

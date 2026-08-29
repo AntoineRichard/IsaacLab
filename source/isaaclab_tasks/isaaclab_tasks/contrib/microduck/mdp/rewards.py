@@ -189,7 +189,7 @@ def _cos_tilt_gate(quat: torch.Tensor, tilt_full_deg: float, tilt_zero_deg: floa
 
     Upstream carries both conventions and uses this one for its stillness rewards, so the two are
     kept apart rather than unified. They agree at the two bounds and nowhere in between: at 25 and 60
-    degrees, a trunk at the angular midpoint scores 0.5 through :func:`_tilt_gate` and 0.64 here,
+    degrees, a trunk at the angular midpoint scores 0.5 through :func:`_tilt_gate` and 0.625 here,
     because the cosine is not linear in the angle.
     """
     cos_tilt = 1.0 - _trunk_tilt_squared(quat)
