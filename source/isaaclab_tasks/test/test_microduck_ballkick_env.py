@@ -206,16 +206,24 @@ names; ``test_the_head_centre_of_mass_randomization_drops_the_upstream_hip_link`
 """
 
 EXPECTED_OBSERVATION_SELECTIONS = {
-    # "<group>.<term>": (kind, expected names)
-    "policy.joint_pos": ("joint", EXPECTED_SERVO_JOINT_NAMES),
-    "policy.joint_vel": ("joint", EXPECTED_SERVO_JOINT_NAMES),
-    "critic.joint_pos": ("joint", EXPECTED_SERVO_JOINT_NAMES),
-    "critic.joint_vel": ("joint", EXPECTED_SERVO_JOINT_NAMES),
-    "critic.foot_air_time": ("body", EXPECTED_FOOT_BODY_NAMES),
-    "critic.foot_contact": ("body", EXPECTED_FOOT_BODY_NAMES),
-    "critic.foot_contact_forces": ("body", EXPECTED_FOOT_BODY_NAMES),
+    # "<group>.<term>.<param>": (kind, expected names, preserve_order)
+    "policy.joint_pos.asset_cfg": ("joint", EXPECTED_SERVO_JOINT_NAMES, True),
+    "policy.joint_vel.asset_cfg": ("joint", EXPECTED_SERVO_JOINT_NAMES, True),
+    "critic.joint_pos.asset_cfg": ("joint", EXPECTED_SERVO_JOINT_NAMES, True),
+    "critic.joint_vel.asset_cfg": ("joint", EXPECTED_SERVO_JOINT_NAMES, True),
+    "critic.foot_air_time.sensor_cfg": ("body", EXPECTED_FOOT_BODY_NAMES, True),
+    "critic.foot_contact.sensor_cfg": ("body", EXPECTED_FOOT_BODY_NAMES, True),
+    "critic.foot_contact_forces.sensor_cfg": ("body", EXPECTED_FOOT_BODY_NAMES, True),
+    "critic.ball_position.asset_cfg": ("asset", "ball", False),
+    "critic.ball_velocity.asset_cfg": ("asset", "ball", False),
 }
-"""Entity selections inside the two observation groups, all of which are ordering contracts."""
+"""Entity selections inside the two observation groups, all of which are ordering contracts.
+
+The joint blocks are the deployed vector's own layout, which the runtime on the robot rebuilds by
+hand from its sensor reads; the foot blocks are three consecutive critic terms that must agree on
+which column is the left foot. The two ball entries are what keeps this task's privileged pair
+pointed at the prop rather than at the robot.
+"""
 
 
 def _entity_cfg_of(term_cfg, key: str) -> SceneEntityCfg:
@@ -223,6 +231,20 @@ def _entity_cfg_of(term_cfg, key: str) -> SceneEntityCfg:
     if key in term_cfg.params:
         return term_cfg.params[key]
     return term_cfg.params["term_params"][key]
+
+
+def _observation_entity_cfgs(term_cfg) -> dict[str, SceneEntityCfg]:
+    """Every entity selection a single observation term carries, wrapped or not.
+
+    The delayed actor terms hold theirs inside the wrapped term's parameters, so a walk that only
+    looked at ``params`` would miss ``policy.joint_vel`` -- which is exactly one of the deploy-order
+    contracts this file exists to pin.
+    """
+    selections = {key: value for key, value in term_cfg.params.items() if isinstance(value, SceneEntityCfg)}
+    for key, value in term_cfg.params.get("term_params", {}).items():
+        if isinstance(value, SceneEntityCfg):
+            selections[key] = value
+    return selections
 
 
 def _scalar_params(term_cfg) -> dict:
@@ -566,6 +588,48 @@ def test_the_terms_select_the_joints_bodies_sensors_and_assets_upstream_measures
             assert entity_cfg.body_names == expected, path
             assert entity_cfg.joint_names is None, path
         assert entity_cfg.preserve_order is preserve_order, path
+
+
+@pytest.mark.unit
+def test_both_observation_groups_read_the_servos_the_feet_and_the_ball_in_the_deploy_order():
+    """Isaac Lab resolves joints and bodies in USD order; the deployed vector is in MJCF order.
+
+    Widths are order-blind, so the integration test that measures 61 and 80 cannot see a joint block
+    that lost ``preserve_order`` and now reports the servos in the articulation's order -- which
+    would produce a policy that runs on the robot against the wrong columns. This is the assertion
+    that catches it.
+    """
+    observations = MicroDuckBallKickFlatEnvCfg().observations
+    groups = {"policy": _observation_terms(observations.policy), "critic": _observation_terms(observations.critic)}
+
+    # two-sided over the observation terms that carry a selection at all, so a term that gains or
+    # loses one -- an actor term that started reading the ball, say -- fails rather than going
+    # unchecked
+    measured = {
+        f"{group}.{term_name}.{key}"
+        for group, terms in groups.items()
+        for term_name, term in terms.items()
+        for key in _observation_entity_cfgs(term)
+    }
+    assert measured == set(EXPECTED_OBSERVATION_SELECTIONS)
+
+    for path, (kind, expected, preserve_order) in EXPECTED_OBSERVATION_SELECTIONS.items():
+        group, term_name, key = path.split(".")
+        entity_cfg = _entity_cfg_of(groups[group][term_name], key)
+        if kind == "asset":
+            assert entity_cfg.name == expected, path
+            assert entity_cfg.joint_names is None and entity_cfg.body_names is None, path
+        elif kind == "joint":
+            assert entity_cfg.name == "robot", path
+            assert entity_cfg.joint_names == expected, path
+        else:
+            assert entity_cfg.name == "contact_forces", path
+            assert entity_cfg.body_names == expected, path
+        assert entity_cfg.preserve_order is preserve_order, path
+
+    # the neck reward indexes its four servos out of the same 14-wide block the observation reports,
+    # so the two orders are one contract rather than two
+    assert EXPECTED_SERVO_JOINT_NAMES[5:9] == EXPECTED_HEAD_JOINT_NAMES
 
 
 @pytest.mark.unit
