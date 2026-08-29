@@ -35,7 +35,7 @@ with the task's instrumentation pass rather than inside the reward kernels.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 import torch
@@ -173,10 +173,29 @@ def _height_gate(z: torch.Tensor, height_low: float, height_high: float) -> torc
 
 
 def _tilt_gate(quat: torch.Tensor, tilt_full_deg: float, tilt_zero_deg: float) -> torch.Tensor:
-    """Smoothstep gate that closes as the trunk tilts from ``tilt_full_deg`` to ``tilt_zero_deg``."""
+    """Smoothstep gate that closes as the trunk tilts from ``tilt_full_deg`` to ``tilt_zero_deg``.
+
+    Interpolated in the **angle**, which is upstream's convention for the late-phase penalty gates.
+    Its stillness terms interpolate the same two bounds in the cosine instead; see
+    :func:`_cos_tilt_gate`.
+    """
     cos_tilt = 1.0 - _trunk_tilt_squared(quat)
     tilt_deg = torch.rad2deg(torch.acos(cos_tilt.clamp(-1.0, 1.0)))
     return _smoothstep((tilt_zero_deg - tilt_deg) / max(tilt_zero_deg - tilt_full_deg, 1e-6))
+
+
+def _cos_tilt_gate(quat: torch.Tensor, tilt_full_deg: float, tilt_zero_deg: float) -> torch.Tensor:
+    """The same gate interpolated in ``cos(tilt)`` rather than in the angle.
+
+    Upstream carries both conventions and uses this one for its stillness rewards, so the two are
+    kept apart rather than unified. They agree at the two bounds and nowhere in between: at 25 and 60
+    degrees, a trunk at the angular midpoint scores 0.5 through :func:`_tilt_gate` and 0.64 here,
+    because the cosine is not linear in the angle.
+    """
+    cos_tilt = 1.0 - _trunk_tilt_squared(quat)
+    cos_full = math.cos(math.radians(tilt_full_deg))
+    cos_zero = math.cos(math.radians(tilt_zero_deg))
+    return _smoothstep((cos_tilt - cos_zero) / max(cos_full - cos_zero, 1e-6))
 
 
 def _is_fallen(
@@ -2940,3 +2959,507 @@ def single_foot_grounded_reward(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityC
         Whether the foot is on the ground, as 0.0 or 1.0. Shape is (num_envs,).
     """
     return _any_contact(env, sensor_cfg, filtered=True).float()
+
+
+##
+# SitStand kernels: the commanded-posture stack.
+##
+
+
+"""
+Every term below reads the *commanded posture* and selects its target from it -- the sitting keyframe
+at the seated height, or the stand pose at the standing one, or any blend between the two -- where
+the stand-up task's equivalents track one fixed goal (addendum section 4.5). The blend is the command
+term's slewed ``alpha`` rather than the raw flag, which is what makes the reward landscape follow the
+transition instead of jumping to its endpoint; see
+:class:`~isaaclab_tasks.contrib.microduck.mdp.commands.SitStandCommand`.
+"""
+
+
+_POSTURE_KEYFRAME_ATTR = "_microduck_posture_keyframe_cache"
+
+_POSTURE_RAMP_DONE_TOLERANCE = 0.02
+"""Blend error below which :func:`posture_stillness` treats the posture ramp as finished.
+
+Upstream's constant, and it is a tolerance rather than a threshold: the blend only reaches the flag
+exactly on the last step of the ramp, so a strict comparison would open the gate a step late.
+"""
+
+
+def _posture_blend(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """The commanded posture blend: 0 at the stand target, 1 at the sit target.
+
+    Upstream falls back to the raw command flag when the term does not expose a blend. The port
+    raises instead: the fallback is unreachable on every shipped configuration, and a posture reward
+    silently reading an un-slewed flag is the exact failure the slew exists to prevent.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the posture command term.
+
+    Returns:
+        The blend in ``[0, 1]``. Shape is (num_envs,).
+
+    Raises:
+        ValueError: If the named command term exposes no ``alpha``.
+    """
+    term = env.command_manager.get_term(command_name)
+    alpha = getattr(term, "alpha", None)
+    if alpha is None:
+        raise ValueError(
+            f"The posture rewards read the slewed blend of the command term '{command_name}', which"
+            " exposes no 'alpha'. Configure it as a"
+            " 'isaaclab_tasks.contrib.microduck.mdp.SitStandCommandCfg'."
+        )
+    return alpha
+
+
+def _sit_keyframe(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, sit_joint_pos: Mapping[str, float]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Resolve, and cache on the environment, the sitting keyframe inside a joint selection.
+
+    Returns the *positions within the selection* of the joints the keyframe overrides, and the angles
+    it sets them to. Resolving against :attr:`SceneEntityCfg.joint_names` rather than against the
+    articulation is what pins the pairing: the names are ordered by ``preserve_order`` and are the
+    same list the selection's indices came from, so a keyframe joint that is not scored is a
+    configuration error rather than a silently ignored entry. Upstream keys the same keyframe by
+    servo index, which the converted asset does not preserve.
+
+    Args:
+        env: The environment instance, which carries the cache.
+        asset_cfg: The resolved joint selection the keyframe is written into.
+        sit_joint_pos: Joint name to angle [rad] of the sitting keyframe.
+
+    Returns:
+        The override positions and their angles [rad]. Both have shape (num_overrides,).
+
+    Raises:
+        ValueError: If the selection is not by name, or if it omits a keyframe joint.
+    """
+    cache: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = env.__dict__.setdefault(_POSTURE_KEYFRAME_ATTR, {})
+    key = (asset_cfg.name, tuple(asset_cfg.joint_names or ()), tuple(sit_joint_pos.items()))
+    resolved = cache.get(key)
+    if resolved is None:
+        names = list(asset_cfg.joint_names or ())
+        if not names:
+            raise ValueError(
+                "The posture rewards need their joints selected by name, so that the sitting"
+                " keyframe can be matched against them. Set 'joint_names' with 'preserve_order=True'."
+            )
+        missing = [name for name in sit_joint_pos if name not in names]
+        if missing:
+            raise ValueError(
+                f"The sitting keyframe sets {missing}, which the scored joint selection {names} does"
+                " not contain, so those joints would be rewarded against the stand pose instead."
+            )
+        positions = torch.tensor([names.index(name) for name in sit_joint_pos], device=env.device, dtype=torch.long)
+        angles = torch.tensor(list(sit_joint_pos.values()), device=env.device)
+        resolved = (positions, angles)
+        cache[key] = resolved
+    return resolved
+
+
+def _posture_joint_target(
+    env: ManagerBasedRLEnv,
+    asset: Articulation,
+    asset_cfg: SceneEntityCfg,
+    command_name: str,
+    sit_joint_pos: Mapping[str, float],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The selected joints' commanded target and their measured positions [rad].
+
+    The target interpolates the stand pose toward the sitting keyframe by the commanded blend, so
+    mid-ramp the rewarded pose folds in step with the descending height target.
+    """
+    positions, angles = _sit_keyframe(env, asset_cfg, sit_joint_pos)
+    stand_target = asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
+    sit_target = stand_target.clone()
+    sit_target[:, positions] = angles
+    blend = _posture_blend(env, command_name).unsqueeze(-1)
+    target = stand_target + blend * (sit_target - stand_target)
+    return asset.data.joint_pos.torch[:, asset_cfg.joint_ids], target
+
+
+def _posture_height(
+    env: ManagerBasedRLEnv,
+    asset: Articulation,
+    command_name: str,
+    sit_height: float,
+    stand_height: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The commanded target trunk height and the measured one [m], both above the environment origin.
+
+    Note:
+        Upstream's equivalent hard-codes ``env.scene["robot"]`` and discards the ``asset_cfg`` it is
+        handed, so its whole posture-height family is silently un-configurable. This port reads the
+        selected articulation, which is the same body on every shipped configuration.
+    """
+    blend = _posture_blend(env, command_name)
+    target_height = stand_height + blend * (sit_height - stand_height)
+    return target_height, _root_height_above_ground(env, asset)
+
+
+def posture_pose_gaussian(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sit_joint_pos: Mapping[str, float],
+    std: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward holding selected joints at the *commanded* posture's pose, with a Gaussian tolerance.
+
+    Ported from addendum section 4.5 (``posture_pose_match``). It is
+    :func:`joint_pose_gaussian` with a moving target: the stand pose when a stand is commanded, the
+    sitting keyframe when a sit is, and the interpolation between them while the ramp runs. The width
+    is deliberately generous -- the knee travels about 1.35 rad between the two poses, so a tight
+    kernel would be flat over most of the transition.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the posture command term.
+        sit_joint_pos: Joint name to angle [rad] of the sitting keyframe. Joints left out of it are
+            rewarded at the stand pose in both postures, which is how the neck and head are handled.
+        std: Width of the per-joint Gaussian kernel [rad].
+        asset_cfg: The articulation and the joints scored. Select them by name with
+            ``preserve_order=True``; the selection must contain every keyframe joint.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos, target = _posture_joint_target(env, asset, asset_cfg, command_name, sit_joint_pos)
+    return torch.exp(-(((joint_pos - target) / std) ** 2)).mean(dim=-1)
+
+
+def posture_pose_l1(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sit_joint_pos: Mapping[str, float],
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize the mean absolute deviation of selected joints from the commanded posture's pose.
+
+    Ported from addendum section 4.5 (``posture_pose_l1``). The constant-gradient companion to
+    :func:`posture_pose_gaussian`, which saturates once the pose error grows past its width and then
+    stops pulling -- which is most of a sit-to-stand transition.
+
+    The term **negates itself** and is therefore configured with a *positive* weight.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the posture command term.
+        sit_joint_pos: Joint name to angle [rad] of the sitting keyframe.
+        asset_cfg: The articulation and the joints scored, selected by name.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos, target = _posture_joint_target(env, asset, asset_cfg, command_name, sit_joint_pos)
+    return -torch.abs(joint_pos - target).mean(dim=-1)
+
+
+def posture_height_gaussian(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sit_height: float,
+    stand_height: float,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward holding the trunk at the commanded posture's height, using a Gaussian kernel.
+
+    Ported from addendum section 4.5 (``posture_height_gaussian``). It is
+    :func:`root_height_gaussian` with the target selected from the command, and the sit-stand task
+    instantiates it twice for the same reason the stand-up task does: a wide layer that pulls across
+    the whole 55 mm of travel and a narrow one that only has gradient in the last few millimetres.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the posture command term.
+        sit_height: Trunk height [m] of the seated rest.
+        stand_height: Trunk height [m] of the standing rest.
+        std: Width of the Gaussian kernel [m].
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    target_height, height = _posture_height(env, asset, command_name, sit_height, stand_height)
+    return torch.exp(-(((height - target_height) / std) ** 2))
+
+
+def posture_height_l1(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sit_height: float,
+    stand_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize the absolute distance of the trunk from the commanded posture's height.
+
+    Ported from addendum section 4.5 (``posture_height_l1``). This is the transition driver: while
+    the robot rests in the *wrong* posture the Gaussian layers are near zero and offer nothing to
+    move toward, whereas this charges a constant gradient across the whole 55 mm, in both directions.
+
+    The term **negates itself** and is therefore configured with a *positive* weight.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the posture command term.
+        sit_height: Trunk height [m] of the seated rest.
+        stand_height: Trunk height [m] of the standing rest.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    target_height, height = _posture_height(env, asset, command_name, sit_height, stand_height)
+    return -torch.abs(height - target_height)
+
+
+def posture_rise_bootstrap(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    max_height: float,
+    max_vz: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward rising while a *stand* is commanded, below a ceiling and up to a speed cap.
+
+    Ported from addendum section 4.5 (``posture_rise_bootstrap``). It is
+    :func:`com_upward_velocity` with two changes that matter: the payout is capped at ``max_vz``, so
+    an explosive launch earns no more than a gentle rise, and it is switched off entirely whenever a
+    sit is commanded, so it can never bid against the descent.
+
+    Note:
+        This is the one posture term that reads the **raw command flag** rather than the slewed
+        blend, and upstream does it deliberately: the bootstrap switches on and off with the button
+        while everything else follows the ramp. Reading the blend instead would leave it paying for
+        upward motion for the first seconds of a commanded descent.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the posture command term.
+        max_height: Trunk height [m] above which the reward is switched off. Set just above the
+            standing rest, so the final centimetre still pays.
+        max_vz: Upward speed [m/s] the payout saturates at.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, max_vz]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    sit_flag = env.command_manager.get_command(command_name)[:, 0]
+    below_ceiling = (_root_height_above_ground(env, asset) < max_height).float()
+    vertical_speed = torch.nan_to_num(asset.data.root_link_lin_vel_w.torch[:, 2], nan=0.0)
+    return torch.clamp(vertical_speed, min=0.0, max=max_vz) * below_ceiling * (1.0 - sit_flag)
+
+
+def trunk_downward_velocity_penalty(
+    env: ManagerBasedRLEnv,
+    max_down_vel: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize downward trunk speed beyond a cap.
+
+    Ported from addendum section 4.4 (``trunk_downward_velocity_penalty``). It caps descent *speed*,
+    which :class:`trunk_vertical_accel_penalty` alone cannot: a fast constant-velocity drop has zero
+    vertical acceleration all the way down and pays a single impact spike at the bottom, which is
+    cheap against arriving at the goal pose sooner. Charging every step of a too-fast descent is what
+    makes the gentlest descent under the cap optimal.
+
+    The term **negates itself** and is therefore configured with a *positive* weight. Upstream
+    records a run where this family carried negative weights: the double negative turned all three
+    into rewards for violence and trained a butt-hopping, crash-sitting policy.
+
+    Args:
+        env: The environment instance.
+        max_down_vel: Downward speed [m/s] below which nothing is charged.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    vertical_speed = torch.nan_to_num(asset.data.root_link_lin_vel_w.torch[:, 2], nan=0.0)
+    return -torch.clamp(-vertical_speed - max_down_vel, min=0.0)
+
+
+def trunk_upward_velocity_penalty(
+    env: ManagerBasedRLEnv,
+    max_up_vel: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize upward trunk speed beyond a cap.
+
+    Ported from addendum section 4.4 (``trunk_upward_velocity_penalty``), the mirror of
+    :func:`trunk_downward_velocity_penalty` for the rise. Upstream introduces it by curriculum only
+    *after* the rise has been discovered: a motion tax that is live while a skill is being explored
+    makes every attempt net-negative and the skill is never found.
+
+    The term **negates itself** and is therefore configured with a *positive* weight.
+
+    Args:
+        env: The environment instance.
+        max_up_vel: Upward speed [m/s] below which nothing is charged.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    vertical_speed = torch.nan_to_num(asset.data.root_link_lin_vel_w.torch[:, 2], nan=0.0)
+    return -torch.clamp(vertical_speed - max_up_vel, min=0.0)
+
+
+def upright_linear_at_height(
+    env: ManagerBasedRLEnv,
+    height_low: float,
+    height_high: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward the cosine of the trunk's tilt, in proportion to how tall the robot is standing.
+
+    Ported from addendum section 4.5 (``upright_while_tall``). It is :func:`body_upright_linear`
+    behind the same smoothstep height gate :func:`upright_gaussian_at_height` uses, and the gate is
+    what closes the "tip backward while still high" exploit: without it a controlled fall collects
+    the descent rewards, and with it the upright incentive is at full strength exactly while the
+    robot is tall enough for tipping to be a choice. It fades out over the seated range, where a
+    trunk resting on its base is fine.
+
+    Args:
+        env: The environment instance.
+        height_low: Trunk height [m] below which the gate is fully closed.
+        height_high: Trunk height [m] above which the gate is fully open.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[-1, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    upright = 1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch)
+    return upright * _height_gate(_root_height_above_ground(env, asset), height_low, height_high)
+
+
+def posture_stillness(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sit_height: float,
+    stand_height: float,
+    band_full: float,
+    band_zero: float,
+    vel_std: float,
+    tilt_full_deg: float,
+    tilt_zero_deg: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward resting still, upright and at the commanded height, once the transition has finished.
+
+    Ported from addendum section 4.5 (``posture_stillness``). A Gaussian on the trunk's speed behind
+    three gates, and each gate closes one exploit:
+
+    * a **height band** around the commanded target, so the term is inactive mid-transition and
+      cannot pay for stopping half-way;
+    * a **tilt** smoothstep, so a back, face or side flop -- motionless, and inside the seated height
+      band -- earns nothing;
+    * **ramp completion**, ``|flag - blend| < 0.02``, so stillness never pays while the setpoint is
+      still moving. This is what makes "arrive, then hold" the peak of the stack rather than "stay
+      where you are".
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the posture command term.
+        sit_height: Trunk height [m] of the seated rest.
+        stand_height: Trunk height [m] of the standing rest.
+        band_full: Height error [m] below which the height gate is fully open.
+        band_zero: Height error [m] above which the height gate is fully closed.
+        vel_std: Width of the Gaussian kernel on the trunk speed [m/s].
+        tilt_full_deg: Trunk tilt [deg] below which the tilt gate is fully open.
+        tilt_zero_deg: Trunk tilt [deg] above which the tilt gate is fully closed.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    target_height, height = _posture_height(env, asset, command_name, sit_height, stand_height)
+    speed = torch.nan_to_num(asset.data.root_link_lin_vel_w.torch, nan=0.0).norm(dim=-1)
+
+    flag = env.command_manager.get_command(command_name)[:, 0]
+    ramp_done = ((flag - _posture_blend(env, command_name)).abs() < _POSTURE_RAMP_DONE_TOLERANCE).float()
+
+    height_gate = _smoothstep((band_zero - torch.abs(height - target_height)) / max(band_zero - band_full, 1e-6))
+    # the cosine-space gate, which is the convention upstream's stillness terms use
+    tilt_gate = _cos_tilt_gate(asset.data.root_link_quat_w.torch, tilt_full_deg, tilt_zero_deg)
+    return torch.exp(-((speed / vel_std) ** 2)) * height_gate * tilt_gate * ramp_done
+
+
+def posture_composite(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sit_joint_pos: Mapping[str, float],
+    sit_height: float,
+    stand_height: float,
+    height_std: float,
+    upright_std: float,
+    pose_std: float,
+    head_std: float,
+    head_command_name: str,
+    asset_cfg: SceneEntityCfg,
+    head_asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward the commanded posture as one multiplicative score over height, tilt, pose and head.
+
+    Ported from addendum section 4.5 (``posture_composite``), the posture-conditioned counterpart of
+    :func:`standing_composite_score`. The product rather than the sum is the whole point: a
+    deficiency in any one factor collapses the term, so the partial-sum compromises a summed stack
+    invites -- plank, flop, lean, park a centimetre short -- never pay. The widths are broad on
+    purpose, because a tight product is numerically zero everywhere except at the goal and has no
+    gradient to follow there.
+
+    The upright factor is posture-independent: both rest states demand a vertical trunk.
+
+    The **head factor** is upstream's fix for a trained run that rested with the head dangling to the
+    floor -- trunk, legs and height all on target, so the composite paid in full and only the light
+    head-tracking term was lost, while the hanging head added passive stability. With it, "arrived"
+    requires the head at its commanded pose; a head-assist mid-transition stays free, because the
+    composite is near zero there anyway.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the posture command term.
+        sit_joint_pos: Joint name to angle [rad] of the sitting keyframe.
+        sit_height: Trunk height [m] of the seated rest.
+        stand_height: Trunk height [m] of the standing rest.
+        height_std: Width of the Gaussian kernel on the height [m].
+        upright_std: Width of the Gaussian kernel on the tilt, in units of ``1 - cos(tilt)``.
+        pose_std: Width of the Gaussian kernel on the joint-position RMS error [rad].
+        head_std: Width of the Gaussian kernel on the head-tracking RMS error [rad].
+        head_command_name: Name of the head-pose command term.
+        asset_cfg: The articulation and the joints scored against the posture pose, selected by name.
+            Its root link carries the trunk height and orientation.
+        head_asset_cfg: The head joints scored against the head-pose command, selected by name with
+            ``preserve_order=True`` so their columns match that command.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos, target = _posture_joint_target(env, asset, asset_cfg, command_name, sit_joint_pos)
+    target_height, height = _posture_height(env, asset, command_name, sit_height, stand_height)
+
+    height_score = torch.exp(-(((height - target_height) / height_std) ** 2))
+    upright_score = torch.exp(-_trunk_tilt_squared(asset.data.root_link_quat_w.torch) / upright_std**2)
+    pose_score = torch.exp(-torch.square(joint_pos - target).mean(dim=-1) / pose_std**2)
+
+    head_asset: Articulation = env.scene[head_asset_cfg.name]
+    head_command = env.command_manager.get_command(head_command_name)
+    head_measured = head_asset.data.joint_pos.torch[:, head_asset_cfg.joint_ids]
+    head_error = (head_measured - head_asset.data.default_joint_pos.torch[:, head_asset_cfg.joint_ids]) - head_command
+    head_score = torch.exp(-torch.square(head_error).mean(dim=-1) / head_std**2)
+
+    return height_score * upright_score * pose_score * head_score
