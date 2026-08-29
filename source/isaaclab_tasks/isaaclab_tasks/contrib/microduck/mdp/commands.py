@@ -416,8 +416,13 @@ class SitStandCommand(UniformVelocityCommand):
     """
 
     def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
-        # skips ``UniformVelocityCommand.reset``, whose only extra work is finalizing the tracking
-        # metrics cleared in ``__init__``
+        # Skips ``UniformVelocityCommand.reset``, whose only extra work is finalizing the tracking
+        # metrics cleared in ``__init__`` -- and which would raise on their absence -- exactly as
+        # :class:`RelativeHeadingVelocityCommand` does for the same reason.
+        #
+        # The cost of the skip is that any *future* behaviour added to that parent's reset is
+        # forfeited here silently, so a change to it has to be mirrored into these two subclasses by
+        # hand. That is the price of not registering metrics for a comparison this term never makes.
         extras = CommandTerm.reset(self, env_ids)
         # Seed the blend from the height the robot actually spawned at, not from the flag it was
         # just handed: a seated spawn under a stand request must start its ramp at the sit end.

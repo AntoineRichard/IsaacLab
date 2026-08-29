@@ -552,8 +552,17 @@ def test_the_sitting_keyframe_is_the_stand_up_tasks_own():
     # the keyframe folds the legs only: the neck and head stay at the stand pose, where the head-pose
     # command steers them
     assert set(SIT_JOINT_POS) < set(EXPECTED_LEG_JOINT_NAMES)
-    # and every angle is inside the model's +/-1.571 rad sagittal limits, so the target is reachable
-    assert all(abs(angle) < 1.571 for angle in SIT_JOINT_POS.values())
+    # and every angle is inside the +/-1.5708 rad sagittal limits the MJCF authors on these joints,
+    # so the target is reachable. Upstream's RollerCrouch keyframe is *not* -- it overshoots the
+    # roller model's neck-pitch and knee ranges, which upstream-issue draft 018 records -- so this is
+    # a bound worth asserting rather than assuming on any keyframe in this family.
+    #
+    # The limit is transcribed from the model rather than read out of it: this is a sim-free parity
+    # test and the articulation is not loaded here. It therefore catches an out-of-range *sagittal*
+    # angle but would not catch a joint whose own compiled range is narrower than the sagittal one --
+    # which is the exact shape of the 018 defect. A model-backed check belongs in the integration
+    # tier and is owed by whichever task actually reproduces that defect, not by this one.
+    assert all(abs(angle) < 1.5708 for angle in SIT_JOINT_POS.values())
 
 
 @pytest.mark.unit
