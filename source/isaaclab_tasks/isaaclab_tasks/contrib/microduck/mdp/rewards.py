@@ -2299,17 +2299,22 @@ def com_height_target(
 def feet_flat_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
-    sensor_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg | None = None,
     normal_axis: tuple[float, float, float] = (0.0, 0.0, 1.0),
     bodies_per_foot: int = 1,
 ) -> torch.Tensor:
-    """Penalize a loaded foot whose sole is not parallel to the ground.
+    """Penalize a foot whose sole is not parallel to the ground.
 
     Ported from addendum section 5.3 (``feet_flat_penalty``). Upstream projects the gravity direction
     into each foot **site**'s frame and charges the squared components orthogonal to the site's
-    ``z`` axis, gated by that foot's own contact time -- so the stance blade is asked to lie flat and
-    the swing blade is free to tilt. The stock :func:`isaaclab.envs.mdp.flat_orientation_l2` measures
-    the same quantity on the articulation root and has no per-body or per-contact gating.
+    ``z`` axis, optionally gated by that foot's own contact time -- so the stance blade is asked to
+    lie flat and the swing blade is free to tilt. The stock
+    :func:`isaaclab.envs.mdp.flat_orientation_l2` measures the same quantity on the articulation root
+    and has no per-body or per-contact gating.
+
+    Leaving the contact gate off asks **both** feet to lie flat at all times, which is what a task
+    with no swing phase wants; upstream's roller recipes pass a sensor and its ground-pick recipe
+    does not, and that argument is the only difference between the two uses.
 
     Isaac Lab has no site concept, so this port measures the foot **body** frame and takes the sole
     normal as a parameter. On the converted roller model the ``left_foot`` and ``right_foot`` sites
@@ -2321,7 +2326,8 @@ def feet_flat_penalty(
     Args:
         env: The environment instance.
         asset_cfg: The articulation and the foot bodies to measure, in the sensor's foot order.
-        sensor_cfg: The contact sensor and the bodies whose contact gates each foot.
+        sensor_cfg: The contact sensor and the bodies whose contact gates each foot. Defaults to
+            None, which charges every selected foot whether or not it is loaded.
         normal_axis: Sole normal in the foot body frame [-]. Defaults to the body ``z`` axis.
         bodies_per_foot: Contact bodies making up one foot. Defaults to 1.
 
@@ -2329,7 +2335,6 @@ def feet_flat_penalty(
         The cost in ``[0, inf)``. Shape is (num_envs,).
     """
     asset: Articulation = env.scene[asset_cfg.name]
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
 
     foot_quat_w = asset.data.body_link_quat_w.torch[:, asset_cfg.body_ids]
     gravity_dir_w = torch.nn.functional.normalize(asset.data.GRAVITY_VEC_W.torch, dim=-1)
@@ -2341,6 +2346,9 @@ def feet_flat_penalty(
     # of gravity orthogonal to the site's z axis
     tilt = 1.0 - torch.square(torch.sum(gravity_dir_b * normal, dim=-1))
 
+    if sensor_cfg is None:
+        return torch.sum(tilt, dim=1)
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     contact_time = _observations.fold_bodies_into_feet(
         contact_sensor.data.current_contact_time.torch[:, sensor_cfg.body_ids], bodies_per_foot
     ).amax(dim=2)
@@ -3463,3 +3471,360 @@ def posture_composite(
     head_score = torch.exp(-torch.square(head_error).mean(dim=-1) / head_std**2)
 
     return height_score * upright_score * pose_score * head_score
+
+
+##
+# GroundPick kernels: the phase-gated bend-to-ground stack.
+##
+
+
+"""
+Every term below reads the *phase* of the task's open-loop cycle out of the command slot and gates
+itself on it, so one stack pays for four different things at four points of the same 4 s cycle: bend
+the mouth to the floor, hold it there, return to a clean stand, and rest (addendum section 5.5). The
+gate is recovered from the command with ``atan2`` rather than read off the command term, which is
+upstream's choice and keeps every kernel readable from the deployed observation alone; see
+:class:`~isaaclab_tasks.contrib.microduck.mdp.commands.GroundPickPhaseCommand`.
+
+The two gates are **not** complements. ``_phase_pose_blend`` ramps 0 to 1 across the descent, holds
+at 1 through the low dwell and falls back to 0 across the rise; ``_phase_rise_gate`` is 0 until the
+low dwell ends, ramps to 1 across the rise and stays there through the standing rest. They sum to 1
+across the rise and nowhere else -- during the descent the down-gate is opening while the up-gate is
+still shut, which is what leaves the approach unpriced by the return terms.
+"""
+
+
+def _phase_from_command(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Recover the cycle phase in ``[0, 1)`` from a ``(cos, sin, 0)`` command slot.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+
+    Returns:
+        The phase in ``[0, 1)``. Shape is (num_envs,).
+    """
+    command = env.command_manager.get_command(command_name)
+    return (torch.atan2(command[:, 1], command[:, 0]) / (2.0 * math.pi)) % 1.0
+
+
+def _phase_pose_blend(phase: torch.Tensor, descent_end: float, hold_end: float, rise_end: float) -> torch.Tensor:
+    """Gate that follows the bend: 0 standing, ramping to 1 by ``descent_end``, back to 0 by ``rise_end``.
+
+    Args:
+        phase: Position in the cycle, in ``[0, 1)``. Shape is (num_envs,).
+        descent_end: Phase at which the descent finishes and the low dwell begins.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+
+    Returns:
+        The gate in ``[0, 1]``. Shape is (num_envs,).
+    """
+    blend = torch.zeros_like(phase)
+    blend = torch.where(phase < descent_end, phase / max(descent_end, 1e-6), blend)
+    blend = torch.where((phase >= descent_end) & (phase < hold_end), torch.ones_like(phase), blend)
+    rising = (phase >= hold_end) & (phase < rise_end)
+    blend = torch.where(rising, 1.0 - (phase - hold_end) / max(rise_end - hold_end, 1e-6), blend)
+    return blend
+
+
+def _phase_rise_gate(phase: torch.Tensor, hold_end: float, rise_end: float) -> torch.Tensor:
+    """Gate that follows the return: 0 before ``hold_end``, ramping to 1 by ``rise_end``, 1 after.
+
+    Args:
+        phase: Position in the cycle, in ``[0, 1)``. Shape is (num_envs,).
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+
+    Returns:
+        The gate in ``[0, 1]``. Shape is (num_envs,).
+    """
+    gate = torch.zeros_like(phase)
+    rising = (phase >= hold_end) & (phase < rise_end)
+    gate = torch.where(rising, (phase - hold_end) / max(rise_end - hold_end, 1e-6), gate)
+    return torch.where(phase >= rise_end, torch.ones_like(phase), gate)
+
+
+def _mouth_tip_pose_w(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, offset_b: Sequence[float]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """World position [m] of the mouth tip and the orientation of the body carrying it.
+
+    Upstream measures the mouth on the MJCF ``mouth_tip`` **site**, which Isaac Lab has no concept
+    of. The site is rigidly attached to the ``jaw_soft`` body, so this port measures that body's link
+    frame and carries the site's fixed offset as a parameter -- the same structural adaptation the
+    foot terms make (see :func:`feet_flat_penalty`), and one whose numbers come off the pinned MJCF
+    rather than out of a guess.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the single body the mouth tip is rigidly attached to.
+        offset_b: Mouth-tip position [m] in that body's frame.
+
+    Returns:
+        The mouth-tip world position [m], shape (num_envs, 3), and the carrying body's orientation in
+        (x, y, z, w), shape (num_envs, 4).
+
+    Raises:
+        ValueError: If ``asset_cfg`` does not select exactly one body.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    if asset_cfg.body_names is None or len(asset_cfg.body_ids) != 1:
+        raise ValueError(
+            "The mouth terms measure one body the mouth tip is attached to; 'asset_cfg' must select"
+            f" exactly one by name. Received: {asset_cfg.body_names}."
+        )
+    body_pos_w = asset.data.body_link_pos_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    body_quat_w = asset.data.body_link_quat_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    offset = torch.tensor(tuple(offset_b), dtype=body_pos_w.dtype, device=body_pos_w.device)
+    return body_pos_w + math_utils.quat_apply(body_quat_w, offset.expand_as(body_pos_w)), body_quat_w
+
+
+def mouth_ground_proximity_phased(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    mouth_offset_b: Sequence[float],
+    std: float,
+    command_name: str,
+    descent_end: float,
+    hold_end: float,
+    rise_end: float,
+    target_height: float = 0.0,
+) -> torch.Tensor:
+    """Reward the mouth tip being close to the ground, while the cycle is asking for the bend.
+
+    Ported from addendum section 5.5 (``mouth_ground_proximity_phased``). This is the task's
+    objective; what keeps it from becoming "plant the head" is :func:`body_impact_cost` on the other
+    side of the balance, so the equilibrium is the mouth hovering just above the floor rather than
+    resting on it.
+
+    Note:
+        Upstream measures a **raw world z** here, alone among its height terms, which is equivalent
+        on a ground plane and silently wrong on its rough variant. This port subtracts the
+        environment origin as every other height term in the family does.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the single body the mouth tip is attached to.
+        mouth_offset_b: Mouth-tip position [m] in that body's frame.
+        std: Width of the Gaussian kernel on the mouth height [m].
+        command_name: Name of the phase command term.
+        descent_end: Phase at which the descent finishes and the low dwell begins.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+        target_height: Mouth height [m] the kernel peaks at. Defaults to 0.0, the floor.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    mouth_pos_w, _ = _mouth_tip_pose_w(env, asset_cfg, mouth_offset_b)
+    height = mouth_pos_w[:, 2] - env.scene.env_origins[:, 2]
+    proximity = torch.exp(-(((height - target_height) / std) ** 2))
+    gate = _phase_pose_blend(_phase_from_command(env, command_name), descent_end, hold_end, rise_end)
+    return gate * proximity
+
+
+def mouth_perpendicular_phased(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    mouth_axis_b: Sequence[float],
+    command_name: str,
+    descent_end: float,
+    hold_end: float,
+    rise_end: float,
+) -> torch.Tensor:
+    """Reward the mouth axis pointing at the floor, while the cycle is asking for the bend.
+
+    Ported from addendum section 5.5 (``mouth_perpendicular_phased``). Reaching the floor with the
+    mouth *sideways* is a different, useless posture from reaching it mouth-down, and the proximity
+    term alone cannot tell them apart.
+
+    The alignment is signed: a mouth pointing straight up during the descent gate scores ``-1``, so
+    at a positive weight this term charges the wrong orientation rather than merely not paying for
+    it. That is upstream's shape and it is kept.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the single body the mouth tip is attached to.
+        mouth_axis_b: The mouth's pointing axis [-] in that body's frame.
+        command_name: Name of the phase command term.
+        descent_end: Phase at which the descent finishes and the low dwell begins.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+
+    Returns:
+        The reward in ``[-1, 1]``. Shape is (num_envs,).
+    """
+    _, body_quat_w = _mouth_tip_pose_w(env, asset_cfg, (0.0, 0.0, 0.0))
+    axis = torch.tensor(tuple(mouth_axis_b), dtype=body_quat_w.dtype, device=body_quat_w.device)
+    axis = torch.nn.functional.normalize(axis, dim=-1).expand(body_quat_w.shape[0], 3)
+    alignment = -math_utils.quat_apply(body_quat_w, axis)[:, 2]
+    gate = _phase_pose_blend(_phase_from_command(env, command_name), descent_end, hold_end, rise_end)
+    return gate * alignment
+
+
+def ground_pick_return_pose_phased(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    std: float,
+    command_name: str,
+    hold_end: float,
+    rise_end: float,
+) -> torch.Tensor:
+    """Reward selected joints returning to the stand pose, while the cycle is asking for the return.
+
+    Ported from addendum section 5.5 (``ground_pick_return_pose_phased``). It is
+    :func:`joint_pose_gaussian` under the rise gate, and the task configures it twice at two widths:
+    a loose one on the legs, whose extension is the return, and a tight one on the neck, where
+    overshooting past the stand pose folds the head back into the trunk.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the joints to return to the stand pose.
+        std: Width of the per-joint Gaussian kernel [rad].
+        command_name: Name of the phase command term.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    gate = _phase_rise_gate(_phase_from_command(env, command_name), hold_end, rise_end)
+    return gate * joint_pose_gaussian(env, std, asset_cfg)
+
+
+def ground_pick_return_upright_phased(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str,
+    hold_end: float,
+    rise_end: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward an upright trunk, while the cycle is asking for the return.
+
+    Ported from addendum section 5.5 (``ground_pick_return_upright_phased``). The task's always-on
+    :func:`upright` is deliberately weak, because the approach *requires* a deep forward lean; this
+    is the other half of that split, paying for verticality only once the robot is supposed to be
+    standing back up. Returning the pose alone does not make the return balanced.
+
+    Its kernel is ``1 - cos(tilt)`` where :func:`upright` uses the projected gravity direction, so
+    the two are not the same width at the same ``std`` and cannot be merged.
+
+    Args:
+        env: The environment instance.
+        std: Width of the Gaussian kernel on the tilt, in units of ``1 - cos(tilt)``.
+        command_name: Name of the phase command term.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    upright_score = torch.exp(-_trunk_tilt_squared(asset.data.root_link_quat_w.torch) / std**2)
+    gate = _phase_rise_gate(_phase_from_command(env, command_name), hold_end, rise_end)
+    return gate * upright_score
+
+
+def neck_vel_descent_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    command_name: str,
+    hold_end: float,
+) -> torch.Tensor:
+    """Penalize neck joint speed while the cycle is asking for the bend and the low dwell.
+
+    Ported from addendum section 5.5 (``neck_vel_descent_penalty``). It is the anti-dive term: the
+    head is the heaviest thing on the end of the longest lever, and throwing it at the floor reaches
+    the proximity reward faster than lowering it. The stock
+    :func:`isaaclab.envs.mdp.joint_vel_l2` charges the same quantity ungated and unaveraged, so it
+    would tax the return just as hard.
+
+    Its gate is a **hard step** at ``hold_end`` rather than a ramp, which is deliberate upstream: the
+    neck is free from the instant the rise begins, so the term never bids against the return.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the neck joints to charge.
+        command_name: Name of the phase command term.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    cost = torch.square(asset.data.joint_vel.torch[:, asset_cfg.joint_ids]).mean(dim=-1)
+    gate = (_phase_from_command(env, command_name) < hold_end).to(cost.dtype)
+    return gate * cost
+
+
+def feet_grounded_reward(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Reward the fraction of the selected feet that are touching the ground.
+
+    Ported from addendum section 5.5 (``feet_grounded_reward``). The ground-pick motion has no swing
+    phase at all -- both soles stay planted through the whole cycle -- so this is a plain "keep your
+    feet down" signal rather than the gait terms' contact bookkeeping. Upstream sums its per-foot
+    ``found`` flags and divides by two; with two feet selected this is the same number, and with any
+    other selection it stays on the same ``[0, 1]`` scale.
+
+    The sensor is filtered against the terrain, as upstream's is: an unfiltered net force cannot tell
+    the floor from the robot's own folded knee, which a deeply bent robot puts against its soles.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The terrain-filtered contact sensor and the sole colliders to read.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    force_matrix_w = sensor.data.force_matrix_w
+    if force_matrix_w is None:
+        raise RuntimeError(
+            f"The contact sensor '{sensor_cfg.name}' reports no force matrix. Set"
+            " 'filter_prim_paths_expr' or 'filter_shape_prim_expr' on its configuration so that its"
+            " contact partners are resolved."
+        )
+    forces = force_matrix_w.torch[:, sensor_cfg.body_ids]
+    grounded = (forces.norm(dim=-1) > 0.0).any(dim=-1)
+    return grounded.float().mean(dim=-1)
+
+
+def body_impact_cost(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float) -> torch.Tensor:
+    """Charge the ground-contact force on selected colliders, above a threshold.
+
+    Ported from addendum section 5.5 (``body_impact_cost``). On the ground-pick task this is what
+    turns "get the mouth to the floor" into "get the mouth *close* to the floor": it is the only term
+    opposing the proximity reward, and the equilibrium between the two is the hover the task is
+    named for. The threshold is a dead band, not a scale -- below it a brush costs nothing, above it
+    the cost is linear in the excess force.
+
+    The stock :func:`isaaclab.envs.mdp.undesired_contacts` counts contacts over a force threshold
+    instead of charging the excess, so it has no gradient to descend once a contact exists.
+
+    Note:
+        Upstream sums the net force over the whole ``neck`` subtree, which on this model is
+        ``neck``, ``neck_pitch``, ``yaw_roll_motion`` and ``jaw_soft`` -- and only ``jaw_soft``
+        carries colliders, so the sum is the three head shells' and nothing else.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The terrain-filtered contact sensor and the colliders to charge.
+        threshold: Contact-force magnitude [N] below which nothing is charged.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    force_matrix_w = sensor.data.force_matrix_w
+    if force_matrix_w is None:
+        raise RuntimeError(
+            f"The contact sensor '{sensor_cfg.name}' reports no force matrix. Set"
+            " 'filter_prim_paths_expr' or 'filter_shape_prim_expr' on its configuration so that its"
+            " contact partners are resolved."
+        )
+    forces = force_matrix_w.torch[:, sensor_cfg.body_ids]
+    total_force = forces.flatten(start_dim=1, end_dim=-2).sum(dim=1)
+    return torch.clamp(total_force.norm(dim=-1) - threshold, min=0.0)
