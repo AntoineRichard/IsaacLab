@@ -70,30 +70,27 @@ ENV UV_HTTP_TIMEOUT=180
 # layer permanently -- templates/Dockerfile.j2 avoids that with
 # `RUN --mount=type=cache`, which also keeps the cache out of the image; that
 # mount is unavailable here, so `rm -rf` the cache in the same RUN instead.
-RUN uv sync --frozen --extra isaacsim --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video --extra tetrahedralization \
-    && rm -rf "$UV_CACHE_DIR"
-
-# A second environment, holding the standalone importers and deliberately NOT
-# `isaacsim`. Assets that are generated rather than committed -- the MicroDuck
-# USDs, whose converter is scripts/tools/convert_microduck.py -- have to be built
-# in the job's prologue, and that converter only takes its kit-less path when
-# `isaaclab.utils.version.standalone_importers_available()` is true.
+# `isaacsim` is deliberately absent, which is what lets `importers` live in this
+# same environment. The Isaac Sim runtime ships `isaacsim` as a regular package,
+# and a regular package discards the `isaacsim.asset` PEP 420 namespace portion
+# that `isaacsim-asset-isolated` contributes, leaving the standalone importers
+# installed but unreachable. That is not a resolver conflict, so uv.lock cannot
+# express it and the absence of a [tool.uv] conflicts entry says nothing.
 #
-# The two extras cannot share one environment, which is not a resolver conflict
-# and so is invisible to uv.lock: `isaacsim-asset-isolated` contributes
-# `isaacsim.asset` as a PEP 420 namespace portion, while the Isaac Sim runtime
-# ships `isaacsim` as a regular package, and a regular package discards every
-# namespace portion for that name. Installed together, the wheel is present but
-# unreachable, the converter falls back to demanding a full Kit runtime, and Kit
-# then fails to start in this image on a USD ABI mismatch -- exiting 0 while
-# writing no asset. Measured on workflow microduck-convert-probe-1.
+# Dropping it is safe for this branch's tasks because they are Newton/MJWarp and
+# never touch Kit. Verified rather than assumed: in a venv with no `isaacsim`,
+# IsaacContrib-Velocity-Flat-MicroDuck resolves its config, builds, resets and
+# steps on CUDA, and the only Omniverse-namespace modules it imports come from
+# base dependencies -- `omni.client` from `omniverseclient` and `pxr.*` from
+# `usd-exchange`, neither of which is part of the `isaacsim` extra.
 #
-# Training keeps using the main environment; only the prologue uses this one.
-ENV ODIN_CONVERT_VENV=/opt/convenv
-RUN UV_PROJECT_ENVIRONMENT="$ODIN_CONVERT_VENV" uv sync --frozen --extra importers \
+# It is also 18 GB of the 32 GB venv, and every OSMO node running a task pays
+# that in image pull, so carrying it would cost the parallel fan-out far more
+# than it costs a single run.
+RUN uv sync --frozen --extra importers --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video --extra tetrahedralization \
     && rm -rf "$UV_CACHE_DIR" \
-    && UV_PROJECT_ENVIRONMENT="$ODIN_CONVERT_VENV" uv run --frozen --extra importers \
-         python -c "from isaaclab.utils.version import standalone_importers_available as s; assert s(), 'standalone importers unreachable in the convert env'; print('convert env OK')"
+    && uv run --frozen --extra importers \
+         python -c "from isaaclab.utils.version import standalone_importers_available as s; assert s(), 'standalone importers unreachable: something in this environment shadows the isaacsim namespace'; print('importers reachable OK')"
 
 # The nvdataset CLI, used by the DSS upload path in dispatch.yaml.j2. It is
 # NOT installed from an index here: OSMO's build pods cannot resolve
