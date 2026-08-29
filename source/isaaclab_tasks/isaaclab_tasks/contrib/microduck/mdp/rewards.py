@@ -3109,22 +3109,26 @@ def _posture_blend(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
     return alpha
 
 
-def _sit_keyframe(
-    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, sit_joint_pos: Mapping[str, float]
+def _keyframe_in_selection(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, keyframe: Mapping[str, float]
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Resolve, and cache on the environment, the sitting keyframe inside a joint selection.
+    """Resolve, and cache on the environment, a named joint keyframe inside a joint selection.
 
     Returns the *positions within the selection* of the joints the keyframe overrides, and the angles
     it sets them to. Resolving against :attr:`SceneEntityCfg.joint_names` rather than against the
     articulation is what pins the pairing: the names are ordered by ``preserve_order`` and are the
     same list the selection's indices came from, so a keyframe joint that is not scored is a
-    configuration error rather than a silently ignored entry. Upstream keys the same keyframe by
-    servo index, which the converted asset does not preserve.
+    configuration error rather than a silently ignored entry. Upstream keys its keyframes by servo
+    index, which the converted asset does not preserve, and resolves the names again on every step.
+
+    Shared by the sit/stand posture rewards and the roller-crouch pose rewards, which differ in where
+    the blend comes from -- a slewed command flag in one case, the cycle phase in the other -- and not
+    in how a keyframe is matched to a selection.
 
     Args:
         env: The environment instance, which carries the cache.
         asset_cfg: The resolved joint selection the keyframe is written into.
-        sit_joint_pos: Joint name to angle [rad] of the sitting keyframe.
+        keyframe: Joint name to angle [rad].
 
     Returns:
         The override positions and their angles [rad]. Both have shape (num_overrides,).
@@ -3133,23 +3137,23 @@ def _sit_keyframe(
         ValueError: If the selection is not by name, or if it omits a keyframe joint.
     """
     cache: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = env.__dict__.setdefault(_POSTURE_KEYFRAME_ATTR, {})
-    key = (asset_cfg.name, tuple(asset_cfg.joint_names or ()), tuple(sit_joint_pos.items()))
+    key = (asset_cfg.name, tuple(asset_cfg.joint_names or ()), tuple(keyframe.items()))
     resolved = cache.get(key)
     if resolved is None:
         names = list(asset_cfg.joint_names or ())
         if not names:
             raise ValueError(
-                "The posture rewards need their joints selected by name, so that the sitting"
-                " keyframe can be matched against them. Set 'joint_names' with 'preserve_order=True'."
+                "The keyframe rewards need their joints selected by name, so that the keyframe can be"
+                " matched against them. Set 'joint_names' with 'preserve_order=True'."
             )
-        missing = [name for name in sit_joint_pos if name not in names]
+        missing = [name for name in keyframe if name not in names]
         if missing:
             raise ValueError(
-                f"The sitting keyframe sets {missing}, which the scored joint selection {names} does"
-                " not contain, so those joints would be rewarded against the stand pose instead."
+                f"The keyframe sets {missing}, which the scored joint selection {names} does not"
+                " contain, so those joints would be rewarded against the stand pose instead."
             )
-        positions = torch.tensor([names.index(name) for name in sit_joint_pos], device=env.device, dtype=torch.long)
-        angles = torch.tensor(list(sit_joint_pos.values()), device=env.device)
+        positions = torch.tensor([names.index(name) for name in keyframe], device=env.device, dtype=torch.long)
+        angles = torch.tensor(list(keyframe.values()), device=env.device)
         resolved = (positions, angles)
         cache[key] = resolved
     return resolved
@@ -3167,7 +3171,7 @@ def _posture_joint_target(
     The target interpolates the stand pose toward the sitting keyframe by the commanded blend, so
     mid-ramp the rewarded pose folds in step with the descending height target.
     """
-    positions, angles = _sit_keyframe(env, asset_cfg, sit_joint_pos)
+    positions, angles = _keyframe_in_selection(env, asset_cfg, sit_joint_pos)
     stand_target = asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
     sit_target = stand_target.clone()
     sit_target[:, positions] = angles
@@ -3915,3 +3919,195 @@ def body_impact_cost(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, thresho
     forces = force_matrix_w.torch[:, sensor_cfg.body_ids]
     total_force = forces.flatten(start_dim=1, end_dim=-2).sum(dim=1)
     return torch.clamp(total_force.norm(dim=-1) - threshold, min=0.0)
+
+
+##
+# RollerCrouch kernels: a directed pose on a phase clock.
+##
+
+
+"""
+The crouch-glide trick is a *pose trajectory* driven by the same cycle phase the ground-pick gesture
+uses, and upstream's blend function for it is byte-identical to the ground-pick one under a second
+name (addendum section 13.8). The two are merged here, so :func:`_phase_pose_blend` above is what
+both families read; what differs is the pose the blend interpolates toward and the fact that the
+crouch family interpolates from an explicit *standing* keyframe rather than from the stand pose.
+"""
+
+
+def _crouch_pose_target(
+    env: ManagerBasedRLEnv,
+    asset: Articulation,
+    asset_cfg: SceneEntityCfg,
+    command_name: str,
+    crouch_pose: Mapping[str, float],
+    stand_pose: Mapping[str, float] | None,
+    descent_end: float,
+    hold_end: float,
+    rise_end: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The selected joints' phase-blended pose target and their measured positions [rad].
+
+    The source pose is the articulation's stand pose with :attr:`stand_pose` written over it, the
+    destination is :attr:`crouch_pose`, and the blend is the cycle's descent/hold/rise envelope.
+    """
+    joint_ids = asset_cfg.joint_ids
+    source = asset.data.default_joint_pos.torch[:, joint_ids].clone()
+    if stand_pose:
+        positions, angles = _keyframe_in_selection(env, asset_cfg, stand_pose)
+        source[:, positions] = angles
+    target = source.clone()
+    positions, angles = _keyframe_in_selection(env, asset_cfg, crouch_pose)
+    target[:, positions] = angles
+
+    blend = _phase_pose_blend(_phase_from_command(env, command_name), descent_end, hold_end, rise_end)
+    blended = source + blend.unsqueeze(-1) * (target - source)
+    return asset.data.joint_pos.torch[:, joint_ids], blended
+
+
+def crouch_glide_pose_gaussian(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    crouch_pose: Mapping[str, float],
+    stand_pose: Mapping[str, float],
+    std: float,
+    descent_end: float,
+    hold_end: float,
+    rise_end: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward holding the selected joints at the phase's blended crouch pose, with a Gaussian tolerance.
+
+    Ported from addendum section 8.5 (``crouch_glide_pose_by_phase``). It is
+    :func:`joint_pose_gaussian` with a target that walks from the standing keyframe down to the
+    crouch keyframe and back over the cycle, so the reward landscape follows the trick rather than
+    jumping to its endpoints. The mean is over *every* joint the crouch pose names, head included:
+    unlike the sit/stand task, this one directs the head as part of the pose rather than by command.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+        crouch_pose: Joint name to angle [rad] of the crouched keyframe.
+        stand_pose: Joint name to angle [rad] of the standing keyframe the cycle departs from and
+            returns to. Joints left out of it stay at the articulation's stand pose.
+        std: Width of the per-joint Gaussian kernel [rad].
+        descent_end: Phase at which the descent finishes and the low dwell begins.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+        asset_cfg: The articulation and the joints scored. Select them by name with
+            ``preserve_order=True``; the selection must contain every keyframe joint.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos, target = _crouch_pose_target(
+        env, asset, asset_cfg, command_name, crouch_pose, stand_pose, descent_end, hold_end, rise_end
+    )
+    return torch.exp(-(((joint_pos - target) / std) ** 2)).mean(dim=-1)
+
+
+def crouch_glide_pose_l1(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    crouch_pose: Mapping[str, float],
+    stand_pose: Mapping[str, float],
+    descent_end: float,
+    hold_end: float,
+    rise_end: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize the mean absolute deviation of the selected joints from the phase's blended crouch pose.
+
+    Ported from addendum section 8.5 (``crouch_glide_pose_l1``). The constant-gradient companion to
+    :func:`crouch_glide_pose_gaussian`, which saturates once the pose error grows past its width --
+    and a 1.5 rad knee fold is several widths.
+
+    The term **negates itself** and is therefore configured with a *positive* weight.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+        crouch_pose: Joint name to angle [rad] of the crouched keyframe.
+        stand_pose: Joint name to angle [rad] of the standing keyframe.
+        descent_end: Phase at which the descent finishes and the low dwell begins.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+        asset_cfg: The articulation and the joints scored, selected by name.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos, target = _crouch_pose_target(
+        env, asset, asset_cfg, command_name, crouch_pose, stand_pose, descent_end, hold_end, rise_end
+    )
+    return -torch.abs(joint_pos - target).mean(dim=-1)
+
+
+def forward_speed_reward(
+    env: ManagerBasedRLEnv, vel_ref: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward rolling forward, saturating at a reference speed.
+
+    Ported from addendum section 8.5 (``forward_speed_reward``). It is deliberately **independent of
+    the command**: on a phase-commanded task the command carries the clock, not a speed, so there is
+    nothing to gate on. It pays at every phase, including the crouch -- which is the point, since the
+    trick is a glide and the momentum has to survive the fold.
+
+    The stock :func:`isaaclab.envs.mdp.track_lin_vel_xy_exp` tracks a *commanded* velocity and would
+    charge going faster than asked; this one only ever pays, and only forwards.
+
+    Args:
+        env: The environment instance.
+        vel_ref: Forward speed [m/s] the ``tanh`` is scaled to saturate near.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    forward_vel = asset.data.root_link_lin_vel_b.torch[:, 0]
+    return torch.tanh(torch.clamp(forward_vel, min=0.0) / vel_ref)
+
+
+def crouch_forward_lean(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    target_pitch: float,
+    std: float,
+    descent_end: float,
+    hold_end: float,
+    rise_end: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward a slight forward trunk lean, only while the cycle is asking for the crouch.
+
+    Ported from addendum section 8.5 (``crouch_forward_lean``). It reads the same projected-gravity
+    component as :func:`forward_lean_reward` and with the same sign, so a positive
+    :attr:`target_pitch` asks for a nose-down lean on both. The gate is
+    :func:`_phase_pose_blend`, i.e. the crouch envelope itself, so the lean is asked for exactly
+    where the fold is and is unpriced during the standing rest.
+
+    Note:
+        Upstream's two lean kernels agree in code and disagree in their docstrings about which sign
+        means forward (addendum sections 8.5 and 13.22). The code is what is ported, and it is the
+        sign that makes a positive target a forward lean.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+        target_pitch: Sine of the requested nose-down lean, in ``[-1, 1]``.
+        std: Width of the Gaussian on the lean error.
+        descent_end: Phase at which the descent finishes and the low dwell begins.
+        hold_end: Phase at which the low dwell finishes and the rise begins.
+        rise_end: Phase at which the rise finishes and the standing rest begins.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    gate = _phase_pose_blend(_phase_from_command(env, command_name), descent_end, hold_end, rise_end)
+    lean = asset.data.projected_gravity_b.torch[:, 0]
+    return gate * torch.exp(-torch.square(lean - target_pitch) / std**2)
