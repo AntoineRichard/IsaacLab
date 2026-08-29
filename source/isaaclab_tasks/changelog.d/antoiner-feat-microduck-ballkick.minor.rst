@@ -32,6 +32,13 @@ Added
   The event places the ball in the robot's yaw frame at rest, exactly touching the ground, and
   freezes the episode's kick direction; the accessor is the shared per-environment state the two
   kick rewards read, defaulting to ``+x`` before the first reset as upstream's does.
+* Sized the MuJoCo Warp solver budget of the ball-kick task from profiling rather than from
+  upstream's value, as the velocity task's budget was: ``njmax`` is 128 and ``nconmax`` is 36,
+  against a measured peak of 86 constraints and 30 contacts per environment under random actions
+  with the tilt termination dropped and the pushes at full magnitude. Upstream raises ``nconmax``
+  from its template's 35 to 50 for the ball's own contacts and leaves the constraint budget
+  untouched; the measured peak was identical at 256 and at 2048 environments, and the parity test
+  asserts a floor under both numbers so a later retune cannot drop below the measurement.
 * Added ``test/test_microduck_ballkick_env.py``, which compares the assembled configuration term by
   term against the upstream reward, event, curriculum, command and observation tables without
   launching the simulator, and then runs the acceptance tests for what makes this task different:
