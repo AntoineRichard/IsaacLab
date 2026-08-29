@@ -388,8 +388,13 @@ EXPECTED_NCONMAX = 32
 
 MEASURED_PEAK_CONSTRAINTS = 82
 MEASURED_PEAK_CONTACTS = 28
-"""Profiled peaks under random actions with the pushes forced to full magnitude, at 2048
-environments. Logs: ``artifacts/microduck/profile_microduck_contacts_sitstand_{256,2048}envs.log``."""
+"""The worst profiled peaks under random actions with the pushes forced to full magnitude.
+
+Profiled at 256, 2048 and 4096 environments -- the last is this task's own training default. The
+peak saturates from 2048 upward (28 then 27 contacts, 82 constraints at both), so these are the
+maxima across all three sizes rather than any single run's. Logs:
+``artifacts/microduck/profile_microduck_contacts_sitstand_{256,2048,4096}envs.log``.
+"""
 
 EXPECTED_SOLVER_ITERATIONS = 30
 EXPECTED_SOLVER_LS_ITERATIONS = 50
