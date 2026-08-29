@@ -35,6 +35,22 @@ _GROUND_STATE_JOINT_IDS_ATTR = "_microduck_ground_state_joint_ids"
 _ROULADE_STATE_ATTR = "_microduck_roulade_state"
 """Attribute the forward-roll bookkeeping is cached under on the environment."""
 
+_CROUCH_PITCH_JITTER = math.radians(10.0)
+"""Half-width [rad] of the pitch noise added to a crouch spawn's depth-scaled forward lean.
+
+Upstream hardcodes it (addendum section 3.4, ``set_random_crouch_state``); it is named here rather
+than left as a literal, but it is not a parameter, because it is not a knob upstream exposes.
+"""
+
+_CROUCH_PITCH_MIN = math.radians(5.0)
+"""Floor [rad] on a crouch spawn's forward lean, so the shallowest draw is still leaning."""
+
+_CROUCH_ROLL_MAX = math.radians(8.0)
+"""Half-width [rad] of the roll noise on a crouch spawn, so no episode starts perfectly sagittal."""
+
+_CROUCH_Z_MARGIN = 0.01
+"""Upward margin [m] added to a crouch spawn's height so it settles onto the floor rather than through it."""
+
 
 def encoder_bias(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """The per-environment, per-joint encoder bias [rad] of an articulation.
@@ -194,16 +210,22 @@ def reset_ground_state(
     face_up_prob: float,
     sitting_prob: float,
     standing_prob: float,
+    crouch_prob: float = 0.0,
     prone_z_range: tuple[float, float] | None = None,
     sitting_z_range: tuple[float, float] | None = None,
     standing_z_range: tuple[float, float] | None = None,
+    crouch_z_range: tuple[float, float] | None = None,
     sitting_joint_pos: Mapping[str, float] | None = None,
     sitting_joint_noise_std: float = 0.0,
     sitting_tilt_max: float = 0.0,
     face_up_roll_max: float = 0.0,
+    crouch_joint_pos: Mapping[str, float] | None = None,
+    crouch_depth_range: tuple[float, float] = (0.0, 1.0),
+    crouch_pitch_max: float = 0.0,
+    crouch_joint_noise: float = 0.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> None:
-    """Reset an articulation into one of four ground poses: face-down, face-up, sitting or standing.
+    """Reset an articulation into a named ground pose: face-down, face-up, sitting, standing or crouching.
 
     Ported from addendum section 3.4 (``set_random_ground_state``). This single event *is* the
     stand-up task's episode distribution: which pose an episode starts from decides which skill it
@@ -212,7 +234,7 @@ def reset_ground_state(
     :func:`isaaclab.envs.mdp.reset_root_state_uniform` samples one continuous band, not a mixture of
     named keyframes with a matching joint pose.
 
-    The four buckets:
+    The five buckets:
 
     * **face-down** -- the trunk pitched +90 degrees, belly to the floor, at a random yaw.
     * **face-up** -- pitched -90 degrees, back to the floor, then rolled by up to
@@ -225,9 +247,16 @@ def reset_ground_state(
       not survive the real hand-off.
     * **standing** -- the same orientation sampler as sitting but at standing height and with the
       joints left at the stand pose, so the policy also learns to *hold* a stand.
+    * **crouching** -- a *continuum* rather than a keyframe (addendum section 3.4,
+      ``set_random_crouch_state``). One depth draw per environment leans the trunk forward, lowers
+      it and folds the legs toward :attr:`crouch_joint_pos` together, so the bucket seeds resets
+      **across** the crouch-to-stand stretch rather than at one point on it. That stretch is the
+      last mile of a recovery, and a task that only reaches it at the tail of a rare good rollout
+      collects almost no data there -- upstream added the bucket after measuring policies that
+      recovered as far as the crouch and parked.
 
-    The probabilities are normalized and need not sum to one. Only the sitting bucket touches the
-    joints; the other three keep whatever the joint reset wrote.
+    The probabilities are normalized and need not sum to one. Only the sitting and crouching buckets
+    touch the joints; the other three keep whatever the joint reset wrote.
 
     This term overwrites the root height and orientation, so it must run **after** any root reset it
     shares an episode with, and that reset's horizontal spread is what survives. Isaac Lab fires
@@ -240,38 +269,56 @@ def reset_ground_state(
         face_up_prob: Relative probability of the face-up bucket.
         sitting_prob: Relative probability of the sitting bucket.
         standing_prob: Relative probability of the standing bucket.
+        crouch_prob: Relative probability of the crouching bucket. Defaults to 0.0, which is what
+            the tasks with a fixed set of keyframes want.
         prone_z_range: Trunk height band [m] the two prone buckets spawn in, above the environment
             origin. Defaults to None, which is only allowed when both prone buckets are disabled.
         sitting_z_range: Trunk height band [m] the sitting bucket spawns in. Defaults to None, which
             is only allowed when that bucket is disabled.
         standing_z_range: Trunk height band [m] the standing bucket spawns in. Defaults to None,
             which is only allowed when that bucket is disabled.
+        crouch_z_range: Trunk height band [m] the crouching bucket **interpolates across**, ordered
+            ``(deepest, standing)``. Unlike the other three this is not sampled independently: the
+            same depth draw that folds the legs picks the height, so the pose stays self-consistent.
+            Defaults to None, which is only allowed when that bucket is disabled.
         sitting_joint_pos: Joint name to angle [rad] the sitting bucket folds its legs into. Joints
             left out of it stay at the stand pose, which is how the neck and head are handled.
             Defaults to None, which is only allowed when that bucket is disabled.
-        sitting_joint_noise_std: Standard deviation [rad] of the zero-mean noise added to *every*
-            joint selected by :attr:`asset_cfg` in the sitting bucket, on top of the overrides.
-            Defaults to 0.0, which writes the keyframe exactly.
+        sitting_joint_noise_std: Standard deviation [rad] of the zero-mean **Gaussian** noise added
+            to *every* joint selected by :attr:`asset_cfg` in the sitting bucket, on top of the
+            overrides. Defaults to 0.0, which writes the keyframe exactly.
         sitting_tilt_max: Bound [rad] on the uniform pitch and roll the sitting and standing buckets
             are tilted by. Defaults to 0.0, which spawns them exactly upright.
         face_up_roll_max: Bound [rad] on the uniform roll about the body long axis applied to the
             face-up bucket. Defaults to 0.0, which spawns it flat on its back.
-        asset_cfg: The articulation to reset, and the joints the sitting noise reaches. Selecting
-            them by name reproduces upstream's exclusion of passive joints, which are not part of
-            any keyframe.
+        crouch_joint_pos: Joint name to angle [rad] of the *deepest* crouch, which the crouching
+            bucket lerps toward by its depth draw. Defaults to None, which is only allowed when that
+            bucket is disabled.
+        crouch_depth_range: Bounds [-] on the per-environment depth draw, 0 being the stand pose and
+            1 being :attr:`crouch_joint_pos` at the bottom of :attr:`crouch_z_range`. Defaults to
+            ``(0.0, 1.0)``, the whole stretch.
+        crouch_pitch_max: Forward trunk lean [rad] at full depth, before the fixed jitter and floor.
+            Defaults to 0.0, which leaves only the jitter.
+        crouch_joint_noise: Half-width [rad] of the zero-mean **uniform** noise added to every joint
+            selected by :attr:`asset_cfg` in the crouching bucket, on top of the lerp. Upstream uses
+            a uniform draw here and a Gaussian one for the sitting bucket; both are reproduced.
+            Defaults to 0.0.
+        asset_cfg: The articulation to reset, and the joints the sitting and crouching noise reach.
+            Selecting them by name reproduces upstream's exclusion of passive joints, which are not
+            part of any keyframe.
 
     Raises:
-        ValueError: If the four probabilities do not sum to a positive number, or if a bucket with a
+        ValueError: If the five probabilities do not sum to a positive number, or if a bucket with a
             positive probability is missing the parameters it spawns from.
     """
-    total = face_down_prob + face_up_prob + sitting_prob + standing_prob
+    total = face_down_prob + face_up_prob + sitting_prob + standing_prob + crouch_prob
     if total <= 0.0:
         raise ValueError(
             "'reset_ground_state' needs at least one bucket with a positive probability. Received"
             f" face_down={face_down_prob}, face_up={face_up_prob}, sitting={sitting_prob},"
-            f" standing={standing_prob}."
+            f" standing={standing_prob}, crouch={crouch_prob}."
         )
-    # A task that uses only some of the four buckets configures only their parameters: the ball-kick
+    # A task that uses only some of the five buckets configures only their parameters: the ball-kick
     # task, for instance, is standing-only and has no seated keyframe to name. Leaving a *live*
     # bucket's parameters out is a configuration error rather than a default, so it is caught here
     # rather than sampled from a fallback band the task never chose.
@@ -279,6 +326,7 @@ def reset_ground_state(
         (face_down_prob + face_up_prob, prone_z_range is None, "prone_z_range"),
         (sitting_prob, sitting_z_range is None or sitting_joint_pos is None, "sitting_z_range/sitting_joint_pos"),
         (standing_prob, standing_z_range is None, "standing_z_range"),
+        (crouch_prob, crouch_z_range is None or crouch_joint_pos is None, "crouch_z_range/crouch_joint_pos"),
     ):
         if probability > 0.0 and missing:
             raise ValueError(
@@ -299,7 +347,14 @@ def reset_ground_state(
     bucket = torch.rand(num_resets, device=env.device) * total
     is_face_up = (bucket >= face_down_prob) & (bucket < face_down_prob + face_up_prob)
     is_sitting = (bucket >= face_down_prob + face_up_prob) & (bucket < face_down_prob + face_up_prob + sitting_prob)
-    is_standing = bucket >= face_down_prob + face_up_prob + sitting_prob
+    is_standing = (bucket >= face_down_prob + face_up_prob + sitting_prob) & (
+        bucket < face_down_prob + face_up_prob + sitting_prob + standing_prob
+    )
+    is_crouching = bucket >= face_down_prob + face_up_prob + sitting_prob + standing_prob
+
+    # One depth draw per environment, shared by the crouching bucket's lean, height and leg fold, so
+    # the three cannot disagree about how deep the crouch is.
+    depth = torch.empty(num_resets, device=env.device).uniform_(*crouch_depth_range)
 
     # orientation. The yaw is shared by all four buckets, so an episode's heading does not correlate
     # with the pose it starts from.
@@ -318,9 +373,17 @@ def reset_ground_state(
         upright_quat = quat_from_euler_xyz(tilt[:, 1], tilt[:, 0], yaw)
     else:
         upright_quat = quat_from_euler_xyz(zeros, zeros, yaw)
+    # The crouch leans forward in proportion to its depth. The floor keeps even the shallowest draw
+    # leaning, because the basin this bucket seeds is a *forward* crouch whichever way the fall came.
+    crouch_pitch = depth * crouch_pitch_max
+    crouch_pitch = crouch_pitch + (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * _CROUCH_PITCH_JITTER
+    crouch_pitch = torch.clamp(crouch_pitch, min=_CROUCH_PITCH_MIN)
+    crouch_roll = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * _CROUCH_ROLL_MAX
+    crouch_quat = quat_from_euler_xyz(crouch_roll, crouch_pitch, yaw)
 
     quat = torch.where(is_face_up.unsqueeze(-1), face_up_quat, face_down_quat)
     quat = torch.where((is_sitting | is_standing).unsqueeze(-1), upright_quat, quat)
+    quat = torch.where(is_crouching.unsqueeze(-1), crouch_quat, quat)
 
     # Height, drawn per bucket. An unconfigured band belongs to a bucket with zero probability --
     # the validation above is what guarantees that -- so the branch it fills selects nothing.
@@ -332,6 +395,11 @@ def reset_ground_state(
     height = _uniform(prone_z_range)
     height = torch.where(is_sitting, _uniform(sitting_z_range), height)
     height = torch.where(is_standing, _uniform(standing_z_range), height)
+    if crouch_z_range is not None:
+        deepest, standing = crouch_z_range
+        crouch_height = standing + depth * (deepest - standing)
+        crouch_height = crouch_height + torch.rand(num_resets, device=env.device) * _CROUCH_Z_MARGIN
+        height = torch.where(is_crouching, crouch_height, height)
 
     # The horizontal position is left alone: it is what an earlier root reset spread out. ``cat``
     # already allocates, so the assignments below cannot reach the articulation's own buffers.
@@ -344,18 +412,33 @@ def reset_ground_state(
     )
 
     sitting_env_ids = env_ids[is_sitting]
-    if len(sitting_env_ids) == 0:
-        return
-    joint_pos = asset.data.default_joint_pos.torch[sitting_env_ids].clone()
-    override_ids = _keyframe_joint_ids(env, asset, tuple(sitting_joint_pos))
-    angles = torch.tensor(list(sitting_joint_pos.values()), device=env.device)
-    joint_pos[:, override_ids] = angles
-    if sitting_joint_noise_std > 0.0:
-        noise = torch.randn(len(sitting_env_ids), len(joint_pos[0, asset_cfg.joint_ids]), device=env.device)
-        joint_pos[:, asset_cfg.joint_ids] += noise * sitting_joint_noise_std
-    asset.write_joint_state_to_sim_index(
-        position=joint_pos, velocity=torch.zeros_like(joint_pos), env_ids=sitting_env_ids
-    )
+    if len(sitting_env_ids) > 0:
+        joint_pos = asset.data.default_joint_pos.torch[sitting_env_ids].clone()
+        override_ids = _keyframe_joint_ids(env, asset, tuple(sitting_joint_pos))
+        angles = torch.tensor(list(sitting_joint_pos.values()), device=env.device)
+        joint_pos[:, override_ids] = angles
+        if sitting_joint_noise_std > 0.0:
+            noise = torch.randn(len(sitting_env_ids), len(joint_pos[0, asset_cfg.joint_ids]), device=env.device)
+            joint_pos[:, asset_cfg.joint_ids] += noise * sitting_joint_noise_std
+        asset.write_joint_state_to_sim_index(
+            position=joint_pos, velocity=torch.zeros_like(joint_pos), env_ids=sitting_env_ids
+        )
+
+    crouching_env_ids = env_ids[is_crouching]
+    if len(crouching_env_ids) > 0:
+        # lerped from the stand pose rather than from the live one: the crouch is a fraction of the
+        # way from standing to the anchor, and the joint reset has just written the stand pose anyway
+        joint_pos = asset.data.default_joint_pos.torch[crouching_env_ids].clone()
+        anchor_ids = _keyframe_joint_ids(env, asset, tuple(crouch_joint_pos))
+        angles = torch.tensor(list(crouch_joint_pos.values()), device=env.device)
+        blend = depth[is_crouching].unsqueeze(-1)
+        joint_pos[:, anchor_ids] += blend * (angles - joint_pos[:, anchor_ids])
+        if crouch_joint_noise > 0.0:
+            noise = torch.rand(len(crouching_env_ids), len(joint_pos[0, asset_cfg.joint_ids]), device=env.device)
+            joint_pos[:, asset_cfg.joint_ids] += (noise * 2.0 - 1.0) * crouch_joint_noise
+        asset.write_joint_state_to_sim_index(
+            position=joint_pos, velocity=torch.zeros_like(joint_pos), env_ids=crouching_env_ids
+        )
 
 
 class RouladeRollState:

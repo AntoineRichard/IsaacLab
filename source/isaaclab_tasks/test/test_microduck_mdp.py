@@ -1200,3 +1200,34 @@ def test_the_ground_state_reset_refuses_a_live_bucket_it_cannot_spawn(probabilit
 
     with pytest.raises(ValueError, match=missing.replace("/", ".")):
         mdp.reset_ground_state(cast("ManagerBasedEnv", env), env_ids=None, **buckets)
+
+
+##
+# Ground-state reset: the crouching bucket
+##
+
+
+CROUCH_ANCHOR = {
+    "left_hip_pitch": -1.15,
+    "left_knee": 1.25,
+    "left_ankle": 1.05,
+    "right_hip_pitch": 1.15,
+    "right_knee": -1.25,
+    "right_ankle": -1.05,
+}
+"""Upstream's deep-crouch anchor (addendum section 3.4, ``_CROUCH_ANCHOR_BY_NAME``)."""
+
+
+def test_the_ground_state_reset_refuses_a_live_crouch_bucket_it_cannot_spawn():
+    """The crouching bucket needs both the height band it interpolates and the pose it folds toward."""
+    env = _DummyEnv(num_envs=2)
+    buckets = {
+        "face_down_prob": 0.0,
+        "face_up_prob": 0.0,
+        "sitting_prob": 0.0,
+        "standing_prob": 0.0,
+        "crouch_prob": 1.0,
+    }
+
+    with pytest.raises(ValueError, match="crouch_z_range.crouch_joint_pos"):
+        mdp.reset_ground_state(cast("ManagerBasedEnv", env), env_ids=None, **buckets)
