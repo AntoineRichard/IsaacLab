@@ -36,6 +36,17 @@ gym.register(
 )
 
 gym.register(
+    id="IsaacContrib-Velocity-Swizzle-MicroDuck",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.swizzle_env_cfg:MicroDuckVelocitySwizzleEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:MicroDuckSwizzlePPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
+gym.register(
     id="IsaacContrib-Velocity-Rough-MicroDuck",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,

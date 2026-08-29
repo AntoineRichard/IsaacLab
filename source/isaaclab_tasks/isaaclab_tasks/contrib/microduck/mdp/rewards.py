@@ -2878,6 +2878,93 @@ class heading_hold_reward(ManagerTermBase):
 
 
 ##
+# Swizzle kernels.
+##
+
+
+def leg_symmetry_reward(
+    env: ManagerBasedRLEnv, left_joint_cfg: SceneEntityCfg, right_joint_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Reward the two legs mirroring each other, which is the swizzle's defining symmetry.
+
+    Ported from addendum section 7.1 (``leg_symmetry_reward``). The classic swizzle is a two-footed
+    hourglass stroke in which both blades stay down and the legs open and close together, so the
+    gait is *defined* by left and right doing the same thing at the same time -- the exact behaviour
+    the stride recipe's ``single_support`` and ``gait_symmetry`` terms exist to suppress. There is no
+    stock counterpart.
+
+    The condition is ``q_left + q_right ~= 0``, not ``q_left ~= q_right``, because the model uses
+    mirrored left/right sign conventions: a symmetric pose reads as equal and opposite joint angles.
+    Compare :func:`leg_antisymmetry`, the spin task's term, which asks for the other one.
+
+    Args:
+        env: The environment instance.
+        left_joint_cfg: The articulation and the left-leg joints, in the order they pair up.
+        right_joint_cfg: The articulation and the right-leg joints, in the matching order.
+
+    Returns:
+        The reward in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[left_joint_cfg.name]
+    joint_pos = asset.data.joint_pos.torch
+    residual = joint_pos[:, left_joint_cfg.joint_ids] + joint_pos[:, right_joint_cfg.joint_ids]
+    return -torch.abs(residual).mean(dim=-1)
+
+
+def grounded_reward(
+    env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, command_name: str, bodies_per_foot: int = 1
+) -> torch.Tensor:
+    """Reward keeping both blades on the ground, in proportion to the commanded throttle magnitude.
+
+    Ported from addendum section 7.1 (``grounded_reward``). It is the sign-flipped counterpart of
+    :func:`single_support_reward`: the stride recipe charges double support as the degenerate
+    swizzle, and this task pays for it, because the swizzle *is* the gait being trained.
+
+    The scale is ``|cmd_x|`` rather than ``clamp(cmd_x, min=0)``, so it shapes the push in either
+    direction -- this task's throttle range is symmetric.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The contact sensor and the bodies to read, in per-foot order.
+        command_name: Name of the velocity command term whose first column is the throttle.
+        bodies_per_foot: Contact bodies making up one foot. Defaults to 1.
+
+    Returns:
+        The reward in ``[0, |cmd_x|]``. Shape is (num_envs,).
+    """
+    grounded = (_feet_in_contact(env, sensor_cfg, bodies_per_foot) >= 2.0).float()
+    return grounded * torch.abs(env.command_manager.get_command(command_name)[:, 0])
+
+
+def heading_tracking_reward(env: ManagerBasedRLEnv, command_name: str, std: float) -> torch.Tensor:
+    """Reward driving the commanded heading error to zero.
+
+    Ported from addendum section 7.3 (``heading_tracking_reward``). The yaw slot of
+    :class:`~isaaclab_tasks.contrib.microduck.mdp.commands.RelativeHeadingVelocityCommand` already
+    *is* the wrapped error between the robot's heading and a per-resample target, clamped to the
+    configured yaw range, so this term is a plain Gaussian on that slot and needs no state of its
+    own. The stock :func:`isaaclab.envs.mdp.heading_command_error_abs` reads a heading *target*
+    column, which this command does not have.
+
+    Note:
+        This term and :func:`heading_hold_reward` are in genuine tension while both weights are
+        non-zero -- one pays for holding the spawn heading and the other for leaving it -- which is
+        why the task hands over between them with a pair of crossing curricula rather than enabling
+        both outright (addendum section 13.14).
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the relative-heading command term whose third column is the error.
+        std: Width [rad] of the Gaussian on the heading error.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    heading_error = env.command_manager.get_command(command_name)[:, 2]
+    return torch.exp(-torch.square(heading_error) / std**2)
+
+
+##
 # Ball-kick kernels.
 ##
 
