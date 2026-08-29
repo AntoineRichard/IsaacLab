@@ -1,0 +1,78 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# Builds the UPSTREAM MicroDuck baseline image: pollen-robotics/microduck_rl on
+# mjlab / MuJoCo-Warp. These runs are the other half of the two-way sim2sim
+# comparison, so nothing in this image may come from this repository -- the
+# source is fetched from upstream's own git at a pinned commit and installed
+# through upstream's own `uv sync`.
+#
+# The kaniko build context is this repository (that is what the OSMO build
+# workflow points at), but nothing is copied from it. Only this file is used.
+#
+# The CUDA minor version tracks what upstream's torch wheel expects: on x86_64
+# they leave torch on PyPI, whose 2.9.1 wheel bundles its own CUDA 12 runtime
+# through the nvidia-*-cu12 dependencies.
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_CACHE_DIR=/opt/uv-cache
+ENV PATH=/root/.local/bin:$PATH
+
+# mujoco and mjlab's viewer reach libGL through the usual loaders. Training is
+# headless, but the ONNX export path constructs an environment and can touch
+# them, and a missing loader surfaces as a confusing pyglet error rather than as
+# a missing library.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git \
+        libgl1 libegl1 libopengl0 libxt6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv manages its own interpreter; upstream requires >=3.12,<3.13.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# The pin, not a branch. Our ports are gated against this commit, so a baseline
+# trained against anything else would not be comparable. Passed as a build arg
+# so the OSMO build workflow is the single place the pin is written, and
+# asserted immediately so a moved ref fails here rather than at comparison time.
+ARG MICRODUCK_RL_COMMIT
+RUN test -n "$MICRODUCK_RL_COMMIT" \
+    && git clone https://github.com/pollen-robotics/microduck_rl.git /workspace/microduck_rl \
+    && cd /workspace/microduck_rl \
+    && git checkout --detach "$MICRODUCK_RL_COMMIT" \
+    && test "$(git rev-parse HEAD)" = "$MICRODUCK_RL_COMMIT"
+
+WORKDIR /workspace/microduck_rl
+
+# Large wheels (torch, the CUDA runtime libraries) routinely stall past the 30s
+# default without the transfer being dead.
+ENV UV_HTTP_TIMEOUT=180
+
+# Upstream's own install path and their committed uv.lock, so the baseline runs
+# the dependency set they pinned -- including the `better-actuator-models` git
+# dependency, which the lock resolves to a fixed commit despite naming a branch.
+RUN uv sync --frozen && rm -rf "$UV_CACHE_DIR"
+
+# Fail the build if the registry does not carry the tasks the baseline fleet
+# needs. Importing the package is what performs registration, so this also
+# proves the environment imports at all -- cheaper to learn here than inside a
+# GPU pod twenty minutes into a queue. Mjlab-RollerStandUp-Flat-MicroDuck is
+# deliberately absent: it raises IndexError at this pin and is not attempted.
+RUN uv run --no-sync python -c "\
+import mjlab_microduck.tasks;\
+from mjlab.tasks.registry import list_tasks;\
+have = set(list_tasks());\
+want = {\
+ 'Mjlab-Velocity-Flat-MicroDuck',\
+ 'Mjlab-Velocity-Rough-MicroDuck',\
+ 'Mjlab-Velocity-Flat-MicroDuck-Rollers',\
+ 'Mjlab-StandUp-Flat-MicroDuck',\
+ 'Mjlab-Roulade-Flat-MicroDuck',\
+ 'Mjlab-BallKick-Flat-MicroDuck',\
+ 'Mjlab-VelStand-Flat-MicroDuck',\
+};\
+missing = sorted(want - have);\
+assert not missing, 'missing upstream tasks at this pin: %s' % missing;\
+print('upstream registry OK, %d tasks, all %d baseline tasks present' % (len(have), len(want)))"
