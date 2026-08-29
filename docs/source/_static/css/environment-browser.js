@@ -60,6 +60,7 @@
             ["IsaacContrib-Assemble-Trocar-G129-Dex3", "rlinf", "", "", "", {}, "tasks/manipulation/g1_assemble_trocar.jpg"],
             ["IsaacContrib-AutoMate-Assembly-Direct", "rl_games", "", "", "", {}, "tasks/automate/00004.jpg"],
             ["IsaacContrib-AutoMate-Disassembly-Direct", "rl_games", "", "", "", {}, "tasks/automate/01053_disassembly.jpg"],
+            ["IsaacContrib-BallKick-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Cartpole-Camera-Showcase-Direct", "skrl", "", "", "box_box,box_discrete,box_multidiscrete,dict_box,dict_discrete,dict_multidiscrete,tuple_box,tuple_discrete,tuple_multidiscrete", {"skrl_box_box_cfg_entry_point": ["box_box"], "skrl_box_discrete_cfg_entry_point": ["box_discrete"], "skrl_box_multidiscrete_cfg_entry_point": ["box_multidiscrete"], "skrl_cfg_entry_point": ["box_box"], "skrl_dict_box_cfg_entry_point": ["dict_box"], "skrl_dict_discrete_cfg_entry_point": ["dict_discrete"], "skrl_dict_multidiscrete_cfg_entry_point": ["dict_multidiscrete"], "skrl_tuple_box_cfg_entry_point": ["tuple_box"], "skrl_tuple_discrete_cfg_entry_point": ["tuple_discrete"], "skrl_tuple_multidiscrete_cfg_entry_point": ["tuple_multidiscrete"]}],
             ["IsaacContrib-Cartpole-Showcase-Direct", "skrl", "isaacsim_physx,newton_kamino,newton_mjwarp,ovphysx", "", "box_box,box_discrete,box_multidiscrete,dict_box,dict_discrete,dict_multidiscrete,discrete_box,discrete_discrete,discrete_multidiscrete,multidiscrete_box,multidiscrete_discrete,multidiscrete_multidiscrete,tuple_box,tuple_discrete,tuple_multidiscrete", {"skrl_box_box_cfg_entry_point": ["box_box"], "skrl_box_discrete_cfg_entry_point": ["box_discrete"], "skrl_box_multidiscrete_cfg_entry_point": ["box_multidiscrete"], "skrl_cfg_entry_point": ["box_box"], "skrl_dict_box_cfg_entry_point": ["dict_box"], "skrl_dict_discrete_cfg_entry_point": ["dict_discrete"], "skrl_dict_multidiscrete_cfg_entry_point": ["dict_multidiscrete"], "skrl_discrete_box_cfg_entry_point": ["discrete_box"], "skrl_discrete_discrete_cfg_entry_point": ["discrete_discrete"], "skrl_discrete_multidiscrete_cfg_entry_point": ["discrete_multidiscrete"], "skrl_multidiscrete_box_cfg_entry_point": ["multidiscrete_box"], "skrl_multidiscrete_discrete_cfg_entry_point": ["multidiscrete_discrete"], "skrl_multidiscrete_multidiscrete_cfg_entry_point": ["multidiscrete_multidiscrete"], "skrl_tuple_box_cfg_entry_point": ["tuple_box"], "skrl_tuple_discrete_cfg_entry_point": ["tuple_discrete"], "skrl_tuple_multidiscrete_cfg_entry_point": ["tuple_multidiscrete"]}],
             ["IsaacContrib-Deploy-GearAssembly-Rizon4s-Grav", "rsl_rl", "", "", ""],
@@ -83,6 +84,7 @@
             ["IsaacContrib-Forge-NutThread-Direct", "rl_games", "", "", "", {}, "tasks/factory/nut_thread.jpg"],
             ["IsaacContrib-Forge-PegInsert-Direct", "rl_games", "", "", "", {}, "tasks/factory/peg_insert.jpg"],
             ["IsaacContrib-Franka-Pour", "rsl_rl", "", "", "", {}, "tasks/manipulation/franka_pour.jpg"],
+            ["IsaacContrib-GroundPick-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Humanoid-AMP-Dance-Direct", "skrl", "", "", "", {}, "tasks/others/humanoid_amp.jpg"],
             ["IsaacContrib-Humanoid-AMP-Run-Direct", "skrl", "", "", "", {}, "tasks/others/humanoid_amp.jpg"],
             ["IsaacContrib-Humanoid-AMP-Walk-Direct", "skrl", "", "", "", {}, "tasks/others/humanoid_amp.jpg"],
@@ -108,7 +110,11 @@
             ["IsaacContrib-Reach-OpenArmBi", "rl_games,rsl_rl", "", "", "", {}, "tasks/manipulation/openarm_bi_reach.jpg"],
             ["IsaacContrib-Reorient-Cube-Shadow-OpenAI-FF-Direct", "rl_games,rsl_rl,skrl", "isaacsim_physx,newton_mjwarp,ovphysx", "", "", {}, "tasks/manipulation/shadow_cube.jpg"],
             ["IsaacContrib-Reorient-Cube-Shadow-OpenAI-LSTM-Direct", "rl_games,rsl_rl", "isaacsim_physx,newton_mjwarp,ovphysx", "", "", {}, "tasks/manipulation/shadow_cube.jpg"],
+            ["IsaacContrib-RollerCrouch-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-RollerStandUp-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Roulade-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-SitStand-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-Spin-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Stack-Cube-Bin-Franka-IK-Rel-Mimic", "", "isaacsim_physx,newton_mjwarp", "", ""],
             ["IsaacContrib-Stack-Cube-BlueGreen-Franka-IK-Rel", "", "isaacsim_physx,newton_mjwarp", "", ""],
             ["IsaacContrib-Stack-Cube-BlueGreenRed-Franka-IK-Rel", "", "isaacsim_physx,newton_mjwarp", "", ""],
@@ -137,6 +143,7 @@
             ["IsaacContrib-TrackPositionNoObstacles-ARL-Robot-1", "rl_games,rsl_rl,skrl", "", "", "", {}, "tasks/drone_arl/arl_robot_1_track_position_state_based.jpg"],
             ["IsaacContrib-Tracking-LocoManip-Digit", "rsl_rl", "isaacsim_physx", "", "", {}, "tasks/locomotion/agility_digit_loco_manip.jpg"],
             ["IsaacContrib-UR10-Particle-Push", "rsl_rl", "", "", "", {}, "tasks/manipulation/ur10_particle_push.jpg"],
+            ["IsaacContrib-VelStand-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Velocity-Flat-AnymalB", "rsl_rl,skrl", "isaacsim_physx,newton_kamino,newton_mjwarp,ovphysx", "", "", {}, "tasks/locomotion/anymal_b_flat.jpg", true],
             ["IsaacContrib-Velocity-Flat-AnymalC-Direct", "rl_games,rsl_rl,skrl", "", "", "", {}, "tasks/locomotion/anymal_c_flat.jpg"],
             ["IsaacContrib-Velocity-Flat-AnymalC", "rl_games,rsl_rl,skrl", "isaacsim_physx,newton_kamino,newton_mjwarp,ovphysx", "", "", {}, "tasks/locomotion/anymal_c_flat.jpg", true],
@@ -153,6 +160,7 @@
             ["IsaacContrib-Velocity-Rough-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Velocity-Rough-UnitreeA1", "rsl_rl,skrl,sb3", "isaacsim_physx,newton_mjwarp,ovphysx", "", "", {}, "tasks/locomotion/a1_rough.jpg"],
             ["IsaacContrib-Velocity-Rough-UnitreeGo1", "rsl_rl,skrl", "isaacsim_physx,newton_mjwarp,ovphysx", "", "", {}, "tasks/locomotion/go1_rough.jpg"],
+            ["IsaacContrib-Velocity-Swizzle-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
         ];
         // END-AUTO-GENERATED: environment-browser-task-rows
 
