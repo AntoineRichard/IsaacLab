@@ -1707,3 +1707,107 @@ def test_heading_hold_reward_anchors_on_the_first_step_of_an_episode():
     torch.testing.assert_close(term(at_pi.as_env(), **cfg.params), torch.tensor([1.0]))
     just_past = _roller_env(heading=-math.pi + 0.4)
     torch.testing.assert_close(term(just_past.as_env(), **cfg.params), torch.tensor([math.exp(-1.0)]))
+
+
+##
+# Ball kick (addendum section 6.3)
+##
+
+
+def _ball_kick_env(velocity_xy: list[list[float]], kick_direction: list[list[float]] | None = None) -> _DummyEnv:
+    """An environment double holding a moving ball and, optionally, a frozen kick direction."""
+    ball = _DummyAsset(root_link_lin_vel_w=torch.tensor([[vx, vy, 0.0] for vx, vy in velocity_xy]))
+    env = _DummyEnv(num_envs=len(velocity_xy), assets={"ball": ball})
+    if kick_direction is not None:
+        mdp.ball_kick_direction(env.as_env())[:] = torch.tensor(kick_direction)
+    return env
+
+
+def test_ball_kick_direction_points_forward_before_the_first_reset():
+    """Upstream allocates the direction lazily at ``+x``; nothing else writes it until a reset."""
+    env = _DummyEnv(num_envs=3)
+
+    direction = mdp.ball_kick_direction(env.as_env())
+
+    torch.testing.assert_close(direction, torch.tensor([[1.0, 0.0]]).expand(3, 2).contiguous())
+    # the same tensor on every call: the two kick rewards and the reset event must share one object
+    assert mdp.ball_kick_direction(env.as_env()) is direction
+
+
+def test_ball_forward_velocity_pays_the_projection_onto_the_frozen_direction():
+    """Only the component along the episode's kick direction counts, and only up to the cap.
+
+    The direction here is 60 degrees off the world x axis, so a ball travelling straight down x is
+    worth ``cos(60 deg) = 0.5`` of its speed -- which a term reading the ball's *speed* would score
+    as 1.0 and a term reading its x component would score as 1.0 as well.
+    """
+    angle = math.radians(60.0)
+    direction = [[math.cos(angle), math.sin(angle)]] * 4
+    # at rest, straight along x, along the kick direction itself, and backwards along it
+    env = _ball_kick_env([[0.0, 0.0], [1.0, 0.0], [math.cos(angle), math.sin(angle)], [-1.0, 0.0]], direction)
+
+    reward = mdp.ball_forward_velocity(env.as_env(), max_speed=0.75, asset_cfg=_entity("ball"))
+
+    torch.testing.assert_close(reward, torch.tensor([0.0, 0.5, 0.75, 0.0]))
+
+
+def test_ball_speed_overshoot_penalty_opens_only_past_the_target_and_stops_at_the_clamp():
+    """The term returns a non-negative overshoot, so its configured weight is what makes it a cost."""
+    env = _ball_kick_env([[0.0, 0.0], [1.0, 0.0], [2.5, 0.0], [9.0, 0.0], [-3.0, 0.0]])
+
+    penalty = mdp.ball_speed_overshoot_penalty(
+        env.as_env(), target_speed=1.0, max_penalty=5.0, asset_cfg=_entity("ball")
+    )
+
+    torch.testing.assert_close(penalty, torch.tensor([0.0, 0.0, 1.5, 5.0, 0.0]))
+
+
+def test_the_kick_terms_survive_a_ball_the_solver_has_lost():
+    """Nothing in this task NaN-checks the ball, so both terms guard themselves.
+
+    Upstream's termination reads the robot only, so a diverged free body would otherwise poison the
+    whole reward sum for the rest of the episode rather than resetting the environment.
+
+    The third case is what decides where the guard has to sit: the velocity component *along* the
+    kick direction is perfectly finite, and the projection still comes out non-finite, because the
+    infinite lateral component meets a zero direction component. Guarding the along-direction input
+    rather than the projection would have missed it.
+    """
+    env = _ball_kick_env([[float("nan"), 0.0], [float("inf"), 0.0], [0.5, float("-inf")]])
+
+    reward = mdp.ball_forward_velocity(env.as_env(), max_speed=1.0, asset_cfg=_entity("ball"))
+    penalty = mdp.ball_speed_overshoot_penalty(
+        env.as_env(), target_speed=1.0, max_penalty=5.0, asset_cfg=_entity("ball")
+    )
+
+    assert torch.isfinite(reward).all()
+    assert torch.isfinite(penalty).all()
+    torch.testing.assert_close(reward, torch.zeros(3))
+    torch.testing.assert_close(penalty, torch.zeros(3))
+
+
+def test_single_foot_grounded_reward_reads_the_filtered_contact_rather_than_the_net_force():
+    """It answers "is this foot on the *floor*", which a net contact force cannot.
+
+    The double gives the support foot a partner force in one environment and none in the other,
+    which is the 0-or-1 flag upstream's ``found`` field reports.
+    """
+    force_matrix = torch.zeros(2, 1, 1, 3)
+    force_matrix[0, 0, 0, 2] = 12.0
+    sensor = _DummySensor(force_matrix_w=force_matrix)
+    env = _DummyEnv(num_envs=2, sensors={"support_foot_ground_contact": sensor})
+
+    reward = mdp.single_foot_grounded_reward(
+        env.as_env(), sensor_cfg=_entity("support_foot_ground_contact", body_ids=[0])
+    )
+
+    torch.testing.assert_close(reward, torch.tensor([1.0, 0.0]))
+
+
+def test_single_foot_grounded_reward_refuses_a_sensor_with_no_contact_partners():
+    """An unfiltered sensor resolves no force matrix, and a term reading zeros would look planted."""
+    sensor = _DummySensor(force_matrix_w=None)
+    env = _DummyEnv(num_envs=1, sensors={"support_foot_ground_contact": sensor})
+
+    with pytest.raises(RuntimeError, match="force matrix"):
+        mdp.single_foot_grounded_reward(env.as_env(), sensor_cfg=_entity("support_foot_ground_contact", body_ids=[0]))

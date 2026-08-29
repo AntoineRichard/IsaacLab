@@ -26,14 +26,14 @@ import torch
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.utils.buffers import CircularBuffer
-from isaaclab.utils.math import quat_apply, quat_from_angle_axis
+from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_from_angle_axis
 
 from .events import encoder_bias
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from isaaclab.assets import Articulation
+    from isaaclab.assets import Articulation, RigidObject
     from isaaclab.envs import ManagerBasedEnv
     from isaaclab.managers import ObservationTermCfg
     from isaaclab.sensors import ContactSensor
@@ -493,3 +493,67 @@ def foot_height_safe(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg) -> torch.T
     asset: Articulation = env.scene[asset_cfg.name]
     heights = asset.data.body_pos_w.torch[:, asset_cfg.body_ids, 2]
     return _finite(heights - env.scene.env_origins[:, 2].unsqueeze(-1))
+
+
+"""
+Ball state, for the ball-kick critic.
+"""
+
+
+def ball_pos_in_base(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Position of the ball relative to the robot base, in the base frame.
+
+    Ported from addendum section 6.4 (``ball_pos_in_base``). This is a **privileged** observation:
+    the deployed robot has no ball sensing at all, so it is written to the critic group only and the
+    actor stays blind to the ball. There is no stock counterpart -- the closest,
+    :func:`isaaclab.envs.mdp.object_pos_in_robot_root_frame`, resolves the robot through a different
+    entity convention and is written for the manipulation tasks.
+
+    The rotation is the full base orientation rather than a yaw-only one, as upstream's is, so a
+    tilted robot's reading tilts with it.
+
+    Both ball terms are guarded against non-finite reads where upstream's are not. Nothing in the
+    ball-kick task NaN-checks the ball -- its termination reads the robot only -- so a free body the
+    solver had ejected would otherwise reach the learner through these two terms and nothing else.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The rigid object to locate.
+        robot_cfg: The articulation whose root link frame the position is expressed in.
+
+    Returns:
+        The ball position [m] in the base frame. Shape is (num_envs, 3).
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    ball: RigidObject = env.scene[asset_cfg.name]
+    relative_pos_w = ball.data.root_link_pos_w.torch - robot.data.root_link_pos_w.torch
+    return _finite(quat_apply_inverse(robot.data.root_link_quat_w.torch, relative_pos_w))
+
+
+def ball_vel_in_base(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Linear velocity of the ball, in the robot base frame.
+
+    Ported from addendum section 6.4 (``ball_vel_in_base``). Privileged, for the same reason as
+    :func:`ball_pos_in_base`. Upstream rotates the ball's *world* velocity into the base frame
+    without subtracting the base's own velocity, so a robot walking toward a stationary ball reads a
+    zero ball velocity rather than a closing one; that is reproduced.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The rigid object whose linear velocity is read.
+        robot_cfg: The articulation whose root link frame the velocity is expressed in.
+
+    Returns:
+        The ball velocity [m/s] in the base frame. Shape is (num_envs, 3).
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    ball: RigidObject = env.scene[asset_cfg.name]
+    return _finite(quat_apply_inverse(robot.data.root_link_quat_w.torch, ball.data.root_link_lin_vel_w.torch))

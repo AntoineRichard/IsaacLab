@@ -88,6 +88,10 @@ class _DummyRobotData:
         self.joint_pos = _DummyTensorView(torch.zeros(num_envs, len(JOINT_NAMES), device=device))
         self.default_joint_pos = _DummyTensorView(torch.zeros(num_envs, len(JOINT_NAMES), device=device))
         self.body_pos_w = _DummyTensorView(torch.zeros(num_envs, len(BODY_NAMES), 3, device=device))
+        self.root_link_pos_w = _DummyTensorView(torch.zeros(num_envs, 3, device=device))
+        # Isaac Lab orders quaternions (x, y, z, w), so identity is the last column
+        identity = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device).expand(num_envs, 4)
+        self.root_link_quat_w = _DummyTensorView(identity.clone())
 
 
 class _DummyRobot:
@@ -1087,3 +1091,112 @@ def test_a_malformed_stage_table_is_rejected_rather_than_silently_misapplied(sta
 
     with pytest.raises(ValueError):
         _apply(env, mdp.reward_weight_stages, reward_name="action_rate_l2", weight_stages=stages)
+
+
+##
+# Ball state, for the ball-kick critic (addendum section 6.4)
+##
+
+
+class _DummyBallData:
+    """The free-body state the two privileged ball observations read."""
+
+    def __init__(self, position: torch.Tensor, velocity: torch.Tensor) -> None:
+        self.root_link_pos_w = _DummyTensorView(position)
+        self.root_link_lin_vel_w = _DummyTensorView(velocity)
+
+
+class _DummyBall:
+    def __init__(self, position: torch.Tensor, velocity: torch.Tensor) -> None:
+        self.data = _DummyBallData(position, velocity)
+
+
+def _ball_obs_env(
+    ball_pos: list[list[float]],
+    ball_vel: list[list[float]],
+    robot_pos: list[list[float]] | None = None,
+    yaw: float = 0.0,
+) -> _DummyEnv:
+    """An environment double holding a ball and a robot yawed by ``yaw`` [rad]."""
+    env = _DummyEnv(num_envs=len(ball_pos))
+    env.scene["ball"] = _DummyBall(torch.tensor(ball_pos), torch.tensor(ball_vel))
+    if robot_pos is not None:
+        env.scene["robot"].data.root_link_pos_w.torch[:] = torch.tensor(robot_pos)
+    half = yaw * 0.5
+    # (x, y, z, w) yaw rotation
+    env.scene["robot"].data.root_link_quat_w.torch[:] = torch.tensor([0.0, 0.0, math.sin(half), math.cos(half)])
+    return env
+
+
+def test_ball_pos_in_base_is_the_relative_position_rotated_into_the_base_frame():
+    """A ball straight ahead of a robot yawed 90 degrees sits on the base frame's ``-y`` axis.
+
+    Both halves matter and a term could get either one wrong on its own: subtracting the robot
+    position without rotating gives ``(1, 0, 0)``, and rotating without subtracting gives
+    ``(2, 1, 0)`` rotated.
+    """
+    env = _ball_obs_env(
+        ball_pos=[[3.0, 1.0, 0.035]], ball_vel=[[0.0, 0.0, 0.0]], robot_pos=[[2.0, 1.0, 0.115]], yaw=math.pi / 2.0
+    )
+
+    position = mdp.ball_pos_in_base(cast("ManagerBasedEnv", env), asset_cfg=SceneEntityCfg("ball"))
+
+    torch.testing.assert_close(position, torch.tensor([[0.0, -1.0, -0.08]]), atol=1e-6, rtol=0.0)
+
+
+def test_ball_vel_in_base_rotates_the_world_velocity_without_subtracting_the_robots_own():
+    """Upstream reads the ball's *world* velocity, so a robot walking at a still ball reads zero.
+
+    That is reproduced rather than corrected: the critic is trained against upstream's signal, and a
+    closing velocity would be a different observation with the same name.
+    """
+    env = _ball_obs_env(ball_pos=[[1.0, 0.0, 0.035]], ball_vel=[[0.6, 0.0, 0.0]], yaw=math.pi / 2.0)
+
+    velocity = mdp.ball_vel_in_base(cast("ManagerBasedEnv", env), asset_cfg=SceneEntityCfg("ball"))
+
+    torch.testing.assert_close(velocity, torch.tensor([[0.0, -0.6, 0.0]]), atol=1e-6, rtol=0.0)
+
+
+def test_the_ball_observations_survive_a_ball_the_solver_has_lost():
+    """Nothing in the ball-kick task NaN-checks the ball, so these two terms guard themselves."""
+    env = _ball_obs_env(ball_pos=[[float("nan"), 0.0, 0.0]], ball_vel=[[0.0, float("inf"), 0.0]])
+
+    position = mdp.ball_pos_in_base(cast("ManagerBasedEnv", env), asset_cfg=SceneEntityCfg("ball"))
+    velocity = mdp.ball_vel_in_base(cast("ManagerBasedEnv", env), asset_cfg=SceneEntityCfg("ball"))
+
+    assert torch.isfinite(position).all()
+    assert torch.isfinite(velocity).all()
+
+
+##
+# Ground-state reset: bucket parameters
+##
+
+
+@pytest.mark.parametrize(
+    "probabilities, missing",
+    [
+        ({"face_down_prob": 1.0}, "prone_z_range"),
+        ({"face_up_prob": 1.0}, "prone_z_range"),
+        ({"sitting_prob": 1.0}, "sitting_z_range/sitting_joint_pos"),
+        ({"standing_prob": 1.0}, "standing_z_range"),
+    ],
+)
+def test_the_ground_state_reset_refuses_a_live_bucket_it_cannot_spawn(probabilities, missing):
+    """A bucket that can be drawn must have the band and keyframe it spawns from.
+
+    The parameters are optional so that a standing-only task -- the ball kick -- does not have to
+    invent values for three buckets it never draws. That only stays safe while a *live* bucket
+    without them is an error rather than a silent fallback to some default band.
+    """
+    env = _DummyEnv(num_envs=2)
+    buckets = {
+        "face_down_prob": 0.0,
+        "face_up_prob": 0.0,
+        "sitting_prob": 0.0,
+        "standing_prob": 0.0,
+        **probabilities,
+    }
+
+    with pytest.raises(ValueError, match=missing.replace("/", ".")):
+        mdp.reset_ground_state(cast("ManagerBasedEnv", env), env_ids=None, **buckets)

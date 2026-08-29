@@ -23,16 +23,23 @@ nothing drives:
 The assets they spawn are converted from the upstream MJCFs and are generated rather than committed;
 see ``ATTRIBUTION.md`` next to :data:`MICRODUCK_USD_PATH` for their provenance and
 ``scripts/tools/convert_microduck.py`` for the conversion.
+
+One non-robot prop lives here too, next to the robots it is kicked by:
+:data:`MICRODUCK_BALL_CFG`, the 70 mm hollow ball of upstream's ball-kick task. It is authored
+directly rather than converted, because its MJCF is a single analytic sphere.
 """
 
 import copy
 import os
 
-from pxr import Usd
+from pxr import Gf, Usd, UsdPhysics
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg, BamMotorParams
 from isaaclab.assets.articulation import ArticulationCfg
+from isaaclab.assets.rigid_object import RigidObjectCfg
+from isaaclab.sim.spawners.materials import UsdPhysicsRigidBodyMaterialCfg
+from isaaclab.sim.utils import clone
 
 from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
 
@@ -355,4 +362,115 @@ else). Their home position is zero, which is the MJCF's, so they are not listed 
     or re-measures is one decision, taken once, at the task level. This configuration's job is to
     carry the MJCF faithfully; it deliberately does not guess at the answer by fixing one member of
     that group in isolation.
+"""
+
+
+##
+# Ball prop.
+#
+# Upstream's ball-kick task adds one free body to the scene, described by a 15-line MJCF
+# (``robot/microduck/ball.xml``) holding a single analytic sphere. There is nothing for the mesh
+# importer to carry, so it is authored here rather than converted -- which also means it needs no
+# generated asset and is available in a tree that has never run the converter.
+##
+
+MICRODUCK_BALL_RADIUS = 0.035
+"""Radius [m] of the ball prop: a 70 mm-diameter floorball, as upstream's MJCF comment describes."""
+
+MICRODUCK_BALL_MASS = 0.015
+"""Mass [kg] of the ball prop, 2.0 % of the 0.737 kg robot."""
+
+MICRODUCK_BALL_SLIDING_FRICTION = 0.5
+"""Sliding friction coefficient the ball's MJCF geom authors.
+
+It is the one contact coefficient upstream customizes; the torsional and rolling ones are left at
+MuJoCo's defaults of 0.005 and 1e-4, which are also Newton's shape defaults, so they are not
+restated here.
+
+**This coefficient is masked in every contact the ball actually makes**, on both stacks, and that is
+upstream's behaviour rather than a port artefact. MuJoCo -- and Newton's MuJoCo Warp solver, which
+reproduces the rule -- mixes contact friction as the element-wise *maximum* of the two shapes unless
+one carries a higher ``priority``. The ground plane, the robot's shells and the two soles all sit at
+1.0, so every ball contact resolves to 1.0 and this 0.5 never binds. It is carried anyway: it is
+what the MJCF authors, and a surface slipperier than the ball would use it.
+"""
+
+
+@clone
+def _spawn_microduck_ball(
+    prim_path: str,
+    cfg: sim_utils.SphereCfg,
+    translation: tuple[float, float, float] | None = None,
+    orientation: tuple[float, float, float, float] | None = None,
+    **kwargs,
+) -> Usd.Prim:
+    """Spawn the ball prop and give it the inertia of a hollow shell rather than of a solid sphere.
+
+    Upstream's MJCF states the ball's inertia outright -- ``diaginertia="1.225e-5 ..."``, which is
+    exactly ``(2/3) m r^2``, a thin spherical shell. Nothing derives that from the geometry: a
+    uniform-density sphere of the same mass and radius has ``(2/5) m r^2 = 7.35e-6``, 40 % less, and
+    that is what a sphere prim carrying only a mass resolves to. A ball 40 % easier to spin up rolls
+    and slides differently off the same kick, so the shell tensor is authored here.
+
+    The tensor is derived from the configuration's own mass and radius rather than restated as a
+    constant, so the three numbers cannot drift apart.
+
+    Args:
+        prim_path: Prim path or pattern to spawn the ball at.
+        cfg: Sphere spawner configuration. Its ``mass_props.mass`` is required.
+        translation: Translation w.r.t. the parent prim. Defaults to the origin.
+        orientation: Orientation as (w, x, y, z) w.r.t. the parent prim. Defaults to identity.
+        **kwargs: Forwarded to :func:`~isaaclab.sim.spawn_sphere`.
+
+    Returns:
+        The spawned prim.
+
+    Raises:
+        ValueError: If the configuration carries no explicit mass to derive the inertia from.
+    """
+    if cfg.mass_props is None or cfg.mass_props.mass is None:
+        raise ValueError(
+            "The MicroDuck ball spawns with an explicit hollow-shell inertia derived from its mass,"
+            f" so 'mass_props.mass' must be set. Received mass_props={cfg.mass_props}."
+        )
+    # ``spawn_sphere`` is itself clone-decorated, but this wrapper has already resolved the pattern
+    # down to a single path, so the inner decorator is inert and the inertia below is authored on
+    # the prototype prim the outer one copies into every environment.
+    prim = sim_utils.spawn_sphere(prim_path, cfg, translation, orientation, **kwargs)
+    inertia = 2.0 / 3.0 * cfg.mass_props.mass * cfg.radius**2
+    UsdPhysics.MassAPI.Apply(prim).CreateDiagonalInertiaAttr().Set(Gf.Vec3f(inertia, inertia, inertia))
+    return prim
+
+
+MICRODUCK_BALL_CFG = RigidObjectCfg(
+    spawn=sim_utils.SphereCfg(
+        func=_spawn_microduck_ball,
+        radius=MICRODUCK_BALL_RADIUS,
+        # solver-common schemas rather than the PhysX ones: the ball has no backend-specific
+        # property to set, and this task runs on MJWarp
+        rigid_props=sim_utils.RigidBodyBaseCfg(),
+        collision_props=sim_utils.CollisionBaseCfg(),
+        mass_props=sim_utils.MassPropertiesCfg(mass=MICRODUCK_BALL_MASS),
+        physics_material=UsdPhysicsRigidBodyMaterialCfg(
+            static_friction=MICRODUCK_BALL_SLIDING_FRICTION,
+            dynamic_friction=MICRODUCK_BALL_SLIDING_FRICTION,
+            # MuJoCo has no restitution coefficient -- its bounce comes out of the contact solver
+            # reference, which the MJCF leaves at the default. Zero is the matching UsdPhysics value.
+            restitution=0.0,
+        ),
+        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.55, 0.0)),
+    ),
+    init_state=RigidObjectCfg.InitialStateCfg(pos=(0.3, 0.0, MICRODUCK_BALL_RADIUS)),
+)
+"""Configuration for the ball prop of upstream's MicroDuck ball-kick task.
+
+A free-floating, non-articulated 70 mm / 15 g hollow plastic sphere -- a floorball -- resting on the
+ground 0.3 m in front of the robot. That initial position only decides where it sits before the
+first reset: the ball-kick task places it in front of the kicking foot every episode, in the robot's
+own yaw frame.
+
+The MJCF gives the geom no collision masks, so it collides with everything, and upstream applies
+none of the robot's collision editing to it. The mass, the radius and the sliding friction are the
+MJCF's; the inertia is a hollow shell rather than the solid sphere the geometry would imply, and is
+authored by :func:`_spawn_microduck_ball`.
 """

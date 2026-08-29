@@ -23,7 +23,7 @@ from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_from_eule
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from isaaclab.assets import Articulation
+    from isaaclab.assets import Articulation, RigidObject
     from isaaclab.envs import ManagerBasedEnv
 
 _ENCODER_BIAS_ATTR = "_microduck_encoder_bias"
@@ -194,10 +194,10 @@ def reset_ground_state(
     face_up_prob: float,
     sitting_prob: float,
     standing_prob: float,
-    prone_z_range: tuple[float, float],
-    sitting_z_range: tuple[float, float],
-    standing_z_range: tuple[float, float],
-    sitting_joint_pos: Mapping[str, float],
+    prone_z_range: tuple[float, float] | None = None,
+    sitting_z_range: tuple[float, float] | None = None,
+    standing_z_range: tuple[float, float] | None = None,
+    sitting_joint_pos: Mapping[str, float] | None = None,
     sitting_joint_noise_std: float = 0.0,
     sitting_tilt_max: float = 0.0,
     face_up_roll_max: float = 0.0,
@@ -241,11 +241,14 @@ def reset_ground_state(
         sitting_prob: Relative probability of the sitting bucket.
         standing_prob: Relative probability of the standing bucket.
         prone_z_range: Trunk height band [m] the two prone buckets spawn in, above the environment
-            origin.
-        sitting_z_range: Trunk height band [m] the sitting bucket spawns in.
-        standing_z_range: Trunk height band [m] the standing bucket spawns in.
+            origin. Defaults to None, which is only allowed when both prone buckets are disabled.
+        sitting_z_range: Trunk height band [m] the sitting bucket spawns in. Defaults to None, which
+            is only allowed when that bucket is disabled.
+        standing_z_range: Trunk height band [m] the standing bucket spawns in. Defaults to None,
+            which is only allowed when that bucket is disabled.
         sitting_joint_pos: Joint name to angle [rad] the sitting bucket folds its legs into. Joints
             left out of it stay at the stand pose, which is how the neck and head are handled.
+            Defaults to None, which is only allowed when that bucket is disabled.
         sitting_joint_noise_std: Standard deviation [rad] of the zero-mean noise added to *every*
             joint selected by :attr:`asset_cfg` in the sitting bucket, on top of the overrides.
             Defaults to 0.0, which writes the keyframe exactly.
@@ -258,7 +261,8 @@ def reset_ground_state(
             any keyframe.
 
     Raises:
-        ValueError: If the four probabilities do not sum to a positive number.
+        ValueError: If the four probabilities do not sum to a positive number, or if a bucket with a
+            positive probability is missing the parameters it spawns from.
     """
     total = face_down_prob + face_up_prob + sitting_prob + standing_prob
     if total <= 0.0:
@@ -267,6 +271,20 @@ def reset_ground_state(
             f" face_down={face_down_prob}, face_up={face_up_prob}, sitting={sitting_prob},"
             f" standing={standing_prob}."
         )
+    # A task that uses only some of the four buckets configures only their parameters: the ball-kick
+    # task, for instance, is standing-only and has no seated keyframe to name. Leaving a *live*
+    # bucket's parameters out is a configuration error rather than a default, so it is caught here
+    # rather than sampled from a fallback band the task never chose.
+    for probability, missing, names in (
+        (face_down_prob + face_up_prob, prone_z_range is None, "prone_z_range"),
+        (sitting_prob, sitting_z_range is None or sitting_joint_pos is None, "sitting_z_range/sitting_joint_pos"),
+        (standing_prob, standing_z_range is None, "standing_z_range"),
+    ):
+        if probability > 0.0 and missing:
+            raise ValueError(
+                f"'reset_ground_state' samples a bucket with probability {probability} whose"
+                f" '{names}' is not configured."
+            )
 
     asset: Articulation = env.scene[asset_cfg.name]
     if env_ids is None:
@@ -304,8 +322,11 @@ def reset_ground_state(
     quat = torch.where(is_face_up.unsqueeze(-1), face_up_quat, face_down_quat)
     quat = torch.where((is_sitting | is_standing).unsqueeze(-1), upright_quat, quat)
 
-    # height, drawn per bucket
-    def _uniform(bounds: tuple[float, float]) -> torch.Tensor:
+    # Height, drawn per bucket. An unconfigured band belongs to a bucket with zero probability --
+    # the validation above is what guarantees that -- so the branch it fills selects nothing.
+    def _uniform(bounds: tuple[float, float] | None) -> torch.Tensor:
+        if bounds is None:
+            return torch.zeros(num_resets, device=env.device)
         return torch.empty(num_resets, device=env.device).uniform_(*bounds)
 
     height = _uniform(prone_z_range)
@@ -605,3 +626,107 @@ def randomize_joint_dry_friction(
         joint_ids=joint_ids,
         env_ids=env_ids,
     )
+
+
+_BALL_KICK_DIRECTION_ATTR = "_microduck_ball_kick_direction"
+"""Attribute the per-environment ball-kick direction is cached under on the environment."""
+
+
+def ball_kick_direction(env: ManagerBasedEnv) -> torch.Tensor:
+    """The world-frame direction "forward" means to the ball-kick rewards, allocated on first use.
+
+    Ported from addendum section 2.3 (``_ball_kick_dir``). It is the robot's heading at the episode
+    reset, frozen for the whole episode by :func:`reset_ball_in_front_of_foot`, and both kick rewards
+    project the ball's velocity onto it. Freezing it is the point: a live heading would let the
+    policy redefine "forward" by turning after the kick and collect the reward for a ball it pushed
+    sideways.
+
+    Before the first reset it is ``+x``, which is what upstream's lazy allocation gives too.
+
+    Args:
+        env: The environment the direction is bookkept for.
+
+    Returns:
+        The shared per-environment unit direction in the horizontal plane. Shape is (num_envs, 2).
+        The same tensor on every call for a given environment.
+    """
+    direction: torch.Tensor | None = getattr(env, _BALL_KICK_DIRECTION_ATTR, None)
+    if direction is None:
+        direction = torch.zeros(env.num_envs, 2, device=env.device)
+        direction[:, 0] = 1.0
+        setattr(env, _BALL_KICK_DIRECTION_ATTR, direction)
+    return direction
+
+
+def reset_ball_in_front_of_foot(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    offset: tuple[float, float],
+    noise_xy: float = 0.0,
+    ball_radius: float = 0.035,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Place the ball just in front of one foot, in the robot's own yaw frame, and freeze the kick
+    direction for the episode.
+
+    Ported from addendum section 2.3 (``reset_ball_in_front_of_foot``). The offset is applied in the
+    frame of the robot's *reset* yaw rather than along the world axes, because the ground-state reset
+    spawns the robot at a uniformly random heading; placing the ball at a world-frame offset would
+    put it behind the robot on half the episodes.
+
+    The ball is set down at rest, exactly touching the ground, with an identity orientation -- a
+    sphere has no meaningful one, and the initial spin is what the kick has to create.
+
+    This term reads the robot's root pose, so it must run **after** every reset event that writes it.
+    Isaac Lab fires reset events in configuration declaration order.
+
+    Args:
+        env: The environment holding the two assets.
+        env_ids: The environments to reset. Defaults to None, which resets all of them.
+        offset: Ball centre offset ``(forward, left)`` [m] from the robot root, in the robot's yaw
+            frame. Negative ``left`` places it in front of the right foot.
+        noise_xy: Half-width [m] of the uniform noise added to both offset components. Defaults to
+            0.0, which places the ball exactly at the offset.
+        ball_radius: Radius [m] of the ball, which is how high its centre is set above the ground.
+            Defaults to 0.035, the radius of :data:`~isaaclab_assets.MICRODUCK_BALL_CFG`.
+        asset_cfg: The rigid object to place.
+        robot_cfg: The articulation whose root pose the placement is measured from.
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    num_resets = len(env_ids)
+    if num_resets == 0:
+        return
+
+    robot: Articulation = env.scene[robot_cfg.name]
+    ball: RigidObject = env.scene[asset_cfg.name]
+
+    # Upstream reads the robot root straight out of ``qpos`` because its own derived buffers lag
+    # until the next ``forward()``. Isaac Lab's root writes update the articulation's buffers as they
+    # go, so the pose read here is the one the preceding reset events wrote.
+    root_pos = robot.data.root_link_pos_w.torch[env_ids]
+    quat = robot.data.root_link_quat_w.torch[env_ids]
+    # Isaac Lab quaternions are (x, y, z, w) where upstream's are (w, x, y, z), so the four
+    # components below are read at shifted indices; the yaw formula itself is upstream's.
+    qx, qy, qz, qw = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    yaw = torch.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    cos_yaw, sin_yaw = torch.cos(yaw), torch.sin(yaw)
+
+    planar_offset = torch.tensor(offset, device=env.device, dtype=root_pos.dtype).repeat(num_resets, 1)
+    if noise_xy > 0.0:
+        planar_offset += (torch.rand(num_resets, 2, device=env.device) * 2.0 - 1.0) * noise_xy
+
+    pose = torch.zeros(num_resets, 7, device=env.device, dtype=root_pos.dtype)
+    pose[:, 0] = root_pos[:, 0] + cos_yaw * planar_offset[:, 0] - sin_yaw * planar_offset[:, 1]
+    pose[:, 1] = root_pos[:, 1] + sin_yaw * planar_offset[:, 0] + cos_yaw * planar_offset[:, 1]
+    pose[:, 2] = env.scene.env_origins[env_ids, 2] + ball_radius
+    pose[:, 6] = 1.0  # (x, y, z, w) identity
+    ball.write_root_link_pose_to_sim_index(root_pose=pose, env_ids=env_ids)
+    ball.write_root_com_velocity_to_sim_index(
+        root_velocity=torch.zeros(num_resets, 6, device=env.device, dtype=root_pos.dtype), env_ids=env_ids
+    )
+
+    direction = ball_kick_direction(env)
+    direction[env_ids, 0] = cos_yaw
+    direction[env_ids, 1] = sin_yaw
