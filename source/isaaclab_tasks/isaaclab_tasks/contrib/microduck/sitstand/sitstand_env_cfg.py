@@ -194,21 +194,34 @@ class MicroDuckSitStandPhysicsCfg(PresetCfg):
             # Measured, not inherited. Profiling under random actions -- the regime where the robots
             # collapse onto the floor and grind every collider into it, with the pushes forced to
             # full magnitude -- peaks at **28 contacts and 82 constraints** per environment. Logs:
-            # ``artifacts/microduck/profile_microduck_contacts_sitstand_{256,2048}envs.log``, from
-            # ``artifacts/microduck/profile_microduck_contacts.py``.
+            # ``artifacts/microduck/profile_microduck_contacts_sitstand_{256,2048,4096}envs.log``,
+            # from ``artifacts/microduck/profile_microduck_contacts.py``.
             #
-            # Unlike the stand-up task's, the two profile sizes do **not** agree here: 256
-            # environments peak at 26 contacts and 74 constraints where 2048 reach 28 and 82. The
-            # larger run is the one used, because this task's tail is rarer -- half the spawns are
-            # seated, and the deepest contact states come from a push landing on one of those -- so
-            # the smaller sample simply does not reach it. The medians agree (23 contacts at both
-            # sizes), which is what says the difference is tail sampling rather than a different
-            # regime. Those peaks match the stand-up and velocity-plus-recovery tasks' to a contact:
-            # the same robot on the same floor.
+            # Profiled at three sizes, because the smallest one **undercounts**:
             #
-            # ``njmax`` is a hard per-environment cap and carries the margin; ``nconmax`` is a
-            # per-environment share of one shared buffer and cannot overflow at the measured peak, so
-            # it sits just above it.
+            # ===========  ==========  ===========  ============  ==========
+            # environments  peak ncon  peak nefc    median ncon    overflow
+            # ===========  ==========  ===========  ============  ==========
+            # 256                  26           74            20           0
+            # 2048                 28           82            23           0
+            # 4096                 27           82            23           0
+            # ===========  ==========  ===========  ============  ==========
+            #
+            # The peak **saturates** from 2048 upward -- 4096, which is this task's own training
+            # default and therefore the size that matters, lands one contact *below* the 2048 run and
+            # at the identical constraint peak. Only the 256-environment sample misses the tail, and
+            # that is expected here where it was not on the stand-up task: half the spawns are
+            # seated, and the deepest contact states come from a push landing on one of those. The
+            # medians agree across all three sizes, which is what says the spread is tail sampling
+            # rather than a different regime. The saturated peaks match the stand-up and
+            # velocity-plus-recovery tasks' to a contact: the same robot on the same floor.
+            #
+            # ``njmax`` is a hard per-environment cap and carries the margin -- 128 against 82 is 46
+            # constraints, about eleven further contacts' worth. ``nconmax`` is a per-environment
+            # *share* of one shared pool rather than a cap: at 4096 environments the worst-case total
+            # demand is 45 228 contacts against the 131 072 the shipped share provides, so a single
+            # environment spiking past 32 borrows from the pool and overflow would need the mean
+            # (11.0 per environment, measured) to roughly triple.
             #
             # Upstream reaches for ``nconmax = 200`` here, which is the whole of its answer to the
             # seated NaN: it has no measurement and raised the buffer until the divergence stopped.
