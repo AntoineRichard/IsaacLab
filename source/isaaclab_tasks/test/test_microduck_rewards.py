@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 import torch
 
-from isaaclab.managers import RewardTermCfg, SceneEntityCfg
+from isaaclab.managers import RewardTermCfg, SceneEntityCfg, TerminationTermCfg
 
 import isaaclab_tasks.contrib.microduck.mdp as mdp
 
@@ -1811,3 +1811,296 @@ def test_single_foot_grounded_reward_refuses_a_sensor_with_no_contact_partners()
 
     with pytest.raises(RuntimeError, match="force matrix"):
         mdp.single_foot_grounded_reward(env.as_env(), sensor_cfg=_entity("support_foot_ground_contact", body_ids=[0]))
+
+
+##
+# VelStand: the fall-recovery layer (addendum section 3.2)
+##
+
+
+def _tilt_quat(degrees: float) -> list[float]:
+    """A root orientation tilted ``degrees`` about the body x axis, in Isaac Lab's (x, y, z, w) order."""
+    half = math.radians(degrees) * 0.5
+    return [math.sin(half), 0.0, 0.0, math.cos(half)]
+
+
+def _fall_env(tilts_deg: list[float], heights: list[float], vertical_speeds: list[float] | None = None) -> _DummyEnv:
+    """A robot double carrying only what the recovery terms read: trunk tilt, height and rise speed."""
+    num_envs = len(tilts_deg)
+    robot = _DummyAsset(
+        root_link_quat_w=torch.tensor([_tilt_quat(degrees) for degrees in tilts_deg]),
+        root_link_pos_w=torch.tensor([[0.0, 0.0, height] for height in heights]),
+        root_link_lin_vel_w=torch.tensor([[0.0, 0.0, speed] for speed in (vertical_speeds or [0.0] * num_envs)]),
+    )
+    return _DummyEnv(num_envs=num_envs, assets={"robot": robot})
+
+
+def _set_fall_state(env: _DummyEnv, tilts_deg=None, heights=None, vertical_speeds=None) -> None:
+    """Move the double's robot without rebuilding the environment, so a stateful term keeps its state."""
+    data = env.scene["robot"].data
+    if tilts_deg is not None:
+        data.root_link_quat_w.torch[:] = torch.tensor([_tilt_quat(degrees) for degrees in tilts_deg])
+    if heights is not None:
+        data.root_link_pos_w.torch[:, 2] = torch.tensor(heights)
+    if vertical_speeds is not None:
+        data.root_link_lin_vel_w.torch[:, 2] = torch.tensor(vertical_speeds)
+
+
+def _stateful(func, env: _DummyEnv, cfg_class=None, **params):
+    """Construct one of the stateful recovery terms the way its own manager does.
+
+    Returns the constructed term together with the parameters to call it with, as the manager holds
+    them on the term configuration and passes them in on every step.
+    """
+    cfg = (
+        RewardTermCfg(func=func, weight=1.0, params=params)
+        if cfg_class is None
+        else cfg_class(func=func, params=params)
+    )
+    return func(cfg, env.as_env()), params
+
+
+def test_upright_progress_pays_the_change_in_cos_tilt_and_nothing_for_holding_a_pose():
+    """Potential-based shaping: rising pays, falling costs, and any held pose is worth exactly zero."""
+    env = _fall_env([90.0], [0.05])
+    term, params = _stateful(mdp.upright_progress, env)
+
+    fresh = term(env.as_env(), **params)
+    _set_fall_state(env, tilts_deg=[0.0])
+    rise = term(env.as_env(), **params)
+    hold = term(env.as_env(), **params)
+    _set_fall_state(env, tilts_deg=[180.0])
+    fall = term(env.as_env(), **params)
+
+    torch.testing.assert_close(fresh, torch.tensor([0.0]))
+    # cos(0) - cos(90) = 1, then cos(180) - cos(0) = -2
+    torch.testing.assert_close(rise, torch.tensor([1.0]))
+    torch.testing.assert_close(hold, torch.tensor([0.0]))
+    torch.testing.assert_close(fall, torch.tensor([-2.0]))
+
+
+def test_upright_progress_starts_each_episode_from_the_pose_it_spawns_in():
+    """A prone respawn after an upright finish must not be charged the phantom fall in between."""
+    env = _fall_env([0.0, 0.0], [0.115, 0.115])
+    term, params = _stateful(mdp.upright_progress, env)
+    term(env.as_env(), **params)
+    term(env.as_env(), **params)
+
+    term.reset(torch.tensor([0]))
+    _set_fall_state(env, tilts_deg=[90.0, 90.0])
+    reward = term(env.as_env(), **params)
+
+    torch.testing.assert_close(reward, torch.tensor([0.0, -1.0]))
+
+
+def test_height_progress_pays_the_rise_and_stops_paying_above_the_ceiling():
+    """The clamp is what stops a policy farming the term by bouncing once it is already up."""
+    env = _fall_env([0.0], [0.05])
+    term, params = _stateful(mdp.height_progress, env, ceiling=0.115)
+
+    term(env.as_env(), **params)
+    _set_fall_state(env, heights=[0.115])
+    rise = term(env.as_env(), **params)
+    _set_fall_state(env, heights=[0.200])
+    above = term(env.as_env(), **params)
+    _set_fall_state(env, heights=[0.050])
+    fall = term(env.as_env(), **params)
+
+    torch.testing.assert_close(rise, torch.tensor([0.065]))
+    torch.testing.assert_close(above, torch.tensor([0.0]))
+    torch.testing.assert_close(fall, torch.tensor([-0.065]))
+
+
+def test_com_upward_velocity_is_gated_on_being_toppled_rather_than_on_being_low():
+    """VelStand pays for rising only while genuinely fallen, and "fallen" is tilt alone.
+
+    Upstream reaches that by passing a height gate of 0.0 m, which never fires; the port takes the
+    tilt bound on its own. Gating on height too would pay a robot for bobbing while seated upright,
+    which is the exact farm upstream's own lesson records.
+    """
+    env = _fall_env([10.0, 50.0], [0.07, 0.07], [0.3, 0.3])
+
+    ungated = mdp.com_upward_velocity(env.as_env(), max_height=0.125)
+    gated = mdp.com_upward_velocity(env.as_env(), max_height=0.125, gate_tilt_above_deg=40.0)
+
+    torch.testing.assert_close(ungated, torch.tensor([0.3, 0.3]))
+    torch.testing.assert_close(gated, torch.tensor([0.0, 0.3]))
+
+
+def test_feet_air_time_windowed_is_gated_on_the_robot_still_being_upright():
+    """A robot lying on its trunk can tap its feet through the swing window; the gate closes that."""
+    air_time = torch.tensor([[0.2, 0.15], [0.2, 0.15]])
+    sensor = _DummySensor(current_air_time=air_time)
+    robot = _DummyAsset(
+        root_link_quat_w=torch.tensor([_tilt_quat(10.0), _tilt_quat(50.0)]),
+        root_link_pos_w=torch.tensor([[0.0, 0.0, 0.115], [0.0, 0.0, 0.05]]),
+    )
+    env = _DummyEnv(
+        num_envs=2,
+        assets={"robot": robot},
+        sensors={"contact_forces": sensor},
+        commands={"twist": torch.tensor([[0.3, 0.0, 0.0]] * 2)},
+    )
+    params = {
+        "sensor_cfg": _entity("contact_forces", body_ids=FOOT_BODY_IDS),
+        "command_name": "twist",
+        "threshold_min": 0.125,
+        "threshold_max": 0.300,
+        "command_threshold": 0.01,
+    }
+
+    ungated = mdp.feet_air_time_windowed(env.as_env(), **params)
+    gated = mdp.feet_air_time_windowed(env.as_env(), gate_tilt_above_deg=40.0, **params)
+
+    torch.testing.assert_close(ungated, torch.tensor([2.0, 2.0]))
+    torch.testing.assert_close(gated, torch.tensor([2.0, 0.0]))
+
+
+def test_fallen_state_penalty_keeps_charging_until_the_stand_is_actually_finished():
+    """The hysteresis is what stops the sub-40-degree crouch being a zero-cost rest state."""
+    env = _fall_env([10.0], [0.115])
+    term, params = _stateful(
+        mdp.fallen_state_penalty,
+        env,
+        gate_tilt_above_deg=40.0,
+        release_tilt_below_deg=25.0,
+        release_z_above=0.09,
+    )
+
+    walking = term(env.as_env(), **params)
+    _set_fall_state(env, tilts_deg=[70.0], heights=[0.05])
+    fallen = term(env.as_env(), **params)
+    # past the 40 degree arming gate, but short of standing: still armed
+    _set_fall_state(env, tilts_deg=[35.0], heights=[0.075])
+    crouched = term(env.as_env(), **params)
+    _set_fall_state(env, tilts_deg=[10.0], heights=[0.115])
+    recovered = term(env.as_env(), **params)
+
+    torch.testing.assert_close(walking, torch.tensor([0.0]))
+    torch.testing.assert_close(fallen, torch.tensor([1.0]))
+    torch.testing.assert_close(crouched, torch.tensor([1.0]))
+    torch.testing.assert_close(recovered, torch.tensor([0.0]))
+
+
+def test_fallen_state_penalty_disarms_the_environments_that_restarted():
+    """A fresh episode inherits neither the previous one's fall nor its tax."""
+    env = _fall_env([70.0, 70.0], [0.05, 0.05])
+    term, params = _stateful(mdp.fallen_state_penalty, env, gate_tilt_above_deg=40.0, release_tilt_below_deg=25.0)
+    term(env.as_env(), **params)
+
+    term.reset(torch.tensor([0]))
+    _set_fall_state(env, tilts_deg=[30.0, 30.0], heights=[0.08, 0.08])
+    charged = term(env.as_env(), **params)
+
+    torch.testing.assert_close(charged, torch.tensor([0.0, 1.0]))
+
+
+def test_recovery_success_fires_once_per_completed_recovery():
+    """A one-shot bounty: gate oscillation must not pay twice for the same stand."""
+    step_dt = 0.02
+    env = _fall_env([70.0], [0.05])
+    env.step_dt = step_dt
+    term, params = _stateful(
+        mdp.recovery_success, env, fallen_tilt_deg=40.0, min_fallen_s=0.5, up_tilt_deg=25.0, up_z=0.09
+    )
+
+    # 0.6 s of fall rather than exactly 0.5: accumulating 0.02 in float32 lands just *under* the
+    # bound at the boundary step, and this test is about the latch rather than about that epsilon
+    for _ in range(30):
+        term(env.as_env(), **params)
+    _set_fall_state(env, tilts_deg=[10.0], heights=[0.115])
+    fired = term(env.as_env(), **params)
+    again = term(env.as_env(), **params)
+
+    torch.testing.assert_close(fired, torch.tensor([1.0]))
+    torch.testing.assert_close(again, torch.tensor([0.0]))
+
+
+def test_recovery_success_ignores_a_stumble_shorter_than_the_minimum():
+    """Without the dwell requirement a walking wobble past 40 degrees would pay the full bounty."""
+    step_dt = 0.02
+    env = _fall_env([70.0], [0.05])
+    env.step_dt = step_dt
+    term, params = _stateful(
+        mdp.recovery_success, env, fallen_tilt_deg=40.0, min_fallen_s=0.5, up_tilt_deg=25.0, up_z=0.09
+    )
+
+    for _ in range(5):
+        term(env.as_env(), **params)
+    _set_fall_state(env, tilts_deg=[10.0], heights=[0.115])
+    reward = term(env.as_env(), **params)
+
+    torch.testing.assert_close(reward, torch.tensor([0.0]))
+
+
+def test_recovery_success_demands_a_height_the_policy_can_actually_reach():
+    """Upstream's function default of 0.105 m is the bug its own configuration overrides."""
+    step_dt = 0.02
+    env = _fall_env([70.0], [0.05])
+    env.step_dt = step_dt
+    term, params = _stateful(
+        mdp.recovery_success, env, fallen_tilt_deg=40.0, min_fallen_s=0.5, up_tilt_deg=25.0, up_z=0.09
+    )
+
+    for _ in range(30):
+        term(env.as_env(), **params)
+    # upright but still in the crouch the run-5 lesson describes
+    _set_fall_state(env, tilts_deg=[10.0], heights=[0.085])
+    crouched = term(env.as_env(), **params)
+    _set_fall_state(env, heights=[0.095])
+    stood = term(env.as_env(), **params)
+
+    torch.testing.assert_close(crouched, torch.tensor([0.0]))
+    torch.testing.assert_close(stood, torch.tensor([1.0]))
+
+
+def test_fallen_too_long_recycles_an_episode_that_never_gets_back_up():
+    """The termination gate is height *or* tilt, unlike the reward gates, so sitters recycle too."""
+    step_dt = 0.02
+    env = _fall_env([10.0], [0.07])
+    env.step_dt = step_dt
+    term, params = _stateful(
+        mdp.fallen_too_long, env, TerminationTermCfg, gate_z_below=0.08, gate_tilt_above_deg=40.0, max_duration_s=0.09
+    )
+
+    early = [term(env.as_env(), **params) for _ in range(4)]
+    timed_out = term(env.as_env(), **params)
+
+    assert not any(bool(flag.item()) for flag in early)
+    assert bool(timed_out.item())
+
+
+def test_fallen_too_long_clears_its_timer_when_the_robot_gets_back_up():
+    """The clock measures a *continuous* fall, so a recovery must not leave a partial charge behind."""
+    step_dt = 0.02
+    env = _fall_env([70.0], [0.05])
+    env.step_dt = step_dt
+    term, params = _stateful(
+        mdp.fallen_too_long, env, TerminationTermCfg, gate_z_below=0.08, gate_tilt_above_deg=40.0, max_duration_s=0.09
+    )
+
+    for _ in range(4):
+        term(env.as_env(), **params)
+    _set_fall_state(env, tilts_deg=[10.0], heights=[0.115])
+    term(env.as_env(), **params)
+    _set_fall_state(env, tilts_deg=[70.0], heights=[0.05])
+    restarted = [term(env.as_env(), **params) for _ in range(4)]
+
+    assert not any(bool(flag.item()) for flag in restarted)
+
+
+def test_fallen_too_long_clears_its_timer_for_the_environments_that_restarted():
+    """A new episode starting prone gets the whole timeout, not the remainder of the last one's."""
+    step_dt = 0.02
+    env = _fall_env([70.0, 70.0], [0.05, 0.05])
+    env.step_dt = step_dt
+    term, params = _stateful(
+        mdp.fallen_too_long, env, TerminationTermCfg, gate_z_below=0.08, gate_tilt_above_deg=40.0, max_duration_s=0.09
+    )
+
+    for _ in range(4):
+        term(env.as_env(), **params)
+    term.reset(torch.tensor([0]))
+    flags = term(env.as_env(), **params)
+
+    torch.testing.assert_close(flags, torch.tensor([False, True]))

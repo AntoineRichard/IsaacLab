@@ -179,6 +179,43 @@ def _tilt_gate(quat: torch.Tensor, tilt_full_deg: float, tilt_zero_deg: float) -
     return _smoothstep((tilt_zero_deg - tilt_deg) / max(tilt_zero_deg - tilt_full_deg, 1e-6))
 
 
+def _is_fallen(
+    env: ManagerBasedRLEnv,
+    asset: Articulation,
+    tilt_above_deg: float,
+    z_below: float | None = None,
+) -> torch.Tensor:
+    """Whether the trunk counts as fallen: tilted past ``tilt_above_deg``, or below ``z_below`` [m].
+
+    Ported from addendum section 3.2 (``_fallen_mask``). This is the hard, unsmoothed gate the
+    recovery layer is built on, unlike the smoothstep :func:`_tilt_gate` the stand-up task's
+    late-phase penalties use.
+
+    Upstream always passes both bounds and reaches the tilt-only form by passing a height of 0.0 m,
+    which the trunk never goes below -- its own comment calls that gate "z=0.0 never triggers". The
+    port takes the height bound as optional instead, so the two regimes are told apart by the
+    signature rather than by a magic value. The distinction is load-bearing: the recovery *rewards*
+    gate on tilt alone, because paying a robot for being low rewards sitting down, while the
+    *termination* keeps the height condition so that sitters and stuck-low environments are
+    recycled rather than paid.
+
+    Args:
+        env: The environment instance.
+        asset: The articulation whose root link carries the trunk.
+        tilt_above_deg: Trunk tilt [deg] beyond which the robot counts as fallen.
+        z_below: Trunk height [m] below which it counts as fallen regardless of tilt. Defaults to
+            None, which tests the tilt alone.
+
+    Returns:
+        Whether each environment's trunk is fallen. Shape is (num_envs,).
+    """
+    cos_tilt = 1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch)
+    fallen = cos_tilt < math.cos(math.radians(tilt_above_deg))
+    if z_below is not None:
+        fallen |= _root_height_above_ground(env, asset) < z_below
+    return fallen
+
+
 def _feet_height_above_ground(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Height of the selected foot bodies above the ground [m], shape (num_envs, num_feet).
 
@@ -599,6 +636,8 @@ def feet_air_time_windowed(
     threshold_min: float,
     threshold_max: float,
     command_threshold: float,
+    gate_tilt_above_deg: float | None = None,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Reward feet whose current air time lies strictly inside a window, gated on the command.
 
@@ -614,6 +653,14 @@ def feet_air_time_windowed(
     a body registers a contact force above :attr:`~isaaclab.sensors.ContactSensorCfg.force_threshold`
     and accumulates the elapsed time otherwise, which is what upstream's sensor reports.
 
+    An optional **upright gate** zeroes the reward while the trunk is toppled, for the recovery tasks
+    whose episodes survive a fall. Upstream wraps this kernel in a separate ``feet_air_time_upright``
+    function that forwards the rest of its parameters as keyword arguments -- and its own extraction
+    warns that adding an ``asset_cfg`` to the wrapped term's parameters would then silently redirect
+    the gate. The gate is a parameter here instead, which cannot collide. Without it a robot lying on
+    its trunk can rhythmically tap its feet through the swing window, which is a farm upstream
+    observed rather than predicted.
+
     Args:
         env: The environment instance.
         sensor_cfg: The contact sensor and the foot bodies to read. Select them by name with
@@ -622,6 +669,9 @@ def feet_air_time_windowed(
         threshold_min: Lower edge of the rewarded air-time window [s], exclusive.
         threshold_max: Upper edge of the rewarded air-time window [s], exclusive.
         command_threshold: Command magnitude below which the reward is suppressed.
+        gate_tilt_above_deg: Trunk tilt [deg] beyond which the reward is suppressed. Defaults to
+            None, which pays a swinging foot whatever the trunk is doing.
+        asset_cfg: The articulation whose root link carries the trunk. Read only by the gate.
 
     Returns:
         The number of feet inside the window, or zero for a standing command. Shape is (num_envs,).
@@ -630,7 +680,11 @@ def feet_air_time_windowed(
     current_air_time = contact_sensor.data.current_air_time.torch[:, sensor_cfg.body_ids]
     in_range = (current_air_time > threshold_min) & (current_air_time < threshold_max)
     reward = torch.sum(in_range.float(), dim=1)
-    return reward * (_command_magnitude(env, command_name) > command_threshold).float()
+    reward = reward * (_command_magnitude(env, command_name) > command_threshold).float()
+    if gate_tilt_above_deg is None:
+        return reward
+    asset: Articulation = env.scene[asset_cfg.name]
+    return reward * (~_is_fallen(env, asset, gate_tilt_above_deg)).float()
 
 
 def foot_clearance(
@@ -1023,6 +1077,7 @@ def root_height_l1(
 def com_upward_velocity(
     env: ManagerBasedRLEnv,
     max_height: float,
+    gate_tilt_above_deg: float | None = None,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Reward rising: the trunk's upward speed, paid only while it is below a ceiling.
@@ -1037,9 +1092,17 @@ def com_upward_velocity(
     deliberately leaves unset after two runs in which capping it suppressed the noisy recovery
     attempts the policy has to make before it can flip; it is not ported.
 
+    An optional **fallen gate** restricts the payout to a toppled robot, which is what the hybrid
+    walking-and-recovery task needs: there the same reward on an upright robot is a bounce incentive
+    that fights the gait. The gate is on tilt alone -- see :func:`_is_fallen` for why the height half
+    of upstream's gate is a documented no-op here.
+
     Args:
         env: The environment instance.
         max_height: Trunk height [m] above which the reward is switched off.
+        gate_tilt_above_deg: Trunk tilt [deg] below which the reward is switched off. Defaults to
+            None, which pays a rising robot at any tilt -- what the stand-up task, whose episodes
+            all start on the ground, wants.
         asset_cfg: The articulation whose root link carries the trunk.
 
     Returns:
@@ -1048,7 +1111,10 @@ def com_upward_velocity(
     asset: Articulation = env.scene[asset_cfg.name]
     below_target = (_root_height_above_ground(env, asset) < max_height).float()
     vertical_speed = torch.nan_to_num(asset.data.root_link_lin_vel_w.torch[:, 2], nan=0.0)
-    return torch.clamp(vertical_speed, min=0.0) * below_target
+    reward = torch.clamp(vertical_speed, min=0.0) * below_target
+    if gate_tilt_above_deg is None:
+        return reward
+    return reward * _is_fallen(env, asset, gate_tilt_above_deg).float()
 
 
 class trunk_vertical_accel_penalty(ManagerTermBase):
@@ -1298,6 +1364,290 @@ class joint_torque_rate_l2(ManagerTermBase):
         self._previous_torque = torque.clone()
         self._is_fresh[:] = False
         return torch.sum(torch.square(rate), dim=1)
+
+
+##
+# VelStand kernels: the fall-recovery layer a walking task carries.
+##
+
+
+"""
+Potential-based progress. Both terms pay the *change* in a scalar potential and nothing for holding
+any pose, which is what makes them unfarmable on a task whose episodes survive a fall (addendum
+section 3.2). Potential-based shaping is also policy-invariant, so they cannot change which policy
+is optimal -- only how quickly it is found.
+"""
+
+
+class _PotentialProgress(ManagerTermBase):
+    """Shared machinery of the two potential-based recovery terms.
+
+    Both are a one-step difference of a scalar potential, so both are stateful and both have to
+    re-baseline on reset: without that, an episode that respawns prone right after the previous one
+    finished standing would be charged the whole phantom fall on its first step. Upstream reaches
+    the same effect by re-seeding whenever ``episode_length_buf <= 1``; the hook is the Isaac Lab
+    convention and the manager calls it with exactly the environments that restarted.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Allocate the previous-potential buffer.
+
+        Args:
+            cfg: The term configuration.
+            env: The environment instance.
+        """
+        super().__init__(cfg, env)
+
+        self._previous = torch.zeros(env.num_envs, device=env.device)
+        self._is_fresh = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Mark the environments that restarted, so their next difference is not paid or charged.
+
+        Args:
+            env_ids: The environment ids. Defaults to None, in which case all are marked.
+        """
+        if env_ids is None:
+            self._is_fresh[:] = True
+        else:
+            self._is_fresh[env_ids] = True
+
+    def _advance(self, potential: torch.Tensor) -> torch.Tensor:
+        """Difference the potential against the previous step and re-baseline the fresh environments.
+
+        Args:
+            potential: This step's potential. Shape is (num_envs,).
+
+        Returns:
+            The change in potential, zero on the step after a reset. Shape is (num_envs,).
+        """
+        delta = potential - self._previous
+        delta = torch.where(self._is_fresh, torch.zeros_like(delta), delta)
+        self._previous = potential.clone()
+        self._is_fresh[:] = False
+        return delta
+
+
+class upright_progress(_PotentialProgress):
+    """Reward the increase in ``cos(tilt)`` of the trunk, and charge the decrease symmetrically.
+
+    Ported from addendum section 3.2 (``upright_progress``). It is the orientation half of the
+    recovery layer and it is deliberately **ungated**: unlike every gated recovery reward upstream
+    tried before it, there is no pose it pays for holding, so it cannot be farmed by sitting, lying
+    or balancing on the head -- the three farms upstream's own run notes record. It also pays for
+    catching a stumble mid-gait, which a fallen-gated term would miss.
+
+    A full prone-to-standing recovery collects a total of about +1 before weighting, because
+    ``cos(tilt)`` runs from 0 lying down to 1 upright.
+
+    :func:`body_upright_linear` is the *level* of the same quantity, which the stand-up specialist
+    can afford because its episodes end when the robot is up; on a task that keeps walking after a
+    recovery the level would be a standing subsidy.
+    """
+
+    def __call__(self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+        """Difference the trunk's ``cos(tilt)`` against the previous control step.
+
+        Args:
+            env: The environment instance.
+            asset_cfg: The articulation whose root link carries the trunk.
+
+        Returns:
+            The change in ``cos(tilt)``, in ``[-2, 2]``. Shape is (num_envs,).
+        """
+        asset: Articulation = env.scene[asset_cfg.name]
+        cos_tilt = torch.nan_to_num(1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch), nan=1.0)
+        return self._advance(cos_tilt)
+
+
+class height_progress(_PotentialProgress):
+    """Reward the increase in trunk height below a ceiling, and charge the decrease symmetrically.
+
+    Ported from addendum section 3.2 (``height_progress``). It is the z-axis companion to
+    :class:`upright_progress` and it exists for one specific stretch: the last mile from a deep
+    crouch to a stand is almost pure height change at modest tilt, where ``cos(tilt)`` barely moves
+    and the Gaussian posture rewards are flat. Upstream added it after measuring policies that
+    recovered as far as that crouch and parked there.
+
+    The ceiling is what stops a standing robot farming the term by bobbing: above it the potential
+    is constant, so a bounce pays exactly what it charges. Upstream's accounting is that a full
+    prone-to-stand rise (0.05 to 0.115 m) collects about +0.065 before weighting.
+    """
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        ceiling: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        """Difference the clamped trunk height against the previous control step.
+
+        Args:
+            env: The environment instance.
+            ceiling: Trunk height [m] above which the potential is constant.
+            asset_cfg: The articulation whose root link carries the trunk.
+
+        Returns:
+            The change in clamped height [m]. Shape is (num_envs,).
+        """
+        asset: Articulation = env.scene[asset_cfg.name]
+        return self._advance(torch.clamp(_root_height_above_ground(env, asset), max=ceiling))
+
+
+"""
+Recovery economics: the flat tax on staying down and the one-shot bounty for getting back up.
+"""
+
+
+class fallen_state_penalty(ManagerTermBase):
+    """Charge a flat cost for every step spent fallen, until the stand is actually finished.
+
+    Ported from addendum section 3.2 (``fallen_state_penalty``). The term exists because waiting is
+    otherwise rational: a recovery attempt costs action-rate and torque-rate penalties where lying
+    still costs nothing, so without a tax the dominant strategy is to lie there until the
+    failed-recovery termination recycles the episode.
+
+    The **hysteresis** is the part that has to be reproduced exactly. Arming is on tilt, so ordinary
+    gait is never taxed; releasing needs a genuinely completed stand -- upright *and* tall -- so the
+    deep crouch just inside the arming gate is no longer a zero-cost rest state. Upstream added it
+    after a run whose recoveries all converged on that crouch.
+
+    The term returns a **positive** magnitude, so it is configured with a negative weight.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Allocate the per-environment armed latch.
+
+        Args:
+            cfg: The term configuration.
+            env: The environment instance.
+        """
+        super().__init__(cfg, env)
+
+        self._is_armed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Disarm the environments that restarted, so a new episode inherits no tax.
+
+        Args:
+            env_ids: The environment ids. Defaults to None, in which case all are disarmed.
+        """
+        if env_ids is None:
+            self._is_armed[:] = False
+        else:
+            self._is_armed[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        gate_tilt_above_deg: float,
+        release_tilt_below_deg: float | None = None,
+        release_z_above: float | None = None,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        """Update the latch and return the cost.
+
+        Args:
+            env: The environment instance.
+            gate_tilt_above_deg: Trunk tilt [deg] beyond which a fall arms the tax.
+            release_tilt_below_deg: Trunk tilt [deg] below which the tax is released. Defaults to
+                None, which drops the hysteresis and charges the instantaneous fallen state.
+            release_z_above: Trunk height [m] above which the tax is released, on top of the tilt
+                condition. Defaults to None, which releases on tilt alone.
+            asset_cfg: The articulation whose root link carries the trunk.
+
+        Returns:
+            The cost, 1.0 while armed and 0.0 otherwise. Shape is (num_envs,).
+        """
+        asset: Articulation = env.scene[asset_cfg.name]
+        fallen = _is_fallen(env, asset, gate_tilt_above_deg)
+        if release_tilt_below_deg is None:
+            return fallen.float()
+
+        cos_tilt = 1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch)
+        recovered = cos_tilt > math.cos(math.radians(release_tilt_below_deg))
+        if release_z_above is not None:
+            recovered &= _root_height_above_ground(env, asset) > release_z_above
+        self._is_armed |= fallen
+        self._is_armed &= ~recovered
+        return self._is_armed.float()
+
+
+class recovery_success(ManagerTermBase):
+    """Pay a one-shot bounty the step a robot finishes standing up after a genuine fall.
+
+    Ported from addendum section 3.2 (``recovery_success``). The dense recovery terms all fade out
+    near the goal, so upstream adds a sharp endpoint signal -- and makes it one-shot, so oscillating
+    across the gate pays once rather than once per crossing.
+
+    Two guards make it a *recovery* bounty rather than a standing subsidy: the robot must have been
+    fallen continuously for :attr:`min_fallen_s` before the bounty arms, so a gait wobble past the
+    tilt bound cannot claim it, and the latch clears when it fires.
+
+    Note:
+        Upstream's function default for ``up_z`` is 0.105 m, which its own configuration overrides
+        as unreachable: a normally wobbling upright MicroDuck measures 0.084 to 0.096 m, so the
+        bounty never fired and recoveries converged on a deep crouch. The parameter is mandatory
+        here rather than defaulted, so the value has to be chosen rather than inherited.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Allocate the fallen clock and the armed latch.
+
+        Args:
+            cfg: The term configuration.
+            env: The environment instance.
+        """
+        super().__init__(cfg, env)
+
+        self._fallen_s = torch.zeros(env.num_envs, device=env.device)
+        self._is_armed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Clear the clock and the latch for the environments that restarted.
+
+        Args:
+            env_ids: The environment ids. Defaults to None, in which case all are cleared.
+        """
+        if env_ids is None:
+            self._fallen_s[:] = 0.0
+            self._is_armed[:] = False
+        else:
+            self._fallen_s[env_ids] = 0.0
+            self._is_armed[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        fallen_tilt_deg: float,
+        min_fallen_s: float,
+        up_tilt_deg: float,
+        up_z: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        """Advance the fallen clock and return the bounty on the step a recovery completes.
+
+        Args:
+            env: The environment instance.
+            fallen_tilt_deg: Trunk tilt [deg] beyond which the fallen clock runs.
+            min_fallen_s: Continuous time [s] spent fallen before the bounty arms.
+            up_tilt_deg: Trunk tilt [deg] below which the robot counts as recovered.
+            up_z: Trunk height [m] above which it counts as recovered, on top of the tilt condition.
+            asset_cfg: The articulation whose root link carries the trunk.
+
+        Returns:
+            The bounty, 1.0 on the step a recovery completes and 0.0 otherwise. Shape is (num_envs,).
+        """
+        asset: Articulation = env.scene[asset_cfg.name]
+        cos_tilt = 1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch)
+        fallen = _is_fallen(env, asset, fallen_tilt_deg)
+        recovered = (cos_tilt > math.cos(math.radians(up_tilt_deg))) & (_root_height_above_ground(env, asset) > up_z)
+
+        self._fallen_s = torch.where(fallen, self._fallen_s + env.step_dt, torch.zeros_like(self._fallen_s))
+        self._is_armed |= self._fallen_s >= min_fallen_s
+        fired = self._is_armed & recovered
+        self._is_armed &= ~fired
+        return fired.float()
 
 
 ##

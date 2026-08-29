@@ -939,6 +939,16 @@ class _DummyEventManager:
         return self._term_cfgs[term_name]
 
 
+class _DummyTerminationManager:
+    """Termination-manager double exposing the accessor the termination curriculum uses."""
+
+    def __init__(self, term_cfgs: dict) -> None:
+        self._term_cfgs = term_cfgs
+
+    def get_term_cfg(self, term_name: str):
+        return self._term_cfgs[term_name]
+
+
 class _DummyTermCfg:
     """Stands in for a term configuration the curricula mutate in place."""
 
@@ -964,6 +974,11 @@ def _make_curriculum_env() -> _DummyEnv:
     env.event_manager = _DummyEventManager(
         {
             "randomize_com": _DummyTermCfg(params={"com_range": {"x": (-0.003, 0.003)}}),
+        }
+    )
+    env.termination_manager = _DummyTerminationManager(
+        {
+            "fell_over": _DummyTermCfg(params={"limit_angle": math.radians(70.0)}),
         }
     )
     return env
@@ -1200,6 +1215,47 @@ def test_the_ground_state_reset_refuses_a_live_bucket_it_cannot_spawn(probabilit
 
     with pytest.raises(ValueError, match=missing.replace("/", ".")):
         mdp.reset_ground_state(cast("ManagerBasedEnv", env), env_ids=None, **buckets)
+
+
+FELL_OVER_STAGES = [
+    {"step": 0, "params": {"limit_angle": math.radians(70.0)}},
+    {"step": 500 * 24, "params": {"limit_angle": math.pi}},
+]
+"""Upstream's ``fell_over_disable`` schedule (addendum section 3.6): the tilt termination is widened
+to half a turn once the walk is established, so a fall becomes recovery training instead of an
+episode end."""
+
+
+@pytest.mark.parametrize(
+    "step, expected",
+    [
+        (0, math.radians(70.0)),
+        (500 * 24 - 1, math.radians(70.0)),
+        (500 * 24, math.pi),
+        (10_000 * 24, math.pi),
+    ],
+)
+def test_the_termination_parameter_ramp_steps_on_an_inclusive_step_boundary(step, expected):
+    """Upstream compares the step counter inclusively here, unlike its reward-weight ramps."""
+    env = _make_curriculum_env()
+    env.common_step_counter = step
+
+    index = _apply(env, mdp.termination_param_stages, term_name="fell_over", param_stages=FELL_OVER_STAGES)
+
+    assert env.termination_manager.get_term_cfg("fell_over").params["limit_angle"] == pytest.approx(expected)
+    assert index == pytest.approx(0.0 if expected < math.pi else 1.0)
+
+
+def test_the_termination_parameter_ramp_merges_shallowly_rather_than_replacing_the_parameters():
+    """A stage lists only what it changes; anything the term also carries has to survive it."""
+    env = _make_curriculum_env()
+    env.termination_manager.get_term_cfg("fell_over").params["asset_cfg"] = "robot"
+    env.common_step_counter = 500 * 24
+
+    _apply(env, mdp.termination_param_stages, term_name="fell_over", param_stages=FELL_OVER_STAGES)
+
+    params = env.termination_manager.get_term_cfg("fell_over").params
+    assert params == {"limit_angle": pytest.approx(math.pi), "asset_cfg": "robot"}
 
 
 ##
