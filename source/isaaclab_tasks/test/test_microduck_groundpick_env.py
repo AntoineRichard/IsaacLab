@@ -737,6 +737,27 @@ def test_the_centre_of_mass_ramp_is_the_widest_in_the_family():
 
 
 @pytest.mark.unit
+def test_the_head_centre_of_mass_randomization_drops_the_upstream_hip_link():
+    """The one entity selection the table above exempts, pinned here instead.
+
+    ``bearing_roll`` is the right hip-yaw link, not a head body; upstream lists it among the head
+    bodies and its own comment says the listing has always been a mistake. It is the same body whose
+    *subtree* the extraction wrongly attributes to the head-impact sensor, so getting it out of both
+    places is one correction made twice.
+
+    The patterns are patterns because the conversion disambiguates the MJCF's ``neck_pitch`` body
+    against the joint of the same name; a pattern that matched nothing would raise at resolve time,
+    so regenerating the asset cannot silently drop a body from the selection.
+    """
+    body_names = MicroDuckGroundPickFlatEnvCfg().events.randomize_head_com.params["asset_cfg"].body_names
+
+    assert body_names == ["neck", "neck_pitch(_[0-9]+)?", "yaw_roll_motion", "jaw_soft"]
+    assert "bearing_roll" not in body_names
+    # the head-impact sensor senses a strict subset of these -- the only one carrying colliders
+    assert EXPECTED_MOUTH_BODY_NAMES[0] in body_names
+
+
+@pytest.mark.unit
 def test_the_terms_select_the_joints_bodies_and_sensors_upstream_measures():
     """A term that measures the wrong entity is as wrong as one carrying the wrong weight."""
     cfg = MicroDuckGroundPickFlatEnvCfg()
@@ -750,9 +771,14 @@ def test_the_terms_select_the_joints_bodies_and_sensors_upstream_measures():
         for key, value in term.params.items()
         if isinstance(value, SceneEntityCfg)
     }
-    # the two selections pinned by their own tests rather than by the table
-    exempt = {"events.randomize_head_com.asset_cfg", "events.randomize_joint_friction.asset_cfg"}
+    # ``randomize_head_com`` selects four body *patterns* rather than four names, which the table's
+    # name equality cannot express; it is pinned by
+    # :func:`test_the_head_centre_of_mass_randomization_drops_the_upstream_hip_link` instead. It is
+    # the only exemption, and the second assertion is what stops the exemption outliving the
+    # selection it excuses.
+    exempt = {"events.randomize_head_com.asset_cfg"}
     assert measured - exempt == set(EXPECTED_ENTITY_SELECTIONS)
+    assert exempt <= measured, "the exemption names a selection the recipe no longer makes"
 
     for path, (kind, expected, preserve_order) in EXPECTED_ENTITY_SELECTIONS.items():
         manager, term_name, key = path.split(".")

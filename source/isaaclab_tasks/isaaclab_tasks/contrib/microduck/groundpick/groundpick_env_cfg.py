@@ -689,12 +689,13 @@ class RewardsCfg:
 
     Two upstream slots are not carried over:
 
-    * ``soft_landing``. Upstream restates the mjlab template's ``-1e-5``, which is a no-op; this
-      port's shared base never had the term, so there is nothing to restate. It is worth naming
-      because of what it demonstrates rather than what it weighs: it is gated on the *magnitude* of
-      the twist command, and this task's twist is a unit vector on the circle, so an inherited
-      "only while moving" gate is permanently open on any phase-command environment (addendum
-      section 13.10).
+    * ``soft_landing``. The term is **live upstream** at ``-1e-5``; what is a no-op is the
+      *assignment*, because the mjlab base template already ships that weight. This port's shared
+      base carries no such term, so there is nothing to restate, and dropping it is a real deviation
+      of order ``1e-5`` against a stack summing to order 10. It is worth naming for what it
+      demonstrates rather than what it weighs: it is gated on the *magnitude* of the twist command,
+      and this task's twist is a unit vector on the circle, so an inherited "only while moving" gate
+      is permanently open on any phase-command environment (addendum section 13.10).
     * ``mouth_payload_force``, a weight-zero reward that is really a physics hook; see
       :class:`EventsCfg`.
     """
