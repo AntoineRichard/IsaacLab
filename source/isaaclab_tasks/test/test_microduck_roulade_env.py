@@ -582,9 +582,12 @@ def test_the_terms_select_the_joints_bodies_and_sensors_upstream_measures():
         for key, value in term.params.items()
         if isinstance(value, SceneEntityCfg)
     }
-    # the two selections pinned by their own tests rather than by the table
-    exempt = {"events.randomize_head_com.asset_cfg", "events.randomize_joint_friction.asset_cfg"}
+    # the one selection pinned by its own test rather than by the table: it names four body
+    # *patterns*, which the table's name equality cannot express. The second assertion is what stops
+    # the exemption outliving the selection it excuses.
+    exempt = {"events.randomize_head_com.asset_cfg"}
     assert measured - exempt == set(EXPECTED_ENTITY_SELECTIONS)
+    assert exempt <= measured, "the exemption names a selection the recipe no longer makes"
 
     for path, (kind, expected, preserve_order) in EXPECTED_ENTITY_SELECTIONS.items():
         manager, term_name, key = path.split(".")
