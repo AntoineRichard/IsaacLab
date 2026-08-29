@@ -27,6 +27,6 @@ class MicroDuckBallKickPPORunnerCfg(MicroDuckPPORunnerCfg):
     # A separate log tree per kicking foot, as upstream names it: the mirrored kick is a different
     # policy, not a different episode, so the two must not share a run directory.
     experiment_name = f"microduck_ball_kick_{MICRODUCK_KICK_FOOT}"
-    # A fifth of the velocity budget and the shortest in the family. The kick is one skill against
-    # one fixed target and upstream's schedules have all finished ramping by iteration 1500.
+    # A fifth of the velocity budget. The kick is one skill against one fixed target and upstream's
+    # schedules have all finished ramping by iteration 1500.
     max_iterations = 10000

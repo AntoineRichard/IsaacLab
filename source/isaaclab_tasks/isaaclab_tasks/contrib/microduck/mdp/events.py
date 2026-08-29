@@ -347,7 +347,7 @@ def reset_ground_state(
 
     # Bucket assignment from one uniform draw, over the normalized cumulative probabilities.
     # Face-down needs no mask of its own: it is the first bucket, so it is what the orientation and
-    # the height fall back to when none of the other three masks select an environment.
+    # the height fall back to when none of the other four masks select an environment.
     bucket = torch.rand(num_resets, device=env.device) * total
     is_face_up = (bucket >= face_down_prob) & (bucket < face_down_prob + face_up_prob)
     is_sitting = (bucket >= face_down_prob + face_up_prob) & (bucket < face_down_prob + face_up_prob + sitting_prob)
@@ -366,7 +366,7 @@ def reset_ground_state(
     else:
         depth = torch.zeros(num_resets, device=env.device)
 
-    # orientation. The yaw is shared by all four buckets, so an episode's heading does not correlate
+    # orientation. The yaw is shared by all five buckets, so an episode's heading does not correlate
     # with the pose it starts from.
     yaw = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * torch.pi
     zeros = torch.zeros_like(yaw)
