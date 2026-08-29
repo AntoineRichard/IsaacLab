@@ -73,3 +73,22 @@ class MicroDuckRollersPPORunnerCfg(MicroDuckPPORunnerCfg):
     # task reward pays nothing at all until the wheels turn, so the policy has to find a push before
     # it gets any gradient toward one.
     algorithm = MicroDuckPPORunnerCfg().algorithm.replace(entropy_coef=0.03)
+
+
+@configclass
+class MicroDuckSwizzlePPORunnerCfg(MicroDuckRollersPPORunnerCfg):
+    """PPO runner for the MicroDuck swizzle task.
+
+    Upstream builds this one by replacing exactly two string fields on the roller runner, so
+    everything else -- including the raised exploration noise, which the swizzle needs for the same
+    reason the stride does -- is inherited. See
+    ``artifacts/microduck/upstream_reference_tasks3.md`` section 7.6.
+
+    Symmetry augmentation stays off, inherited silently through upstream's ``dataclasses.replace``.
+    That is worth naming rather than fixing: this is the one task in the family whose defining
+    property *is* left-right symmetry, and upstream trains it without the augmentation that would
+    exploit that (section 11.4). Turning it on would be a retune with its own training run.
+    """
+
+    # a separate log tree: the MicroDuck policies are trained and deployed independently
+    experiment_name = "microduck_velocity_swizzle"
