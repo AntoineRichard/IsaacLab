@@ -73,7 +73,7 @@ Changed
   stack NaN-checks the ball**: the termination reads the robot only, so a free body the solver
   ejected would reach the learner through those four terms and nothing else. The guards only change
   behaviour in states that are already broken.
-* The support-foot contact sensor is filtered against the terrain, where the family's other foot
+* Filtered the support-foot contact sensor against the terrain, where the family's other foot
   sensors read an unfiltered net contact force. On this task the narrowing is required rather than
   preferred: the ball rolls along the ground at exactly sole height, so an unfiltered sole would
   report "grounded" while the foot was airborne and merely touching the ball.

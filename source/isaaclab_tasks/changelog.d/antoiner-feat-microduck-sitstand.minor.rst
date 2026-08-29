@@ -77,6 +77,10 @@ Changed
   silently falls back to the raw flag. The fallback is unreachable on every shipped configuration,
   and a posture reward quietly reading an un-slewed flag is the exact failure the slew exists to
   prevent.
+* Made the posture-height rewards honour the ``asset_cfg`` they are handed. Upstream's equivalent
+  hard-codes ``env.scene["robot"]`` and discards the selection, so its whole posture-height family is
+  silently un-configurable. Behaviour-identical on every shipped configuration, which selects that
+  same articulation.
 * Reused the stand-up task's sitting keyframe and its two rest heights rather than restating them.
   Upstream keeps its sit, stand-up and sit-stand environments' keyframes in sync by hand and says so
   in each of them; a second copy is the drift that instruction guards against. As elsewhere in the
