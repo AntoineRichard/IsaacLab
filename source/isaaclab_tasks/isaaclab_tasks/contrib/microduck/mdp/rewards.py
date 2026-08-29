@@ -4111,3 +4111,293 @@ def crouch_forward_lean(
     gate = _phase_pose_blend(_phase_from_command(env, command_name), descent_end, hold_end, rise_end)
     lean = asset.data.projected_gravity_b.torch[:, 0]
     return gate * torch.exp(-torch.square(lean - target_pitch) / std**2)
+
+
+##
+# Spin kernels: a yaw-rate envelope on a phase clock.
+##
+
+
+"""
+The spin trick asks for a target yaw *rate* rather than a pose, so its phase envelope is a trapezoid
+in angular velocity -- launch, hold, brake, rest -- instead of the crouch family's pose blend. The
+same clock drives both: the phase comes out of the twist slot the same way, and the envelope
+normalized to ``[0, 1]`` is what gates the two shaping terms, so the leg scissor and the wheel
+differential fade out before the standing rest and the robot hands back in a neutral station.
+"""
+
+
+def _spin_rate_by_phase(
+    phase: torch.Tensor, rate_max: float, accel_end: float, hold_end: float, brake_end: float
+) -> torch.Tensor:
+    """The commanded yaw rate [rad/s] along the cycle, positive counter-clockwise.
+
+    A trapezoid: a linear ramp to :attr:`rate_max` by :attr:`accel_end`, a hold to :attr:`hold_end`,
+    a linear ramp back to zero by :attr:`brake_end`, then zero for the standing rest.
+
+    Args:
+        phase: Position in the cycle, in ``[0, 1)``. Shape is (num_envs,).
+        rate_max: Peak yaw rate [rad/s] of the hold segment.
+        accel_end: Phase at which the launch finishes and the hold begins.
+        hold_end: Phase at which the hold finishes and the braking begins.
+        brake_end: Phase at which the braking finishes and the standing rest begins.
+
+    Returns:
+        The target yaw rate [rad/s] in ``[0, rate_max]``. Shape is (num_envs,).
+    """
+    rate = torch.zeros_like(phase)
+    rate = torch.where(phase < accel_end, rate_max * phase / max(accel_end, 1e-6), rate)
+    rate = torch.where((phase >= accel_end) & (phase < hold_end), torch.full_like(phase, rate_max), rate)
+    braking = (phase >= hold_end) & (phase < brake_end)
+    rate = torch.where(braking, rate_max * (1.0 - (phase - hold_end) / max(brake_end - hold_end, 1e-6)), rate)
+    return rate
+
+
+def _spin_target_rate(
+    env: ManagerBasedRLEnv, command_name: str, rate_max: float, accel_end: float, hold_end: float, brake_end: float
+) -> torch.Tensor:
+    """The commanded yaw rate [rad/s] this step, read off the phase command."""
+    return _spin_rate_by_phase(_phase_from_command(env, command_name), rate_max, accel_end, hold_end, brake_end)
+
+
+def _spin_gate(
+    env: ManagerBasedRLEnv, command_name: str, rate_max: float, accel_end: float, hold_end: float, brake_end: float
+) -> torch.Tensor:
+    """The envelope normalized to ``[0, 1]``, which is what the two shaping terms are gated on.
+
+    It is zero across the whole standing rest and *not* zero during the braking ramp, so the shaping
+    fades out with the rotation instead of being cut at the top of it.
+    """
+    return _spin_target_rate(env, command_name, rate_max, accel_end, hold_end, brake_end) / rate_max
+
+
+def spin_rate_track(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std: float,
+    rate_max: float,
+    accel_end: float,
+    hold_end: float,
+    brake_end: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward tracking the cycle's commanded yaw rate, with a Gaussian tolerance.
+
+    Ported from addendum section 10.3 (``spin_rate_track``). It is the spin task's objective. The
+    stock :func:`isaaclab.envs.mdp.track_ang_vel_z_exp` tracks the *commanded* yaw slot, which on a
+    phase command carries the clock rather than a rate, so the target is derived from the phase here.
+
+    The measured rate is taken in the **body** frame, deliberately: that is what the robot's own gyro
+    reports and therefore what the policy observes.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+        std: Width [rad/s] of the Gaussian on the yaw-rate error.
+        rate_max: Peak yaw rate [rad/s] of the envelope's hold segment.
+        accel_end: Phase at which the launch finishes and the hold begins.
+        hold_end: Phase at which the hold finishes and the braking begins.
+        brake_end: Phase at which the braking finishes and the standing rest begins.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``(0, 1]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    yaw_rate = asset.data.root_link_ang_vel_b.torch[:, 2]
+    target = _spin_target_rate(env, command_name, rate_max, accel_end, hold_end, brake_end)
+    return torch.exp(-torch.square((yaw_rate - target) / std))
+
+
+def spin_rate_l1(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    rate_max: float,
+    accel_end: float,
+    hold_end: float,
+    brake_end: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize the absolute yaw-rate error against the cycle's commanded rate.
+
+    Ported from addendum section 10.3 (``spin_rate_l1``). The constant-gradient companion to
+    :func:`spin_rate_track`, which saturates once the error grows past its width -- and a launch
+    starts three widths away from the hold target.
+
+    The term **negates itself** and is therefore configured with a *positive* weight.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+        rate_max: Peak yaw rate [rad/s] of the envelope's hold segment.
+        accel_end: Phase at which the launch finishes and the hold begins.
+        hold_end: Phase at which the hold finishes and the braking begins.
+        brake_end: Phase at which the braking finishes and the standing rest begins.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The penalty in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    yaw_rate = asset.data.root_link_ang_vel_b.torch[:, 2]
+    target = _spin_target_rate(env, command_name, rate_max, accel_end, hold_end, brake_end)
+    return -torch.abs(yaw_rate - target)
+
+
+def spin_stay_in_place(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    launch_scale: float,
+    accel_end: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Charge the trunk's horizontal speed, discounted while the rotation is being launched.
+
+    Ported from addendum section 10.3 (``spin_stay_in_place``). It is what makes the trick a *spin*
+    rather than a pivot around one skate: a robot rotating about a single blade translates its trunk
+    at roughly the yaw rate times the half-track, which is the signature upstream measured on a
+    calibration run and then tripled this weight to suppress.
+
+    Two details are deliberate. The launch discount lets the policy shuffle its feet to get the
+    rotation started, and the term is **not** gated by the envelope: during the standing rest the
+    charge is at full strength, because that is exactly when the robot is supposed to be still.
+
+    The term returns a **non-negative** cost and is therefore configured with a *negative* weight.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+        launch_scale: Fraction of the cost charged before :attr:`accel_end`, in ``[0, 1]``.
+        accel_end: Phase at which the launch finishes and the full charge begins.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The cost in ``[0, inf)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    cost = torch.sum(torch.square(asset.data.root_link_lin_vel_b.torch[:, :2]), dim=1)
+    phase = _phase_from_command(env, command_name)
+    scale = torch.where(phase < accel_end, torch.full_like(cost, launch_scale), torch.ones_like(cost))
+    return cost * scale
+
+
+def spin_wheel_differential(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    left_wheel_cfg: SceneEntityCfg,
+    right_wheel_cfg: SceneEntityCfg,
+    omega_scale: float,
+    rate_max: float,
+    accel_end: float,
+    hold_end: float,
+    brake_end: float,
+) -> torch.Tensor:
+    """Reward the wheels turning in opposite directions, in the sense that spins counter-clockwise.
+
+    Ported from addendum section 10.3 (``spin_wheel_differential``). This is the mechanism hint: on
+    skates a yaw rotation is produced by driving the two bogies at different rates, and a policy with
+    no differential is pivoting on one blade instead. It is clamped at zero, so a differential in the
+    wrong sense earns nothing rather than being charged, and it is gated by the envelope, so it fades
+    out before the standing rest.
+
+    Note:
+        Upstream derives :attr:`omega_scale` from a half-track it states as 0.0499 m; measured on the
+        pinned roller model the half-track is 0.0393 m at the foot sites and 0.0406 m at the tire
+        centres, so the derivation does not reproduce (addendum section 13.9). The **constant** is
+        reproduced, because it is what the deployed policy trained against; only the arithmetic
+        behind it is not carried over.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+        left_wheel_cfg: The articulation and the left bogie's wheel hinges, averaged.
+        right_wheel_cfg: The articulation and the right bogie's wheel hinges, averaged.
+        omega_scale: Wheel-rate difference [rad/s] the ``tanh`` is scaled to saturate near.
+        rate_max: Peak yaw rate [rad/s] of the envelope's hold segment.
+        accel_end: Phase at which the launch finishes and the hold begins.
+        hold_end: Phase at which the hold finishes and the braking begins.
+        brake_end: Phase at which the braking finishes and the standing rest begins.
+
+    Returns:
+        The reward in ``[0, 1)``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[left_wheel_cfg.name]
+    joint_vel = asset.data.joint_vel.torch
+    left_rate = joint_vel[:, left_wheel_cfg.joint_ids].mean(dim=1)
+    right_rate = joint_vel[:, right_wheel_cfg.joint_ids].mean(dim=1)
+    gate = _spin_gate(env, command_name, rate_max, accel_end, hold_end, brake_end)
+    return gate * torch.tanh(torch.clamp(right_rate - left_rate, min=0.0) / omega_scale)
+
+
+def spin_grounded(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str,
+    rate_max: float,
+    accel_end: float,
+    hold_end: float,
+    brake_end: float,
+    bodies_per_foot: int = 1,
+) -> torch.Tensor:
+    """Reward keeping both blades on the ground, while the cycle is asking for rotation.
+
+    Ported from addendum section 10.3 (``spin_grounded``). It is :func:`grounded_reward` with the
+    envelope in place of the throttle scale, and upstream states the reason in the same file: the
+    swizzle version weights by ``cmd_x``, which on a phase command is ``cos(2*pi*phase)`` and
+    therefore means nothing.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The contact sensor and the bodies to read, in per-foot order.
+        command_name: Name of the phase command term.
+        rate_max: Peak yaw rate [rad/s] of the envelope's hold segment.
+        accel_end: Phase at which the launch finishes and the hold begins.
+        hold_end: Phase at which the hold finishes and the braking begins.
+        brake_end: Phase at which the braking finishes and the standing rest begins.
+        bodies_per_foot: Contact bodies making up one foot. Defaults to 1.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    grounded = (_feet_in_contact(env, sensor_cfg, bodies_per_foot) >= 2.0).float()
+    return grounded * _spin_gate(env, command_name, rate_max, accel_end, hold_end, brake_end)
+
+
+def leg_antisymmetry(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    left_joint_cfg: SceneEntityCfg,
+    right_joint_cfg: SceneEntityCfg,
+    rate_max: float,
+    accel_end: float,
+    hold_end: float,
+    brake_end: float,
+) -> torch.Tensor:
+    """Reward a scissored leg pose while the cycle is asking for rotation.
+
+    Ported from addendum section 10.3 (``leg_antisymmetry``). The mirror image of
+    :func:`leg_symmetry_reward`: because the model uses mirrored left/right sign conventions, a
+    *symmetric* pose reads as ``q_left + q_right ~= 0`` and a *scissor* -- one leg forward, one back,
+    which is what drives a rotation -- reads as ``q_left ~= q_right``.
+
+    It is a training wheel rather than an objective, and the task decays its weight by curriculum so
+    the policy is left to refine its own pumping frequency once the mechanism has been found. The
+    envelope gate is what stops it shaping the standing rest.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the phase command term.
+        left_joint_cfg: The articulation and the left-leg joints, in the order they pair up.
+        right_joint_cfg: The articulation and the right-leg joints, in the matching order.
+        rate_max: Peak yaw rate [rad/s] of the envelope's hold segment.
+        accel_end: Phase at which the launch finishes and the hold begins.
+        hold_end: Phase at which the hold finishes and the braking begins.
+        brake_end: Phase at which the braking finishes and the standing rest begins.
+
+    Returns:
+        The reward in ``(-inf, 0]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[left_joint_cfg.name]
+    joint_pos = asset.data.joint_pos.torch
+    scissor = -torch.abs(joint_pos[:, left_joint_cfg.joint_ids] - joint_pos[:, right_joint_cfg.joint_ids]).mean(dim=-1)
+    return _spin_gate(env, command_name, rate_max, accel_end, hold_end, brake_end) * scissor
