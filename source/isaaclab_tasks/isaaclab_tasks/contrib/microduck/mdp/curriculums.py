@@ -285,3 +285,45 @@ def event_param_stages(
         index = 0
     event_cfg.params.update(param_stages[index]["params"])
     return float(index)
+
+
+def termination_param_stages(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    term_name: str,
+    param_stages: Sequence[dict[str, Any]],
+    inclusive: bool = True,
+) -> float:
+    """Rewrite named parameters of a termination term through a staged schedule.
+
+    Ported from addendum section 3.6 (``termination_param_curriculum``). The hybrid
+    walking-and-recovery task drives one schedule with it, and that schedule is the task's central
+    design: the tilt termination that ends a fall is active while the walk is learned and is then
+    *widened to half a turn*, so a fall stops ending the episode and starts being a recovery to
+    train on. Deleting the term instead would change the episode's termination set mid-run;
+    widening its bound leaves the manager's shape alone.
+
+    :func:`event_param_stages` is the same shallow merge over an event term. The two are kept apart
+    rather than generalized over a manager name, so that a schedule cannot silently address the
+    wrong manager's term of the same name.
+
+    Args:
+        env: The environment instance.
+        env_ids: The environments being updated. Unused: the parameters are global.
+        term_name: Name of the termination term whose parameters are rewritten.
+        param_stages: Stages of the schedule, each a ``{"step": int, "params": dict}`` mapping,
+            ordered by strictly increasing ``"step"``. Before the first boundary the first stage's
+            parameters apply.
+        inclusive: Whether a stage triggers on the step that equals its boundary. Defaults to True,
+            which is what upstream compares with here (see the module note).
+
+    Returns:
+        The index of the stage now in force.
+    """
+    del env_ids
+    term_cfg = env.termination_manager.get_term_cfg(term_name)
+    index = _resolve_stage_index(env, param_stages, "params", "termination_param_stages", inclusive=inclusive)
+    if index is None:
+        index = 0
+    term_cfg.params.update(param_stages[index]["params"])
+    return float(index)
