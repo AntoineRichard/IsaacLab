@@ -57,10 +57,11 @@ Changed
   ``crouch_joint_noise``. Unlike the other four it is a continuum rather than a keyframe: one depth
   draw per environment sets the forward lean, the trunk height and the leg fold together, so the
   bucket seeds resets *across* the crouch-to-stand stretch instead of at one point on it. Existing
-  callers are unaffected -- the probability defaults to 0.0 and the partition stays a single
-  exclusive draw. The velocity-plus-recovery task needs it because that stretch is the last mile of
-  a recovery, and a policy that only reaches it at the tail of a rare good rollout collects almost no
-  data there.
+  callers are unaffected -- the probability defaults to 0.0, the partition stays a single exclusive
+  draw, and a closed bucket skips every crouch draw, so it neither pays for the work nor shifts the
+  random stream the live buckets sample from. The velocity-plus-recovery task needs it because that
+  stretch is the last mile of a recovery, and a policy that only reaches it at the tail of a rare good
+  rollout collects almost no data there.
 * Changed ``feet_air_time_windowed`` and ``com_upward_velocity`` to accept an optional
   ``gate_tilt_above_deg``, which suppresses the first while the robot is toppled and restricts the
   second to a toppled robot. Both default to None and are unchanged for every existing caller.

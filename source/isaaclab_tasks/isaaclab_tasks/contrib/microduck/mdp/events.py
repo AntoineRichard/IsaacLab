@@ -357,8 +357,14 @@ def reset_ground_state(
     is_crouching = bucket >= face_down_prob + face_up_prob + sitting_prob + standing_prob
 
     # One depth draw per environment, shared by the crouching bucket's lean, height and leg fold, so
-    # the three cannot disagree about how deep the crouch is.
-    depth = torch.empty(num_resets, device=env.device).uniform_(*crouch_depth_range)
+    # the three cannot disagree about how deep the crouch is. A caller whose crouch bucket is closed
+    # -- including one whose curriculum has not opened it yet -- skips every crouch draw below, so it
+    # neither pays for the work nor shifts the random stream the live buckets sample from. The zeros
+    # keep the symbol defined for the guarded consumers rather than standing for a shallow crouch.
+    if crouch_prob > 0.0:
+        depth = torch.empty(num_resets, device=env.device).uniform_(*crouch_depth_range)
+    else:
+        depth = torch.zeros(num_resets, device=env.device)
 
     # orientation. The yaw is shared by all four buckets, so an episode's heading does not correlate
     # with the pose it starts from.
@@ -377,17 +383,18 @@ def reset_ground_state(
         upright_quat = quat_from_euler_xyz(tilt[:, 1], tilt[:, 0], yaw)
     else:
         upright_quat = quat_from_euler_xyz(zeros, zeros, yaw)
-    # The crouch leans forward in proportion to its depth. The floor keeps even the shallowest draw
-    # leaning, because the basin this bucket seeds is a *forward* crouch whichever way the fall came.
-    crouch_pitch = depth * crouch_pitch_max
-    crouch_pitch = crouch_pitch + (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * _CROUCH_PITCH_JITTER
-    crouch_pitch = torch.clamp(crouch_pitch, min=_CROUCH_PITCH_MIN)
-    crouch_roll = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * _CROUCH_ROLL_MAX
-    crouch_quat = quat_from_euler_xyz(crouch_roll, crouch_pitch, yaw)
-
     quat = torch.where(is_face_up.unsqueeze(-1), face_up_quat, face_down_quat)
     quat = torch.where((is_sitting | is_standing).unsqueeze(-1), upright_quat, quat)
-    quat = torch.where(is_crouching.unsqueeze(-1), crouch_quat, quat)
+    if crouch_prob > 0.0:
+        # The crouch leans forward in proportion to its depth. The floor keeps even the shallowest
+        # draw leaning, because the basin this bucket seeds is a *forward* crouch whichever way the
+        # fall came.
+        crouch_pitch = depth * crouch_pitch_max
+        crouch_pitch = crouch_pitch + (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * _CROUCH_PITCH_JITTER
+        crouch_pitch = torch.clamp(crouch_pitch, min=_CROUCH_PITCH_MIN)
+        crouch_roll = (torch.rand(num_resets, device=env.device) * 2.0 - 1.0) * _CROUCH_ROLL_MAX
+        crouch_quat = quat_from_euler_xyz(crouch_roll, crouch_pitch, yaw)
+        quat = torch.where(is_crouching.unsqueeze(-1), crouch_quat, quat)
 
     # Height, drawn per bucket. An unconfigured band belongs to a bucket with zero probability --
     # the validation above is what guarantees that -- so the branch it fills selects nothing.
@@ -399,7 +406,8 @@ def reset_ground_state(
     height = _uniform(prone_z_range)
     height = torch.where(is_sitting, _uniform(sitting_z_range), height)
     height = torch.where(is_standing, _uniform(standing_z_range), height)
-    if crouch_z_range is not None:
+    if crouch_prob > 0.0:
+        # the validation above is what makes the band safe to unpack under this guard
         deepest, standing = crouch_z_range
         crouch_height = standing + depth * (deepest - standing)
         crouch_height = crouch_height + torch.rand(num_resets, device=env.device) * _CROUCH_Z_MARGIN
