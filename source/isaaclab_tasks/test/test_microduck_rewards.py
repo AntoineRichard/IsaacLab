@@ -81,12 +81,23 @@ class _DummySensor:
         return _DummyTensorView(((contact_time > 0.0) & (contact_time < dt + abs_tol)).float())
 
 
+class _DummyPostureCommandTerm:
+    """Posture command double, which the sit-stand rewards read the slewed blend off."""
+
+    def __init__(self, alpha: torch.Tensor) -> None:
+        self.alpha = alpha
+
+
 class _DummyCommandManager:
-    def __init__(self, commands: dict[str, torch.Tensor]) -> None:
+    def __init__(self, commands: dict[str, torch.Tensor], terms: dict | None = None) -> None:
         self._commands = commands
+        self._terms = terms or {}
 
     def get_command(self, name: str) -> torch.Tensor:
         return self._commands[name]
+
+    def get_term(self, name: str):
+        return self._terms[name]
 
 
 class _DummyScene:
@@ -109,6 +120,7 @@ class _DummyEnv:
         assets: dict | None = None,
         sensors: dict | None = None,
         commands: dict[str, torch.Tensor] | None = None,
+        command_terms: dict | None = None,
         env_origins: torch.Tensor | None = None,
         step_dt: float = 0.02,
         common_step_counter: int = 0,
@@ -123,7 +135,7 @@ class _DummyEnv:
             sensors or {},
             torch.zeros(num_envs, 3, device=device) if env_origins is None else env_origins,
         )
-        self.command_manager = _DummyCommandManager(commands or {})
+        self.command_manager = _DummyCommandManager(commands or {}, command_terms)
 
     def as_env(self) -> ManagerBasedRLEnv:
         return cast("ManagerBasedRLEnv", self)
@@ -2104,3 +2116,372 @@ def test_fallen_too_long_clears_its_timer_for_the_environments_that_restarted():
     flags = term(env.as_env(), **params)
 
     torch.testing.assert_close(flags, torch.tensor([False, True]))
+
+
+##
+# SitStand: the commanded-posture stack (addendum sections 4.4 and 4.5)
+##
+
+POSTURE_JOINT_NAMES = ["hip", "knee", "ankle"]
+"""Three stand-in leg joints for the posture terms, in the order the selection pins."""
+
+POSTURE_JOINT_IDS = [0, 1, 2]
+
+POSTURE_SIT_POSE = {"knee": 1.0}
+"""A one-joint sitting keyframe. The stand pose is all zeros below, so the keyframe *is* the offset,
+which is what makes every interpolated target below readable by inspection."""
+
+SIT_HEIGHT = 0.060
+STAND_HEIGHT = 0.115
+"""The two rest heights, upstream's measured values, so the interpolated targets are the real ones."""
+
+
+def _posture_env(
+    blend: list[float],
+    flag: list[float] | None = None,
+    joint_pos: list[list[float]] | None = None,
+    heights: list[float] | None = None,
+    tilts_deg: list[float] | None = None,
+    speeds: list[list[float]] | None = None,
+    head_pos: list[list[float]] | None = None,
+    head_command: list[list[float]] | None = None,
+) -> _DummyEnv:
+    """A robot double carrying what the posture terms read, plus a command term exposing the blend.
+
+    ``flag`` defaults to the blend rounded to the nearest posture, which is the steady state the ramp
+    settles into; the tests that care about the difference pass it explicitly.
+    """
+    num_envs = len(blend)
+    zeros = [[0.0] * len(POSTURE_JOINT_NAMES) for _ in range(num_envs)]
+    head_zeros = [[0.0] * 4 for _ in range(num_envs)]
+    robot = _DummyAsset(
+        joint_pos=torch.tensor(joint_pos if joint_pos is not None else zeros),
+        default_joint_pos=torch.tensor(zeros),
+        root_link_pos_w=torch.tensor([[0.0, 0.0, z] for z in (heights or [STAND_HEIGHT] * num_envs)]),
+        root_link_quat_w=torch.tensor([_tilt_quat(deg) for deg in (tilts_deg or [0.0] * num_envs)]),
+        root_link_lin_vel_w=torch.tensor(speeds if speeds is not None else [[0.0, 0.0, 0.0]] * num_envs),
+    )
+    head = _DummyAsset(
+        joint_pos=torch.tensor(head_pos if head_pos is not None else head_zeros),
+        default_joint_pos=torch.tensor(head_zeros),
+    )
+    return _DummyEnv(
+        num_envs=num_envs,
+        assets={"robot": robot, "head": head},
+        commands={
+            "posture": torch.tensor([[value, 0.0, 0.0] for value in (flag if flag is not None else blend)]),
+            "head_pose": torch.tensor(head_command if head_command is not None else head_zeros),
+        },
+        command_terms={"posture": _DummyPostureCommandTerm(torch.tensor(blend))},
+    )
+
+
+def _posture_entity() -> SceneEntityCfg:
+    return _entity("robot", joint_ids=POSTURE_JOINT_IDS, joint_names=POSTURE_JOINT_NAMES)
+
+
+def test_posture_pose_gaussian_interpolates_its_target_with_the_commanded_blend():
+    """The rewarded pose folds in step with the ramp, which is what a mid-transition target means."""
+    # blend 0.4 puts the knee target at 0.4 rad; every environment sits exactly on it
+    env = _posture_env(blend=[0.0, 0.4, 1.0], joint_pos=[[0.0, 0.0, 0.0], [0.0, 0.4, 0.0], [0.0, 1.0, 0.0]])
+
+    reward = mdp.posture_pose_gaussian(
+        env.as_env(), command_name="posture", sit_joint_pos=POSTURE_SIT_POSE, std=0.5, asset_cfg=_posture_entity()
+    )
+
+    torch.testing.assert_close(reward, torch.ones(3))
+
+
+def test_posture_pose_gaussian_averages_the_per_joint_gaussian():
+    """A mean, not a sum, so the scale does not follow how many joints are scored."""
+    std = 0.5
+    # one joint off by exactly ``std``, the other two on target
+    env = _posture_env(blend=[0.4], joint_pos=[[0.0, 0.4 + std, 0.0]])
+
+    reward = mdp.posture_pose_gaussian(
+        env.as_env(), command_name="posture", sit_joint_pos=POSTURE_SIT_POSE, std=std, asset_cfg=_posture_entity()
+    )
+
+    torch.testing.assert_close(reward, torch.tensor([(2.0 + math.exp(-1.0)) / 3.0]))
+
+
+def test_posture_pose_l1_charges_the_mean_absolute_distance_to_the_moving_target():
+    """The constant-gradient driver, negative where the Gaussian is flat."""
+    env = _posture_env(blend=[0.4], joint_pos=[[0.0, 0.7, 0.0]])
+
+    penalty = mdp.posture_pose_l1(
+        env.as_env(), command_name="posture", sit_joint_pos=POSTURE_SIT_POSE, asset_cfg=_posture_entity()
+    )
+
+    # only the knee is off, by 0.3 rad, averaged over three joints
+    torch.testing.assert_close(penalty, torch.tensor([-0.1]))
+
+
+def test_the_posture_terms_leave_joints_outside_the_keyframe_at_the_stand_pose():
+    """Upstream omits the neck from its keyframe on purpose: the head is command-steered in both."""
+    # the hip and the ankle are not in the keyframe, so a full sit still rewards them at zero
+    env = _posture_env(blend=[1.0], joint_pos=[[0.0, 1.0, 0.0]])
+
+    reward = mdp.posture_pose_gaussian(
+        env.as_env(), command_name="posture", sit_joint_pos=POSTURE_SIT_POSE, std=0.5, asset_cfg=_posture_entity()
+    )
+
+    torch.testing.assert_close(reward, torch.ones(1))
+
+
+def test_the_posture_terms_reject_a_keyframe_joint_that_is_not_scored():
+    """Silently ignoring it would reward that joint at the stand pose in both postures."""
+    env = _posture_env(blend=[0.0])
+
+    with pytest.raises(ValueError, match="scored joint selection"):
+        mdp.posture_pose_l1(
+            env.as_env(), command_name="posture", sit_joint_pos={"elbow": 1.0}, asset_cfg=_posture_entity()
+        )
+
+
+def test_the_posture_terms_reject_a_joint_selection_that_is_not_by_name():
+    """The keyframe is keyed by name, so an unnamed selection has nothing to match against."""
+    env = _posture_env(blend=[0.0])
+
+    with pytest.raises(ValueError, match="selected by name"):
+        mdp.posture_pose_l1(
+            env.as_env(),
+            command_name="posture",
+            sit_joint_pos=POSTURE_SIT_POSE,
+            asset_cfg=_entity("robot", joint_ids=POSTURE_JOINT_IDS),
+        )
+
+
+def test_the_posture_terms_reject_a_command_term_that_exposes_no_blend():
+    """Reading the raw flag instead is the exact failure the slew exists to prevent."""
+    env = _posture_env(blend=[0.0])
+    env.command_manager._terms["posture"] = object()
+
+    with pytest.raises(ValueError, match="no 'alpha'"):
+        mdp.posture_pose_l1(
+            env.as_env(), command_name="posture", sit_joint_pos=POSTURE_SIT_POSE, asset_cfg=_posture_entity()
+        )
+
+
+def test_posture_height_gaussian_tracks_the_interpolated_target_height():
+    """Half-way along the ramp the target is the midpoint of the two rest heights."""
+    std = 0.04
+    midpoint = 0.5 * (STAND_HEIGHT + SIT_HEIGHT)
+    env = _posture_env(blend=[0.5, 0.5], heights=[midpoint, midpoint + std])
+
+    reward = mdp.posture_height_gaussian(
+        env.as_env(), command_name="posture", sit_height=SIT_HEIGHT, stand_height=STAND_HEIGHT, std=std
+    )
+
+    torch.testing.assert_close(reward, torch.tensor([1.0, math.exp(-1.0)]))
+
+
+def test_posture_height_l1_charges_the_full_travel_for_resting_in_the_wrong_posture():
+    """This is the transition driver: the Gaussians are numerically flat this far out."""
+    # a robot standing while a full sit is commanded, and the reverse
+    env = _posture_env(blend=[1.0, 0.0], heights=[STAND_HEIGHT, SIT_HEIGHT])
+
+    penalty = mdp.posture_height_l1(
+        env.as_env(), command_name="posture", sit_height=SIT_HEIGHT, stand_height=STAND_HEIGHT
+    )
+
+    travel = STAND_HEIGHT - SIT_HEIGHT
+    torch.testing.assert_close(penalty, torch.tensor([-travel, -travel]))
+
+
+def test_posture_height_measures_the_trunk_above_the_environment_origin():
+    """The environments are laid out on a grid, so a world height would be the grid offset."""
+    env = _posture_env(blend=[0.0], heights=[STAND_HEIGHT + 7.0])
+    env.scene.env_origins[:, 2] = 7.0
+
+    penalty = mdp.posture_height_l1(
+        env.as_env(), command_name="posture", sit_height=SIT_HEIGHT, stand_height=STAND_HEIGHT
+    )
+
+    # single-precision subtraction of a 7 m offset leaves a few hundred nanometres of residue
+    torch.testing.assert_close(penalty, torch.zeros(1), atol=1e-6, rtol=0.0)
+
+
+def test_posture_rise_bootstrap_reads_the_raw_flag_rather_than_the_slewed_blend():
+    """Upstream's one deliberate exception: the bootstrap switches with the button, not the ramp.
+
+    Reading the blend would leave it paying for upward motion through the first seconds of a
+    commanded descent, where it would bid directly against the sit.
+    """
+    # a sit has just been requested, so the flag is 1 while the blend has barely moved
+    env = _posture_env(blend=[0.01], flag=[1.0], heights=[STAND_HEIGHT], speeds=[[0.0, 0.0, 0.05]])
+
+    reward = mdp.posture_rise_bootstrap(env.as_env(), command_name="posture", max_height=0.125, max_vz=0.08)
+
+    torch.testing.assert_close(reward, torch.zeros(1))
+
+
+def test_posture_rise_bootstrap_caps_the_rewarded_speed_and_the_height():
+    """An explosive launch earns no more than a gentle rise, and nothing at all once up."""
+    env = _posture_env(
+        blend=[0.0, 0.0, 0.0],
+        flag=[0.0, 0.0, 0.0],
+        heights=[0.09, 0.09, 0.13],
+        speeds=[[0.0, 0.0, 0.05], [0.0, 0.0, 0.50], [0.0, 0.0, 0.05]],
+    )
+
+    reward = mdp.posture_rise_bootstrap(env.as_env(), command_name="posture", max_height=0.125, max_vz=0.08)
+
+    torch.testing.assert_close(reward, torch.tensor([0.05, 0.08, 0.0]))
+
+
+def test_the_two_speed_caps_charge_only_past_their_own_cap_and_only_in_their_own_direction():
+    """Both kernels negate themselves, which is why the configuration weights them positively."""
+    env = _posture_env(
+        blend=[0.0] * 4,
+        speeds=[[0.0, 0.0, -0.20], [0.0, 0.0, -0.05], [0.0, 0.0, 0.20], [0.0, 0.0, 0.08]],
+    )
+
+    descent = mdp.trunk_downward_velocity_penalty(env.as_env(), max_down_vel=0.05)
+    rise = mdp.trunk_upward_velocity_penalty(env.as_env(), max_up_vel=0.08)
+
+    torch.testing.assert_close(descent, torch.tensor([-0.15, 0.0, 0.0, 0.0]))
+    torch.testing.assert_close(rise, torch.tensor([0.0, 0.0, -0.12, 0.0]))
+    assert bool((descent <= 0.0).all()) and bool((rise <= 0.0).all())
+
+
+def test_upright_linear_at_height_fades_out_over_the_seated_range():
+    """Full upright incentive while standing tall, nothing once the sit is committed to."""
+    env = _posture_env(blend=[0.0] * 3, heights=[0.10, 0.075, 0.0875], tilts_deg=[0.0, 0.0, 0.0])
+
+    reward = mdp.upright_linear_at_height(env.as_env(), height_low=0.075, height_high=0.10)
+
+    # the midpoint of the gate window is the smoothstep's own midpoint, 0.5
+    torch.testing.assert_close(reward, torch.tensor([1.0, 0.0, 0.5]), atol=1e-6, rtol=0.0)
+
+
+def test_upright_linear_at_height_keeps_the_sign_of_the_tilt_cosine():
+    """It is the linear cosine rather than a Gaussian, so an inverted trunk is a cost, not a zero."""
+    env = _posture_env(blend=[0.0, 0.0], heights=[0.115, 0.115], tilts_deg=[90.0, 180.0])
+
+    reward = mdp.upright_linear_at_height(env.as_env(), height_low=0.075, height_high=0.10)
+
+    torch.testing.assert_close(reward, torch.tensor([0.0, -1.0]), atol=1e-6, rtol=0.0)
+
+
+def test_posture_stillness_pays_only_once_the_ramp_has_finished():
+    """Without the ramp gate it would pay for holding still *anywhere* mid-transition."""
+    at_rest = dict(heights=[STAND_HEIGHT, STAND_HEIGHT], speeds=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    # both robots are motionless at the standing height; only the first has finished its ramp
+    env = _posture_env(blend=[0.0, 0.2], flag=[0.0, 0.0], **at_rest)
+
+    reward = mdp.posture_stillness(
+        env.as_env(),
+        command_name="posture",
+        sit_height=SIT_HEIGHT,
+        stand_height=STAND_HEIGHT,
+        band_full=0.012,
+        band_zero=0.03,
+        vel_std=0.05,
+        tilt_full_deg=25.0,
+        tilt_zero_deg=60.0,
+    )
+
+    torch.testing.assert_close(reward, torch.tensor([1.0, 0.0]))
+
+
+def test_posture_stillness_pays_nothing_for_a_motionless_flop():
+    """A robot lying still is inside the seated height band and perfectly quiet; the tilt gate is
+    what denies it, and it is upstream's own run-2 exploit."""
+    env = _posture_env(
+        blend=[1.0, 1.0],
+        flag=[1.0, 1.0],
+        heights=[SIT_HEIGHT, SIT_HEIGHT],
+        tilts_deg=[0.0, 60.0],
+    )
+
+    reward = mdp.posture_stillness(
+        env.as_env(),
+        command_name="posture",
+        sit_height=SIT_HEIGHT,
+        stand_height=STAND_HEIGHT,
+        band_full=0.012,
+        band_zero=0.03,
+        vel_std=0.05,
+        tilt_full_deg=25.0,
+        tilt_zero_deg=60.0,
+    )
+
+    torch.testing.assert_close(reward, torch.tensor([1.0, 0.0]), atol=1e-6, rtol=0.0)
+
+
+def test_posture_stillness_gates_on_the_tilt_cosine_rather_than_on_the_angle():
+    """Upstream carries two tilt-gate conventions and uses the cosine one for its stillness terms.
+
+    Worked out from the formula rather than from the implementation: at the angular midpoint of the
+    25-to-60-degree window the cosine has covered 0.584 of its span, and the smoothstep of that is
+    0.639 -- where the angle-space gate the late-phase penalties use would return exactly 0.5.
+    """
+    env = _posture_env(blend=[1.0], flag=[1.0], heights=[SIT_HEIGHT], tilts_deg=[42.5])
+
+    reward = mdp.posture_stillness(
+        env.as_env(),
+        command_name="posture",
+        sit_height=SIT_HEIGHT,
+        stand_height=STAND_HEIGHT,
+        band_full=0.012,
+        band_zero=0.03,
+        vel_std=0.05,
+        tilt_full_deg=25.0,
+        tilt_zero_deg=60.0,
+    )
+
+    span = math.cos(math.radians(25.0)) - math.cos(math.radians(60.0))
+    ratio = (math.cos(math.radians(42.5)) - math.cos(math.radians(60.0))) / span
+    torch.testing.assert_close(reward, torch.tensor([ratio * ratio * (3.0 - 2.0 * ratio)]), atol=1e-6, rtol=0.0)
+
+
+def test_posture_composite_is_one_at_the_commanded_goal_state():
+    """Height, tilt, pose and head all on target, in both postures."""
+    env = _posture_env(
+        blend=[0.0, 1.0],
+        heights=[STAND_HEIGHT, SIT_HEIGHT],
+        joint_pos=[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+    )
+
+    reward = mdp.posture_composite(
+        env.as_env(),
+        command_name="posture",
+        sit_joint_pos=POSTURE_SIT_POSE,
+        sit_height=SIT_HEIGHT,
+        stand_height=STAND_HEIGHT,
+        height_std=0.03,
+        upright_std=0.40,
+        pose_std=0.40,
+        head_std=0.40,
+        head_command_name="head_pose",
+        asset_cfg=_posture_entity(),
+        head_asset_cfg=_entity("head", joint_ids=HEAD_JOINT_IDS, joint_names=["a", "b", "c", "d"]),
+    )
+
+    torch.testing.assert_close(reward, torch.ones(2), atol=1e-6, rtol=0.0)
+
+
+def test_posture_composite_collapses_when_any_one_factor_is_missed():
+    """The product is the point: two out of four earns almost nothing, so partial sums never pay."""
+    common = dict(
+        command_name="posture",
+        sit_joint_pos=POSTURE_SIT_POSE,
+        sit_height=SIT_HEIGHT,
+        stand_height=STAND_HEIGHT,
+        height_std=0.03,
+        upright_std=0.40,
+        pose_std=0.40,
+        head_std=0.40,
+        head_command_name="head_pose",
+        asset_cfg=_posture_entity(),
+        head_asset_cfg=_entity("head", joint_ids=HEAD_JOINT_IDS, joint_names=["a", "b", "c", "d"]),
+    )
+    # a plank at 70 degrees; height, pose and head are all perfect
+    plank = mdp.posture_composite(_posture_env(blend=[0.0], tilts_deg=[70.0]).as_env(), **common)
+    # the head dangling 1.2 rad below its command, everything else perfect -- upstream's own
+    # observed exploit, which is why the head factor exists at all
+    dangling = mdp.posture_composite(_posture_env(blend=[0.0], head_pos=[[1.2, 1.2, 1.2, 1.2]]).as_env(), **common)
+
+    assert float(plank.item()) < 0.05
+    assert float(dangling.item()) < 0.05
