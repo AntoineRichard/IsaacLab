@@ -45,10 +45,10 @@ from isaaclab.utils import math as math_utils
 from isaaclab.utils.string import resolve_matching_names_values
 
 from . import observations as _observations
-from .events import roulade_roll_state
+from .events import ball_kick_direction, roulade_roll_state
 
 if TYPE_CHECKING:
-    from isaaclab.assets import Articulation
+    from isaaclab.assets import Articulation, RigidObject
     from isaaclab.envs import ManagerBasedRLEnv
     from isaaclab.sensors import ContactSensor
 
@@ -2498,3 +2498,95 @@ class heading_hold_reward(ManagerTermBase):
         self._is_fresh[:] = False
         error = math_utils.wrap_to_pi(heading - self._reference_heading)
         return torch.exp(-torch.square(error) / std**2)
+
+
+##
+# Ball-kick kernels.
+##
+
+
+def _ball_forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Signed ball speed [m/s] along the episode's frozen kick direction.
+
+    Both kick terms read this one projection, so they cannot disagree about which way "forward" is.
+    Non-finite values are zeroed, as upstream does in both terms: a diverged free body is not
+    NaN-checked anywhere in this task, and an unguarded NaN here would poison the whole reward sum.
+    """
+    ball: RigidObject = env.scene[asset_cfg.name]
+    velocity_xy = ball.data.root_link_lin_vel_w.torch[:, :2]
+    forward = (velocity_xy * ball_kick_direction(env)).sum(dim=1)
+    return torch.nan_to_num(forward, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def ball_forward_velocity(
+    env: ManagerBasedRLEnv, max_speed: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("ball")
+) -> torch.Tensor:
+    """Reward the ball rolling away along the direction the robot was facing at reset.
+
+    Ported from addendum section 6.3 (``ball_forward_velocity``). There is no stock counterpart:
+    every Isaac Lab velocity term tracks a *commanded* velocity of the robot itself, where this pays
+    a second body's speed along a frozen world direction and pays nothing for backwards motion.
+
+    The cap is what makes this a target rather than a race. Paired with
+    :func:`ball_speed_overshoot_penalty` at the same speed it forms a one-sided plateau: the reward
+    grows linearly up to :attr:`max_speed` and the penalty erodes it beyond, which is upstream's
+    "kick it *this* hard" landscape.
+
+    Args:
+        env: The environment instance.
+        max_speed: Ball speed [m/s] at which the reward saturates.
+        asset_cfg: The rigid object whose linear velocity is read.
+
+    Returns:
+        The reward in ``[0, max_speed]``. Shape is (num_envs,).
+    """
+    return _ball_forward_speed(env, asset_cfg).clamp(0.0, max_speed)
+
+
+def ball_speed_overshoot_penalty(
+    env: ManagerBasedRLEnv,
+    target_speed: float,
+    max_penalty: float = 5.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("ball"),
+) -> torch.Tensor:
+    """Charge the ball's forward speed above a target, up to a cap.
+
+    Ported from addendum section 6.3 (``ball_speed_overshoot_penalty``). The term returns a
+    **non-negative** overshoot and is therefore configured with a *negative* weight, unlike the
+    self-negating stand-up penalties.
+
+    The cap bounds the worst single step a wild kick can cost, which is what keeps one lucky
+    smash from dominating a whole episode's return.
+
+    Args:
+        env: The environment instance.
+        target_speed: Ball speed [m/s] above which the overshoot is charged.
+        max_penalty: Largest overshoot [m/s] charged in one step. Defaults to 5.0, upstream's value.
+        asset_cfg: The rigid object whose linear velocity is read.
+
+    Returns:
+        The overshoot in ``[0, max_penalty]``. Shape is (num_envs,).
+    """
+    return (_ball_forward_speed(env, asset_cfg) - target_speed).clamp(0.0, max_penalty)
+
+
+def single_foot_grounded_reward(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Reward one named foot being on the ground, as a 0-or-1 flag.
+
+    Ported from addendum section 6.3 (``single_foot_grounded_reward``). It is the ball-kick task's
+    balance signal: the support foot has to stay planted through a fast one-legged swing. The stock
+    :func:`isaaclab.envs.mdp.undesired_contacts` reads the *net* contact force, which cannot tell the
+    floor from the ball rolling against the sole, so this reads the sensor's per-partner force matrix
+    instead -- the sensor is filtered against the terrain, exactly as upstream's is.
+
+    Upstream reads its sensor's boolean ``found`` field and clamps the slot count to one; the flag
+    here is the same signal, since the shapes carry no collision margin.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: The terrain-filtered contact sensor and the sensing objects to read.
+
+    Returns:
+        Whether the foot is on the ground, as 0.0 or 1.0. Shape is (num_envs,).
+    """
+    return _any_contact(env, sensor_cfg, filtered=True).float()
