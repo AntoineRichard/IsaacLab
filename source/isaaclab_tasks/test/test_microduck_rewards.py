@@ -2415,7 +2415,7 @@ def test_posture_stillness_gates_on_the_tilt_cosine_rather_than_on_the_angle():
 
     Worked out from the formula rather than from the implementation: at the angular midpoint of the
     25-to-60-degree window the cosine has covered 0.584 of its span, and the smoothstep of that is
-    0.639 -- where the angle-space gate the late-phase penalties use would return exactly 0.5.
+    0.625 -- where the angle-space gate the late-phase penalties use would return exactly 0.5.
     """
     env = _posture_env(blend=[1.0], flag=[1.0], heights=[SIT_HEIGHT], tilts_deg=[42.5])
 
