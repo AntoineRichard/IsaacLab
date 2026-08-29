@@ -595,7 +595,12 @@ def test_the_rise_stack_scores_a_stand_far_above_a_fallen_start():
         robot = unwrapped.scene["robot"]
 
         def place(height: float, pitch: float) -> None:
-            """Put the robot at a trunk height with a pitch about the body ``y`` axis, and settle it.
+            """Put the robot at a trunk height with a pitch about the body ``y`` axis, and refresh
+            the buffers.
+
+            Nothing steps: the placements are read at their measured rest heights, so letting them
+            settle would let the face-down and face-up poses drift before the reward is scored --
+            which is the thing the placement is controlling for.
 
             Isaac Lab's root pose is ``(x, y, z, qx, qy, qz, qw)``, so a rotation about ``y`` fills
             columns 4 and 6 -- not the columns upstream's ``(w, x, y, z)`` convention would suggest.
