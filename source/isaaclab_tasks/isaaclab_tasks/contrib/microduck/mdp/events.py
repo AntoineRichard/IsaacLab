@@ -13,6 +13,7 @@ formulas are quoted in sections 2.6 and 5 of ``artifacts/microduck/upstream_refe
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import torch
@@ -34,6 +35,9 @@ _GROUND_STATE_JOINT_IDS_ATTR = "_microduck_ground_state_joint_ids"
 
 _ROULADE_STATE_ATTR = "_microduck_roulade_state"
 """Attribute the forward-roll bookkeeping is cached under on the environment."""
+
+_MOUTH_PAYLOAD_ATTR = "_microduck_mouth_payload"
+"""Attribute the per-environment ground-pick payload mass is cached under on the environment."""
 
 _CROUCH_PITCH_JITTER = math.radians(10.0)
 """Half-width [rad] of the pitch noise added to a crouch spawn's depth-scaled forward lean.
@@ -813,3 +817,117 @@ def reset_ball_in_front_of_foot(
     direction = ball_kick_direction(env)
     direction[env_ids, 0] = cos_yaw
     direction[env_ids, 1] = sin_yaw
+
+
+def mouth_payload(env: ManagerBasedEnv) -> torch.Tensor:
+    """The per-environment mass [kg] the ground-pick robot is carrying in its mouth.
+
+    Lazily allocated on first use and cached on the environment, as the encoder bias is: the reset
+    event that draws it and the interval event that applies it are two different terms that have to
+    address one buffer.
+
+    Args:
+        env: The environment instance.
+
+    Returns:
+        The payload mass [kg]. Shape is (num_envs,).
+    """
+    payload = getattr(env, _MOUTH_PAYLOAD_ATTR, None)
+    if payload is None:
+        payload = torch.zeros(env.num_envs, device=env.device)
+        setattr(env, _MOUTH_PAYLOAD_ATTR, payload)
+    return payload
+
+
+def sample_mouth_payload(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    min_kg: float,
+    max_kg: float,
+) -> None:
+    """Draw the mass [kg] the robot is asked to lift in its mouth this episode.
+
+    Ported from addendum section 5.6 (``sample_mouth_payload``). It is domain randomization over the
+    *task*, not over the plant: the robot never knows what it picked up, so a policy trained across
+    the range has to lift whatever it is handed rather than one calibrated weight.
+
+    Args:
+        env: The environment instance.
+        env_ids: Environments to redraw. None redraws every environment.
+        min_kg: Lower bound of the payload mass [kg].
+        max_kg: Upper bound of the payload mass [kg].
+    """
+    payload = mouth_payload(env)
+    if env_ids is None:
+        env_ids = slice(None)
+    sampled = torch.rand(payload[env_ids].shape, device=env.device)
+    payload[env_ids] = sampled * (max_kg - min_kg) + min_kg
+
+
+def apply_mouth_payload_force(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    mouth_offset_b: Sequence[float],
+    command_name: str,
+    hold_end: float,
+    ramp: float = 0.05,
+    gravity: float = 9.81,
+) -> None:
+    """Hang the drawn payload off the mouth tip, from the moment the robot starts standing back up.
+
+    Ported from addendum section 5.6 (``apply_mouth_payload_force``). The payload is not an asset:
+    it is an equivalent wrench, a 10-40 g point mass at the mouth tip, and at the end of a head on
+    the end of a neck it is a real moment about the ankles during the return. Its gate ramps in over
+    ``ramp`` of a cycle from ``hold_end`` -- the moment the mouth closes on the object -- and stays
+    on for the rest of the cycle, dropping abruptly at the wrap.
+
+    Note:
+        Upstream implements this as a **weight-zero reward term** whose function writes an external
+        wrench every step (addendum section 13.20). This port registers it where Isaac Lab writes
+        state -- as an interval event on a zero-width interval, so it fires every control step for
+        every environment -- because a zero-weight reward that is load-bearing physics is exactly the
+        thing a later cleanup deletes. The consequence is that the wrench is written after the
+        command manager advances the clock rather than before, so it lags upstream by one control
+        step out of the 200 in a cycle.
+
+    Args:
+        env: The environment instance.
+        env_ids: Environments to write. None writes every environment.
+        asset_cfg: The articulation and the single body the mouth tip is attached to.
+        mouth_offset_b: Mouth-tip position [m] in that body's frame.
+        command_name: Name of the phase command term.
+        hold_end: Phase at which the low dwell finishes, the mouth closes and the payload appears.
+        ramp: Fraction of a cycle the payload fades in over. Defaults to 0.05, upstream's value.
+        gravity: Gravitational acceleration [m/s^2] the payload weighs under. Defaults to 9.81,
+            upstream's value.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    if asset_cfg.body_names is None or len(asset_cfg.body_ids) != 1:
+        raise ValueError(
+            "The mouth payload hangs off one body; 'asset_cfg' must select exactly one by name."
+            f" Received: {asset_cfg.body_names}."
+        )
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+
+    command = env.command_manager.get_command(command_name)
+    phase = (torch.atan2(command[:, 1], command[:, 0]) / (2.0 * math.pi)) % 1.0
+    gate = ((phase - hold_end) / max(ramp, 1e-6)).clamp(0.0, 1.0)
+
+    body_pos_w = asset.data.body_link_pos_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    body_quat_w = asset.data.body_link_quat_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    offset = torch.tensor(tuple(mouth_offset_b), dtype=body_pos_w.dtype, device=body_pos_w.device)
+    mouth_pos_w = body_pos_w + quat_apply(body_quat_w, offset.expand_as(body_pos_w))
+
+    forces = torch.zeros_like(body_pos_w)
+    forces[:, 2] = -gate * mouth_payload(env) * gravity
+    # The composer resolves the moment about the body's centre of mass itself, which is upstream's
+    # explicit ``cross(p_mouth - p_com, F)`` without the chance of reading the wrong frame.
+    asset.permanent_wrench_composer.set_forces_and_torques_index(
+        forces=forces[env_ids].unsqueeze(1),
+        positions=mouth_pos_w[env_ids].unsqueeze(1),
+        body_ids=asset_cfg.body_ids,
+        env_ids=env_ids,
+        is_global=True,
+    )

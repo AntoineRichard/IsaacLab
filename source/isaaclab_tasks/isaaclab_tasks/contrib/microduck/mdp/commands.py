@@ -497,3 +497,143 @@ class SitStandCommandCfg(UniformVelocityCommandCfg):
 
     stand_height: float = 0.115
     """Trunk height [m] of the standing rest, used to seed the blend from a spawn pose."""
+
+
+class GroundPickPhaseCommand(UniformVelocityCommand):
+    """Open-loop cycle clock riding in the twist slot: ``[cos(2*pi*phi), sin(2*pi*phi), 0]``.
+
+    Ported from addendum section 5.3 (``GroundPickPhaseCommand``). The ground-pick task has no
+    velocity to track: what the policy is told is *where in a fixed 4 s bend-and-return cycle it
+    currently is*, and the three-wide twist slot carries that phase as a unit vector on the circle so
+    the deployed 61-wide observation keeps its shape. The encoding is deliberate -- a raw ``phi`` in
+    ``[0, 1)`` would present the wrap from 0.999 to 0.0 as the largest jump in the input, where
+    ``(cos, sin)`` is continuous across it.
+
+    The clock is **open loop**. It advances by ``dt / period`` every control step and neither the
+    robot's state nor the resampling timer can move it, so a policy trained here follows a schedule
+    rather than a goal; on the robot the runtime plays the same clock from a button press.
+
+    The starting phase is drawn uniformly at every reset by default
+    (:attr:`GroundPickPhaseCommandCfg.randomize_phase`), which decorrelates the environments. With it
+    off, every episode starts standing at phase 0, which is what a task whose deployed cycle begins
+    on a button press wants instead.
+
+    Note:
+        Upstream's ``compute`` does not call its parent's, so the inherited resample timer, the
+        standing-environment zeroing and the heading controller never run; this port reproduces that
+        rather than leaving inert machinery live. It also writes the command from :meth:`reset` where
+        upstream leaves the previous episode's value in the buffer until the next ``compute``. That
+        is unobservable in a rollout -- both stacks compute observations after the command manager --
+        but it means the buffer and :attr:`phase` never disagree.
+    """
+
+    cfg: GroundPickPhaseCommandCfg
+    """Configuration for the command term."""
+
+    def __init__(self, cfg: GroundPickPhaseCommandCfg, env: ManagerBasedRLEnv):
+        """Initialize the command term.
+
+        Args:
+            cfg: The configuration parameters for the command term.
+            env: The environment object.
+        """
+        super().__init__(cfg, env)
+
+        self._phase = torch.zeros(self.num_envs, device=self.device)
+        # Upstream reports no velocity-tracking metrics here, for the reason
+        # :class:`SitStandCommand` gives: the slot carries a phase, so the inherited error metrics
+        # would score a comparison that was never made.
+        self.metrics.clear()
+        self._write_command()
+
+    def __str__(self) -> str:
+        msg = super().__str__().replace("UniformVelocityCommand:", "GroundPickPhaseCommand:", 1)
+        msg += f"\n\tCycle period: {self.cfg.period} s"
+        msg += f"\n\tRandomized start phase: {self.cfg.randomize_phase}"
+        return msg
+
+    """
+    Properties
+    """
+
+    @property
+    def phase(self) -> torch.Tensor:
+        """Position in the cycle, in ``[0, 1)``. Shape is (num_envs,).
+
+        The reward terms recover this from the command with ``atan2`` rather than reading it here,
+        which is what upstream does and what keeps them readable by a deployed runtime that only has
+        the command vector. This property is the same quantity without the round trip.
+        """
+        return self._phase
+
+    """
+    Implementation specific functions.
+    """
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
+        # Skips ``UniformVelocityCommand.reset``, which would finalize the tracking metrics cleared
+        # in ``__init__`` and raise on their absence; see :meth:`SitStandCommand.reset` for the cost
+        # of that skip.
+        extras = CommandTerm.reset(self, env_ids)
+        if env_ids is None:
+            env_ids = slice(None)
+        if self.cfg.randomize_phase:
+            self._phase[env_ids] = torch.rand_like(self._phase[env_ids])
+        else:
+            self._phase[env_ids] = 0.0
+        self._write_command()
+        return extras
+
+    def _update_metrics(self):
+        pass
+
+    def _update_command(self):
+        pass  # no heading controller and no standing-environment machinery on a phase clock
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        pass  # the phase is continuous, so there is nothing to resample
+
+    def compute(self, dt: float):
+        """Advance the clock by one control step and re-encode it into the command slot.
+
+        Args:
+            dt: Time [s] since the last call.
+        """
+        self._phase = (self._phase + dt / max(self.cfg.period, 1e-6)) % 1.0
+        self._write_command()
+
+    """
+    Helper functions.
+    """
+
+    def _write_command(self) -> None:
+        """Encode the current phase into the three-wide twist slot."""
+        angle = 2.0 * math.pi * self._phase
+        self.vel_command_b[:, 0] = torch.cos(angle)
+        self.vel_command_b[:, 1] = torch.sin(angle)
+        self.vel_command_b[:, 2] = 0.0
+
+
+@configclass
+class GroundPickPhaseCommandCfg(UniformVelocityCommandCfg):
+    """Configuration for the ground-pick phase command term.
+
+    Please refer to the :class:`GroundPickPhaseCommand` class for more details.
+
+    The inherited velocity ranges, the resampling time and the heading and standing-environment
+    fractions are all inert: the clock writes the slot directly and the overridden ``compute`` never
+    reaches the machinery that would read them.
+    """
+
+    class_type: type[GroundPickPhaseCommand] = GroundPickPhaseCommand
+
+    period: float = 4.0
+    """Length [s] of one bend-and-return cycle. Defaults to 4.0, upstream's ``GP_PERIOD``."""
+
+    randomize_phase: bool = True
+    """Whether each episode starts at a uniformly drawn phase. Defaults to True.
+
+    Upstream's default and the ground-pick task's value, so that environments do not oscillate in
+    lockstep. Its two roller trick tasks pass False instead, because their deployed cycle starts from
+    a standing button press.
+    """
