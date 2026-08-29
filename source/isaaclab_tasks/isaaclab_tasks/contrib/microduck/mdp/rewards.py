@@ -3440,8 +3440,8 @@ def upright_linear_at_height(
         The reward in ``[-1, 1]``. Shape is (num_envs,).
     """
     asset: Articulation = env.scene[asset_cfg.name]
-    upright = 1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch)
-    return upright * _height_gate(_root_height_above_ground(env, asset), height_low, height_high)
+    uprightness = 1.0 - _trunk_tilt_squared(asset.data.root_link_quat_w.torch)
+    return uprightness * _height_gate(_root_height_above_ground(env, asset), height_low, height_high)
 
 
 def posture_stillness(
@@ -4098,7 +4098,7 @@ def crouch_forward_lean(
         env: The environment instance.
         command_name: Name of the phase command term.
         target_pitch: Sine of the requested nose-down lean, in ``[-1, 1]``.
-        std: Width of the Gaussian on the lean error.
+        std: Width [-] of the Gaussian on the lean error.
         descent_end: Phase at which the descent finishes and the low dwell begins.
         hold_end: Phase at which the low dwell finishes and the rise begins.
         rise_end: Phase at which the rise finishes and the standing rest begins.
