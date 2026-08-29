@@ -155,6 +155,14 @@
             ["IsaacContrib-Roulade-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-StandUp-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Velocity-Flat-MicroDuck-Rollers", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-BallKick-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-GroundPick-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-RollerCrouch-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-RollerStandUp-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-SitStand-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-Spin-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-VelStand-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-Velocity-Swizzle-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
         ];
         // END-AUTO-GENERATED: environment-browser-task-rows
 
