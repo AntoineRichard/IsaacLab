@@ -84,8 +84,13 @@ Changed
   ground-pick recipe does not, and that argument is the only difference between the two uses: with
   the gate off, both feet are asked to lie flat at every phase, which is what a gesture with no swing
   phase wants.
-* Did not carry upstream's ``soft_landing`` slot, whose ``-1e-5`` restates a template default this
-  port's shared base never had. It is worth naming for what it demonstrates rather than what it
-  weighs: it is gated on the *magnitude* of the twist command, and this task's twist is a unit vector
-  on the circle, so an inherited "only while moving" gate is permanently open on any phase-command
-  environment.
+* Normalized ``feet_grounded_reward`` by the number of selected sensing objects, where upstream sums
+  its per-foot contact flags and divides by a hard-coded two. Identical with two feet selected, and
+  it does not silently mis-scale if the selection changes.
+* Did not carry upstream's ``soft_landing`` slot. The term is live upstream at ``-1e-5`` -- what is a
+  no-op there is the *assignment*, because the mjlab base template already ships that weight -- and
+  this port's shared base carries no such term, so dropping it is a real deviation of order ``1e-5``
+  against a stack summing to order 10. It is worth naming for what it demonstrates rather than what
+  it weighs: it is gated on the *magnitude* of the twist command, and this task's twist is a unit
+  vector on the circle, so an inherited "only while moving" gate is permanently open on any
+  phase-command environment.
