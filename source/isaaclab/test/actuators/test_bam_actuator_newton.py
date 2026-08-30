@@ -725,6 +725,58 @@ def test_a_zero_mask_reproduces_the_plain_controller_bit_for_bit(device):
     assert engaged_gap > 1e-3, "raising the mask left the torque unchanged"
 
 
+@pytest.mark.parametrize("device", test_devices())
+def test_a_zero_mask_dereferences_no_second_joint_at_all(device):
+    """A DOF with no modelled play must not read the joint its index nominally points at.
+
+    "Read it and weight it by zero" is not the same guarantee as "do not read it". A NaN
+    survives the zero weight and reaches the firmware error, where the duty-cycle clamps
+    *launder* it into a finite, full-scale torque -- which is how the model has always treated
+    its own joint's NaN, and is exactly why the blast radius matters: a shared read would kick
+    every DOF that takes it at full effort, with no NaN left anywhere in the output for a
+    termination term to catch. The safe radius is zero DOFs, so a masked-off entry is not
+    dereferenced at all.
+
+    Two topologies are pinned. An **unbound** controller is the state of every existing BAM
+    Newton plant, none of which asked for backlash: one environment's broken joint may not reach
+    another's torque. A **bound but zero-masked** DOF is what a servo whose model has no play
+    hinge gets from the name-convention lookup: the joint it points at is arbitrary, so nothing
+    it holds may be observable.
+    """
+    num_envs = 4
+    rng = np.random.default_rng(23)
+    servo_pos = rng.uniform(-0.4, 0.4, (num_envs, 2))
+    servo_vel = rng.uniform(-2.0, 2.0, (num_envs, 2))
+    target = rng.uniform(-0.4, 0.4, (num_envs, 2))
+    play_pos = rng.uniform(-PLAY_LIMIT, PLAY_LIMIT, (num_envs, 2))
+
+    # An unbound controller holds index 0 for every DOF of every environment, so environment 0's
+    # first joint is the slot a broadcast read would land on.
+    poisoned_servo = servo_pos.copy()
+    poisoned_servo[0, 0] = np.nan
+    clean, poisoned = (_Harness(_make_cfg(), num_envs=num_envs, device=device) for _ in range(2))
+    for step in range(3):
+        reference = clean.step(servo_pos, servo_vel, target).copy()
+        got = poisoned.step(poisoned_servo, servo_vel, target)
+        np.testing.assert_array_equal(
+            got[1:], reference[1:], err_msg=f"an unbound controller leaked environment 0's NaN at step {step}"
+        )
+
+    # A zero-masked DOF points at a real play hinge, whose state must be equally invisible.
+    poisoned_play = play_pos.copy()
+    poisoned_play[0, 0] = np.nan
+    vel, cmd = _interleave(servo_vel, np.zeros((num_envs, 2))), _interleave(target, np.zeros((num_envs, 2)))
+    clean, poisoned = (_make_bound_harness(device, [0.0, 0.0], num_envs=num_envs) for _ in range(2))
+    for step in range(3):
+        reference = clean.step(_interleave(servo_pos, play_pos), vel, cmd).copy()
+        got = poisoned.step(_interleave(servo_pos, poisoned_play), vel, cmd)
+        np.testing.assert_array_equal(
+            got[:, SERVO_SLOTS],
+            reference[:, SERVO_SLOTS],
+            err_msg=f"a zero-masked DOF read the hinge it points at, at step {step}",
+        )
+
+
 @pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
 def test_the_bound_encoder_view_replays_from_a_cuda_graph(device):
     """The encoder feedback must run inside a captured graph, reading the live binding.

@@ -186,9 +186,13 @@ def _bam_motor_kernel(
     # and the torque equation solely through the back-EMF term.
     scaled_vel = velocities[vel_indices[i]] * kd_scale[i]
 
-    # The encoder sits on the far side of whatever play was bound, so it reads the sum. An
-    # unbound DOF carries a zero mask, which leaves the term exactly zero.
-    measured = positions[pos_indices[i]] + positions[backlash_pos_indices[i]] * backlash_mask[i]
+    # The encoder sits on the far side of whatever play was bound, so it reads the sum. The
+    # mask gates the *read*, not just its weight: a zero-weighted read of a broken joint is
+    # still a NaN that the duty clamps below would launder into a finite full-scale torque, so
+    # an unbound DOF must touch no second slot at all to degrade to the plain servo exactly.
+    measured = positions[pos_indices[i]]
+    if backlash_mask[i] != 0.0:
+        measured += positions[backlash_pos_indices[i]] * backlash_mask[i]
 
     duty = (target - measured) * (kp_fw[i] * kp_scale[i]) * error_gain[i]
     if max_current[i] > 0.0:
@@ -414,12 +418,16 @@ class ControllerBam(Controller):
     backlash_pos_indices: wp.array[wp.uint32] | None
     """Position slot each DOF's encoder reads through, shape ``(N,)``, or None before finalize.
 
-    Written by :meth:`bind_backlash_indices`; zero, and inert under the zero
-    :attr:`backlash_mask` beside it, until then.
+    Written by :meth:`bind_backlash_indices`. Read only where :attr:`backlash_mask` is nonzero,
+    so the entry of a DOF without modelled play is never dereferenced.
     """
 
     backlash_mask: wp.array[float] | None
-    """Whether each DOF's encoder reads through :attr:`backlash_pos_indices` [-], shape ``(N,)``."""
+    """Whether each DOF's encoder reads through :attr:`backlash_pos_indices` [-], shape ``(N,)``.
+
+    Zero gates the read away entirely rather than weighting it by zero, so a DOF without
+    modelled play is unaffected by any state the joint it nominally points at may hold.
+    """
 
     _PER_DOF_PARAMS = (
         "kp_fw",
@@ -681,9 +689,8 @@ class ControllerBam(Controller):
         self.viscous_damping = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self.effective_vin = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self.motor_torque = wp.zeros(num_actuators, dtype=wp.float32, device=device)
-        # Slot zero is the placeholder for a DOF whose encoder reads nothing but its own joint:
-        # it is always a valid read, and the zero mask beside it discards the value. Matches
-        # the reference implementation, which fills the same map with zeros.
+        # The indices start at zero and the mask beside them gates every read, so an unbound
+        # controller dereferences no second slot at all -- see :func:`_bam_motor_kernel`.
         self.backlash_pos_indices = wp.zeros(num_actuators, dtype=wp.uint32, device=device)
         self.backlash_mask = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._next_state_arrays = {
@@ -737,10 +744,12 @@ class ControllerBam(Controller):
 
         Args:
             indices: Index into the position array of the joint each DOF's encoder also reads,
-                shape ``(N,)``. A DOF with no such joint takes any valid index and mask ``0``.
+                shape ``(N,)``. A DOF with no such joint takes mask ``0``, and its index is then
+                never dereferenced -- the mask gates the read itself.
             mask: ``1`` where the DOF's encoder reads through :paramref:`indices`, ``0`` where
-                it does not [-], shape ``(N,)``. An all-zero mask reproduces the plain servo
-                bit for bit, which is what lets one configuration cover plants with and without
+                it does not [-], shape ``(N,)``. An all-zero mask reproduces the plain servo bit
+                for bit -- for *every* input, not only finite ones, because the second slot goes
+                unread -- which is what lets one configuration cover plants with and without
                 modelled play.
 
         Raises:
