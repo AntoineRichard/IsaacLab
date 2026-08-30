@@ -121,11 +121,21 @@ class MujocoJointCfg(JointDriveFragment):
     """``mjc:*`` joint attributes for Newton's MuJoCo solver from ``MjcJointAPI``.
 
     A single-namespace fragment (see :class:`~isaaclab.sim.schemas.SchemaFragment`) carrying
-    joint-level gravity compensation. Applied alongside
-    :class:`~isaaclab.sim.schemas.UsdPhysicsDriveCfg` via
+    joint-level gravity compensation, the joint-limit constraint's solver parameters, and passive
+    DOF damping. Applied alongside :class:`~isaaclab.sim.schemas.UsdPhysicsDriveCfg` via
     :func:`~isaaclab.sim.schemas.apply_joint_drive_properties`. It overrides :attr:`func` with
-    :func:`~isaaclab_newton.sim.schemas.apply_mujoco_joint`, which writes the ``mjc:*`` attributes
-    and enforces the body-level gravcomp coupling that joint-level ``actuatorgravcomp`` requires.
+    :func:`~isaaclab_newton.sim.schemas.apply_mujoco_joint`, which writes the ``mjc:*`` attributes,
+    authors the fixed-length ones as USD arrays, and enforces the body-level gravcomp coupling that
+    joint-level ``actuatorgravcomp`` requires.
+
+    The fields are authored per joint prim, so a single asset can mix joints that tune the MuJoCo
+    solver with joints that do not: an unset field is not written, and the joint keeps whatever the
+    import resolved for it.
+
+    .. note::
+        These attributes reach Newton through its ``mujoco`` custom-attribute namespace rather than
+        through a schema resolver, so they apply to any asset Isaac Lab spawns on the MuJoCo Warp
+        backend. They are inert on every other solver.
     """
 
     _usd_namespace: ClassVar[str | None] = "mjc"
@@ -142,6 +152,40 @@ class MujocoJointCfg(JointDriveFragment):
     When ``True``, compensation forces go to ``qfrc_actuator`` (subject to force limits).
     Requires body-level :attr:`MujocoRigidBodyCfg.gravcomp`. Written to ``mjc:actuatorgravcomp``
     via ``MjcJointAPI``.
+    """
+
+    damping: float | None = None
+    """Passive damping on the joint's DOFs [N*s/m or N*m*s/rad, depending on joint type].
+
+    Written to ``mjc:damping`` and applied by MuJoCo as ``dof_damping``, a force opposing the DOF
+    velocity that no actuator has to produce. This is MuJoCo's ``<joint damping="...">`` in its own
+    per-radian units, unlike the ``newton:damping`` attribute of Newton's own schema, which follows
+    the UsdPhysics per-degree convention on a revolute joint. It is the only channel for a joint no
+    actuator group owns, whose damping an actuator model therefore cannot republish.
+    """
+
+    solimplimit: tuple[float, float, float, float, float] | None = None
+    """Joint-limit constraint impedance ``(dmin, dmax, width, midpoint, power)``.
+
+    Component units are [dimensionless, dimensionless, m or rad depending on joint type,
+    dimensionless, dimensionless]. Written to ``mjc:solimplimit`` as a five-element array and
+    applied by MuJoCo as ``jnt_solimp``. Raising ``dmax`` towards ``1`` makes the limit constraint
+    nearly rigid, which is what a joint whose range is a mechanical stop (a hard stop, a gear-play
+    dead zone) needs. Newton defaults to ``(0.9, 0.95, 0.001, 0.5, 2.0)``.
+    """
+
+    solreflimit: tuple[float, float] | None = None
+    """Joint-limit constraint reference parameters.
+
+    In positive format, the components are ``(time_constant [s], damping_ratio [dimensionless])``;
+    in non-positive direct format, ``(-stiffness [s^-2], -damping [s^-1])``. Written to
+    ``mjc:solreflimit`` as a two-element array and applied by MuJoCo as ``jnt_solref``, verbatim:
+    authoring it opts the joint out of the force-space conversion of Newton's ``limit_ke`` /
+    ``limit_kd`` gains *and* out of the default-``solref`` retag of
+    :attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref`, so an
+    explicitly authored pair always wins. MuJoCo's own default is ``(0.02, 1.0)``; a joint that
+    overshoots its limits under load needs a shorter time constant, and no less than twice the
+    physics time step.
     """
 
 

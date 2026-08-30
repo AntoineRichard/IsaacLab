@@ -18,6 +18,9 @@ Covers :mod:`isaaclab_newton.physics.mjwarp_joint_limits`:
 * Joints that author explicit limit gains keep their force-space conversion.
 * A light limit-bounded articulation at low joint damping diverges with the
   legacy conversion and stays finite with MuJoCo's default limit ``solref``.
+* A joint that authors :class:`~isaaclab_newton.sim.schemas.MujocoJointCfg`'s
+  ``solreflimit`` / ``solimplimit`` / ``damping`` in USD reaches the live MJWarp
+  model per joint, and the unauthored-gain retag above leaves it alone.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import pytest
 import warp as wp
 from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, NewtonManager
 from isaaclab_newton.physics.mjwarp_joint_limits import apply_mujoco_default_joint_limit_solref
+from isaaclab_newton.sim.schemas import MujocoJointCfg, apply_mujoco_joint
 from newton import Model, ModelBuilder, ModelFlags
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
@@ -34,6 +38,9 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton.solvers import SolverMuJoCo
+from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
+
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
 from isaaclab.sim import SimulationCfg, build_simulation_context
 
@@ -44,6 +51,21 @@ _NEWTON_DEFAULT_LIMIT_KD = 1.0e1
 _NUM_LINKS = 6
 _JOINT_LIMIT = 0.35
 _PHYSICS_DT = 0.005
+
+_AUTHORED_SOLREFLIMIT = (0.01, 1.0)
+"""Limit ``solref`` a joint prim authors: half MuJoCo's default time constant, critically damped."""
+
+_AUTHORED_SOLIMPLIMIT = (0.95, 0.999, 0.0001, 0.5, 2.0)
+"""Limit ``solimp`` a joint prim authors, distinct from Newton's ``(0.9, 0.95, 0.001, 0.5, 2.0)``."""
+
+_AUTHORED_JOINT_DAMPING = 0.01
+"""Passive joint damping [N*m*s/rad] a joint prim authors, in MuJoCo's per-radian units."""
+
+_AUTHORING_JOINT = "authored"
+"""Name of the hinge in :func:`_usd_hinge_pair` that carries the MuJoCo joint fragment."""
+
+_PLAIN_JOINT = "plain"
+"""Name of the hinge in :func:`_usd_hinge_pair` that authors nothing, as the in-model control."""
 
 
 def _build_light_chain(
@@ -103,8 +125,91 @@ def _build_light_chain(
     return builder.finalize(device=device)
 
 
+def _usd_hinge_pair(*, author: bool = True) -> Usd.Stage:
+    """Author two limit-bounded hinges in USD, one of them carrying the MuJoCo joint fragment.
+
+    Both hinges are identical apart from the fragment, so every assertion has an
+    in-model control that isolates what the authoring changed.
+
+    Args:
+        author: Whether to apply :class:`MujocoJointCfg` to the ``authored`` hinge.
+
+    Returns:
+        The in-memory stage.
+    """
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdPhysics.ArticulationRootAPI.Apply(UsdGeom.Xform.Define(stage, "/Articulation").GetPrim())
+
+    links = []
+    for index in range(3):
+        link = UsdGeom.Cube.Define(stage, f"/Articulation/Link{index}")
+        link.GetSizeAttr().Set(0.05)
+        prim = link.GetPrim()
+        prim.CreateAttribute("xformOp:translate", Sdf.ValueTypeNames.Double3).Set((0.1 * index, 0.0, 0.0))
+        prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray).Set(["xformOp:translate"])
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        mass_api = UsdPhysics.MassAPI.Apply(prim)
+        mass_api.CreateMassAttr().Set(0.05)
+        mass_api.CreateDiagonalInertiaAttr().Set((2.0e-5, 2.0e-5, 2.0e-5))
+        links.append(prim)
+
+    for index, name in enumerate((_AUTHORING_JOINT, _PLAIN_JOINT), start=1):
+        joint = UsdPhysics.RevoluteJoint.Define(stage, f"/Articulation/Link{index}/{name}")
+        joint.CreateBody0Rel().SetTargets([links[index - 1].GetPath()])
+        joint.CreateBody1Rel().SetTargets([links[index].GetPath()])
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateLowerLimitAttr().Set(-np.rad2deg(_JOINT_LIMIT))
+        joint.CreateUpperLimitAttr().Set(np.rad2deg(_JOINT_LIMIT))
+        if name == _AUTHORING_JOINT and author:
+            apply_mujoco_joint(
+                MujocoJointCfg(
+                    solreflimit=_AUTHORED_SOLREFLIMIT,
+                    solimplimit=_AUTHORED_SOLIMPLIMIT,
+                    damping=_AUTHORED_JOINT_DAMPING,
+                ),
+                joint.GetPrim().GetPath().pathString,
+                stage,
+            )
+    return stage
+
+
+def _import_usd_hinge_pair(*, author: bool = True) -> tuple[Model, dict[str, int]]:
+    """Import :func:`_usd_hinge_pair` the way Isaac Lab imports an asset, and map hinges to DOFs.
+
+    ``NewtonManager`` passes only the ``newton`` and ``physx`` schema resolvers to
+    ``ModelBuilder.add_usd``, so the import here uses that same set: an
+    ``mjc:*`` attribute that only reached the model through a MuJoCo resolver
+    would not reach a spawned Isaac Lab asset.
+
+    Returns:
+        The finalized model and a mapping from hinge name to its Newton DOF index.
+    """
+    builder = ModelBuilder(up_axis="Z")
+    SolverMuJoCo.register_custom_attributes(builder)
+    builder.add_usd(_usd_hinge_pair(author=author), schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()])
+    model = builder.finalize(device="cpu")
+    dof_start = model.joint_qd_start.numpy()
+    dofs = {
+        label.rsplit("/", maxsplit=1)[-1]: int(dof_start[joint])
+        for joint, label in enumerate(model.joint_label)
+        if label.rsplit("/", maxsplit=1)[-1] in (_AUTHORING_JOINT, _PLAIN_JOINT)
+    }
+    assert set(dofs) == {_AUTHORING_JOINT, _PLAIN_JOINT}
+    return model, dofs
+
+
 def _make_solver(model: Model) -> SolverMuJoCo:
     return SolverMuJoCo(model, iterations=100, ls_iterations=50, integrator="implicitfast", njmax=64)
+
+
+def _mjc_joint_of_dof(solver: SolverMuJoCo, newton_dof: int) -> int:
+    """Return the MuJoCo joint index a Newton DOF is mapped to."""
+    dof_of_jnt = solver.mjc_jnt_to_newton_dof.numpy()[0]
+    matches = [jnt for jnt in range(solver.mj_model.njnt) if int(dof_of_jnt[jnt]) == newton_dof]
+    assert len(matches) == 1, f"Newton DOF {newton_dof} maps to {matches}, expected exactly one MuJoCo joint."
+    return matches[0]
 
 
 def _expected_force_space_solref(solver: SolverMuJoCo, mjc_jnt: int, ke: float, kd: float) -> tuple[float, float]:
@@ -256,6 +361,84 @@ def test_light_articulation_stays_finite_at_low_joint_damping():
     apply_mujoco_default_joint_limit_solref(fixed_model)
     fixed_failure = _run_random_torques(fixed_model, _make_solver(fixed_model), steps=600, torque=0.2, seed=0)
     assert fixed_failure is None
+
+
+def test_usd_authored_limit_solref_and_solimp_reach_the_live_model():
+    """A per-joint ``MujocoJointCfg`` lands in ``jnt_solref`` / ``jnt_solimp``, its neighbour untouched.
+
+    This is the whole point of the fragment: the two hinges are identical apart
+    from it, so the control row also pins that nothing leaks across joints.
+    """
+    model, dofs = _import_usd_hinge_pair()
+    solver = _make_solver(model)
+
+    solref = solver.mjw_model.jnt_solref.numpy()[0]
+    solimp = solver.mjw_model.jnt_solimp.numpy()[0]
+    authored_jnt = _mjc_joint_of_dof(solver, dofs[_AUTHORING_JOINT])
+    plain_jnt = _mjc_joint_of_dof(solver, dofs[_PLAIN_JOINT])
+
+    np.testing.assert_allclose(solref[authored_jnt], _AUTHORED_SOLREFLIMIT, rtol=1e-6)
+    np.testing.assert_allclose(solimp[authored_jnt], _AUTHORED_SOLIMPLIMIT, rtol=1e-6)
+    # The control hinge keeps the force-space conversion of Newton's generic gains.
+    assert not np.allclose(solref[plain_jnt], _AUTHORED_SOLREFLIMIT)
+    np.testing.assert_allclose(
+        solref[plain_jnt],
+        _expected_force_space_solref(solver, plain_jnt, _NEWTON_DEFAULT_LIMIT_KE, _NEWTON_DEFAULT_LIMIT_KD),
+        rtol=1e-4,
+    )
+    assert not np.allclose(solimp[plain_jnt], _AUTHORED_SOLIMPLIMIT)
+
+
+def test_usd_authored_limit_solref_survives_the_unauthored_gain_retag():
+    """The default-``solref`` retag skips a joint that authored its own pair.
+
+    "Explicit authoring always wins" is the retag's contract, and a USD-authored
+    ``mjc:solreflimit`` is a second way to express it: the pair is carried on
+    ``mujoco.solreflimit`` rather than on the Newton force-space gains, which
+    still read as Newton's untouched defaults on both hinges.
+    """
+    model, dofs = _import_usd_hinge_pair()
+    modes = model.mujoco.solreflimit_mode.numpy()
+    assert modes[dofs[_AUTHORING_JOINT]] == SOLREF_MODE_RAW
+    assert modes[dofs[_PLAIN_JOINT]] == SOLREF_MODE_FORCE_SPACE
+    # Both hinges still carry Newton's generic gains, so only the authored pair
+    # distinguishes them and the retag mask has to read it.
+    limit_ke = model.joint_limit_ke.numpy()
+    assert limit_ke[dofs[_AUTHORING_JOINT]] == limit_ke[dofs[_PLAIN_JOINT]] == pytest.approx(_NEWTON_DEFAULT_LIMIT_KE)
+
+    assert apply_mujoco_default_joint_limit_solref(model) == 1
+
+    solver = _make_solver(model)
+    solref = solver.mjw_model.jnt_solref.numpy()[0]
+    np.testing.assert_allclose(
+        solref[_mjc_joint_of_dof(solver, dofs[_AUTHORING_JOINT])], _AUTHORED_SOLREFLIMIT, rtol=1e-6
+    )
+    np.testing.assert_allclose(solref[_mjc_joint_of_dof(solver, dofs[_PLAIN_JOINT])], DEFAULT_LIMIT_SOLREF, rtol=1e-6)
+
+
+def test_usd_authored_joint_damping_reaches_the_live_model():
+    """``MujocoJointCfg.damping`` lands in ``dof_damping`` verbatim, in per-radian units.
+
+    The unauthored control is the mutation check: without the fragment the same
+    hinge reads zero, so a passthrough that silently dropped the value could not
+    pass. MuJoCo's ``damping`` is per radian, unlike the per-degree
+    ``newton:damping`` the UsdPhysics convention scales on a revolute joint, so
+    the authored number has to survive unscaled.
+    """
+    model, dofs = _import_usd_hinge_pair()
+    unauthored, _ = _import_usd_hinge_pair(author=False)
+
+    damping = model.joint_damping.numpy()
+    assert damping[dofs[_AUTHORING_JOINT]] == pytest.approx(_AUTHORED_JOINT_DAMPING)
+    assert damping[dofs[_PLAIN_JOINT]] == 0.0
+    assert np.count_nonzero(unauthored.joint_damping.numpy()) == 0
+
+    solver = _make_solver(model)
+    dof_damping = solver.mjw_model.dof_damping.numpy()[0]
+    # MuJoCo has its own DOF order, so the rows are reached through the joint map.
+    mjc_dof = {name: int(solver.mj_model.jnt_dofadr[_mjc_joint_of_dof(solver, dof)]) for name, dof in dofs.items()}
+    assert dof_damping[mjc_dof[_AUTHORING_JOINT]] == pytest.approx(_AUTHORED_JOINT_DAMPING)
+    assert dof_damping[mjc_dof[_PLAIN_JOINT]] == 0.0
 
 
 @pytest.mark.parametrize("use_mujoco_default", [True, False])

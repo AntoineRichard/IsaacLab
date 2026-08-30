@@ -126,14 +126,19 @@ def apply_mujoco_joint(cfg: MujocoJointCfg, prim_path: str, stage: Usd.Stage | N
     """Apply a :class:`MujocoJointCfg` fragment, including its body-level gravcomp coupling.
 
     Custom ``func`` override for :class:`MujocoJointCfg`. Writes the joint's ``mjc:*`` attributes via
-    :func:`~isaaclab.sim.schemas.apply_namespaced`, then enforces the MuJoCo coupling that joint-level
-    ``actuatorgravcomp`` requires body-level ``gravcomp``: in MuJoCo ``actuatorgravcomp`` is a per-joint
-    flag (``jnt_actgravcomp``) that routes the gravity-compensation force of the joint's actuated body
-    through the actuator, and it is inert unless that body's ``mjc:gravcomp`` is non-zero. So when
-    :attr:`~MujocoJointCfg.actuatorgravcomp` is requested, this enables ``mjc:gravcomp = 1.0`` on the
-    joint's child body (its ``physics:body1`` target) when the body has not authored it. An explicitly
-    authored body gravcomp is preserved. Keeping this coupling in the Newton applier (not the core
-    spawner) keeps the core package free of any backend dependency.
+    :func:`~isaaclab.sim.schemas.apply_namespaced`, except for the fixed-length
+    :attr:`~MujocoJointCfg.solreflimit` and :attr:`~MujocoJointCfg.solimplimit`, which are authored as
+    canonical USD ``double[]`` arrays the way :func:`apply_mujoco_collision` authors their contact
+    counterparts.
+
+    It then enforces the MuJoCo coupling that joint-level ``actuatorgravcomp`` requires body-level
+    ``gravcomp``: in MuJoCo ``actuatorgravcomp`` is a per-joint flag (``jnt_actgravcomp``) that routes
+    the gravity-compensation force of the joint's actuated body through the actuator, and it is inert
+    unless that body's ``mjc:gravcomp`` is non-zero. So when :attr:`~MujocoJointCfg.actuatorgravcomp`
+    is requested, this enables ``mjc:gravcomp = 1.0`` on the joint's child body (its ``physics:body1``
+    target) when the body has not authored it. An explicitly authored body gravcomp is preserved.
+    Keeping this coupling in the Newton applier (not the core spawner) keeps the core package free of
+    any backend dependency.
 
     Args:
         cfg: The :class:`MujocoJointCfg` fragment to apply.
@@ -142,10 +147,30 @@ def apply_mujoco_joint(cfg: MujocoJointCfg, prim_path: str, stage: Usd.Stage | N
 
     Returns:
         True if the joint fragment was applied successfully.
+
+    Raises:
+        ValueError: If a fixed-length field does not carry exactly its number of components.
     """
     if stage is None:
         stage = get_current_stage()
-    success = apply_namespaced(cfg, prim_path, stage)
+    # The array fields are written below; the generic writer takes the scalars and applies
+    # ``MjcJointAPI`` for the whole fragment.
+    success = apply_namespaced(cfg.replace(solreflimit=None, solimplimit=None), prim_path, stage)
+    for attr_name, expected_length in (("solimplimit", 5), ("solreflimit", 2)):
+        value = getattr(cfg, attr_name)
+        if value is None:
+            continue
+        if len(value) != expected_length:
+            raise ValueError(f"'{attr_name}' must contain exactly {expected_length} values. Received: {len(value)}.")
+        success = (
+            change_prim_property(
+                prop_path=f"{prim_path}.mjc:{attr_name}",
+                value=Vt.DoubleArray(value),
+                stage=stage,
+                type_to_create_if_not_exist=Sdf.ValueTypeNames.DoubleArray,
+            )
+            and success
+        )
     # actuatorgravcomp is inert unless the actuated body has non-zero gravcomp; flip it on the joint's
     # child body when requested and unset (per-joint dispatch covers every actuated body in the
     # articulation; the non-actuated base has no parent joint and needs no compensation).
