@@ -30,6 +30,21 @@ Added
   **read back off the articulation** after a reset, and the environment origins are checked against
   the surface of the terrain that was actually generated.
 
+Known issue
+^^^^^^^^^^^
+
+* Training ``IsaacContrib-RollerSlope-Flat-MicroDuck`` is blocked on a Newton contact gap on
+  generated mesh terrain, which the environment configuration does not cause and cannot work around.
+  Once the wheels are turning the roller model's tires stop carrying the robot on a generated mesh:
+  it rides for about 0.1 s, sinks 45 mm and stops, where the same robot in the same pose at the same
+  entry speed rolls normally on the skating task's analytic ground plane. Four controls localise it
+  -- it reproduces at a **zero-degree** ramp angle, so it is not the incline; it does not reproduce
+  on the plane, so it is not the robot; it does not reproduce at rest, so static contact is fine; and
+  neither the collision margin nor contact reduction moves it. The terrain geometry is verified
+  correct: the environment origins are bit-identical to upstream's and a downward ray cast onto the
+  built mesh lands on them to 1e-6 m on all ten rows. The configuration, the registration and the
+  parity tests are unaffected, and the environment builds, resets and steps NaN-free.
+
 Changed
 ^^^^^^^
 
