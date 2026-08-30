@@ -30,6 +30,7 @@ import math
 import numpy as np
 import pytest
 import torch
+import warp as wp
 from isaaclab_newton.physics import (
     FeatherstoneSolverCfg,
     MjWarpActuatorBridge,
@@ -39,7 +40,7 @@ from isaaclab_newton.physics import (
 )
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import BamActuator, BamActuatorCfg
+from isaaclab.actuators import BamActuator, BamActuatorCfg, BamBacklashActuatorCfg
 from isaaclab.actuators.bam_model import (
     BamMotorParams,
     compute_duty,
@@ -113,6 +114,107 @@ output shaft (0.0018 kg m^2 for the Dynamixel XL330 the BAM parameters were fitt
 Without it the joint inertia would sit far below the actuator's electrical damping times the
 timestep, and a back-EMF torque applied explicitly by the actuator could not be integrated
 stably.
+"""
+
+BACKLASH_PENDULUM_USDA = """\
+#usda 1.0
+(
+    defaultPrim = "Robot"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Robot" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Pivot" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 0.1
+        float3 physics:diagonalInertia = (0.001, 0.001, 0.001)
+    }
+
+    def Xform "PlayDummy" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 1e-6
+        float3 physics:diagonalInertia = (1e-12, 1e-12, 1e-12)
+    }
+
+    def Xform "PlayedArm" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 0.02
+        point3f physics:centerOfMass = (0.05, 0, 0)
+        float3 physics:diagonalInertia = (0.002, 0.002, 0.002)
+    }
+
+    def Xform "RigidArm" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 0.02
+        point3f physics:centerOfMass = (0.05, 0, 0)
+        float3 physics:diagonalInertia = (0.002, 0.002, 0.002)
+    }
+
+    def PhysicsFixedJoint "anchor"
+    {
+        rel physics:body1 = </Robot/Pivot>
+    }
+
+    def PhysicsRevoluteJoint "servo_played"
+    {
+        uniform token physics:axis = "Y"
+        rel physics:body0 = </Robot/Pivot>
+        rel physics:body1 = </Robot/PlayDummy>
+        float physxJoint:armature = 0.0018
+    }
+
+    def PhysicsRevoluteJoint "passive_servo_played_backlash" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        uniform token physics:axis = "Y"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+        rel physics:body0 = </Robot/PlayDummy>
+        rel physics:body1 = </Robot/PlayedArm>
+        float physxJoint:armature = 0.001
+        float mjc:damping = 0.01
+        double[] mjc:solimplimit = [0.95, 0.999, 0.0001, 0.5, 2]
+        double[] mjc:solreflimit = [0.01, 1]
+    }
+
+    def PhysicsRevoluteJoint "servo_rigid"
+    {
+        uniform token physics:axis = "Y"
+        rel physics:body0 = </Robot/Pivot>
+        rel physics:body1 = </Robot/RigidArm>
+        float physxJoint:armature = 0.0018
+    }
+}
+"""
+"""Two BAM servos on the same welded pivot, only one of which has modelled gear play.
+
+``servo_played`` drives a massless dummy, and ``passive_servo_played_backlash`` -- the play hinge,
+named by the convention :class:`~isaaclab.actuators.BamBacklashActuatorCfg` contracts on -- carries
+the plus/minus one degree of gear play between that dummy and ``PlayedArm``. ``servo_rigid`` drives
+its arm directly and has no such hinge, so one fixture covers both halves of the name lookup: a
+servo that finds its twin and a servo that does not.
+
+The dummy's mass and inertia are the converter's (1e-6 kg, 1e-12 kg m^2): the dead zone has to be
+a free axis, not a second link. Both servos carry the Dynamixel XL330's reflected rotor inertia as
+joint armature, which is what makes the interval where the dummy hangs off nothing integrable at
+all -- inside the dead zone the servo's only inertia is that armature.
+
+The play hinge authors the MuJoCo limit-constraint parameters the converted asset does, because the
+gear teeth *are* that constraint: at MuJoCo's default limit reference a range this small overshoots
+roughly twofold, which would read as twice the play the model declares.
 """
 
 DT = 1.0 / 120.0
@@ -588,8 +690,14 @@ def _settle_with_friction_scales(robot: Articulation, sim, load: float) -> torch
     return settled
 
 
-def _build_native_pendulum(sim, pendulum_usd: str) -> Articulation:
-    """Spawn :data:`NUM_ENVS` BAM-driven pendulums on the Newton-native actuator path."""
+def _build_native_pendulum(sim, pendulum_usd: str, actuator_cfg: BamActuatorCfg | None = None) -> Articulation:
+    """Spawn :data:`NUM_ENVS` BAM-driven pendulums on the Newton-native actuator path.
+
+    Args:
+        sim: Simulation context to spawn into.
+        pendulum_usd: Path of the pendulum asset.
+        actuator_cfg: Servo group to drive them with. Defaults to the plain BAM configuration.
+    """
     for index in range(NUM_ENVS):
         sim_utils.create_prim(f"/World/Env_{index}", "Xform", translation=(index * 1.0, 0.0, 1.0))
     robot = Articulation(
@@ -597,7 +705,7 @@ def _build_native_pendulum(sim, pendulum_usd: str) -> Articulation:
             prim_path="/World/Env_[^/]*/Robot",
             spawn=sim_utils.UsdFileCfg(usd_path=pendulum_usd),
             init_state=ArticulationCfg.InitialStateCfg(joint_pos={"joint": INITIAL_ANGLE}),
-            actuators={"servo": BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)},
+            actuators={"servo": actuator_cfg or BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)},
         )
     )
     sim.reset()
@@ -950,3 +1058,344 @@ def test_startup_ranges_are_sampled_without_a_mujoco_solver(device, pendulum_usd
         vin = read_group_parameter(robot.actuators, "servo", "controller", "vin")
         assert bool(((vin >= 6.0) & (vin <= 8.0)).all())
         assert len(torch.unique(vin)) > 1
+
+
+"""
+Encoder-through-backlash wiring (:class:`~isaaclab.actuators.BamBacklashActuatorCfg`).
+
+The controller can already close its firmware loop on a second joint; what these tests cover is
+everything between a task configuration and that binding. The Newton backend resolves each driven
+joint's play hinge by name at articulation initialization, builds the per-DOF index and mask
+arrays, and hands them to the controller before the first step -- and therefore before any CUDA
+graph capture. The plant is the fixture above: one servo with a plus/minus one degree play hinge
+and one without.
+"""
+
+SERVO_ONLY_EXPR = ["^(?!passive_).*"]
+"""Group selection of the backlash assets: the servos, never the play hinges nothing drives."""
+
+PLAYED_SERVO = "servo_played"
+"""Fixture joint whose gearbox has modelled play."""
+
+PLAY_HINGE = "passive_servo_played_backlash"
+"""Fixture joint that carries :data:`PLAYED_SERVO`'s gear play."""
+
+RIGID_SERVO = "servo_rigid"
+"""Fixture joint whose gearbox has none, so the name lookup finds it no twin."""
+
+PLAY_LIMIT = math.radians(1.0)
+"""Half the gear play of the fixture's played servo [rad]."""
+
+PLAY_WIDTH = 2.0 * PLAY_LIMIT
+"""Peak-to-peak gear play of the fixture's played servo [rad], i.e. the dead zone's total width."""
+
+PLATEAU_TOLERANCE = 0.2
+"""Fraction of :data:`PLAY_WIDTH` the measured dead zone may differ from it by [-].
+
+The gear teeth are a limit constraint, not a rigid stop, so the play reads slightly wide under
+load. Twenty percent is the accuracy gate's own band for this signature.
+"""
+
+REVERSAL_TARGETS = (math.radians(70.0), math.radians(110.0))
+"""Commanded angles either side of the arm's vertical [rad].
+
+The joint spins about ``+Y`` and the arm's centre of mass sits at ``(L, 0, 0)``, so the gravity
+torque is ``m*g*L*cos(theta)`` and reverses sign as the arm swings through ``pi/2``. Holding the
+arm on one side and then the other is therefore a genuine reversal of the load the gearbox carries,
+which is what makes the play hinge change limits -- the reversal the dead zone is measured across.
+Twenty degrees off vertical keeps the load well clear of zero without leaving the servo's reach.
+"""
+
+REVERSAL_STEPS = 300
+"""Steps each side of the reversal settles for [-]. The arm is at rest well before this."""
+
+DEAD_ZONE_FRICTION_SCALE = (0.02, 0.02)
+"""Friction-budget scale the dead-zone measurement runs the gearbox at [-].
+
+At the identified budget this servo's stiction band is about a degree wide in measured position --
+the same order as the play itself -- so the joint stops as soon as friction can hold it and where
+it stopped says nothing about which quantity the firmware was regulating. A fiftieth of the budget
+narrows the band to well under a tenth of the play. It is a measurement condition and not a plant
+change: the play hinge, its limits and its limit constraint are untouched, and the dead zone this
+measures is the same one a fully frictional gearbox has.
+"""
+
+
+@pytest.fixture(scope="module")
+def backlash_pendulum_usd(tmp_path_factory) -> str:
+    """Write :data:`BACKLASH_PENDULUM_USDA` to a temporary file and return its path."""
+    path = tmp_path_factory.mktemp("bam_backlash") / "backlash_pendulum.usda"
+    path.write_text(BACKLASH_PENDULUM_USDA)
+    return str(path)
+
+
+def _backlash_robot_cfg(actuator_cfg) -> ArticulationCfg:
+    """Return the fixture's articulation configuration, driven by *actuator_cfg*."""
+    return ArticulationCfg(
+        prim_path="/World/Env_[^/]*/Robot",
+        spawn=sim_utils.UsdFileCfg(usd_path=None),
+        init_state=ArticulationCfg.InitialStateCfg(),
+        actuators={"servo": actuator_cfg},
+    )
+
+
+def _build_backlash_pendulum(sim, usd_path: str, actuator_cfg) -> Articulation:
+    """Spawn :data:`NUM_ENVS` copies of the play fixture and initialize the simulation."""
+    for index in range(NUM_ENVS):
+        sim_utils.create_prim(f"/World/Env_{index}", "Xform", translation=(index * 1.0, 0.0, 1.0))
+    cfg = _backlash_robot_cfg(actuator_cfg)
+    cfg.spawn.usd_path = usd_path
+    robot = Articulation(cfg)
+    sim.reset()
+    assert robot.is_initialized
+    return robot
+
+
+def _backlash_actuator_cfg(**overrides) -> BamBacklashActuatorCfg:
+    """Return the fixture's encoder-through-play servo group."""
+    kwargs = {"joint_names_expr": SERVO_ONLY_EXPR, "vin": VIN, "kp_fw": KP_FW}
+    kwargs.update(overrides)
+    return BamBacklashActuatorCfg(**kwargs)
+
+
+def _settle_at(robot: Articulation, sim, angle: float, steps: int = REVERSAL_STEPS) -> torch.Tensor:
+    """Release both servos at *angle* with the play closed, hold it as the target, and settle.
+
+    Returns:
+        The recorded joint positions [rad], shape ``(steps, NUM_ENVS, num_joints)``.
+    """
+    released = torch.zeros_like(robot.data.joint_pos.torch)
+    for name in _servo_names(robot):
+        released[:, robot.joint_names.index(name)] = angle
+    robot.write_joint_position_to_sim_index(position=released)
+    robot.write_joint_velocity_to_sim_index(velocity=torch.zeros_like(robot.data.joint_vel.torch))
+    robot.actuators.reset()
+    robot.actuators.target_command.set_position_index(value=released.clone())
+
+    positions = []
+    for _ in range(steps):
+        robot.write_data_to_sim()
+        sim.step()
+        robot.update(sim.get_physics_dt())
+        positions.append(robot.data.joint_pos.torch.clone())
+    trace = torch.stack(positions)
+    assert torch.isfinite(trace).all(), "non-finite joint position in the rollout"
+    return trace
+
+
+def _servo_names(robot: Articulation) -> list[str]:
+    """Return the fixture's driven joints, i.e. everything the play hinges are not."""
+    return [name for name in robot.joint_names if not name.startswith("passive_")]
+
+
+def _joint_angle(trace: torch.Tensor, robot: Articulation, name: str) -> torch.Tensor:
+    """Return one joint's final angle in every environment [rad], shape ``(NUM_ENVS,)``."""
+    return trace[-1, :, robot.joint_names.index(name)]
+
+
+def _unbind_backlash(controller: ControllerBam, device: str) -> None:
+    """Rebind *controller* with an all-zero mask, i.e. back to the plain servo."""
+    controller.bind_backlash_indices(
+        wp.array(controller.backlash_pos_indices.numpy(), dtype=wp.uint32, device=device),
+        wp.zeros(len(controller.backlash_mask), dtype=wp.float32, device=device),
+    )
+
+
+def _actuator_dof_indices() -> list[int]:
+    """Return the flat model DOF indices the scene's single BAM actuator drives."""
+    actuators = [
+        actuator for actuator in NewtonManager._adapter.actuators if isinstance(actuator.controller, ControllerBam)
+    ]
+    assert len(actuators) == 1, "the fixture has exactly one BAM actuator"
+    return [int(index) for index in actuators[0].indices.numpy()]
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_each_servo_is_bound_to_the_play_hinge_in_series_with_it(native_sim, device, backlash_pendulum_usd):
+    """The name lookup must produce the controller's per-DOF binding, DOF by DOF.
+
+    The binding is a pair of flat indices into the *whole* model's position array, in the
+    actuator's own DOF order (environment major). Everything about it is easy to get subtly
+    wrong -- the stride, the environment offset, the articulation's own DOF offset -- and every
+    mistake reads a real angle from some other joint, so the expectation here is built from the
+    articulation's joint names and the model's DOF count rather than from the resolver.
+
+    A servo whose plant models no play takes a zero mask, and its index is then never
+    dereferenced. It is still filled with the DOF's *own* position slot: the array is
+    self-documenting that way, and neither slot zero nor a plain ``arange`` would be the self
+    index once an actuator covers a subset of the articulation's joints, which is exactly what a
+    servo group on a plant with play hinges does.
+    """
+    robot = _build_backlash_pendulum(native_sim, backlash_pendulum_usd, _backlash_actuator_cfg())
+    controller = _native_controller(robot)
+    joint_names = robot.backend_joint_names
+    assert set(joint_names) == {PLAYED_SERVO, PLAY_HINGE, RIGID_SERVO}
+
+    dofs_per_env = NewtonManager._model.joint_dof_count // NUM_ENVS
+    assert dofs_per_env == len(joint_names), "the fixture is the only articulation in the model"
+    slots = {name: joint_names.index(name) for name in joint_names}
+
+    # The actuator drives the two servos and nothing else, in environment-major order.
+    driven = [(index // dofs_per_env, index % dofs_per_env) for index in _actuator_dof_indices()]
+    assert driven == [(env, slots[name]) for env in range(NUM_ENVS) for name in (PLAYED_SERVO, RIGID_SERVO)] or (
+        driven == [(env, slots[name]) for env in range(NUM_ENVS) for name in (RIGID_SERVO, PLAYED_SERVO)]
+    ), "the actuator must cover exactly the two servos, environment major"
+
+    expected_mask = []
+    expected_indices = []
+    for env, slot in driven:
+        played = slot == slots[PLAYED_SERVO]
+        expected_mask.append(1.0 if played else 0.0)
+        expected_indices.append(env * dofs_per_env + (slots[PLAY_HINGE] if played else slot))
+
+    np.testing.assert_array_equal(controller.backlash_mask.numpy(), np.array(expected_mask, dtype=np.float32))
+    np.testing.assert_array_equal(controller.backlash_pos_indices.numpy(), np.array(expected_indices, dtype=np.uint32))
+    # The unplayed servo's entry is its own slot, which on this fixture is neither 0 nor its
+    # position in the actuator's DOF order -- the two fillings the contract rules out.
+    assert expected_indices != list(range(len(expected_indices)))
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_the_play_opens_a_two_degree_dead_zone_across_a_load_reversal(native_sim, device, backlash_pendulum_usd):
+    """Hold the arm either side of vertical and measure the dead zone the gear play opens.
+
+    Rotating this arm through ``pi/2`` reverses the sign of the gravity torque it hangs from, so
+    holding it at 70 and then at 110 degrees is a genuine reversal of the load the gearbox
+    carries -- and a gearbox with play answers a load reversal by crossing its dead zone. The
+    signature is a plateau: the motor travels the full peak-to-peak play *more* than the encoder
+    reads, because that much of its travel goes into taking up the teeth rather than into moving
+    the link. Both settled states are quasi-static, so the plateau is read off two resting states
+    rather than chased through a transient.
+
+    What is under test here is the wiring, not the hinge: the play swing is a property of the
+    plant and would be there whatever the servo believes. The binding is what decides *which*
+    quantity the firmware regulates, and the last assertion is the one that reads it -- with the
+    encoder bound the link angle lands on the commanded target and the motor sits a play-width
+    away from it, and without the binding the two swap round.
+    """
+    robot = _build_backlash_pendulum(
+        native_sim, backlash_pendulum_usd, _backlash_actuator_cfg(friction_scale_range=DEAD_ZONE_FRICTION_SCALE)
+    )
+    settled = {}
+    for target in REVERSAL_TARGETS:
+        trace = _settle_at(robot, native_sim, target)
+        servo = _joint_angle(trace, robot, PLAYED_SERVO)
+        play = _joint_angle(trace, robot, PLAY_HINGE)
+        settled[target] = (servo, play, servo + play)
+    (servo_low, play_low, measured_low), (servo_high, play_high, measured_high) = settled.values()
+
+    # The precondition the whole measurement rests on: the load really did reverse. The arm's
+    # gravity torque is ``m*g*L*cos(theta)``, so the two states have to straddle ``pi/2``.
+    assert bool((torch.cos(measured_low) > 0).all()), "the first state is not on the near side of vertical"
+    assert bool((torch.cos(measured_high) < 0).all()), "the second state is not on the far side of vertical"
+
+    # The play crossed its dead zone with the load, ending on the opposite tooth each time.
+    play_tolerance = PLATEAU_TOLERANCE * PLAY_LIMIT
+    torch.testing.assert_close(play_low, torch.full_like(play_low, PLAY_LIMIT), atol=play_tolerance, rtol=0.0)
+    torch.testing.assert_close(play_high, torch.full_like(play_high, -PLAY_LIMIT), atol=play_tolerance, rtol=0.0)
+
+    # The plateau: motor travel the encoder never saw, over the reversal.
+    plateau = (servo_high - servo_low).abs() - (measured_high - measured_low).abs()
+    torch.testing.assert_close(
+        plateau, torch.full_like(plateau, PLAY_WIDTH), atol=PLATEAU_TOLERANCE * PLAY_WIDTH, rtol=0.0
+    )
+
+    # ... and the firmware closed its loop on the encoder, not on its own shaft: the link lands on
+    # the target and the motor is the one sitting a play-width off. An unbound controller settles
+    # the other way round, which is what makes this the assertion that reads the binding.
+    for target, (servo, _, measured) in settled.items():
+        assert float((measured - target).abs().max()) < float((servo - target).abs().min()), (
+            f"the motor, not the encoder, tracked the {math.degrees(target):.0f} degree target"
+        )
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_a_bound_backlash_articulation_is_captured_in_the_cuda_graph(native_sim, device, backlash_pendulum_usd):
+    """The encoder view must survive the decimation loop's CUDA graph capture, read live.
+
+    A controller that forced eager stepping would cost the whole decimation loop its capture, so
+    the property is asserted rather than assumed on a real articulation with real play hinges --
+    the unit suite proves the kernel captures, this proves the wired-up plant does. Capture
+    happens on :meth:`~isaaclab_newton.physics.NewtonManager.set_decimation`, which an
+    environment calls for its policy decimation and a bare simulation context never does.
+
+    Replaying under a *changed* binding is the real evidence, exactly as the friction-budget
+    capture test replays under a changed randomization: the arrays the controller was finalized
+    with are the ones the recorded launch reads, so dropping the mask has to move the settled
+    motor angle by the play. A binding baked into the graph, or one rebound by replacing the
+    arrays instead of copying into them, leaves it where it was.
+    """
+    robot = _build_backlash_pendulum(
+        native_sim, backlash_pendulum_usd, _backlash_actuator_cfg(friction_scale_range=DEAD_ZONE_FRICTION_SCALE)
+    )
+    controller = _native_controller(robot)
+    assert NewtonManager._adapter.is_all_graphable
+    assert bool(controller.backlash_mask.numpy().any()), "the fixture's played servo must be bound"
+
+    NewtonManager.set_decimation(GRAPH_DECIMATION)
+    if device.startswith("cuda"):
+        assert NewtonManager._graph is not None, "the decimation loop was not captured"
+
+    bound = _joint_angle(_settle_at(robot, native_sim, REVERSAL_TARGETS[0]), robot, PLAYED_SERVO)
+    _unbind_backlash(controller, robot.device)
+    unbound = _joint_angle(_settle_at(robot, native_sim, REVERSAL_TARGETS[0]), robot, PLAYED_SERVO)
+
+    # Dropping the mask hands the firmware its own shaft angle again, so the motor settles a
+    # play-width away from where the encoder view put it.
+    separation = float((bound - unbound).abs().min())
+    assert separation > 0.5 * PLAY_LIMIT, f"the replayed graph kept the old binding ({separation:.2e} rad)"
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_a_plant_without_play_hinges_degrades_to_the_plain_servo(device, pendulum_usd):
+    """A backlash configuration on a model with no play hinges must cost exactly nothing.
+
+    The name lookup finds no twin for the pendulum's one joint, which is the documented
+    degrade-to-plain case: mask zero, and the index left at the DOF's own position slot because
+    the kernel then never dereferences it. What that has to buy is not "almost the plain servo"
+    but the plain servo, so the two rollouts are compared with no tolerance at all -- a plant a
+    policy was trained against may not shift under a configuration change that models nothing.
+    """
+    rollouts: dict[str, torch.Tensor] = {}
+    bindings: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for name, actuator_cfg in (
+        ("plain", BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)),
+        ("backlash", BamBacklashActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)),
+    ):
+        with build_simulation_context(
+            device=device,
+            gravity_enabled=True,
+            add_ground_plane=False,
+            sim_cfg=_make_sim_cfg(device, use_newton_actuators=True),
+        ) as sim_ctx:
+            sim_ctx._app_control_on_stop_handle = None  # noqa: SLF001
+            robot = _build_native_pendulum(sim_ctx, pendulum_usd, actuator_cfg)
+            controller = _native_controller(robot)
+            bindings[name] = (
+                controller.backlash_mask.numpy().copy(),
+                controller.backlash_pos_indices.numpy().copy(),
+            )
+            dof_indices = np.array(_actuator_dof_indices(), dtype=np.uint32)
+            _release(robot)
+            rollouts[name] = _settle(robot, sim_ctx)[0].cpu()
+
+    mask, indices = bindings["backlash"]
+    assert not mask.any(), "a joint with no play hinge must be masked off"
+    np.testing.assert_array_equal(indices, dof_indices, err_msg="the masked-off index is not the DOF's own slot")
+    np.testing.assert_array_equal(
+        bindings["plain"][0], mask, err_msg="the plain configuration must leave the same all-zero mask"
+    )
+    torch.testing.assert_close(rollouts["backlash"], rollouts["plain"], atol=0.0, rtol=0.0)
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_the_backlash_cfg_is_refused_on_the_isaac_lab_executed_path(sim, device, pendulum_usd):
+    """``use_newton_actuators=False`` must refuse the configuration rather than drop the play.
+
+    This fixture's simulation runs the Isaac Lab actuator loop, which is handed one group's
+    joints and cannot read the play hinge beside them. There is no degraded mode to fall back
+    to, so the refusal names the one-line fix instead of quietly training a policy against a
+    plant without the play its configuration asked for.
+    """
+    with pytest.raises(ValueError, match="use_newton_actuators"):
+        _build_native_pendulum(sim, pendulum_usd, BamBacklashActuatorCfg(joint_names_expr=[".*"], kp_fw=KP_FW))

@@ -130,6 +130,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         # Start-up randomization only needs the actuators, so it runs now. Publishing friction
         # to the solver needs a solver, which does not exist while assets are initializing.
         self._sample_bam_startup_parameters()
+        self._bind_bam_backlash_indices(collection)
         SimulationManager.register_solver_init_callback(self._bind_bam_actuators)
 
         if adapter is None:
@@ -296,6 +297,92 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         from isaaclab.actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
 
         return next(cfg for cfg in self._native_actuator_cfgs.values() if isinstance(cfg, BamActuatorCfg))
+
+    def _bind_bam_backlash_indices(self, collection: ActuatorCollection) -> None:
+        """Point each backlash-configured servo's encoder at the play hinge in series with it.
+
+        A gearbox modelled with play splits the servo in two: the configured joint is the motor
+        output and an unactuated hinge beside it carries the play, so the link angle is the two
+        summed and the servo's encoder -- which sits on the output side of the play -- reads that
+        sum. :class:`~isaaclab.actuators.BamBacklashActuatorCfg` declares that a group's plant is
+        built that way; this is where the declaration becomes the controller's per-DOF binding.
+
+        The pairing is by name (``passive_<joint>_backlash``) against the articulation's own
+        joints, and the joints to pair come from the group's resolved selection -- never from
+        which joints carry a drive. The play hinges do carry one: the converter authors a
+        zero-gain force drive on them, as the importer does for any hinge no actuator drives.
+
+        A servo whose plant has no such hinge takes mask ``0`` and keeps the plain servo's
+        behaviour bit for bit. Its index is then never dereferenced, and is filled with the DOF's
+        own position slot so the array reads as what it is. Slot zero would name another
+        environment's joint, and a running index would name another joint of this one, because a
+        servo group on a plant with play hinges covers a *subset* of the articulation's DOFs.
+
+        Runs while the model is being built, right after the start-up randomization: the actuators
+        exist (Newton finalizes a controller inside ``Actuator.__init__``) and no step, and hence
+        no CUDA graph capture, has happened yet. The values are copied into the arrays the
+        controller allocated, so a captured graph reads the binding live.
+
+        Args:
+            collection: The articulation's fully constructed actuator collection, which is where
+                each group's joint selection has already been resolved.
+
+        Raises:
+            RuntimeError: If a group asks for the binding but the articulation runs no
+                Newton-native BAM actuator to carry it.
+        """
+        from isaaclab.actuators.actuator_bam_cfg import (  # noqa: PLC0415
+            BACKLASH_JOINT_TEMPLATE,
+            BamBacklashActuatorCfg,
+        )
+
+        played_joints = {
+            joint_name
+            for group_name, cfg in self._native_actuator_cfgs.items()
+            if isinstance(cfg, BamBacklashActuatorCfg)
+            for joint_name in collection._group_joint_names.get(group_name, ())
+        }
+        if not played_joints:
+            return
+
+        adapter = SimulationManager._adapter
+        actuators = self._bam_actuators()
+        if adapter is None or not actuators:
+            raise RuntimeError(
+                "An actuator group is configured with 'BamBacklashActuatorCfg', whose firmware loop reads a"
+                " second joint through the Newton BAM controller, but this articulation runs no such"
+                " controller. Check that the group's joints reach the Newton actuator path."
+            )
+
+        joint_names = self._articulation.backend_joint_names
+        twin_slots: dict[str, int | None] = {}
+        for name in played_joints:
+            twin = BACKLASH_JOINT_TEMPLATE.format(joint=name)
+            twin_slots[name] = joint_names.index(twin) if twin in joint_names else None
+        first_dof = self._joint_dof_offset()
+        env_stride = adapter.num_joints
+
+        for actuator in actuators:
+            controller = actuator.controller
+            # Newton merges structurally identical actuators, so one may span several
+            # articulations. Start from the live arrays and touch only this articulation's DOFs.
+            indices = controller.backlash_pos_indices.numpy().copy()
+            mask = controller.backlash_mask.numpy().copy()
+            for slot, global_dof in enumerate(actuator.indices.numpy()):
+                env, local_dof = divmod(int(global_dof), env_stride)
+                articulation_dof = local_dof - first_dof
+                if not 0 <= articulation_dof < self.num_joints:
+                    continue
+                joint_name = joint_names[articulation_dof]
+                if joint_name not in twin_slots:
+                    continue
+                twin_slot = twin_slots[joint_name]
+                indices[slot] = global_dof if twin_slot is None else env * env_stride + first_dof + twin_slot
+                mask[slot] = 0.0 if twin_slot is None else 1.0
+            controller.bind_backlash_indices(
+                wp.array(indices, dtype=wp.uint32, device=self.device),
+                wp.array(mask, dtype=wp.float32, device=self.device),
+            )
 
     def _bind_bam_actuators(self) -> None:
         """Give this articulation's BAM actuators their per-step MuJoCo Warp channel.
