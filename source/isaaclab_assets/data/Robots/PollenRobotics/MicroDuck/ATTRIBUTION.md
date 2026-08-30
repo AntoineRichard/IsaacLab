@@ -90,6 +90,13 @@ with `add_backlash.py` to model 2° of total gear play per servo:
   the joint order the built articulation reports, which is only benign because every MicroDuck joint
   selection is by exact name.
 
+  The play hinge also carries `MjcJointAPI` with the three properties upstream's `backlash` class
+  gives it beyond the range: `mjc:solreflimit` (`0.01 1`) and `mjc:solimplimit`
+  (`0.95 0.999 0.0001 0.5 2`), because the gear teeth *are* the limit constraint and MuJoCo's default
+  reference lets a range this small overshoot roughly twofold under load, and `mjc:damping` (`0.01`),
+  which nothing else can supply — no actuator group owns these joints, so no actuator model
+  republishes their damping.
+
 A further property is deliberately dropped rather than repaired: the importer bakes the MJCF's home
 pose (`qpos0`, 0.12 m of trunk height) into the articulation root's own transform. Spawning applies
 an asset configuration's initial position to the prim the asset is referenced under, so that
@@ -101,10 +108,11 @@ Not carried over, and therefore owned by the task's actuator configuration:
 * the position actuator gains (`kp = 0.55`, `kv = 0.0`) — the importer declines to translate them
   ("Gain and bias prm arrays are not in the expected format ... physics drive stiffness and damping
   will not be created"), so the drives are unauthored;
-* the MJCF joint `damping` (0.053) and `frictionloss` (0.0048) — written only as `mjc:*` attributes,
-  which are not in the schema resolver set Isaac Lab passes to Newton's USD importer. The backlash
-  model's play hinges lose their own `damping` (0.01) and their `solreflimit`/`solimplimit` the same
-  way, and no actuator group owns those joints to restore them from.
+* the servos' MJCF joint `damping` (0.053) and `frictionloss` (0.0048) — the importer writes them as
+  `mjc:*` attributes of the `"mujoco"` variant only, and the conversion selects the `"physx"` one.
+  Every servo is driven by an actuator group that republishes both, which is why this is a handover
+  rather than a loss; the backlash model's undriven play hinges have no such group, so the
+  conversion authors *their* dynamics on the joint prim itself (see above).
 
 ## Regenerating
 
