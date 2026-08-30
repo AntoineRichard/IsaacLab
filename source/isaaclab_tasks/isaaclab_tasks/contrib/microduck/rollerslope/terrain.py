@@ -129,6 +129,29 @@ class FlatRampTerrainCfg(SubTerrainBaseCfg):
 
     function = flat_ramp_terrain
 
+    convert_to_heightfield: bool = True
+    """Collide against a heightfield rather than the raw triangle mesh. Defaults to True.
+
+    The stock default is ``False``, and this is the one field that departs from it. Two reasons, and
+    the second is measured rather than stylistic:
+
+    * The tile is **exactly** heightfield-representable. It is three boxes laid along ``+x`` whose
+      top faces form a single-valued, piecewise-planar profile with no overhangs and no vertical
+      risers, so the conversion the field's own docstring warns is lossy for mesh sub-terrains loses
+      nothing here.
+    * Raw-mesh collision does not carry this robot. On the triangle mesh the roller model's tires
+      stop supporting it as soon as the wheels turn -- it rides for about 0.1 s, sinks 45 mm and
+      stops -- where on the heightfield it rides like it does on an analytic ground plane. That is a
+      Newton contact gap rather than a geometry error, and it is reproducible at a **zero-degree**
+      ramp angle with nothing task-specific involved; see
+      ``artifacts/microduck/golden_trajectories/rollerslope/controls/``. The heightfield is also the
+      representation every stock Newton-validated terrain configuration uses
+      (:mod:`isaaclab.terrains.config.rough`, and every ``Hf*`` sub-terrain by default).
+
+    Conversion is all-or-nothing across a generator's sub-terrains, so a configuration that mixes
+    this sub-terrain with one that leaves the flag unset silently falls back to the mesh.
+    """
+
     flat_length: float = 2.0
     """Length [m] of the starting platform, whose surface is at ``z = 0``. Defaults to 2.0."""
 
