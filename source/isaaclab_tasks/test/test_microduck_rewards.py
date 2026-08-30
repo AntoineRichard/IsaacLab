@@ -33,6 +33,17 @@ if TYPE_CHECKING:
 HEAD_JOINT_IDS = [0, 1, 2, 3]
 """Joint slots the doubles below fill with ``(neck_pitch, head_pitch, head_yaw, head_roll)``."""
 
+HEAD_JOINT_NAMES = ["neck_pitch", "head_pitch", "head_yaw", "head_roll"]
+"""Names of those four slots, needed only where a term resolves the gear-play twins by name."""
+
+PLAYED_HEAD_JOINT_NAMES = HEAD_JOINT_NAMES + [f"passive_{name}_backlash" for name in HEAD_JOINT_NAMES]
+"""The played articulation's joint names: the four head servos, then their four play hinges.
+
+Slots 4 to 7 are the twins, so ``joint_pos[:, 4:]`` is the play the encoder reads through. The head
+doubles otherwise carry :data:`HEAD_JOINT_NAMES`, which stands in for every unplayed model -- on
+those the two head rewards must behave exactly as they did before the encoder view existed.
+"""
+
 FOOT_BODY_IDS = [0, 1]
 """Body/sensor slots the doubles below fill with the two feet."""
 
@@ -58,7 +69,10 @@ class _DummyData:
 
 
 class _DummyAsset:
-    def __init__(self, **fields: torch.Tensor | None) -> None:
+    def __init__(self, joint_names: list[str] | None = None, **fields: torch.Tensor | None) -> None:
+        # an articulation with no names stands in for every model whose joints no term resolves by
+        # name; only the encoder-view lookup needs them
+        self.joint_names = list(joint_names or ())
         self.data = _DummyData(**fields)
 
 
@@ -324,8 +338,8 @@ def test_pose_mode_switch_counts_yaw_rate_towards_the_speed():
 ##
 
 
-def _head_env(joint_pos: torch.Tensor, command: torch.Tensor) -> _DummyEnv:
-    robot = _DummyAsset(joint_pos=joint_pos, default_joint_pos=torch.zeros_like(joint_pos))
+def _head_env(joint_pos: torch.Tensor, command: torch.Tensor, joint_names: list[str] = HEAD_JOINT_NAMES) -> _DummyEnv:
+    robot = _DummyAsset(joint_names=joint_names, joint_pos=joint_pos, default_joint_pos=torch.zeros_like(joint_pos))
     return _DummyEnv(
         num_envs=joint_pos.shape[0],
         assets={"robot": robot},
@@ -380,8 +394,46 @@ def test_head_pose_tracking_is_a_mean_not_a_sum():
     torch.testing.assert_close(reward, torch.tensor([(3.0 + math.exp(-1.0)) / 4.0]))
 
 
-def _head_bias_term(joint_pos: torch.Tensor, command: torch.Tensor, tau_s: float = 1.0, step_dt: float = 0.02):
-    robot = _DummyAsset(joint_pos=joint_pos, default_joint_pos=torch.zeros_like(joint_pos))
+def test_head_pose_tracking_measures_the_head_through_its_gear_play():
+    """The reward has to score the same angle the policy observes, or it prices the play twice.
+
+    Upstream states the invariant on this very term (``mdp.py:5157-5162``): measuring the servo
+    alone would let the head droop the play reward-free *and* penalize the policy for biasing the
+    servo up to correct what it sees. Here the servos sit one play-width short of the command and
+    the play hinges make up the difference, so the *link* is exactly on target.
+    """
+    play = 0.017453
+    command = torch.tensor([[0.05, -0.02, 0.07, 0.01]])
+    joint_pos = torch.cat([command - play, torch.full((1, 4), play)], dim=1)
+    asset_cfg = _entity("robot", joint_ids=HEAD_JOINT_IDS)
+
+    played = mdp.head_pose_tracking(
+        _head_env(joint_pos, command, PLAYED_HEAD_JOINT_NAMES).as_env(),
+        command_name="head_pose",
+        std=0.5,
+        asset_cfg=asset_cfg,
+    )
+
+    torch.testing.assert_close(played, torch.tensor([1.0]))
+    # the same state read motor-side is off by the play, which is what the term must not report
+    motor_side = mdp.head_pose_tracking(
+        _head_env(joint_pos, command).as_env(),
+        command_name="head_pose",
+        std=0.5,
+        asset_cfg=asset_cfg,
+    )
+    assert motor_side.item() < 1.0
+    torch.testing.assert_close(motor_side, torch.tensor([math.exp(-((play / 0.5) ** 2))]))
+
+
+def _head_bias_term(
+    joint_pos: torch.Tensor,
+    command: torch.Tensor,
+    tau_s: float = 1.0,
+    step_dt: float = 0.02,
+    joint_names: list[str] = HEAD_JOINT_NAMES,
+):
+    robot = _DummyAsset(joint_names=joint_names, joint_pos=joint_pos, default_joint_pos=torch.zeros_like(joint_pos))
     env = _DummyEnv(
         num_envs=joint_pos.shape[0],
         assets={"robot": robot},
@@ -434,6 +486,30 @@ def test_head_pose_bias_penalty_forgets_the_average_on_reset():
     assert penalty[0].item() > settled[0].item()
     assert penalty[1].item() < settled[1].item()
     torch.testing.assert_close(penalty[0], torch.tensor(-0.1 * 0.02))
+
+
+def test_head_pose_bias_penalty_measures_the_head_through_its_gear_play():
+    """The companion DC term reads the same angle, so a play-width droop is charged exactly once.
+
+    This is the term the invariant bites hardest on: it prices the *steady-state* head error, and a
+    gearbox play is a steady-state error source. Read motor-side it would charge a policy that has
+    already put the link where it was asked.
+    """
+    play = 0.017453
+    command = torch.zeros(1, 4)
+    # servos biased up by the play, hinges hanging down by it: the link sits on the command
+    joint_pos = torch.cat([torch.full((1, 4), play), torch.full((1, 4), -play)], dim=1)
+
+    term, env, params = _head_bias_term(joint_pos, command, joint_names=PLAYED_HEAD_JOINT_NAMES)
+    for _ in range(20):
+        penalty = term(env.as_env(), **params)
+
+    torch.testing.assert_close(penalty, torch.zeros(1))
+    # motor-side the same state accumulates a bias, which is the reading upstream calls wrong
+    motor_term, motor_env, motor_params = _head_bias_term(joint_pos, command)
+    for _ in range(20):
+        motor_penalty = motor_term(motor_env.as_env(), **motor_params)
+    assert motor_penalty.item() < -1e-3
 
 
 ##
