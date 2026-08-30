@@ -30,8 +30,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+import torch
+
+from isaaclab.managers import SceneEntityCfg
+
 if TYPE_CHECKING:
+    from isaaclab.assets import Articulation
     from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.terrains import TerrainImporter
 
 
 def _resolve_stage_index(
@@ -327,3 +333,60 @@ def termination_param_stages(
         index = 0
     term_cfg.params.update(param_stages[index]["params"])
     return float(index)
+
+
+def slope_move_masks(distance: torch.Tensor, size_x: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Split a per-environment descent distance into promotions and demotions.
+
+    Ported from addendum section 4.4 (``slope_move_masks``). An environment that travelled more than
+    40 percent of the tile has ridden the ramp out and earns a steeper one; one that travelled less
+    than 20 percent fell or stalled near the top and gets a gentler one; the band between them holds.
+
+    Note:
+        Upstream's docstring calibrates the two fractions against an 8 m tile, and the task it serves
+        runs a 15 m one -- so the live thresholds are 6.0 m and 3.0 m, not 3.2 m and 1.6 m (addendum
+        section 9.4). The fractions are reproduced because they are what the reference policy trained
+        against.
+
+    Args:
+        distance: **Signed** distance [m] travelled down the slope since the reset. Shape is (N,).
+        size_x: Length [m] of the sub-terrain tile along the slope.
+
+    Returns:
+        The promotion and demotion masks. Each shape is (N,).
+    """
+    move_up = distance > size_x * 0.4
+    # Redundant on its own -- the two bands are disjoint -- but it is how the stock
+    # ``terrain_levels_vel`` is written, and keeping the two diffable is worth the extra term.
+    move_down = (distance < size_x * 0.2) & (~move_up)
+    return move_up, move_down
+
+
+def terrain_levels_slope(
+    env: ManagerBasedRLEnv, env_ids: Sequence[int], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Promote an environment to a steeper ramp once it has ridden its current one out.
+
+    Ported from addendum section 4.4 (``terrain_levels_slope``). The stock
+    :func:`~isaaclab_tasks.core.velocity.mdp.terrain_levels_vel` cannot be reused: it demotes against
+    the distance a *commanded* velocity should have covered, and this task's twist command is
+    neutralized to zero, so every environment would be demoted on every reset. Progress is measured
+    instead as the raw distance down the slope.
+
+    That distance is the **signed** x displacement, not a planar norm, which is what makes a robot
+    that slid backwards up the ramp get an easier slope rather than a harder one.
+
+    Args:
+        env: The environment instance.
+        env_ids: The environments being reset, whose progress is scored.
+        asset_cfg: The articulation whose root link is tracked. Defaults to the robot.
+
+    Returns:
+        The mean terrain level over **all** environments, which is what the training log plots.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    terrain: TerrainImporter = env.scene.terrain
+    distance = asset.data.root_link_pos_w.torch[env_ids, 0] - env.scene.env_origins[env_ids, 0]
+    move_up, move_down = slope_move_masks(distance, terrain.cfg.terrain_generator.size[0])
+    terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
