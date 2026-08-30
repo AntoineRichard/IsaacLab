@@ -140,6 +140,9 @@ sampled. Logs: ``artifacts/microduck/backlash/profile_backlash_{256,2048}envs_wo
 The shipped 64 therefore does not merely run tight on this plant, the peak overflows it; the
 feasibility probe measured the overshoot degrading by 3.2x when it does. ``nconmax`` is left at the
 base task's 10: the play hinges are joints, not colliders, and the contact peak did not move.
+
+Both profiles were taken at or below 2048 environments, so the value is sized on a sample that stops
+short of the training scale this task is meant to run at.
 """
 
 
