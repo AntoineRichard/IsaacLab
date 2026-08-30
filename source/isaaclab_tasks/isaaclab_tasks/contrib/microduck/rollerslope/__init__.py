@@ -4,3 +4,22 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 """Passive slope-descent task for the roller-skating MicroDuck biped."""
+
+import gymnasium as gym
+
+from . import agents
+
+##
+# Register Gym environments.
+##
+
+gym.register(
+    id="IsaacContrib-RollerSlope-Flat-MicroDuck",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rollerslope_env_cfg:MicroDuckRollerSlopeFlatEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:MicroDuckRollerSlopePPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
