@@ -2529,6 +2529,49 @@ def wheel_speed_reward(
     return torch.clamp(command_x, min=0.0) * torch.tanh(torch.clamp(forward_omega, min=0.0) / omega_scale)
 
 
+def wheel_glide_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    cap_speed: float = 0.35,
+    wheel_radius: float = 0.0175,
+) -> torch.Tensor:
+    """Reward letting the passive wheels roll forward, up to a cap.
+
+    Ported from addendum section 4.1 (``wheel_glide_reward``). This is the slope task's only positive
+    task reward, and where :func:`wheel_speed_reward` scales the wheel rate by a commanded throttle,
+    this one is command-free: that task's twist command is neutralized and the descent comes from
+    gravity. The reward is ``clamp(mean(omega) * wheel_radius, 0, cap_speed)`` -- the mean wheel rate
+    read as a ground speed -- so three properties hold by construction. It is **capped**, so nothing
+    pays for dropping down the ramp faster; it is **one-sided**, so rolling back up is free rather
+    than charged; and it is measured on the **wheels**, so running on the blades without rolling
+    earns nothing. Without it the argmax of the remaining stack is to stand still on the incline.
+    There is no stock counterpart.
+
+    Note:
+        ``wheel_radius`` defaults to upstream's 0.0175, which addendum section 9.3 measures against
+        the model as 0.0150. The stale value is reproduced for parity with the trained policy; its
+        only effect here is on the label of the cap, which is reached at a true ground speed of
+        0.300 m/s rather than 0.350.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the passive wheel joints to average. On the roller model the
+            wheels interleave with the servos, so they are selected by name rather than by index.
+        cap_speed: Rolling speed [m/s] the reward saturates at. Defaults to 0.35, which is upstream's.
+        wheel_radius: Rolling radius [m] the wheel rate is converted to a ground speed with. Defaults
+            to 0.0175, which is upstream's.
+
+    Returns:
+        The reward in ``[0, cap_speed]``. Shape is (num_envs,).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    forward_omega = torch.mean(asset.data.joint_vel.torch[:, asset_cfg.joint_ids], dim=1)
+    # A rare contact divergence turns a free-spinning wheel's rate into a NaN, and this task carries
+    # no reward-side NaN policy to fall back on.
+    speed = torch.nan_to_num(forward_omega * wheel_radius, nan=0.0, posinf=0.0, neginf=0.0)
+    return torch.clamp(speed, min=0.0, max=cap_speed)
+
+
 def braking_reward(
     env: ManagerBasedRLEnv,
     command_name: str,

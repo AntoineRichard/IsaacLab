@@ -1554,6 +1554,56 @@ def test_wheel_speed_reward_saturates_in_the_mean_wheel_rate_and_scales_with_the
     torch.testing.assert_close(mdp.wheel_speed_reward(backwards.as_env(), **params), torch.tensor([0.0]))
 
 
+WHEEL_GLIDE_CASES = [
+    # (wheel rates [rad/s], rewarded rolling speed [m/s])
+    ([0.0] * 4, 0.0),
+    # 0.2 m/s of rolling speed at the configured radius, below the cap
+    ([0.2 / 0.0175] * 4, 0.2),
+    # exactly at the cap, and then twice as fast: the reward does not grow
+    ([0.35 / 0.0175] * 4, 0.35),
+    ([0.70 / 0.0175] * 4, 0.35),
+    # rolling backwards up the slope pays nothing rather than being charged
+    ([-0.2 / 0.0175] * 4, 0.0),
+    # the four wheels are averaged, so one wheel spinning alone pays a quarter
+    ([0.2 / 0.0175, 0.0, 0.0, 0.0], 0.05),
+    # a free-spinning joint the solver has lost must not poison the reward
+    ([float("nan")] * 4, 0.0),
+]
+"""Wheel rates and the rolling speed :func:`wheel_glide_reward` pays for each, worked out by hand
+from ``clamp(mean(omega) * wheel_radius, 0, cap_speed)`` (addendum section 4.1)."""
+
+
+@pytest.mark.parametrize("wheel_vel, expected", WHEEL_GLIDE_CASES)
+def test_wheel_glide_reward_pays_the_capped_forward_rolling_speed(wheel_vel, expected):
+    """The slope task's only positive task reward, and it is deliberately not a *base* speed reward.
+
+    Capped, so there is no gradient towards dropping down the ramp faster; one-sided, so rolling
+    back up is free rather than punished; and read off the wheels, so a policy that runs on its
+    blades without rolling earns nothing.
+    """
+    wheel_cfg = _entity("robot", joint_ids=WHEEL_JOINT_IDS, joint_names=["a", "b", "c", "d"])
+    env = _roller_env(wheel_vel=wheel_vel)
+
+    reward = mdp.wheel_glide_reward(env.as_env(), asset_cfg=wheel_cfg, cap_speed=0.35, wheel_radius=0.0175)
+
+    torch.testing.assert_close(reward, torch.tensor([expected]), atol=1e-6, rtol=0.0)
+
+
+def test_wheel_glide_reward_reads_only_the_selected_joints():
+    """The wheels are selected by name upstream; here the resolved selection has to be honoured.
+
+    On the roller model the passive wheels interleave with the servos, so a term that averaged the
+    whole joint-velocity tensor would silently mix leg rates into the glide.
+    """
+    wheel_cfg = _entity("robot", joint_ids=WHEEL_JOINT_IDS, joint_names=["a", "b", "c", "d"])
+    # the two trailing slots of the roller double are leg joints, thrashing at a high rate
+    env = _roller_env(wheel_vel=[0.2 / 0.0175] * 4, leg_vel=[50.0, -50.0])
+
+    reward = mdp.wheel_glide_reward(env.as_env(), asset_cfg=wheel_cfg, cap_speed=0.35, wheel_radius=0.0175)
+
+    torch.testing.assert_close(reward, torch.tensor([0.2]), atol=1e-6, rtol=0.0)
+
+
 def test_braking_reward_is_silent_unless_the_throttle_is_negative():
     """It never competes with the wheel-speed reward, which only pays above a zero throttle."""
     params = {"command_name": "twist", "vel_std": 0.3}

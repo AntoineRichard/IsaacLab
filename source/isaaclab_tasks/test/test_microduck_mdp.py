@@ -1287,3 +1287,233 @@ def test_the_ground_state_reset_refuses_a_live_crouch_bucket_it_cannot_spawn():
 
     with pytest.raises(ValueError, match="crouch_z_range.crouch_joint_pos"):
         mdp.reset_ground_state(cast("ManagerBasedEnv", env), env_ids=None, **buckets)
+
+
+##
+# Rolling entry, for the roller-slope task (addendum section 4.3)
+##
+
+
+WHEEL_RADIUS = 0.0175
+"""Rolling radius [m] upstream's roller terms default to (addendum section 9.3: the model measures
+0.0150, and the stale value is ported verbatim for parity)."""
+
+
+class _RollingEntryRobot:
+    """Articulation double that records the two writes the rolling entry makes."""
+
+    def __init__(self, num_envs: int, device: str) -> None:
+        self.data = _DummyRobotData(num_envs, device)
+        self.root_velocity_writes: list[tuple[torch.Tensor, torch.Tensor]] = []
+        self.joint_velocity_writes: list[tuple[torch.Tensor, list[int], torch.Tensor]] = []
+
+    def write_root_link_velocity_to_sim_index(self, *, root_velocity, env_ids=None, skip_forward=False) -> None:
+        del skip_forward
+        self.root_velocity_writes.append((root_velocity.clone(), env_ids))
+
+    def write_joint_velocity_to_sim_index(self, *, velocity, joint_ids=None, env_ids=None, skip_forward=False) -> None:
+        del skip_forward
+        self.joint_velocity_writes.append((velocity.clone(), joint_ids, env_ids))
+
+
+def _rolling_entry_env(num_envs: int = 6) -> _DummyEnv:
+    env = _DummyEnv(num_envs=num_envs)
+    env.scene["robot"] = _RollingEntryRobot(num_envs, env.device)
+    return env
+
+
+def _wheel_entity(joint_ids: list[int]) -> SceneEntityCfg:
+    cfg = SceneEntityCfg("robot")
+    cfg.joint_ids = joint_ids
+    cfg.joint_names = [f"passive_{name}_wheel" for name in ("LF", "LR", "RF", "RR")]
+    return cfg
+
+
+def test_the_rolling_entry_pushes_the_base_forward_only():
+    """A world-frame ``+x`` shove and nothing else: the ramp descends along ``+x``."""
+    env = _rolling_entry_env()
+    robot = env.scene["robot"]
+
+    mdp.reset_rolling_entry(
+        cast("ManagerBasedEnv", env), env_ids=None, asset_cfg=_wheel_entity([1, 3, 5, 7]), speed_range=(0.25, 0.45)
+    )
+
+    velocity, env_ids = robot.root_velocity_writes[0]
+    assert velocity.shape == (env.num_envs, 6)
+    assert torch.all((velocity[:, 0] >= 0.25) & (velocity[:, 0] <= 0.45))
+    # every other component -- the lateral and vertical push and the whole angular velocity -- is
+    # written as zero rather than left alone, so an inherited base velocity cannot survive the reset
+    torch.testing.assert_close(velocity[:, 1:], torch.zeros(env.num_envs, 5))
+    torch.testing.assert_close(env_ids, torch.arange(env.num_envs))
+
+
+def test_the_rolling_entry_spins_every_wheel_to_match_its_own_environments_base_speed():
+    """``omega * r == v`` per environment: the entry rolls rather than skids.
+
+    Upstream added this after a base-only shove -- moving base, motionless wheels -- produced a
+    contact spike on the first step that diverged into NaN.
+    """
+    env = _rolling_entry_env()
+    robot = env.scene["robot"]
+
+    mdp.reset_rolling_entry(
+        cast("ManagerBasedEnv", env),
+        env_ids=None,
+        asset_cfg=_wheel_entity([1, 3, 5, 7]),
+        speed_range=(0.25, 0.45),
+        wheel_radius=WHEEL_RADIUS,
+    )
+
+    speed = robot.root_velocity_writes[0][0][:, 0]
+    wheel_velocity, joint_ids, _ = robot.joint_velocity_writes[0]
+    assert wheel_velocity.shape == (env.num_envs, 4)
+    assert joint_ids == [1, 3, 5, 7]
+    torch.testing.assert_close(wheel_velocity * WHEEL_RADIUS, speed.unsqueeze(1).expand(-1, 4).contiguous())
+
+
+def test_the_rolling_entry_draws_one_speed_per_environment():
+    """One draw per environment, not one shared draw: the entry speed is a randomization."""
+    env = _rolling_entry_env(num_envs=64)
+
+    mdp.reset_rolling_entry(
+        cast("ManagerBasedEnv", env), env_ids=None, asset_cfg=_wheel_entity([1, 3, 5, 7]), speed_range=(0.25, 0.45)
+    )
+
+    speed = env.scene["robot"].root_velocity_writes[0][0][:, 0]
+    assert torch.unique(speed).numel() > 1
+
+
+def test_the_rolling_entry_touches_only_the_environments_it_was_given():
+    """Reset events are handed the restarting environments, and the rest are mid-episode."""
+    env = _rolling_entry_env()
+    env_ids = torch.tensor([1, 4])
+
+    mdp.reset_rolling_entry(
+        cast("ManagerBasedEnv", env), env_ids=env_ids, asset_cfg=_wheel_entity([1, 3, 5, 7]), speed_range=(0.3, 0.3)
+    )
+
+    velocity, written_ids = env.scene["robot"].root_velocity_writes[0]
+    assert velocity.shape == (2, 6)
+    torch.testing.assert_close(written_ids, env_ids)
+    torch.testing.assert_close(env.scene["robot"].joint_velocity_writes[0][0].shape[0], 2)
+
+
+def test_pinning_the_entry_speed_range_makes_the_entry_deterministic():
+    """What the accuracy-gate harness relies on to compare a rollout against upstream's."""
+    env = _rolling_entry_env()
+
+    mdp.reset_rolling_entry(
+        cast("ManagerBasedEnv", env),
+        env_ids=None,
+        asset_cfg=_wheel_entity([1, 3, 5, 7]),
+        speed_range=(0.35, 0.35),
+        wheel_radius=WHEEL_RADIUS,
+    )
+
+    velocity, _ = env.scene["robot"].root_velocity_writes[0]
+    wheel_velocity = env.scene["robot"].joint_velocity_writes[0][0]
+    torch.testing.assert_close(velocity[:, 0], torch.full((env.num_envs,), 0.35))
+    torch.testing.assert_close(wheel_velocity, torch.full((env.num_envs, 4), 0.35 / WHEEL_RADIUS))
+
+
+##
+# Slope curriculum (addendum section 4.4)
+##
+
+
+SLOPE_TILE_SIZE_X = 15.0
+"""Length [m] of the roller-slope tile, which both curriculum thresholds are fractions of."""
+
+SLOPE_MOVE_CASES = [
+    # (x displacement [m], promoted, demoted) at the live 15 m tile: promote above 6.0, demote below 3.0
+    (-7.0, False, True),
+    (0.0, False, True),
+    (2.999, False, True),
+    (3.0, False, False),
+    (4.5, False, False),
+    (6.0, False, False),
+    (6.001, True, False),
+    (12.0, True, False),
+]
+"""The promotion and demotion bands, evaluated by hand from ``d > 0.4 * size_x`` and
+``d < 0.2 * size_x``. Both comparisons are strict, so the two boundary values themselves hold."""
+
+
+@pytest.mark.parametrize("distance, promoted, demoted", SLOPE_MOVE_CASES)
+def test_the_slope_move_masks_promote_past_forty_percent_and_demote_below_twenty(distance, promoted, demoted):
+    move_up, move_down = mdp.slope_move_masks(torch.tensor([distance]), SLOPE_TILE_SIZE_X)
+
+    assert bool(move_up[0]) is promoted
+    assert bool(move_down[0]) is demoted
+
+
+class _DummyTerrainGeneratorCfg:
+    def __init__(self, size: tuple[float, float]) -> None:
+        self.size = size
+
+
+class _DummyTerrainCfg:
+    def __init__(self, size: tuple[float, float]) -> None:
+        self.terrain_generator = _DummyTerrainGeneratorCfg(size)
+
+
+class _DummyTerrain:
+    """Terrain-importer double recording the promotion decision it is handed."""
+
+    def __init__(self, num_envs: int, device: str, size: tuple[float, float]) -> None:
+        self.cfg = _DummyTerrainCfg(size)
+        self.terrain_levels = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self.updates: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+
+    def update_env_origins(self, env_ids, move_up, move_down) -> None:
+        # the real importer also wraps an environment that clears the last level to a random one;
+        # this double keeps the floor, which is the half these tests exercise
+        self.updates.append((env_ids, move_up.clone(), move_down.clone()))
+        self.terrain_levels[env_ids] = torch.clip(self.terrain_levels[env_ids] + move_up.long() - move_down.long(), 0)
+
+
+def _slope_curriculum_env(root_x: list[float], root_y: list[float] | None = None) -> _DummyEnv:
+    env = _DummyEnv(num_envs=len(root_x))
+    env.scene.terrain = _DummyTerrain(env.num_envs, env.device, (SLOPE_TILE_SIZE_X, 4.0))
+    positions = env.scene["robot"].data.root_link_pos_w.torch
+    positions[:, 0] = torch.tensor(root_x)
+    if root_y is not None:
+        positions[:, 1] = torch.tensor(root_y)
+    return env
+
+
+def test_the_slope_curriculum_measures_the_signed_distance_down_the_slope():
+    """Signed ``x``, not a planar norm: sliding backwards must demote rather than promote.
+
+    A norm would read a 7 m slide back up the ramp as 7 m of progress, and a robot that fell over
+    and skidded uphill would be handed a steeper slope.
+    """
+    env = _slope_curriculum_env(root_x=[7.0, -7.0, 4.0], root_y=[0.0, 0.0, 9.0])
+
+    mdp.terrain_levels_slope(cast("ManagerBasedRLEnv", env), env_ids=torch.arange(3))
+
+    _, move_up, move_down = env.scene.terrain.updates[0]
+    torch.testing.assert_close(move_up, torch.tensor([True, False, False]))
+    torch.testing.assert_close(move_down, torch.tensor([False, True, False]))
+
+
+def test_the_slope_curriculum_measures_the_distance_from_each_environments_own_origin():
+    """The origins sit on the ramp of each environment's own tile, at whatever world x that is."""
+    env = _slope_curriculum_env(root_x=[107.0, 7.0])
+    env.scene.env_origins[0, 0] = 100.0
+
+    mdp.terrain_levels_slope(cast("ManagerBasedRLEnv", env), env_ids=torch.arange(2))
+
+    _, move_up, _ = env.scene.terrain.updates[0]
+    torch.testing.assert_close(move_up, torch.tensor([True, True]))
+
+
+def test_the_slope_curriculum_reports_the_mean_level_over_every_environment():
+    """Matches the stock ``terrain_levels_vel``, which the training log reads as one scalar."""
+    env = _slope_curriculum_env(root_x=[7.0, 7.0, 0.0, 0.0])
+
+    mean_level = mdp.terrain_levels_slope(cast("ManagerBasedRLEnv", env), env_ids=torch.arange(4))
+
+    # two promoted to level 1, two held at level 0 by the floor inside ``update_env_origins``
+    torch.testing.assert_close(mean_level, torch.tensor(0.5))
+    torch.testing.assert_close(env.scene.terrain.terrain_levels, torch.tensor([1, 1, 0, 0]))

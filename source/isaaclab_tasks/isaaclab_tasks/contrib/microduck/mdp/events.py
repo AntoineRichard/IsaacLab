@@ -723,6 +723,61 @@ def randomize_joint_dry_friction(
     )
 
 
+def reset_rolling_entry(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    speed_range: tuple[float, float] = (0.25, 0.45),
+    wheel_radius: float = 0.0175,
+) -> None:
+    """Start an episode already rolling: the base and its wheels leave the reset at the same speed.
+
+    Ported from addendum section 4.3 (``reset_rolling_entry``). One forward speed ``v`` is drawn per
+    environment; the root gets a world-frame linear velocity of ``(v, 0, 0)`` and every selected
+    wheel gets ``v / wheel_radius``, so the contact starts rolling rather than skidding. Upstream
+    reached for this after a base-only shove -- a moving base on motionless wheels -- produced a
+    contact spike on the first step that diverged into a NaN, and taught the policy to walk itself to
+    a stop instead of rolling. There is no stock counterpart:
+    :func:`isaaclab.envs.mdp.reset_root_state_uniform`'s ``velocity_range`` moves the base alone,
+    which is exactly the failure this replaces.
+
+    The whole six-vector is written, so any base velocity an earlier reset left behind is overwritten
+    rather than added to. It must therefore run **after** the root reset that places the base, and
+    Isaac Lab fires reset events in configuration declaration order.
+
+    Note:
+        ``wheel_radius`` defaults to upstream's 0.0175 where the model measures 0.0150 (addendum
+        section 9.3), so the wheels actually start about 14 percent slower than rolling without
+        slipping would need. The stale value is reproduced for parity with the trained policy.
+
+    Args:
+        env: The environment holding the articulation.
+        env_ids: The environments to reset. Defaults to None, which resets all of them.
+        asset_cfg: The articulation and the passive wheel joints to spin up. Selecting them by name
+            is what keeps this correct on a model whose wheels interleave with the servos.
+        speed_range: The ``(low, high)`` bounds [m/s] of the entry speed. Defaults to (0.25, 0.45),
+            which is upstream's. Pin both ends to the same value to make an entry deterministic.
+        wheel_radius: Rolling radius [m] the entry speed is converted to a wheel rate with. Defaults
+            to 0.0175, which is upstream's.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    num_resets = len(env_ids)
+    if num_resets == 0:
+        return
+
+    speed = torch.empty(num_resets, device=env.device).uniform_(*speed_range)
+    root_velocity = torch.zeros(num_resets, 6, device=env.device)
+    root_velocity[:, 0] = speed
+    asset.write_root_link_velocity_to_sim_index(root_velocity=root_velocity, env_ids=env_ids)
+
+    joint_ids = None if isinstance(asset_cfg.joint_ids, slice) else asset_cfg.joint_ids
+    num_wheels = asset.num_joints if joint_ids is None else len(joint_ids)
+    wheel_velocity = (speed / wheel_radius).unsqueeze(1).expand(-1, num_wheels).contiguous()
+    asset.write_joint_velocity_to_sim_index(velocity=wheel_velocity, joint_ids=joint_ids, env_ids=env_ids)
+
+
 _BALL_KICK_DIRECTION_ATTR = "_microduck_ball_kick_direction"
 """Attribute the per-environment ball-kick direction is cached under on the environment."""
 

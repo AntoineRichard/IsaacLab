@@ -94,6 +94,7 @@ __all__ = [
     "recovery_success",
     "reset_ball_in_front_of_foot",
     "reset_ground_state",
+    "reset_rolling_entry",
     "reset_roulade_state",
     "reward_weight_stages",
     "robot_state_is_nan",
@@ -118,6 +119,7 @@ __all__ = [
     "single_foot_grounded_reward",
     "single_support_reward",
     "skating_air_time_reward",
+    "slope_move_masks",
     "spin_grounded",
     "spin_rate_l1",
     "spin_rate_track",
@@ -126,6 +128,7 @@ __all__ = [
     "standing_composite_score",
     "standing_envs_stages",
     "termination_param_stages",
+    "terrain_levels_slope",
     "track_angular_velocity",
     "track_linear_velocity",
     "trunk_downward_velocity_penalty",
@@ -135,6 +138,7 @@ __all__ = [
     "upright_gaussian_at_height",
     "upright_linear_at_height",
     "upright_progress",
+    "wheel_glide_reward",
     "wheel_speed_reward",
     "zero_command_padding",
 ]
@@ -157,7 +161,9 @@ from .curriculums import (
     event_param_stages,
     event_range_stages,
     reward_weight_stages,
+    slope_move_masks,
     standing_envs_stages,
+    terrain_levels_slope,
     termination_param_stages,
 )
 from .events import (
@@ -171,6 +177,7 @@ from .events import (
     randomize_joint_dry_friction,
     reset_ball_in_front_of_foot,
     reset_ground_state,
+    reset_rolling_entry,
     reset_roulade_state,
     roulade_roll_state,
     sample_mouth_payload,
@@ -277,6 +284,7 @@ from .rewards import (
     upright_gaussian_at_height,
     upright_linear_at_height,
     upright_progress,
+    wheel_glide_reward,
     wheel_speed_reward,
 )
 from .terminations import fallen_too_long, robot_state_is_nan
