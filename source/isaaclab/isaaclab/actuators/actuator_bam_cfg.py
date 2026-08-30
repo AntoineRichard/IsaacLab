@@ -136,3 +136,47 @@ class BamActuatorCfg(ActuatorBaseCfg):
     size the stopping torque of its static-friction clip and to differentiate the joint
     velocities, neither of which the base actuator interface provides.
     """
+
+
+BACKLASH_JOINT_TEMPLATE: str = "passive_{joint}_backlash"
+"""Name of the play hinge a :class:`BamBacklashActuatorCfg` servo reads its encoder through.
+
+Formatted with the driven joint's name, so ``head_pitch`` is read through
+``passive_head_pitch_backlash``. This is the convention the reference implementation's backlash
+generator emits and the one the converted assets carry; it is a naming contract rather than a
+configured value, because the two joints have to be paired up by a plant the asset already
+describes.
+"""
+
+
+@configclass
+class BamBacklashActuatorCfg(BamActuatorCfg):
+    """Configuration for a BAM servo whose gearbox backlash is modelled as a second joint.
+
+    A gearbox with play is modelled by splitting the servo in two: the configured joint is the
+    motor output, and a second, unactuated hinge in series with it carries the play. The link
+    angle is the two summed. The real servo's magnetic encoder sits on the *output* side of that
+    play, so the firmware closes its position loop on the sum -- while the rotor winds through
+    the dead zone the measured position, and hence the proportional error, does not move.
+
+    This configuration is :class:`BamActuatorCfg` in every parameter; what it adds is that
+    contract. The Newton backend pairs each driven joint with
+    ``BACKLASH_JOINT_TEMPLATE.format(joint=<joint name>)`` at articulation initialization and
+    binds the pair through
+    :meth:`~isaaclab.actuators.newton.ControllerBam.bind_backlash_indices`. A driven joint whose
+    plant carries no such hinge keeps the plain servo's behaviour, bit for bit, so one
+    configuration covers a robot whose joints are only partly modelled with play.
+
+    The group's joint expression selects the *servos*, never the play hinges: the hinges are
+    joints nothing drives, and the asset's own expression (``^(?!passive_).*``) already leaves
+    them out.
+
+    Note:
+        This model runs on the Newton-native actuator path only, and refuses to run anywhere
+        else rather than degrading. Its encoder view is an index into the whole articulation's
+        joint-position array, which only the Newton controller is handed; Isaac Lab's actuator
+        loop is given one group's joints and cannot read a joint outside it. Running the plain
+        servo instead would silently drop the modelled play, so a backend that steps native
+        actuators through the host adapter (PhysX, OVPhysX) and a simulation configured with
+        ``use_newton_actuators=False`` both raise.
+    """
