@@ -149,6 +149,7 @@
             ["IsaacContrib-Velocity-Flat-AnymalC", "rl_games,rsl_rl,skrl", "isaacsim_physx,newton_kamino,newton_mjwarp,ovphysx", "", "", {}, "tasks/locomotion/anymal_c_flat.jpg", true],
             ["IsaacContrib-Velocity-Flat-Digit", "rsl_rl", "isaacsim_physx", "", "", {}, "tasks/locomotion/agility_digit_flat.jpg"],
             ["IsaacContrib-Velocity-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-Velocity-Flat-MicroDuck-Backlash", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Velocity-Flat-MicroDuck-Rollers", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Velocity-Flat-Spot", "rsl_rl,skrl", "isaacsim_physx,newton_kamino,newton_mjwarp", "", "", {}, "tasks/locomotion/spot_flat.jpg"],
             ["IsaacContrib-Velocity-Flat-UnitreeA1", "rsl_rl,skrl,sb3", "isaacsim_physx,newton_kamino,newton_mjwarp,ovphysx", "", "", {}, "tasks/locomotion/a1_flat.jpg", true],
