@@ -907,12 +907,13 @@ def test_a_diverged_environment_does_not_poison_the_reward_buffer():
 
     A rare MuJoCo Warp divergence leaves one environment's whole joint state and every body
     orientation non-finite for a single step while the root quaternion stays normalized. The
-    ``nan_state`` termination exists to catch exactly that -- but
-    :class:`~isaaclab.managers.RewardManager` runs *before*
-    :class:`~isaaclab.managers.TerminationManager` in ``ManagerBasedRLEnv.step``, so the poisoned
-    value is already in the reward buffer, and RSL-RL aborts the run on it before the recycle can
-    help. Measured rate on this task: about one step-environment in sixteen million, which is the
-    order upstream reports for the same divergence.
+    ``nan_state`` termination exists to catch exactly that, and it does -- but detection is not what
+    is missing. ``ManagerBasedRLEnv.step`` computes the terminations and then the rewards from the
+    same post-physics buffers, and only *repairs* the flagged environments afterwards, in
+    ``_reset_idx``; so the reward for the step the divergence happened on is computed on the poisoned
+    state whichever manager runs first, and RSL-RL aborts the run on it. Measured rate on this task:
+    about one step-environment in sixteen million, which is the order upstream reports for the same
+    divergence.
 
     The state written below is the shape captured from a live rollout, not a guess:
     ``artifacts/microduck/reward_nan/``. Two things are asserted, and the second is the one that

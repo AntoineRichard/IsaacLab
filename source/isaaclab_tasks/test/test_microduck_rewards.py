@@ -1486,8 +1486,8 @@ def test_the_state_reading_reward_kernels_survive_a_diverged_solver():
     position and velocity and *every* body orientation non-finite for a single step, five steps into
     an episode, while the root quaternion stayed normalized and the applied torques stayed clamped at
     the effort limit. The ``nan_state`` termination caught it and recycled the environment -- but the
-    reward manager runs before the termination manager, so the poisoned value was already in the
-    buffer, and two OSMO runs died on it at iterations 19 and 45.
+    recycle happens in ``_reset_idx``, which runs *after* the reward is computed, so the poisoned
+    value was already in the buffer, and two OSMO runs died on it at iterations 19 and 45.
 
     Both kernels charge **zero** rather than a finite guess: a joint with no position is not away
     from its pose, and a blade with no orientation is not tilted.

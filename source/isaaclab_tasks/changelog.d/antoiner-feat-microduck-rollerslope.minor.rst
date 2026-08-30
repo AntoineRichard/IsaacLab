@@ -37,8 +37,10 @@ Fixed
   reward buffer containing NaN, at a different iteration on every run. A rare MuJoCo Warp divergence
   leaves one environment's whole joint state and every body orientation non-finite for a single step
   -- about one step-environment in sixteen million, the order upstream reports for the same event --
-  and the ``nan_state`` termination that exists to catch it does fire, but the reward manager runs
-  *before* the termination manager, so the poisoned value is already in the buffer. ``joint_pose_l2``
+  and the ``nan_state`` termination that exists to catch it does fire -- but detection cannot help,
+  because ``ManagerBasedRLEnv.step`` computes the terminations and the rewards from the same
+  post-physics buffers and only resets the flagged environments afterwards, so the reward for the
+  step the divergence happened on is computed on the poisoned state regardless. ``joint_pose_l2``
   and ``feet_flat_penalty`` now sanitize the pose error and the blade tilt respectively, so a broken
   environment contributes zero rather than a guess: a joint with no position is not away from its
   pose and a blade with no orientation is not tilted. Both guards are no-ops on any finite state and

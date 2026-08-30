@@ -2325,11 +2325,13 @@ def feet_flat_penalty(
 
     Note:
         The tilt is NaN-guarded, so a broken environment is charged nothing rather than poisoning the
-        batch. A rare solver divergence leaves the body orientations non-finite for a single step, and
-        the reward manager runs *before* the termination manager, so the ``nan_state`` termination
-        that exists to catch exactly this recycles the environment one step too late to keep the value
-        out of the reward buffer -- which RSL-RL checks and aborts on. The guard is a no-op on any
-        finite orientation.
+        batch. A rare solver divergence leaves the body orientations non-finite for a single step,
+        and no termination can save the reward for that step: ``ManagerBasedRLEnv.step`` computes
+        both the terminations and the rewards from the same post-physics buffers and only *resets*
+        the flagged environments afterwards, in ``_reset_idx``. So ``nan_state`` does detect the
+        divergence and does recycle the environment, but the reward for the step it happened on is
+        computed on the poisoned state either way -- and RSL-RL aborts training on a NaN reward. The
+        guard is a no-op on any finite orientation.
 
     Args:
         env: The environment instance.
@@ -2353,11 +2355,11 @@ def feet_flat_penalty(
     # 1 - cos^2 between the sole normal and gravity, which is upstream's sum of the two components
     # of gravity orthogonal to the site's z axis
     tilt = 1.0 - torch.square(torch.sum(gravity_dir_b * normal, dim=-1))
-    # A diverged solver leaves the body orientations non-finite for exactly one step, and the reward
-    # manager runs before the termination manager, so ``nan_state`` recycles the environment a step
-    # too late to keep the NaN out of the reward buffer RSL-RL checks. A blade whose frame is not a
-    # number is not tilted in any measurable sense, so the guard charges nothing; it is a no-op on
-    # any finite orientation. Same guard, same reason, as ``wheel_glide_reward``.
+    # A diverged solver leaves the body orientations non-finite for exactly one step, and the reset
+    # that repairs it runs after the reward is computed, so no termination can keep the NaN out of
+    # the reward buffer RSL-RL checks. A blade whose frame is not a number is not tilted in any
+    # measurable sense, so the guard charges nothing; it is a no-op on any finite orientation. Same
+    # guard, same reason, as ``wheel_glide_reward``.
     tilt = torch.nan_to_num(tilt, nan=0.0, posinf=0.0, neginf=0.0)
 
     if sensor_cfg is None:
@@ -2452,11 +2454,13 @@ def joint_pose_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Te
 
     Note:
         The deviation is NaN-guarded, so a broken environment scores zero rather than poisoning the
-        batch. A rare solver divergence leaves the joint state non-finite for a single step, and the
-        reward manager runs *before* the termination manager, so the ``nan_state`` termination that
-        exists to catch exactly this recycles the environment one step too late to keep the value out
-        of the reward buffer -- which RSL-RL checks and aborts on. The guard is a no-op on any finite
-        state.
+        batch. A rare solver divergence leaves the joint state non-finite for a single step, and no
+        termination can save the reward for that step: ``ManagerBasedRLEnv.step`` computes both the
+        terminations and the rewards from the same post-physics buffers and only *resets* the
+        flagged environments afterwards, in ``_reset_idx``. So ``nan_state`` does detect the
+        divergence and does recycle the environment, but the reward for the step it happened on is
+        computed on the poisoned state either way -- and RSL-RL aborts training on a NaN reward. The
+        guard is a no-op on any finite state.
 
     Args:
         env: The environment instance.
@@ -2469,11 +2473,11 @@ def joint_pose_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Te
     error = (
         asset.data.joint_pos.torch[:, asset_cfg.joint_ids] - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
     )
-    # A diverged solver leaves the whole joint state non-finite for exactly one step, and the reward
-    # manager runs before the termination manager, so ``nan_state`` recycles the environment a step
-    # too late to keep the NaN out of the reward buffer RSL-RL checks. Sanitizing the *error* rather
-    # than the sum keeps that environment's contribution at zero -- it has no pose to be away from --
-    # and is a no-op on any finite state. Same guard, same reason, as ``wheel_glide_reward``.
+    # A diverged solver leaves the whole joint state non-finite for exactly one step, and the reset
+    # that repairs it runs after the reward is computed, so no termination can keep the NaN out of
+    # the reward buffer RSL-RL checks. Sanitizing the *error* rather than the sum keeps that
+    # environment's contribution at zero -- it has no pose to be away from -- and is a no-op on any
+    # finite state. Same guard, same reason, as ``wheel_glide_reward``.
     error = torch.nan_to_num(error, nan=0.0, posinf=0.0, neginf=0.0)
     return torch.sum(torch.square(error), dim=1)
 
