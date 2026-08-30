@@ -447,9 +447,6 @@ class BacklashPair:
     backlash: str
     """Name of the ``passive_<servo>_backlash`` hinge sharing its body."""
 
-    body: str
-    """Name of the MJCF body both joints are declared on."""
-
 
 def backlash_pairs_from_mjcf(mjcf_path: str) -> list[BacklashPair]:
     """Return the servo/backlash joint pairs a MJCF declares, in declaration order.
@@ -482,7 +479,7 @@ def backlash_pairs_from_mjcf(mjcf_path: str) -> list[BacklashPair]:
                     f"'{name}' is declared on body '{body.get('name')}' but its servo joint"
                     f" '{servo}' is not, so it is not a serial play hinge."
                 )
-            pairs.append(BacklashPair(servo=servo, backlash=name, body=body.get("name", "")))
+            pairs.append(BacklashPair(servo=servo, backlash=name))
     return pairs
 
 
