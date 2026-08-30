@@ -21,6 +21,8 @@ Covers :mod:`isaaclab_newton.physics.mjwarp_joint_limits`:
 * A joint that authors :class:`~isaaclab_newton.sim.schemas.MujocoJointCfg`'s
   ``solreflimit`` / ``solimplimit`` / ``damping`` in USD reaches the live MJWarp
   model per joint, and the unauthored-gain retag above leaves it alone.
+* One of those fixed-width pairs authored at the wrong width is refused rather
+  than written short.
 """
 
 from __future__ import annotations
@@ -439,6 +441,28 @@ def test_usd_authored_joint_damping_reaches_the_live_model():
     mjc_dof = {name: int(solver.mj_model.jnt_dofadr[_mjc_joint_of_dof(solver, dof)]) for name, dof in dofs.items()}
     assert dof_damping[mjc_dof[_AUTHORING_JOINT]] == pytest.approx(_AUTHORED_JOINT_DAMPING)
     assert dof_damping[mjc_dof[_PLAIN_JOINT]] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_length"),
+    [("solreflimit", (0.01,), 2), ("solimplimit", (0.95, 0.999, 0.0001), 5)],
+)
+def test_fixed_width_joint_fields_are_refused_at_the_wrong_width(field, value, expected_length):
+    """A fixed-width pair authored short raises instead of reaching the joint prim.
+
+    ``solreflimit`` and ``solimplimit`` are the two fields MuJoCo reads as arrays of a fixed width,
+    and a short one is what a hand-written configuration gets wrong. Authoring it would leave the
+    solver reading whatever the missing components happened to be, so the applier refuses it and the
+    attribute stays unauthored.
+    """
+    stage = _usd_hinge_pair(author=False)
+    prim_path = f"/Articulation/Link1/{_AUTHORING_JOINT}"
+
+    with pytest.raises(ValueError, match=f"'{field}' must contain exactly {expected_length} values"):
+        apply_mujoco_joint(MujocoJointCfg(**{field: value}), prim_path, stage)
+
+    attribute = stage.GetPrimAtPath(prim_path).GetAttribute(f"mjc:{field}")
+    assert not (attribute.IsValid() and attribute.HasAuthoredValue())
 
 
 @pytest.mark.parametrize("use_mujoco_default", [True, False])
