@@ -111,6 +111,7 @@
             ["IsaacContrib-Reorient-Cube-Shadow-OpenAI-FF-Direct", "rl_games,rsl_rl,skrl", "isaacsim_physx,newton_mjwarp,ovphysx", "", "", {}, "tasks/manipulation/shadow_cube.jpg"],
             ["IsaacContrib-Reorient-Cube-Shadow-OpenAI-LSTM-Direct", "rl_games,rsl_rl", "isaacsim_physx,newton_mjwarp,ovphysx", "", "", {}, "tasks/manipulation/shadow_cube.jpg"],
             ["IsaacContrib-RollerCrouch-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
+            ["IsaacContrib-RollerSlope-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-RollerStandUp-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-Roulade-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
             ["IsaacContrib-SitStand-Flat-MicroDuck", "rsl_rl", "newton_mjwarp", "", ""],
