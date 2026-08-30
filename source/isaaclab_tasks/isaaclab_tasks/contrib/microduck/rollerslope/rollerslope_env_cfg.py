@@ -40,18 +40,19 @@ rolling entry, a rebuilt reward dict, two terminations and a single curriculum t
 randomization suite -- is inherited, and ``test_microduck_rollerslope_env.py`` asserts that it still
 is.
 
-Warning:
-    **Training this task is blocked on a backend gap, and the configuration is not the cause.** On
-    Isaac Lab's generated *mesh* terrain the roller model's tires stop carrying the robot as soon as
-    the wheels are turning: it rides for about 0.1 s, sinks 45 mm and stops, where the same robot in
-    the same pose at the same entry speed rolls normally on the skating task's analytic ground
-    plane. The accuracy gate localises it with four controls -- it reproduces at a **zero-degree**
-    ramp angle, so it is not the incline; it does not reproduce on the plane, so it is not the robot;
-    it does not reproduce at rest, so static contact is fine; and neither the collision margin nor
-    contact reduction moves it. See ``artifacts/microduck/golden_trajectories/rollerslope/README.md``
-    for the measurements. The terrain geometry itself is verified correct -- the environment origins
-    are bit-identical to upstream's and a ray cast onto the built mesh lands on them to 1e-6 m -- so
-    what is affected is the contact response, not this package.
+Note:
+    **The terrain is collided against as a heightfield, and that is load-bearing rather than a
+    detail.** Against the raw triangle mesh the generator emits, this robot's tires stop carrying it
+    as soon as the wheels turn -- it rides for about 0.1 s, sinks 45 mm and stops, where on the
+    heightfield it rides like it does on an analytic ground plane. The sub-terrain therefore sets
+    :attr:`~isaaclab_tasks.contrib.microduck.rollerslope.terrain.FlatRampTerrainCfg.convert_to_heightfield`,
+    which is the representation every stock Newton-validated terrain configuration uses, and the
+    conversion is lossless here because the tile is piecewise planar with no overhangs. The raw-mesh
+    behaviour is a Newton contact gap worth its own report -- it reproduces at a zero-degree ramp
+    angle, on stock terrain-generator output, with nothing task-specific involved -- and the control
+    experiments that establish that live in
+    ``artifacts/microduck/golden_trajectories/rollerslope/controls/``. It does not affect this task
+    as configured.
 
 Note:
     Upstream additionally sets ``nan_policy = "sanitize"`` on both observation groups, an mjlab
@@ -129,6 +130,12 @@ One sub-terrain type over ten rows of increasing difficulty, which the generator
 angle. The two stacks' per-row difficulty formula -- ``(row + eta) / num_rows`` rescaled into
 ``difficulty_range`` -- is character-for-character identical, so a row here is the same ramp band as
 upstream's (addendum section 3.2).
+
+The tile is collided against as a **heightfield** rather than as the raw triangle mesh the generator
+emits; see :attr:`~isaaclab_tasks.contrib.microduck.rollerslope.terrain.FlatRampTerrainCfg.convert_to_heightfield`
+for why. The rasterization resolution is this generator's ``horizontal_scale``, left at the stock
+0.1 m: halving it to 0.05 m moves the trunk height on a 20 degree ramp by under a millimetre, so the
+default costs nothing.
 
 Note:
     The per-tile ramp length is drawn from the **global** numpy random state, because Isaac Lab
@@ -252,11 +259,19 @@ class CommandsCfg(RollersCommandsCfg):
         standing-environment zeroing that ``rel_standing_envs = 1.0`` was set to trigger. On
         upstream's stack the two combine to feed a 0.3 throttle to a fifth of the environments, for
         the whole resampling interval, on a task where **no reward reads the command** -- it reaches
-        only the actor's three twist slots. Reproducing that would mean dropping the zeroing from a
-        command class this port shares with the skating and swizzle tasks, whose docstring keeps it
-        precisely so that raising the standing fraction does what it says. Turning the bucket off
-        instead makes the twist slots identically zero at every step of every episode, which is what
-        the neutralization was for.
+        only the actor's three twist slots. Turning the bucket off instead makes the twist slots
+        identically zero at every step of every episode, which is what upstream's own edit was
+        reaching for and what the neutralization is for here.
+
+        Reproducing upstream's *actual* behaviour is possible -- a task-local subclass could drop
+        the standing-environment zeroing without touching the class the skating and swizzle tasks
+        share -- and it is rejected on cost rather than on feasibility. A new command class to
+        reproduce a throttle leak into an observation slot nothing reads buys nothing; the family
+        reproduces upstream accidents that shape *physics*, and this one shapes only the actor's
+        observation distribution in one slot for a fifth of the environments. Note also that the
+        literal one-line revert to 0.2 would reproduce **neither** stack: our shared class zeroes
+        standing environments every step, so the 0.3 would survive only in the observation returned
+        by the reset step, before the first update.
     """
 
     def __post_init__(self):
@@ -492,21 +507,21 @@ class MicroDuckRollerSlopeFlatEnvCfg(MicroDuckVelocityRollersFlatEnvCfg):
         if self.scene.terrain.terrain_generator is not None:
             self.scene.terrain.terrain_generator.curriculum = self.curriculum.terrain_levels is not None
 
-        # Measured, not inherited: the skating task's budget is sized for four tires on an infinite
-        # plane, and this one puts them on a triangle mesh -- and on the joins between three boxes,
-        # where a single tire can touch two faces at once. Profiled under random actions with the
-        # tilt termination dropped and the pushes forced to full magnitude, at 256, 2048 and 4096
-        # environments: **98 constraints and 35 contacts** per environment at the peak, against the
-        # skating task's 83 and 26 on the same robot. The contact peak agrees to one between 2048
-        # and 4096, which is what says the tail has been sampled; the inherited ``nconmax`` of 32
-        # sits *below* it, which is the reason this override exists rather than being cosmetic.
-        # Logs: ``artifacts/microduck/profile_microduck_contacts_rollerslope_{256,2048,4096}envs.log``,
+        # Measured, not inherited, and the widest budget in the family by a factor of three. The
+        # skating task's is sized for four tires on an infinite plane, which is one analytic contact
+        # patch per tire; this task collides against a heightfield rasterized at 0.1 m, where a
+        # sprawled robot's colliders straddle cell boundaries and pick up two triangles per cell
+        # across several cells. Profiled under random actions with the tilt termination dropped and
+        # the pushes forced to full magnitude, at 256, 2048 and 4096 environments: **295 constraints
+        # and 92 contacts** per environment at the peak, against the skating task's 83 and 26 on the
+        # same robot, and against 98 and 35 for this task on the raw mesh it no longer uses. Logs:
+        # ``artifacts/microduck/profile_microduck_contacts_rollerslope_{256,2048,4096}envs.log``,
         # from ``artifacts/microduck/profile_microduck_contacts.py``.
         #
         # ``njmax`` is a hard per-environment cap and carries the wider margin; ``nconmax`` is a
         # per-environment share of one shared buffer and cannot overflow at the measured peak, so it
         # sits just above it, at the same 1.2x the rest of the family uses.
         newton_mjwarp = self.sim.physics.newton_mjwarp
-        newton_mjwarp.solver_cfg.njmax = 192
-        newton_mjwarp.solver_cfg.nconmax = 42
+        newton_mjwarp.solver_cfg.njmax = 448
+        newton_mjwarp.solver_cfg.nconmax = 112
         self.sim.physics.default = newton_mjwarp

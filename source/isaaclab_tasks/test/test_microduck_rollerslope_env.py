@@ -29,6 +29,7 @@ The simulator-backed tests skip when the generated roller USD is absent. Generat
 """
 
 import copy
+import dataclasses
 import math
 import os
 
@@ -46,7 +47,7 @@ import trimesh
 import isaaclab.sim as sim_utils
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sim import SimulationContext
-from isaaclab.terrains import TerrainGenerator
+from isaaclab.terrains import SubTerrainBaseCfg, TerrainGenerator
 
 import isaaclab_tasks  # noqa: F401
 import isaaclab_tasks.contrib.microduck.mdp as mdp
@@ -149,9 +150,9 @@ EXPECTED_ABSENT_REWARDS = {
 }
 """The fourteen skating terms that do not survive into this task (addendum section 5.3).
 
-Upstream's ``keep = {"action_rate_l2"}`` deletes **twenty** inherited terms and then declares six of them again
-of them with fresh parameters, so "deleted" is not the same as "absent" and only these fourteen are
-gone. The deletion is the design: no fixed-pose reward, so the robot is free to fold and lean into
+Upstream's ``keep = {"action_rate_l2"}`` deletes **twenty** inherited terms and then declares six of
+them again with fresh parameters, so "deleted" is not the same as "absent" and only these fourteen
+are gone. The deletion is the design: no fixed-pose reward, so the robot is free to fold and lean into
 the slope instead of being told to hold the flat-ground stand.
 """
 
@@ -568,6 +569,31 @@ def test_the_terrain_generator_reproduces_upstreams_tile_and_ladder():
 
 
 @pytest.mark.unit
+def test_the_terrain_is_collided_against_as_a_heightfield():
+    """Load-bearing, not a detail: against the raw mesh this robot's tires do not carry it.
+
+    On the triangle mesh the generator emits, the roller model rides for about 0.1 s, sinks 45 mm
+    and stops; on the heightfield it rides like it does on an analytic ground plane. The conversion
+    is lossless here because the tile is piecewise planar with no overhangs, and it is what every
+    stock Newton-validated terrain configuration does. Traces:
+    ``artifacts/microduck/golden_trajectories/rollerslope/controls/``.
+    """
+    generator = MicroDuckRollerSlopeFlatEnvCfg().scene.terrain.terrain_generator
+
+    assert generator.sub_terrains["flat_ramp"].convert_to_heightfield is True
+    # the conversion is all-or-nothing across a generator's sub-terrains, so a second sub-terrain
+    # that left the flag unset would silently drop the whole tile back to the mesh
+    assert all(sub_cfg.convert_to_heightfield for sub_cfg in generator.sub_terrains.values())
+    # the stock default is off, so this is a deliberate override rather than an inherited value
+    stock_default = {field.name: field for field in dataclasses.fields(SubTerrainBaseCfg)}[
+        "convert_to_heightfield"
+    ].default_factory()
+    assert stock_default is False
+    # rasterization resolution: the generator's own horizontal_scale, left at the stock value
+    assert generator.horizontal_scale == pytest.approx(0.1)
+
+
+@pytest.mark.unit
 def test_the_generated_environment_origins_lie_on_the_ramp_surface():
     """The whole reason this task needed new terrain, measured on the mesh the generator built.
 
@@ -649,18 +675,20 @@ def test_no_passive_hinge_reaches_a_selection_that_is_not_about_the_wheels():
 
 @pytest.mark.unit
 def test_the_contact_budget_is_measured_rather_than_inherited():
-    """The skating budget is sized for a plane, and this task puts the tires on a triangle mesh.
+    """The skating budget is sized for one analytic contact patch per tire; a heightfield is not that.
 
-    The inherited ``nconmax`` of 32 sits *below* the measured peak of 35, so this is a live fix
-    rather than a cosmetic one.
+    Rasterized at 0.1 m, a sprawled robot's colliders straddle cell boundaries and pick up two
+    triangles per cell across several cells, so *both* inherited buffers sit below the measured peaks
+    and this is a live fix rather than a cosmetic one.
     """
     solver = MicroDuckRollerSlopeFlatEnvCfg().sim.physics.default.solver_cfg
     inherited = MicroDuckVelocityRollersFlatEnvCfg().sim.physics.default.solver_cfg
 
-    # measured peaks under random actions with the tilt termination dropped: 98 and 35
-    assert solver.njmax >= 98
-    assert solver.nconmax >= 35
-    assert inherited.nconmax < 35
+    # measured peaks under random actions with the tilt termination dropped: 295 and 92
+    assert solver.njmax >= 295
+    assert solver.nconmax >= 92
+    assert inherited.njmax < 295
+    assert inherited.nconmax < 92
     # upstream's flat solver profile is inherited unchanged; only the buffers are resized
     assert (solver.iterations, solver.ls_iterations) == (inherited.iterations, inherited.ls_iterations) == (10, 20)
 
@@ -814,6 +842,10 @@ def test_the_environments_start_on_the_ramp_and_the_void_guard_stays_quiet_throu
             "z": (-0.005, 0.005),
             "yaw": (0.0, 0.0),
         }
+        # pin the entry draw to the band's midpoint, which is the accuracy gate's regime, so the
+        # distance below is not also sampling the (0.25, 0.45) spread
+        entry_speed = sum(MICRODUCK_SLOPE_ENTRY_SPEED_X) / 2.0
+        env_cfg.events.reset_rolling_entry.params["speed_range"] = (entry_speed, entry_speed)
         env_cfg.terminations.fell_over = None
         env = gym.make(TASK_NAME, cfg=env_cfg)
         env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
@@ -838,14 +870,28 @@ def test_the_environments_start_on_the_ramp_and_the_void_guard_stays_quiet_throu
         start = (robot.data.root_pos_w.torch - origins).clone()
         action = torch.zeros((unwrapped.num_envs, unwrapped.action_manager.total_action_dim), device=unwrapped.device)
         void_term = unwrapped.termination_manager.get_term_cfg("fell_into_void")
-        for _ in range(200):
+        travelled_at_60 = None
+        for step in range(200):
             env.step(action)
             assert torch.isfinite(robot.data.root_pos_w.torch).all()
             assert not bool(mdp.root_height_below_minimum(unwrapped, **void_term.params).any())
+            if step == 59:
+                travelled_at_60 = (robot.data.root_pos_w.torch - origins - start).clone()
 
-        # the robot went down the hill and forward along it, which is what "on the ramp" means
+        # It rode the ramp rather than sinking onto it, and that is the discriminator this test
+        # exists for. A robot whose tires stop carrying it sinks and stalls within the first
+        # quarter second, which is what the raw triangle-mesh collider does to this model: measured
+        # on this configuration with the flag flipped off, the best environment reaches 0.23 m by
+        # step 60 where the heightfield reaches 0.51-0.54. The thresholds sit between those, and on
+        # the spread rather than on the worst environment -- the domain randomization is live here,
+        # so an environment that topples early is a normal draw rather than a broken plant.
+        distance_at_60 = travelled_at_60[:, 0]
+        assert float(distance_at_60.max()) > 0.35
+        assert float(distance_at_60.median()) > 0.2
+
+        # and it went down the hill as well as along it, which is what "on the ramp" means
         travelled = robot.data.root_pos_w.torch - origins - start
-        assert float(travelled[:, 0].min()) > 0.02
+        assert float(travelled[:, 0].max()) > 0.35
         assert float(travelled[:, 2].max()) < -0.03
         assert float(robot.data.root_pos_w.torch[:, 2].min()) > MICRODUCK_SLOPE_VOID_FLOOR
     finally:

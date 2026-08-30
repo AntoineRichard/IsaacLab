@@ -30,23 +30,21 @@ Added
   **read back off the articulation** after a reset, and the environment origins are checked against
   the surface of the terrain that was actually generated.
 
-Known issue
-^^^^^^^^^^^
-
-* Training ``IsaacContrib-RollerSlope-Flat-MicroDuck`` is blocked on a Newton contact gap on
-  generated mesh terrain, which the environment configuration does not cause and cannot work around.
-  Once the wheels are turning the roller model's tires stop carrying the robot on a generated mesh:
-  it rides for about 0.1 s, sinks 45 mm and stops, where the same robot in the same pose at the same
-  entry speed rolls normally on the skating task's analytic ground plane. Four controls localise it
-  -- it reproduces at a **zero-degree** ramp angle, so it is not the incline; it does not reproduce
-  on the plane, so it is not the robot; it does not reproduce at rest, so static contact is fine; and
-  neither the collision margin nor contact reduction moves it. The terrain geometry is verified
-  correct: the environment origins are bit-identical to upstream's and a downward ray cast onto the
-  built mesh lands on them to 1e-6 m on all ten rows. The configuration, the registration and the
-  parity tests are unaffected, and the environment builds, resets and steps NaN-free.
-
 Changed
 ^^^^^^^
+
+* Collided the generated slope tile as a **heightfield** rather than as the raw triangle mesh the
+  terrain generator emits, by setting the stock ``SubTerrainBaseCfg.convert_to_heightfield`` flag on
+  ``FlatRampTerrainCfg``. This is the representation every Newton-validated stock terrain
+  configuration uses, and the conversion is lossless here because the tile is piecewise planar with
+  no overhangs. It is load-bearing rather than stylistic: against the raw mesh this robot's tires stop
+  carrying it as soon as the wheels turn -- it rides for about 0.1 s, sinks 45 mm and stops -- where
+  on the heightfield it rides like it does on an analytic ground plane, and the accuracy gate's
+  cross-stack error falls by 3-6x on every regime. The raw-mesh behaviour is a Newton contact gap
+  rather than a geometry error: it reproduces at a **zero-degree** ramp angle, on stock
+  terrain-generator output, with nothing task-specific involved, and it is not roller-specific either
+  -- the walking MicroDuck falls through the same tile once it topples. The control experiments that
+  establish that, and the traces behind them, are archived with the accuracy-gate goldens.
 
 * Converted upstream's upright standard deviation instead of copying it. Upstream scores trunk tilt
   as ``exp(-(1 - cos t) / 0.2^2)`` where this family's ``upright`` scores ``exp(-sin^2(t) / std^2)``,
@@ -60,11 +58,12 @@ Changed
   ``neck_action_rate_l2`` and ``joint_torques_l2`` -- are identical, and a test compares them against
   the skating task rather than against a transcribed literal so the two cannot drift apart.
 * Sized the MuJoCo Warp contact budget from profiling rather than inheriting the skating task's:
-  ``njmax`` is 192 and ``nconmax`` is 42, against a measured peak of 98 constraints and 35 contacts
+  ``njmax`` is 448 and ``nconmax`` is 112, against a measured peak of 295 constraints and 92 contacts
   per environment under random actions with the tilt termination dropped and the pushes forced to
-  full magnitude, profiled at 256, 2048 and 4096 environments. The inherited ``nconmax`` of 32 sits
-  below that peak: four tires on a triangle mesh, and on the joins between three boxes where one
-  tire can touch two faces, demand more than four tires on a plane. The **solver iteration counts
+  full magnitude, profiled at 256, 2048 and 4096 environments. Both inherited values sit far below
+  those peaks. The skating budget is sized for one analytic contact patch per tire on an infinite
+  plane; a heightfield rasterized at 0.1 m gives a sprawled robot colliders that straddle cell
+  boundaries and pick up two triangles per cell across several cells. The **solver iteration counts
   are upstream's** template values, 10 and 20.
 * Turned the forced-forward command bucket off on this task, where upstream leaves the template's
   ``rel_forward_envs = 0.2``. The bucket clamps the surge slot to at least 0.3 at resample time, and
