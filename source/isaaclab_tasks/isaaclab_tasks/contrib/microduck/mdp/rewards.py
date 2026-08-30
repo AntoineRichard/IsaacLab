@@ -46,6 +46,7 @@ from isaaclab.utils.string import resolve_matching_names_values
 
 from . import observations as _observations
 from .events import ball_kick_direction, roulade_roll_state
+from .observations import backlash_encoder_ids
 
 if TYPE_CHECKING:
     from isaaclab.assets import Articulation, RigidObject
@@ -442,6 +443,38 @@ Head and body pose tracking.
 """
 
 
+def _head_angle_through_the_play(
+    env: ManagerBasedRLEnv, asset: Articulation, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """The head joints' angle as the encoder reports it: the link, not the motor.
+
+    The two head-pose terms track a quantity the policy *observes*, and on the gear-backlash plant
+    the policy observes the link angle -- ``qpos[servo] + qpos[passive_<servo>_backlash]`` -- through
+    :func:`~isaaclab_tasks.contrib.microduck.mdp.observations.joint_pos_rel_backlash`. A reward that
+    measured the motor instead would break upstream's consistency invariant twice over: the head
+    could droop the play free of charge, *and* the policy would be charged for biasing the servo up
+    to correct the droop it can see. Upstream states it on these two terms specifically and resolves
+    it inside them rather than in the task configuration, which is why this is not a variant term.
+
+    On every model without play hinges -- which is every MicroDuck model but one -- the lookup
+    returns nothing and this is the plain servo reading, unchanged.
+
+    Args:
+        env: The environment instance.
+        asset: The articulation carrying the head joints.
+        asset_cfg: The articulation and the head joints, in the command's column order.
+
+    Returns:
+        The measured head-joint angles [rad]. Shape is (num_envs, num_selected_joints).
+    """
+    measured = asset.data.joint_pos.torch[:, asset_cfg.joint_ids]
+    encoder = backlash_encoder_ids(env, asset, asset_cfg)
+    if encoder is None:
+        return measured
+    twin_ids, mask = encoder
+    return measured + asset.data.joint_pos.torch[:, twin_ids] * mask
+
+
 def head_pose_tracking(
     env: ManagerBasedRLEnv, command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -469,7 +502,7 @@ def head_pose_tracking(
     """
     asset: Articulation = env.scene[asset_cfg.name]
     command = env.command_manager.get_command(command_name)
-    measured = asset.data.joint_pos.torch[:, asset_cfg.joint_ids]
+    measured = _head_angle_through_the_play(env, asset, asset_cfg)
     error = (measured - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]) - command
     return torch.exp(-((error / std) ** 2)).mean(dim=-1)
 
@@ -557,7 +590,7 @@ class head_pose_bias_penalty(ManagerTermBase):
         """
         asset: Articulation = env.scene[asset_cfg.name]
         command = env.command_manager.get_command(command_name)
-        measured = asset.data.joint_pos.torch[:, asset_cfg.joint_ids]
+        measured = _head_angle_through_the_play(env, asset, asset_cfg)
         error = (measured - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]) - command
 
         gate = None
