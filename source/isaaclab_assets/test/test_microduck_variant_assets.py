@@ -210,8 +210,10 @@ the mistake the binding is easiest to get wrong in.
 BACKLASH_SETTLE_STEPS = 500
 """Physics steps the configured backlash model is held at its home pose for, i.e. 2.5 s.
 
-Long enough for the 14 play hinges to take up their teeth under the weight of the limbs and for the
-servos to reach their stiction band, which is the transient the settle case has to look past.
+Long enough for the servos to reach their stiction band and for 14 permanently active limit rows to
+show any energy they pump, which is the transient the settle case has to look past. It is not long
+enough to say anything about the teeth, because this hold does not load them -- see
+:func:`test_backlash_cfg_comes_to_rest_holding_the_home_pose`.
 """
 
 BACKLASH_QUASI_STATIC_STEPS = 100
@@ -450,11 +452,11 @@ def backlash_native():
         }
 
         # Hold the home pose with the robot hung by its trunk: the servos are commanded to it and
-        # the 14 play hinges are left to take up their teeth under the weight of the limbs. The
-        # base is rewritten every step rather than stood on a ground plane, because the plain
-        # walking model sinks through one in a bare stage too (a harness defect, not a plant one)
-        # and because a hanging robot loads every play hinge instead of only the ones a stance
-        # happens to load.
+        # the 14 play hinges are left free. The base is rewritten every step rather than stood on a
+        # ground plane, because the plain walking model sinks through one in a bare stage too (a
+        # harness defect, not a plant one). Pinning the base that way also holds the articulation's
+        # generalized velocity down, so nothing here loads the limbs -- what this hold can say is
+        # about integration, not about the teeth.
         robot.write_joint_position_to_sim_index(position=default_joint_pos)
         robot.write_joint_velocity_to_sim_index(velocity=torch.zeros_like(default_joint_pos))
         robot.actuators.reset()
@@ -940,14 +942,18 @@ def test_backlash_play_hinges_carry_the_mjcfs_limit_solver_parameters(usd_articu
             assert np.ravel(attribute.Get()) == pytest.approx(np.ravel(mjcf[name][key])), f"{attribute_name} {name}"
 
 
-def test_backlash_play_hinges_reach_the_solver_with_the_mjcfs_limit_parameters(usd_articulations, mj_joints):
+def test_backlash_play_hinges_reach_the_built_model_with_the_mjcfs_limit_parameters(usd_articulations, mj_joints):
     """The authored parameters arrive in the built model, on the play DOFs and on nothing else.
 
-    Authoring them is only half the mechanism: ``mjc:solreflimit`` also has to reach MuJoCo Warp as a
+    Authoring them is only half the mechanism: ``mjc:solreflimit`` also has to reach the model as a
     raw pair, which is what keeps the joint out of the unauthored-gain retag that would otherwise
     give it MuJoCo's default ``(0.02, 1.0)`` -- twice the play under load. The plain walking asset is
     spawned in the same model and is asserted untouched, so a passthrough that wrote every DOF rather
     than the authored ones cannot pass.
+
+    What is read here is the Newton model's own arrays, which is where a spawned asset's authoring
+    lands; their forwarding into the live MuJoCo Warp model is pinned separately, through a real
+    solver, by ``isaaclab_newton``'s ``test_mjwarp_joint_limit_solref.py``.
     """
     from newton._src.solvers.mujoco.constants import SOLREF_MODE_RAW
 
@@ -1144,9 +1150,12 @@ def test_backlash_cfg_comes_to_rest_holding_the_home_pose(backlash_native):
     assert drift < BACKLASH_HOME_DRIFT, f"the pose still drifts by {np.rad2deg(drift):.4f} deg over the last steps"
 
     # The play hinges are still where the configuration reset them, which is the one thing this
-    # unloaded hold does establish about them: nothing pushed them off centre on its own.
+    # unloaded hold does establish about them: nothing pushed them off centre on its own. The bound
+    # is a tenth of the range rather than the range itself, so that only a hinge that stayed centred
+    # can pass -- one that had wandered anywhere inside its teeth could pass the wider bound.
     play = [index for index, name in enumerate(backlash_native["joint_names"]) if name in BACKLASH_JOINTS]
-    assert np.abs(joint_pos[-1][:, play]).max() < BACKLASH_LIMIT_RAD
+    off_centre = np.abs(joint_pos[-1][:, play]).max()
+    assert off_centre < 0.1 * BACKLASH_LIMIT_RAD, f"the play hinges sit {np.rad2deg(off_centre):.4f} deg off centre"
 
 
 def test_the_played_plant_needs_its_own_configuration(backlash_native, usd_articulations):
