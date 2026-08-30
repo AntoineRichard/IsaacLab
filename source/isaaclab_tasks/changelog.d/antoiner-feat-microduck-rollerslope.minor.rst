@@ -30,6 +30,24 @@ Added
   **read back off the articulation** after a reset, and the environment origins are checked against
   the surface of the terrain that was actually generated.
 
+Fixed
+^^^^^
+
+* Fixed a training abort on ``IsaacContrib-RollerSlope-Flat-MicroDuck`` at scale: RSL-RL rejected a
+  reward buffer containing NaN, at a different iteration on every run. A rare MuJoCo Warp divergence
+  leaves one environment's whole joint state and every body orientation non-finite for a single step
+  -- about one step-environment in sixteen million, the order upstream reports for the same event --
+  and the ``nan_state`` termination that exists to catch it does fire, but the reward manager runs
+  *before* the termination manager, so the poisoned value is already in the buffer. ``joint_pose_l2``
+  and ``feet_flat_penalty`` now sanitize the pose error and the blade tilt respectively, so a broken
+  environment contributes zero rather than a guess: a joint with no position is not away from its
+  pose and a blade with no orientation is not tilted. Both guards are no-ops on any finite state and
+  match the one ``wheel_glide_reward`` already carries for the same reason. The kernels are shared
+  with the skating, spin, crouch-glide, stand-up-on-skates and ground-pick tasks, which are covered
+  by the same fix; the slope task is where the divergence is frequent enough to bite, because it is
+  the only one that spawns on a generated ramp, injects wheel spin at every reset and inherits a
+  horizontal spawn jitter that can start the trunk inside the starting platform.
+
 Changed
 ^^^^^^^
 
