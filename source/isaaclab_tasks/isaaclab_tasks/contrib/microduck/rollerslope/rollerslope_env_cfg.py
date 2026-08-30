@@ -40,6 +40,19 @@ rolling entry, a rebuilt reward dict, two terminations and a single curriculum t
 randomization suite -- is inherited, and ``test_microduck_rollerslope_env.py`` asserts that it still
 is.
 
+Warning:
+    **Training this task is blocked on a backend gap, and the configuration is not the cause.** On
+    Isaac Lab's generated *mesh* terrain the roller model's tires stop carrying the robot as soon as
+    the wheels are turning: it rides for about 0.1 s, sinks 45 mm and stops, where the same robot in
+    the same pose at the same entry speed rolls normally on the skating task's analytic ground
+    plane. The accuracy gate localises it with four controls -- it reproduces at a **zero-degree**
+    ramp angle, so it is not the incline; it does not reproduce on the plane, so it is not the robot;
+    it does not reproduce at rest, so static contact is fine; and neither the collision margin nor
+    contact reduction moves it. See ``artifacts/microduck/golden_trajectories/rollerslope/README.md``
+    for the measurements. The terrain geometry itself is verified correct -- the environment origins
+    are bit-identical to upstream's and a ray cast onto the built mesh lands on them to 1e-6 m -- so
+    what is affected is the contact response, not this package.
+
 Note:
     Upstream additionally sets ``nan_policy = "sanitize"`` on both observation groups, an mjlab
     ``ObservationGroupCfg`` field with no Isaac Lab equivalent (addendum sections 5.5 and 9.10). It
