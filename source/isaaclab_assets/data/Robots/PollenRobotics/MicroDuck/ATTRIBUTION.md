@@ -108,11 +108,12 @@ Not carried over, and therefore owned by the task's actuator configuration:
 * the position actuator gains (`kp = 0.55`, `kv = 0.0`) — the importer declines to translate them
   ("Gain and bias prm arrays are not in the expected format ... physics drive stiffness and damping
   will not be created"), so the drives are unauthored;
-* the servos' MJCF joint `damping` (0.053) and `frictionloss` (0.0048) — the importer writes them as
-  `mjc:*` attributes of the `"mujoco"` variant only, and the conversion selects the `"physx"` one.
-  Every servo is driven by an actuator group that republishes both, which is why this is a handover
-  rather than a loss; the backlash model's undriven play hinges have no such group, so the
-  conversion authors *their* dynamics on the joint prim itself (see above).
+* the servos' MJCF joint `damping` (0.053) and `frictionloss` (0.0048) — no servo joint of a
+  converted asset carries an `mjc:*` attribute for either, since the conversion selects the
+  importer's `"physx"` physics variant rather than its `"mujoco"` one. Every servo is driven by an
+  actuator group that republishes both, which is why this is a handover rather than a loss; the
+  backlash model's undriven play hinges have no such group, so the conversion authors *their*
+  dynamics on the joint prim itself (see above).
 
 ## Regenerating
 
