@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from isaaclab.actuators.actuator_bam_cfg import BACKLASH_JOINT_TEMPLATE
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.utils.buffers import CircularBuffer
@@ -40,6 +41,9 @@ if TYPE_CHECKING:
 
 _IMU_MISALIGNMENT_ATTR = "_microduck_imu_misalignment"
 """Attribute the per-environment IMU misalignment rotation is cached under on the environment."""
+
+_BACKLASH_ENCODER_ATTR = "_microduck_backlash_encoder_ids"
+"""Attribute the resolved encoder-view joint pairings are cached under on the environment."""
 
 
 """
@@ -82,6 +86,143 @@ def joint_pos_rel_biased(
     if biased:
         joint_pos = joint_pos + encoder_bias(env, asset_cfg)[:, asset_cfg.joint_ids]
     return joint_pos - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
+
+
+"""
+Encoder view through the gear play.
+"""
+
+
+def backlash_encoder_ids(
+    env: ManagerBasedEnv, asset: Articulation, asset_cfg: SceneEntityCfg
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Pair each selected servo with the play hinge in series with it, once per selection.
+
+    On the played model (:data:`~isaaclab_assets.MICRODUCK_BACKLASH_CFG`) every servo drives a
+    ``passive_<servo>_backlash`` hinge, and the link angle -- the one the servo's magnetic encoder
+    reports, because it sits on the far side of the gearbox -- is the two summed. This resolves that
+    pairing by the naming convention
+    :data:`~isaaclab.actuators.actuator_bam_cfg.BACKLASH_JOINT_TEMPLATE`, which is the same constant
+    the Newton actuator binding uses, so the observation and the servo firmware can never disagree
+    about which hinge belongs to which servo.
+
+    A servo with no twin keeps **its own slot** behind a zero mask rather than slot 0: the index is
+    never scaled in, but it still has to be a valid local one, so that a poisoned slot 0 cannot be
+    laundered into every observation of every environment.
+
+    Returns ``None`` -- not an all-zero mask -- when *no* selected servo is played, so that the
+    terms below take the same code path they took before this existed on the models that are not.
+
+    Args:
+        env: The environment, which caches the resolution per articulation and selection.
+        asset: The articulation the selection was resolved against.
+        asset_cfg: The resolved servo selection, in the order the observation block reports.
+
+    Returns:
+        The play hinges' joint indices and a per-joint mask that is 1.0 where a hinge was found, or
+        None when the model carries none for this selection.
+    """
+    cache: dict[tuple[str, str], tuple[torch.Tensor, torch.Tensor] | None] | None = getattr(
+        env, _BACKLASH_ENCODER_ATTR, None
+    )
+    if cache is None:
+        cache = {}
+        setattr(env, _BACKLASH_ENCODER_ATTR, cache)
+    key = (asset_cfg.name, str(asset_cfg.joint_ids))
+    if key in cache:
+        return cache[key]
+
+    names = list(asset.joint_names)
+    joint_ids = asset_cfg.joint_ids
+    servo_ids = list(range(len(names)))[joint_ids] if isinstance(joint_ids, slice) else [int(i) for i in joint_ids]
+    slot_of = {name: slot for slot, name in enumerate(names)}
+    twin_ids: list[int] = []
+    mask: list[float] = []
+    for servo_id in servo_ids:
+        twin = slot_of.get(BACKLASH_JOINT_TEMPLATE.format(joint=names[servo_id]))
+        twin_ids.append(servo_id if twin is None else twin)
+        mask.append(0.0 if twin is None else 1.0)
+
+    resolved = None
+    if any(mask):
+        resolved = (
+            torch.tensor(twin_ids, dtype=torch.long, device=env.device),
+            torch.tensor(mask, dtype=torch.float32, device=env.device),
+        )
+    cache[key] = resolved
+    return resolved
+
+
+def joint_pos_rel_backlash(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    biased: bool = True,
+) -> torch.Tensor:
+    """Joint positions as the encoders report them **through** the gearbox play.
+
+    Ported from upstream ``joint_pos_rel_backlash`` (report section 1.3). This is
+    :func:`joint_pos_rel_biased` with the play hinge's angle added to each servo's:
+    ``(qpos[servo] + bias) + qpos[backlash] - default[servo]``. The encoder sits on the output side
+    of the gear teeth, so while the rotor winds through the dead zone the reading -- and hence the
+    policy's observation -- does not move.
+
+    The bias composes on the **servo reading only** and the play summand stays raw: there is one
+    encoder per servo, so one calibration error per servo. The default subtracted is the servo's,
+    since the play rests centred at zero.
+
+    ``asset_cfg`` must select servos only. It never has to be narrowed by hand in this package --
+    every selection is spelled out as exact joint names, which cannot match a ``passive_`` joint --
+    but a selection that did reach the play hinges would report them as extra columns.
+
+    On a model without play hinges this is :func:`joint_pos_rel_biased` exactly, which is what lets
+    the deployed 61-wide observation layout stay the same on both plants.
+
+    Args:
+        env: The environment.
+        asset_cfg: The articulation and the servos to report, in the requested order.
+        biased: Whether to add the encoder bias. Defaults to True.
+
+    Returns:
+        Encoder positions relative to the servos' defaults [rad].
+        Shape is (num_envs, num_selected_joints).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos = asset.data.joint_pos.torch[:, asset_cfg.joint_ids]
+    if biased:
+        joint_pos = joint_pos + encoder_bias(env, asset_cfg)[:, asset_cfg.joint_ids]
+    encoder = backlash_encoder_ids(env, asset, asset_cfg)
+    if encoder is not None:
+        twin_ids, mask = encoder
+        joint_pos = joint_pos + asset.data.joint_pos.torch[:, twin_ids] * mask
+    return joint_pos - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
+
+
+def joint_vel_rel_backlash(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Joint velocities as the firmware derives them, through the gearbox play.
+
+    Ported from upstream ``joint_vel_rel_backlash`` (report section 1.3). The servo firmware
+    computes its reported velocity by differencing encoder *positions*, so it sees the play move as
+    well: ``qvel[servo] + qvel[backlash] - default[servo]``. This is the observation only -- the BAM
+    controller's own back-EMF and friction terms stay motor-side, because they are rotor physics
+    rather than an encoder-derived signal.
+
+    On a model without play hinges this is :func:`~isaaclab.envs.mdp.joint_vel_rel` exactly.
+
+    Args:
+        env: The environment.
+        asset_cfg: The articulation and the servos to report, in the requested order.
+
+    Returns:
+        Encoder velocities relative to the servos' defaults [rad/s].
+        Shape is (num_envs, num_selected_joints).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_vel = asset.data.joint_vel.torch[:, asset_cfg.joint_ids]
+    encoder = backlash_encoder_ids(env, asset, asset_cfg)
+    if encoder is not None:
+        twin_ids, mask = encoder
+        joint_vel = joint_vel + asset.data.joint_vel.torch[:, twin_ids] * mask
+    return joint_vel - asset.data.default_joint_vel.torch[:, asset_cfg.joint_ids]
 
 
 """

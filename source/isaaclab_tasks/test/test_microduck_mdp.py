@@ -53,6 +53,16 @@ ANG_VEL_Z_RANGE = (-1.0, 1.0)
 JOINT_NAMES = ["hip", "knee", "ankle", "neck"]
 """Joint names of the articulation double, standing in for the 14 MicroDuck servos."""
 
+BACKLASH_JOINT_NAMES = ["hip", "passive_hip_backlash", "knee", "passive_knee_backlash", "ankle", "neck"]
+"""Joint names of the *played* articulation double: two servos carry a gear-play twin, two do not.
+
+The twins are **interleaved** with the servos rather than appended, which is the order the converted
+backlash asset resolves them in, so a term that paired its slots positionally would read the wrong
+joint here. ``ankle`` and ``neck`` are deliberately left without a twin: upstream masks a missing
+twin off per joint rather than per model, and a double whose every servo is played could not tell
+the two behaviours apart.
+"""
+
 BODY_NAMES = ["trunk", "ankle_left", "ankle_right"]
 """Body names of the articulation double, in the resolved order the real scene reports."""
 
@@ -79,14 +89,16 @@ class _DummyTensorView:
 class _DummyRobotData:
     """The articulation state the MicroDuck command, observation and action terms read."""
 
-    def __init__(self, num_envs: int, device: str) -> None:
+    def __init__(self, num_envs: int, device: str, num_joints: int = len(JOINT_NAMES)) -> None:
         self.root_lin_vel_b = _DummyTensorView(torch.zeros(num_envs, 3, device=device))
         self.root_ang_vel_b = _DummyTensorView(torch.zeros(num_envs, 3, device=device))
         self.heading_w = _DummyTensorView(torch.zeros(num_envs, device=device))
         gravity = torch.tensor([0.0, 0.0, -1.0], device=device).expand(num_envs, 3)
         self.projected_gravity_b = _DummyTensorView(gravity.clone())
-        self.joint_pos = _DummyTensorView(torch.zeros(num_envs, len(JOINT_NAMES), device=device))
-        self.default_joint_pos = _DummyTensorView(torch.zeros(num_envs, len(JOINT_NAMES), device=device))
+        self.joint_pos = _DummyTensorView(torch.zeros(num_envs, num_joints, device=device))
+        self.default_joint_pos = _DummyTensorView(torch.zeros(num_envs, num_joints, device=device))
+        self.joint_vel = _DummyTensorView(torch.zeros(num_envs, num_joints, device=device))
+        self.default_joint_vel = _DummyTensorView(torch.zeros(num_envs, num_joints, device=device))
         self.body_pos_w = _DummyTensorView(torch.zeros(num_envs, len(BODY_NAMES), 3, device=device))
         self.root_link_pos_w = _DummyTensorView(torch.zeros(num_envs, 3, device=device))
         # Isaac Lab orders quaternions (x, y, z, w), so identity is the last column
@@ -95,15 +107,16 @@ class _DummyRobotData:
 
 
 class _DummyRobot:
-    def __init__(self, num_envs: int, device: str) -> None:
-        self.data = _DummyRobotData(num_envs, device)
-        self.num_joints = len(JOINT_NAMES)
+    def __init__(self, num_envs: int, device: str, joint_names: list[str] | None = None) -> None:
+        self.joint_names = list(JOINT_NAMES if joint_names is None else joint_names)
+        self.data = _DummyRobotData(num_envs, device, len(self.joint_names))
+        self.num_joints = len(self.joint_names)
         self.device = device
         self.joint_position_target: torch.Tensor | None = None
 
     def find_joints(self, name_keys, preserve_order: bool = False, *, as_proxy: bool = False):
         names = list(name_keys)
-        ids = [JOINT_NAMES.index(name) for name in names]
+        ids = [self.joint_names.index(name) for name in names]
         indices = torch.tensor(ids, dtype=torch.long, device=self.device)
         return (_DummyTensorView(indices) if as_proxy else ids), names
 
@@ -146,13 +159,13 @@ class _DummySimulation:
 class _DummyEnv:
     """Minimal environment double for command, observation and action terms."""
 
-    def __init__(self, num_envs: int = 8, device: str = "cpu") -> None:
+    def __init__(self, num_envs: int = 8, device: str = "cpu", joint_names: list[str] | None = None) -> None:
         self.num_envs = num_envs
         self.device = device
         self.extras: dict = {}
         self.common_step_counter = 0
         self.sim = _DummySimulation()
-        self.scene = _DummyScene({"robot": _DummyRobot(num_envs, device)}, num_envs, device)
+        self.scene = _DummyScene({"robot": _DummyRobot(num_envs, device, joint_names)}, num_envs, device)
 
 
 def _make_pose_command(ranges, resampling_time_range=(2.0, 5.0), num_envs=8) -> mdp.UniformPoseDeltaCommand:
@@ -460,6 +473,136 @@ def test_the_biased_action_subtracts_the_bias_the_observation_adds():
     robot.data.joint_pos.torch[:] = robot.joint_position_target
     read_back = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), _joint_cfg([0, 1, 2, 3]), biased=True)
     torch.testing.assert_close(read_back, actions)
+
+
+##
+# Encoder view through the gear play
+##
+
+
+def _played_env(num_envs: int = 8) -> _DummyEnv:
+    """An environment whose articulation carries the interleaved play hinges."""
+    return _DummyEnv(num_envs=num_envs, joint_names=BACKLASH_JOINT_NAMES)
+
+
+def _played_joint_cfg(names: list[str]) -> SceneEntityCfg:
+    """A resolved servo selection on the played articulation, in the requested order."""
+    return SceneEntityCfg("robot", joint_names=names, joint_ids=[BACKLASH_JOINT_NAMES.index(name) for name in names])
+
+
+def _fill_distinct(view: _DummyTensorView, scale: float) -> None:
+    """Give every joint slot its own value, so a mis-paired slot cannot pass by coincidence."""
+    view.torch[:] = scale * torch.arange(1, view.torch.shape[1] + 1, device=view.torch.device)
+
+
+def test_the_encoder_reads_the_servo_position_through_its_play_hinge():
+    """The measured angle is ``qpos[servo] + qpos[backlash]``, which is where the encoder sits."""
+    env = _played_env()
+    asset_cfg = _played_joint_cfg(["hip", "knee"])
+    data = env.scene["robot"].data
+    _fill_distinct(data.joint_pos, 0.1)
+    data.default_joint_pos.torch[:] = 0.05
+
+    measured = mdp.joint_pos_rel_backlash(cast("ManagerBasedEnv", env), asset_cfg, biased=False)
+
+    # hip is slot 0 and its twin slot 1; knee is slot 2 and its twin slot 3
+    expected = torch.tensor([[0.1 + 0.2 - 0.05, 0.3 + 0.4 - 0.05]], device=env.device).expand(env.num_envs, 2)
+    torch.testing.assert_close(measured, expected)
+    # and it is not the servo-only reading, which is what makes the term worth having
+    plain = mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), asset_cfg, biased=False)
+    assert not torch.allclose(measured, plain)
+
+
+def test_the_encoder_velocity_sums_the_play_hinge_rate():
+    """The firmware derives its velocity from encoder positions, so it sees the play move too."""
+    env = _played_env()
+    asset_cfg = _played_joint_cfg(["hip", "knee"])
+    data = env.scene["robot"].data
+    _fill_distinct(data.joint_vel, 1.0)
+    data.default_joint_vel.torch[:] = 0.5
+
+    measured = mdp.joint_vel_rel_backlash(cast("ManagerBasedEnv", env), asset_cfg)
+
+    expected = torch.tensor([[1.0 + 2.0 - 0.5, 3.0 + 4.0 - 0.5]], device=env.device).expand(env.num_envs, 2)
+    torch.testing.assert_close(measured, expected)
+
+
+def test_the_encoder_bias_lands_on_the_servo_reading_and_the_play_stays_raw():
+    """One encoder per servo means one calibration error per servo (upstream ``mdp.py:6191-6193``).
+
+    The bias is a property of the sensor, and the play is upstream of it, so a biased reading is
+    ``(qpos[servo] + bias) + qpos[backlash]`` -- never ``(qpos[servo] + qpos[backlash]) * something``
+    and never a second bias on the summand. The difference is measurable here because the two
+    readings differ by exactly the bias and by nothing else.
+    """
+    torch.manual_seed(0)
+    env = _played_env(num_envs=64)
+    asset_cfg = _played_joint_cfg(["hip", "knee"])
+    data = env.scene["robot"].data
+    _fill_distinct(data.joint_pos, 0.1)
+    mdp.randomize_encoder_bias(cast("ManagerBasedEnv", env), None, bias_range=ENCODER_BIAS_RANGE)
+    bias = mdp.encoder_bias(cast("ManagerBasedEnv", env))
+
+    truth = mdp.joint_pos_rel_backlash(cast("ManagerBasedEnv", env), asset_cfg, biased=False)
+    biased = mdp.joint_pos_rel_backlash(cast("ManagerBasedEnv", env), asset_cfg, biased=True)
+
+    torch.testing.assert_close(biased - truth, bias[:, asset_cfg.joint_ids])
+    # the bias is per servo, and the twins' own bias slots are never read
+    assert torch.any(bias[:, [1, 3]] != 0.0)
+
+
+def test_a_servo_without_a_play_hinge_reads_exactly_as_it_did_before():
+    """The mask is per joint, so a partly played model is not all-or-nothing."""
+    env = _played_env()
+    asset_cfg = _played_joint_cfg(["hip", "ankle"])
+    data = env.scene["robot"].data
+    _fill_distinct(data.joint_pos, 0.1)
+
+    measured = mdp.joint_pos_rel_backlash(cast("ManagerBasedEnv", env), asset_cfg, biased=False)
+
+    # hip (slot 0) reads through its twin (slot 1); ankle (slot 4) has none and reads itself
+    expected = torch.tensor([[0.1 + 0.2, 0.5]], device=env.device).expand(env.num_envs, 2)
+    torch.testing.assert_close(measured, expected)
+
+
+def test_the_encoder_view_follows_the_requested_joint_order():
+    """A reordered selection reorders the pairing with it, or the observation block misaligns."""
+    env = _played_env()
+    data = env.scene["robot"].data
+    _fill_distinct(data.joint_pos, 0.1)
+
+    forward = mdp.joint_pos_rel_backlash(cast("ManagerBasedEnv", env), _played_joint_cfg(["hip", "knee"]), biased=False)
+    reversed_ = mdp.joint_pos_rel_backlash(
+        cast("ManagerBasedEnv", env), _played_joint_cfg(["knee", "hip"]), biased=False
+    )
+
+    torch.testing.assert_close(reversed_, forward.flip(dims=(1,)))
+
+
+@pytest.mark.parametrize("biased", [False, True])
+def test_the_encoder_terms_degrade_to_the_plain_ones_on_a_model_without_play_hinges(biased: bool):
+    """One configuration is safe on every model: without twins the terms are bit-identical."""
+    torch.manual_seed(0)
+    env = _make_obs_env(num_envs=32)
+    asset_cfg = _joint_cfg([0, 1, 2, 3])
+    data = env.scene["robot"].data
+    data.joint_pos.torch[:] = torch.rand_like(data.joint_pos.torch)
+    data.joint_vel.torch[:] = torch.rand_like(data.joint_vel.torch)
+    data.default_joint_pos.torch[:] = 0.1
+    mdp.randomize_encoder_bias(cast("ManagerBasedEnv", env), None, bias_range=ENCODER_BIAS_RANGE)
+
+    torch.testing.assert_close(
+        mdp.joint_pos_rel_backlash(cast("ManagerBasedEnv", env), asset_cfg, biased=biased),
+        mdp.joint_pos_rel_biased(cast("ManagerBasedEnv", env), asset_cfg, biased=biased),
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        mdp.joint_vel_rel_backlash(cast("ManagerBasedEnv", env), asset_cfg),
+        mdp.joint_vel_rel(cast("ManagerBasedEnv", env), asset_cfg),
+        rtol=0.0,
+        atol=0.0,
+    )
 
 
 ##
