@@ -48,6 +48,13 @@ What differs from implementation A, and why
 * **The external torque can come from the solver.** :attr:`ControllerBam.external_torque`,
   when bound, replaces implementation A's rotor-momentum estimator with the true generalized
   forces the load applies to the gearbox.
+* **The firmware can read its encoder through a serial play hinge.** Because a controller is
+  handed the *whole* position array plus per-DOF index arrays, rather than a slice of its own
+  joints, :meth:`ControllerBam.bind_backlash_indices` can point each driven DOF at a second
+  joint whose angle the encoder also sees. That is what a gearbox's backlash looks like when
+  it is modelled as a hinge: implementation A's ``compute`` only ever receives its own joints'
+  state and cannot express it without a new hook. Unbound, the controller is bit-for-bit the
+  plain servo.
 
 The controller is stateful and CUDA-graph-safe: all of its state is double-buffered Warp
 arrays, and every scalar that changes the kernel's control flow is fixed before graph
@@ -83,6 +90,8 @@ def _bam_motor_kernel(
     pos_indices: wp.array[wp.uint32],
     vel_indices: wp.array[wp.uint32],
     target_pos_indices: wp.array[wp.uint32],
+    backlash_pos_indices: wp.array[wp.uint32],
+    backlash_mask: wp.array[float],
     kp_fw: wp.array[float],
     kp_scale: wp.array[float],
     kd_scale: wp.array[float],
@@ -119,6 +128,12 @@ def _bam_motor_kernel(
     :func:`~isaaclab.actuators.bam_model.compute_duty` and
     :func:`~isaaclab.actuators.bam_model.compute_motor_torque`, preceded by the command
     delay that :meth:`isaaclab.actuators.BamActuator._apply_delay` implements.
+
+    The one departure from those functions is the position the firmware error is measured
+    against, which is the DOF's own angle plus a masked second angle -- see
+    :meth:`ControllerBam.bind_backlash_indices`. The velocity is not treated that way, and
+    deliberately so: it enters only the back-EMF, the Stribeck blend and the stiction clip,
+    which are rotor physics rather than an encoder-derived firmware signal.
     """
     i = wp.tid()
 
@@ -171,7 +186,11 @@ def _bam_motor_kernel(
     # and the torque equation solely through the back-EMF term.
     scaled_vel = velocities[vel_indices[i]] * kd_scale[i]
 
-    duty = (target - positions[pos_indices[i]]) * (kp_fw[i] * kp_scale[i]) * error_gain[i]
+    # The encoder sits on the far side of whatever play was bound, so it reads the sum. An
+    # unbound DOF carries a zero mask, which leaves the term exactly zero.
+    measured = positions[pos_indices[i]] + positions[backlash_pos_indices[i]] * backlash_mask[i]
+
+    duty = (target - measured) * (kp_fw[i] * kp_scale[i]) * error_gain[i]
     if max_current[i] > 0.0:
         duty_center = kt[i] * scaled_vel / vin_eff
         duty_span = resistance[i] * max_current[i] / vin_eff
@@ -391,6 +410,16 @@ class ControllerBam(Controller):
 
     motor_torque: wp.array[float] | None
     """Motor-side torque of the last step, before any friction [N.m], shape ``(N,)``."""
+
+    backlash_pos_indices: wp.array[wp.uint32] | None
+    """Position slot each DOF's encoder reads through, shape ``(N,)``, or None before finalize.
+
+    Written by :meth:`bind_backlash_indices`; zero, and inert under the zero
+    :attr:`backlash_mask` beside it, until then.
+    """
+
+    backlash_mask: wp.array[float] | None
+    """Whether each DOF's encoder reads through :attr:`backlash_pos_indices` [-], shape ``(N,)``."""
 
     _PER_DOF_PARAMS = (
         "kp_fw",
@@ -639,6 +668,8 @@ class ControllerBam(Controller):
         self.viscous_damping = None
         self.effective_vin = None
         self.motor_torque = None
+        self.backlash_pos_indices = None
+        self.backlash_mask = None
         self._next_state_arrays: dict[str, wp.array] = {}
 
     """
@@ -650,6 +681,11 @@ class ControllerBam(Controller):
         self.viscous_damping = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self.effective_vin = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self.motor_torque = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        # Slot zero is the placeholder for a DOF whose encoder reads nothing but its own joint:
+        # it is always a valid read, and the zero mask beside it discards the value. Matches
+        # the reference implementation, which fills the same map with zeros.
+        self.backlash_pos_indices = wp.zeros(num_actuators, dtype=wp.uint32, device=device)
+        self.backlash_mask = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._next_state_arrays = {
             "prev_motor_torque": wp.zeros(num_actuators, dtype=wp.float32, device=device),
             "prev_applied_torque": wp.zeros(num_actuators, dtype=wp.float32, device=device),
@@ -677,6 +713,57 @@ class ControllerBam(Controller):
         if stride < 1:
             raise ValueError(f"env_dof_stride must be at least 1, got {stride}")
         self.env_dof_stride = int(stride)
+
+    def bind_backlash_indices(self, indices: wp.array[wp.uint32], mask: wp.array[float]) -> None:
+        """Bind the joint each DOF's encoder reads through, on top of the DOF's own.
+
+        A gearbox whose backlash is modelled as a hinge in series with the servo puts the play
+        on a second, unactuated joint: the servo joint is the motor output and the link angle
+        is the two summed. The real servo's magnetic encoder sits on the *output* side of that
+        play, and the firmware closes its position loop on what the encoder reads -- so while
+        the rotor winds through the dead zone, the proportional error does not move. Binding
+        makes this controller measure its error against
+        ``positions[dof] + positions[indices[dof]] * mask[dof]`` instead of ``positions[dof]``.
+        The velocities stay motor-side; see :func:`_bam_motor_kernel`.
+
+        The indices are into the *whole* position array the controller is handed, so they are a
+        property of the finalized articulation rather than of the actuator prim, and cannot be
+        authored in USD: DOF numbering is a finalize-time artifact. Isaac Lab's Newton backend
+        resolves them from the joint names at articulation initialization.
+
+        The values are copied into the arrays :meth:`finalize` allocated, so the binding a
+        captured CUDA graph reads stays live and a rebind is visible to it. Bind before the
+        first step regardless -- a plant does not grow play mid-episode.
+
+        Args:
+            indices: Index into the position array of the joint each DOF's encoder also reads,
+                shape ``(N,)``. A DOF with no such joint takes any valid index and mask ``0``.
+            mask: ``1`` where the DOF's encoder reads through :paramref:`indices`, ``0`` where
+                it does not [-], shape ``(N,)``. An all-zero mask reproduces the plain servo
+                bit for bit, which is what lets one configuration cover plants with and without
+                modelled play.
+
+        Raises:
+            RuntimeError: If the controller has not been finalized.
+            ValueError: If an array's dtype, rank, length or device does not match the DOFs.
+        """
+        if self.backlash_mask is None:
+            raise RuntimeError("bind_backlash_indices requires a finalized ControllerBam")
+        for name, array, dtype in (("indices", indices, wp.uint32), ("mask", mask, wp.float32)):
+            if array.dtype is not dtype or array.ndim != 1:
+                raise ValueError(f"backlash {name} must be a one-dimensional {dtype.__name__} array")
+            if len(array) != len(self.backlash_mask):
+                raise ValueError(
+                    f"backlash {name} length ({len(array)}) must match the controller's DOF count"
+                    f" ({len(self.backlash_mask)})"
+                )
+            if array.device != self.backlash_mask.device:
+                raise ValueError(
+                    f"backlash {name} device ({array.device}) must match the controller's device"
+                    f" ({self.backlash_mask.device})"
+                )
+        wp.copy(self.backlash_pos_indices, indices)
+        wp.copy(self.backlash_mask, mask)
 
     def state(self, num_actuators: int, device: wp.Device) -> ControllerBam.State:
         state = ControllerBam.State(
@@ -745,6 +832,8 @@ class ControllerBam(Controller):
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
+                self.backlash_pos_indices,
+                self.backlash_mask,
                 self.kp_fw,
                 self.kp_scale,
                 self.kd_scale,
