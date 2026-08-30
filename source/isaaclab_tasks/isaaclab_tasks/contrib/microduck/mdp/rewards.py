@@ -2870,10 +2870,13 @@ class heading_hold_reward(ManagerTermBase):
     heading, which this task has none of.
 
     Note:
-        Upstream re-anchors the reference heading while ``episode_length_buf <= 1``, i.e. on both
-        the reset step and the one after it; this term anchors once, on the first call after
-        reset. The difference is one step of yaw drift folded into the reference -- immaterial in
-        practice, but it is a real episode-boundary deviation from upstream.
+        Upstream re-anchors the reference heading while ``episode_length_buf <= 1``, which reads
+        like two captures but is one: both stacks increment the episode counter *before* computing
+        rewards, so the condition holds on exactly the first post-reset reward evaluation. The
+        "first call after reset" mask here fires on that same evaluation, so the two anchor at the
+        same instant from the same post-physics quaternion -- there is no episode-boundary deviation
+        (addendum section 9.7 of ``upstream_reference_tasks4.md``, which corrects an earlier reading
+        of this note).
     """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
