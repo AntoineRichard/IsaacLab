@@ -1478,6 +1478,82 @@ def test_joint_pose_l2_sums_the_squared_deviation_from_the_stand_pose():
     torch.testing.assert_close(cost, torch.tensor([0.2**2 + 0.3**2]))
 
 
+def test_the_state_reading_reward_kernels_survive_a_diverged_solver():
+    """A NaN state must not reach the reward buffer, because RSL-RL aborts training on it.
+
+    The state below is the one captured from a live 4096-environment rollout on the roller-slope
+    task (``artifacts/microduck/reward_nan/``): a rare MuJoCo Warp divergence left *every* joint
+    position and velocity and *every* body orientation non-finite for a single step, five steps into
+    an episode, while the root quaternion stayed normalized and the applied torques stayed clamped at
+    the effort limit. The ``nan_state`` termination caught it and recycled the environment -- but the
+    reward manager runs before the termination manager, so the poisoned value was already in the
+    buffer, and two OSMO runs died on it at iterations 19 and 45.
+
+    Both kernels charge **zero** rather than a finite guess: a joint with no position is not away
+    from its pose, and a blade with no orientation is not tilted.
+    """
+    nan = float("nan")
+    tire_contact = [1.0, 1.0, 1.0, 1.0]
+
+    # every joint position non-finite, the stand pose intact -- the captured shape
+    pose_env = _DummyEnv(
+        num_envs=1,
+        assets={
+            "robot": _DummyAsset(
+                joint_pos=torch.full((1, 4), nan),
+                default_joint_pos=torch.tensor([[0.3491, 0.3491, 0.0, 0.0]]),
+            )
+        },
+    )
+    cost = mdp.joint_pose_l2(pose_env.as_env(), asset_cfg=_entity("robot", joint_ids=[0, 1, 2, 3]))
+    assert torch.isfinite(cost).all()
+    torch.testing.assert_close(cost, torch.tensor([0.0]))
+
+    # every body orientation non-finite, both blades loaded -- the captured shape
+    flat_env = _DummyEnv(
+        num_envs=1,
+        assets={
+            "robot": _DummyAsset(
+                body_link_quat_w=torch.full((1, 2, 4), nan),
+                GRAVITY_VEC_W=torch.tensor([[0.0, 0.0, -9.81]]),
+            )
+        },
+        sensors={"feet_ground_contact": _roller_sensor([0.0] * 4, tire_contact)},
+    )
+    penalty = mdp.feet_flat_penalty(
+        flat_env.as_env(),
+        asset_cfg=_entity("robot", body_ids=[0, 1], body_names=["ankle_l_v1", "ankle_r_v1"]),
+        sensor_cfg=_tire_sensor_cfg(),
+        normal_axis=(0.0, 1.0, 0.0),
+        bodies_per_foot=2,
+    )
+    assert torch.isfinite(penalty).all()
+    torch.testing.assert_close(penalty, torch.tensor([0.0]))
+
+    # and the guards are invisible on a finite state: a 90 degree roll still scores its own tilt
+    level = [0.0, 0.0, 0.0, 1.0]
+    finite_env = _DummyEnv(
+        num_envs=1,
+        assets={
+            "robot": _DummyAsset(
+                body_link_quat_w=torch.tensor([[level, level]]),
+                GRAVITY_VEC_W=torch.tensor([[0.0, 0.0, -9.81]]),
+            )
+        },
+        sensors={"feet_ground_contact": _roller_sensor([0.0] * 4, tire_contact)},
+    )
+    torch.testing.assert_close(
+        mdp.feet_flat_penalty(
+            finite_env.as_env(),
+            asset_cfg=_entity("robot", body_ids=[0, 1], body_names=["ankle_l_v1", "ankle_r_v1"]),
+            sensor_cfg=_tire_sensor_cfg(),
+            normal_axis=(0.0, 1.0, 0.0),
+            bodies_per_foot=2,
+        ),
+        torch.tensor([2.0]),
+    )
+
+
 def _action_rate_term(joint_ids, action, prev_action, selected, selected_names):
     """Build a resolved ``joint_action_rate_l2`` against an action-manager double."""
     robot = _DummyAsset(joint_pos=torch.zeros(1, 6), default_joint_pos=torch.zeros(1, 6))

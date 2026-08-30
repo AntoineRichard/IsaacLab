@@ -902,6 +902,71 @@ def test_the_environments_start_on_the_ramp_and_the_void_guard_stays_quiet_throu
 
 @pytest.mark.integration
 @requires_microduck_rollers_usd
+def test_a_diverged_environment_does_not_poison_the_reward_buffer():
+    """The failure that killed two 4096-environment training runs, reproduced deterministically.
+
+    A rare MuJoCo Warp divergence leaves one environment's whole joint state and every body
+    orientation non-finite for a single step while the root quaternion stays normalized. The
+    ``nan_state`` termination exists to catch exactly that -- but
+    :class:`~isaaclab.managers.RewardManager` runs *before*
+    :class:`~isaaclab.managers.TerminationManager` in ``ManagerBasedRLEnv.step``, so the poisoned
+    value is already in the reward buffer, and RSL-RL aborts the run on it before the recycle can
+    help. Measured rate on this task: about one step-environment in sixteen million, which is the
+    order upstream reports for the same divergence.
+
+    The state written below is the shape captured from a live rollout, not a guess:
+    ``artifacts/microduck/reward_nan/``. Two things are asserted, and the second is the one that
+    keeps the guard honest -- the divergence must still be *detected*, only kept out of the reward.
+    """
+    sim_utils.create_new_stage()
+    env = None
+    try:
+        env_cfg = parse_env_cfg(TASK_NAME, device="cuda", num_envs=4)
+        env = gym.make(TASK_NAME, cfg=env_cfg)
+        env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
+        unwrapped = env.unwrapped
+        env.reset()
+        robot = unwrapped.scene["robot"]
+
+        joint_pos = robot.data.joint_pos.torch.clone()
+        joint_vel = robot.data.joint_vel.torch.clone()
+        joint_pos[0] = float("nan")
+        joint_vel[0] = float("nan")
+        robot.write_joint_state_to_sim_index(position=joint_pos, velocity=joint_vel)
+        unwrapped.sim.forward()
+
+        # the divergence really did reach the quantities the reward terms read
+        assert not bool(torch.isfinite(robot.data.joint_pos.torch[0]).all())
+        assert not bool(torch.isfinite(robot.data.body_link_quat_w.torch[0]).all())
+        # ...and not the root orientation, which is what leaves ``upright`` and ``heading_hold``
+        # scoring normally and is why only two terms were ever implicated
+        assert bool(torch.isfinite(robot.data.root_link_quat_w.torch[0]).all())
+
+        rewards = unwrapped.reward_manager.compute(unwrapped.step_dt)
+        per_term = unwrapped.reward_manager._step_reward
+        terms = list(unwrapped.reward_manager.active_terms)
+
+        assert torch.isfinite(per_term).all(), {name: float(per_term[0, index]) for index, name in enumerate(terms)}
+        assert torch.isfinite(rewards).all()
+        # the two guarded terms charge nothing for a state that has no pose and no orientation
+        for name in ("feet_flat", "neck_joint_pos_l2"):
+            assert float(per_term[0, terms.index(name)]) == pytest.approx(0.0, abs=1e-9), name
+        # the healthy environments are untouched
+        assert torch.isfinite(per_term[1:]).all()
+
+        # the guard keeps the divergence out of the reward; it does not hide it. The environment is
+        # still recycled by the termination that owns this failure.
+        broken = mdp.robot_state_is_nan(unwrapped, sensor_names=("contact_forces",))
+        assert bool(broken[0])
+        assert not bool(broken[1:].any())
+    finally:
+        if env is not None:
+            env.close()
+        SimulationContext.clear_instance()
+
+
+@pytest.mark.integration
+@requires_microduck_rollers_usd
 def test_environment_steps_with_random_actions():
     """The registered task builds, resets, and steps without producing invalid signals."""
     _run_environments(TASK_NAME, device="cuda", num_envs=2, num_steps=10)
