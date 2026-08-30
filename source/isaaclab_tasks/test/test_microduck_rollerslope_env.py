@@ -960,6 +960,25 @@ def test_a_diverged_environment_does_not_poison_the_reward_buffer():
         broken = mdp.robot_state_is_nan(unwrapped, sensor_names=("contact_forces",))
         assert bool(broken[0])
         assert not bool(broken[1:].any())
+
+        # Second shape, which the capture did *not* contain: the root link's orientation going with
+        # it. That the root quaternion survived is empirical from one event rather than an invariant,
+        # and it is the only reason ``upright`` and ``heading_hold`` scored normally above -- so the
+        # buffer has to stay finite when it does not survive either.
+        root_pose = robot.data.root_link_pose_w.torch.clone()
+        root_pose[0] = float("nan")
+        robot.write_root_link_pose_to_sim_index(root_pose=root_pose)
+        unwrapped.sim.forward()
+        assert not bool(torch.isfinite(robot.data.root_link_quat_w.torch[0]).all())
+
+        unwrapped.reward_manager.compute(unwrapped.step_dt)
+        per_term = unwrapped.reward_manager._step_reward
+        assert torch.isfinite(per_term).all(), {name: float(per_term[0, index]) for index, name in enumerate(terms)}
+        # both root-quaternion readers pay a broken environment nothing rather than full marks
+        for name in ("upright", "heading_hold"):
+            assert float(per_term[0, terms.index(name)]) == pytest.approx(0.0, abs=1e-4), name
+        assert torch.isfinite(per_term[1:]).all()
+        assert bool(mdp.robot_state_is_nan(unwrapped, sensor_names=("contact_forces",))[0])
     finally:
         if env is not None:
             env.close()

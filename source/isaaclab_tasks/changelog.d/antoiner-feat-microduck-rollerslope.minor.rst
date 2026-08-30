@@ -49,6 +49,13 @@ Fixed
   by the same fix; the slope task is where the divergence is frequent enough to bite, because it is
   the only one that spawns on a generated ramp, injects wheel spin at every reset and inherits a
   horizontal spawn jitter that can start the trunk inside the starting platform.
+* Extended the same guard to ``upright`` and ``heading_hold``, the two terms that read the *root*
+  link's orientation. In the captured divergence the root quaternion survived normalized while
+  eighteen of the nineteen body orientations did not, which is why those two scored normally -- but
+  that is one observation, not an invariant, so both now score a broken environment as maximally
+  tilted and maximally off-heading respectively, which pays it nothing rather than full marks.
+  ``heading_hold`` additionally refuses to write a non-finite heading into its per-episode anchor,
+  where it would have poisoned every remaining step of that episode rather than only the one.
 
 Changed
 ^^^^^^^
