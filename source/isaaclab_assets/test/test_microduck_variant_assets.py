@@ -38,7 +38,7 @@ import os
 
 import numpy as np
 import pytest
-from isaaclab_newton.physics import NewtonCfg
+from isaaclab_newton.physics import NewtonCfg, NewtonManager
 
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -177,6 +177,19 @@ against an absolute eigenvalue floor of 1e-10 and adds 1e-6 when it corrects, so
 below the floor reaches the solver a thousand times *heavier* than the play DOF's own armature.
 """
 
+BACKLASH_SOLVER_ATTRIBUTES = {
+    "damping": "mjc:damping",
+    "solimplimit": "mjc:solimplimit",
+    "solreflimit": "mjc:solreflimit",
+}
+"""Per :func:`mj_joints` key: the USD attribute the conversion carries it on.
+
+The gear teeth *are* the limit constraint, so upstream's ``backlash`` class tunes it -- a time
+constant of twice the physics step and a near-rigid impedance -- and damps the play DOF. None of
+that survives a plain MJCF-to-USD conversion, and no actuator group owns these hinges, so an
+actuator model cannot republish the damping either.
+"""
+
 PASSIVE_JOINTS = {
     "allcollisions": frozenset(),
     "rollers": PASSIVE_WHEEL_JOINTS,
@@ -232,7 +245,9 @@ def mj_joints(mj_models):
 
     MuJoCo applies the ``chosen_actuator`` default class while compiling, so reading the compiled
     model rather than the XML text also covers the values the joints inherit -- and the wheels, which
-    inherit nothing and are the reason ``limited`` is carried along.
+    inherit nothing and are the reason ``limited`` is carried along. The play hinges inherit
+    everything they have from upstream's ``backlash`` class, including the limit-constraint
+    parameters, which is why those are read here rather than transcribed.
     """
     import mujoco
 
@@ -249,6 +264,9 @@ def mj_joints(mj_models):
                 "lower": float(model.jnt_range[index, 0]),
                 "upper": float(model.jnt_range[index, 1]),
                 "armature": float(model.dof_armature[dof]),
+                "damping": float(model.dof_damping[dof]),
+                "solreflimit": tuple(float(value) for value in model.jnt_solref[index]),
+                "solimplimit": tuple(float(value) for value in model.jnt_solimp[index]),
             }
         joints[variant] = per_variant
     return joints
@@ -379,6 +397,21 @@ def _joint_prims(stage: Usd.Stage, prim_path: str) -> dict[str, Usd.Prim]:
     return {
         prim.GetName(): prim for prim in Usd.PrimRange(stage.GetPrimAtPath(prim_path)) if prim.IsA(UsdPhysics.Joint)
     }
+
+
+def _newton_dof_indices(model, prim_path: str, joint_names) -> dict[str, int]:
+    """Return the Newton model DOF index of each named hinge of one spawned robot.
+
+    Every robot in the module fixture shares one model, so the joints are selected by the prim path
+    they were spawned under; each of them is a single-DOF hinge.
+    """
+    dof_start = model.joint_qd_start.numpy()
+    indices = {}
+    for joint, label in enumerate(model.joint_label):
+        name = label.rsplit("/", maxsplit=1)[-1]
+        if label.startswith(f"{prim_path}/") and name in joint_names:
+            indices[name] = int(dof_start[joint])
+    return indices
 
 
 def _ancestor_names(prim: Usd.Prim) -> set[str]:
@@ -676,6 +709,72 @@ def test_backlash_intermediate_bodies_are_dynamically_invisible(usd_articulation
         assert list(mass_api.GetDiagonalInertiaAttr().Get()) == pytest.approx([BACKLASH_DUMMY_INERTIA] * 3), name
         assert masses[index] == pytest.approx(BACKLASH_DUMMY_MASS, rel=1e-3), name
         np.testing.assert_allclose(np.diag(inertias[index]), BACKLASH_DUMMY_INERTIA, rtol=1e-3, err_msg=name)
+
+
+def test_backlash_play_hinges_carry_the_mjcfs_limit_solver_parameters(usd_articulations, mj_joints):
+    """Each play hinge authors upstream's limit ``solref``/``solimp`` and damping; no servo does.
+
+    The values are read back from the compiled MJCF rather than transcribed, because the play hinges
+    inherit all three from a default class: a transcription would keep passing if upstream re-tuned
+    that class.
+    """
+    robot, stage = usd_articulations["walk_backlash"]
+    joint_prims = _joint_prims(stage, robot.cfg.prim_path)
+    mjcf = mj_joints["walk_backlash"]
+
+    for name, prim in joint_prims.items():
+        for key, attribute_name in BACKLASH_SOLVER_ATTRIBUTES.items():
+            attribute = prim.GetAttribute(attribute_name)
+            authored = attribute.IsValid() and attribute.HasAuthoredValue()
+            if name not in BACKLASH_JOINTS:
+                # A servo joint inherits MuJoCo's defaults, so authoring anything here would be a
+                # change to the plant this model is a twin of.
+                assert not authored, f"{attribute_name} is authored on servo joint {name}"
+                continue
+            assert authored, f"{attribute_name} is missing from play hinge {name}"
+            assert np.ravel(attribute.Get()) == pytest.approx(np.ravel(mjcf[name][key])), f"{attribute_name} {name}"
+
+
+def test_backlash_play_hinges_reach_the_solver_with_the_mjcfs_limit_parameters(usd_articulations, mj_joints):
+    """The authored parameters arrive in the built model, on the play DOFs and on nothing else.
+
+    Authoring them is only half the mechanism: ``mjc:solreflimit`` also has to reach MuJoCo Warp as a
+    raw pair, which is what keeps the joint out of the unauthored-gain retag that would otherwise
+    give it MuJoCo's default ``(0.02, 1.0)`` -- twice the play under load. The plain walking asset is
+    spawned in the same model and is asserted untouched, so a passthrough that wrote every DOF rather
+    than the authored ones cannot pass.
+    """
+    from newton._src.solvers.mujoco.constants import SOLREF_MODE_RAW
+
+    model = NewtonManager.get_model()
+    robot, _ = usd_articulations["walk_backlash"]
+    reference, _ = usd_articulations[REFERENCE_MODEL]
+    mjcf = mj_joints["walk_backlash"]
+
+    play_dofs = _newton_dof_indices(model, robot.cfg.prim_path, BACKLASH_JOINTS)
+    servo_dofs = _newton_dof_indices(model, robot.cfg.prim_path, set(robot.joint_names) - BACKLASH_JOINTS)
+    reference_dofs = _newton_dof_indices(model, reference.cfg.prim_path, set(reference.joint_names))
+    assert len(play_dofs) == len(servo_dofs) == len(reference_dofs) == NUM_SERVO_JOINTS
+
+    damping = model.joint_damping.numpy()
+    solref = model.mujoco.solreflimit.numpy()
+    solimp = model.mujoco.solimplimit.numpy()
+    solref_mode = model.mujoco.solreflimit_mode.numpy()
+
+    for name, dof in play_dofs.items():
+        assert damping[dof] == pytest.approx(mjcf[name]["damping"]), name
+        assert solref[dof] == pytest.approx(mjcf[name]["solreflimit"]), name
+        assert solimp[dof] == pytest.approx(mjcf[name]["solimplimit"]), name
+        assert solref_mode[dof] == SOLREF_MODE_RAW, name
+
+    # The servos of both models keep the plant they had before the play hinges were added: MuJoCo's
+    # own limit defaults, which they reach through the unauthored-gain retag rather than by
+    # authoring anything. Their MJCF damping is not the asset's to carry -- it is the actuator
+    # model's viscous term, republished on the DOFs an actuator group drives.
+    for name, dof in list(servo_dofs.items()) + list(reference_dofs.items()):
+        assert damping[dof] == 0.0, name
+        assert solref[dof] == pytest.approx(mjcf[name]["solreflimit"]), name
+        assert solimp[dof] == pytest.approx(mjcf[name]["solimplimit"]), name
 
 
 def test_backlash_servo_joints_match_the_plain_walk_asset(usd_articulations):

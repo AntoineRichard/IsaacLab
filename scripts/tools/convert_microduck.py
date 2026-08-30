@@ -14,7 +14,9 @@ drives, and only adds what that script's flags cannot express:
   variant Isaac Lab's Newton importer reads the MJCF joint armature from (Newton resolves
   ``physxJoint:armature``; the ``mjc:*`` attributes of the ``"mujoco"`` variant are not in the
   resolver set Isaac Lab passes to ``ModelBuilder.add_usd``, and that variant also drops the
-  drive force range);
+  drive force range). Newton *does* read a few ``mjc:*`` joint attributes without any resolver,
+  through its ``mujoco`` custom-attribute namespace -- see :func:`_author_backlash_joint`, which
+  authors three of them on the play hinges;
 * it flattens the layered asset the importer emits (an interface layer plus seven payloads) into
   one self-contained binary USD, so the shipped asset is a single file;
 * it repairs the two contact properties the importer loses to scene-graph instancing: the physics
@@ -112,6 +114,32 @@ BACKLASH_ARMATURE = 0.001
 
 "Kept small but non-zero for solver conditioning" (``add_backlash.py``); it also dominates the dummy
 body's own inertia, which is why that body's exact mass does not matter.
+"""
+
+BACKLASH_DAMPING = 0.01
+"""Passive damping [N*m*s/rad] upstream's ``backlash`` default class authors on a play DOF.
+
+No actuator group owns these hinges -- they are the gear play between a servo and its link, not a
+joint anything drives -- so an actuator model cannot republish this the way it republishes the
+servos' viscous term. Losing it leaves the play DOF undamped and free to ring inside its range.
+"""
+
+BACKLASH_LIMIT_SOLREF = (0.01, 1.0)
+"""Limit-constraint reference (time constant [s], damping ratio) of upstream's ``backlash`` class.
+
+The gear teeth *are* the limit constraint, so its softness is the play's fidelity. MuJoCo's default
+``(0.02, 1.0)`` lets a range this small overshoot roughly twofold under load (measured on this
+plant: 2.2x at rest, 2.8x under random actions), which reads as twice the play the model declares.
+0.01 s is twice the ``dt=0.005`` the MicroDuck velocity tasks run at, i.e. the stiffest setting that
+stays above MuJoCo's ``refsafe`` floor.
+"""
+
+BACKLASH_LIMIT_SOLIMP = (0.95, 0.999, 0.0001, 0.5, 2.0)
+"""Limit-constraint impedance ``(dmin, dmax, width, midpoint, power)`` of the ``backlash`` class.
+
+Component units are [dimensionless, dimensionless, rad, dimensionless, dimensionless]. It raises the
+impedance far above MuJoCo's ``(0.9, 0.95, 0.001, 0.5, 2.0)`` default so the gear-teeth contact is
+nearly rigid over the whole tiny range.
 """
 
 BACKLASH_LIMIT_DEG = 1.0
@@ -659,7 +687,13 @@ def _author_backlash_joint(
     The gainless force drive is what the importer itself authors for a hinge no MJCF actuator drives,
     as it does for the roller model's wheels. Without it the play DOF arrives at the solver with a
     fallback effort limit instead of the unbounded one an undriven joint has.
+
+    The MuJoCo joint fragment carries the three plant properties the conversion would otherwise drop:
+    the limit constraint's ``solref``/``solimp``, which are what the gear teeth actually are, and the
+    play DOF's damping, which no actuator group can republish for it.
     """
+    from isaaclab_newton.sim.schemas import MujocoJointCfg, apply_mujoco_joint  # noqa: PLC0415
+
     joint = UsdPhysics.RevoluteJoint.Define(stage, path)
     joint.CreateBody0Rel().SetTargets([body0])
     joint.CreateBody1Rel().SetTargets([body1])
@@ -685,6 +719,15 @@ def _author_backlash_joint(
     # friction (upstream's ``backlash`` class sets ``frictionloss="0"``).
     prim.CreateAttribute("physxJoint:armature", Sdf.ValueTypeNames.Float).Set(BACKLASH_ARMATURE)
     prim.CreateAttribute("physxJoint:jointFriction", Sdf.ValueTypeNames.Float).Set(0.0)
+    apply_mujoco_joint(
+        MujocoJointCfg(
+            damping=BACKLASH_DAMPING,
+            solimplimit=BACKLASH_LIMIT_SOLIMP,
+            solreflimit=BACKLASH_LIMIT_SOLREF,
+        ),
+        prim.GetPath().pathString,
+        stage,
+    )
     return prim
 
 
