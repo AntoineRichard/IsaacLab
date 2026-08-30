@@ -141,7 +141,7 @@ def Xform "Robot" (
     )
     {
         float physics:mass = 1e-6
-        float3 physics:diagonalInertia = (1e-12, 1e-12, 1e-12)
+        float3 physics:diagonalInertia = (1e-9, 1e-9, 1e-9)
     }
 
     def Xform "PlayedArm" (
@@ -207,8 +207,12 @@ the plus/minus one degree of gear play between that dummy and ``PlayedArm``. ``s
 its arm directly and has no such hinge, so one fixture covers both halves of the name lookup: a
 servo that finds its twin and a servo that does not.
 
-The dummy's mass and inertia are the converter's (1e-6 kg, 1e-12 kg m^2): the dead zone has to be
-a free axis, not a second link. Both servos carry the Dynamixel XL330's reflected rotor inertia as
+The dummy's mass and inertia are the converter's (1e-6 kg, 1e-9 kg m^2): the dead zone has to be a
+free axis, not a second link. The inertia is deliberately *not* smaller. Newton's
+``ModelBuilder.finalize`` validates inertia against an absolute eigenvalue floor of 1e-10 and adds
+1e-6 when it corrects, so a 1e-12 dummy is silently inflated to a value three orders of magnitude
+above the play hinge's own armature -- and warns once per body per environment while doing it.
+1e-9 clears the floor untouched. Both servos carry the Dynamixel XL330's reflected rotor inertia as
 joint armature, which is what makes the interval where the dummy hangs off nothing integrable at
 all -- inside the dead zone the servo's only inertia is that armature.
 
