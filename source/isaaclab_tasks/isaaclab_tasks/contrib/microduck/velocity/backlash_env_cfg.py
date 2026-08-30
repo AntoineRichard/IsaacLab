@@ -141,8 +141,14 @@ The shipped 64 therefore does not merely run tight on this plant, the peak overf
 feasibility probe measured the overshoot degrading by 3.2x when it does. ``nconmax`` is left at the
 base task's 10: the play hinges are joints, not colliders, and the contact peak did not move.
 
-Both profiles were taken at or below 2048 environments, so the value is sized on a sample that stops
-short of the training scale this task is meant to run at.
+Both of those profiles were taken at or below 2048 environments. Re-measured the same way at
+**4096**, where this task actually trains: peak 66 with the budget widened out of the way, and the
+shipped 96 runs there with no solver overflow, 63 constraints at the 95th percentile and 30 rows
+still spare. The peak moved by one across a sixteenfold change in scale, which is the tail being
+sampled rather than a number that grows with the population. Cost of the play at that scale, against
+the plain model's 54-row peak: 24 percent more solver iterations and 29 percent fewer
+environment-steps per second. Logs and method:
+``artifacts/microduck/golden_trajectories/backlash/README.md``.
 """
 
 
