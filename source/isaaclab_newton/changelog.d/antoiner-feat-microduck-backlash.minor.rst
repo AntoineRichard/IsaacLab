@@ -19,5 +19,8 @@ Added
   such hinge for is masked off and keeps the plain servo's behaviour bit for bit. The pairing is by
   name against the group's own joint selection and never against which joints carry a drive: the
   play hinges do carry one, since the converted assets author a zero-gain force drive on every
-  hinge no actuator drives. The binding is copied into the arrays the controller was finalized
-  with, so a captured decimation graph reads it live rather than baking it in.
+  hinge no actuator drives. The indices are in the joint *coordinate* layout, which is the one the
+  controller dereferences them in and is not the degree-of-freedom layout an actuator's own indices
+  use once the articulation has a floating base. The binding is copied into the arrays the
+  controller was finalized with, so a captured decimation graph reads it live rather than baking it
+  in.
