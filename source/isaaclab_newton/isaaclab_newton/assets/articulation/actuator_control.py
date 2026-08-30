@@ -318,6 +318,10 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         environment's joint, and a running index would name another joint of this one, because a
         servo group on a plant with play hinges covers a *subset* of the articulation's DOFs.
 
+        The indices are positions into the coordinate array, not degrees of freedom. On a
+        floating-base articulation those two layouts differ, so the binding is built from the
+        actuator's ``pos_indices`` rather than from its DOF indices.
+
         Runs while the model is being built, right after the start-up randomization: the actuators
         exist (Newton finalizes a controller inside ``Actuator.__init__``) and no step, and hence
         no CUDA graph capture, has happened yet. The values are copied into the arrays the
@@ -368,6 +372,13 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             # articulations. Start from the live arrays and touch only this articulation's DOFs.
             indices = controller.backlash_pos_indices.numpy().copy()
             mask = controller.backlash_mask.numpy().copy()
+            # The controller dereferences this array against the *coordinate* layout, which is the
+            # one the actuator's own ``pos_indices`` are in. Its DOF indices are in the velocity
+            # layout, and the two are not the same array: a floating base spends seven coordinates
+            # and six degrees of freedom, so the layouts drift by one slot per environment. Each
+            # twin is therefore located as an offset from its servo's coordinate slot rather than
+            # rebuilt from a stride, which keeps the whole calculation inside one layout.
+            coord_indices = actuator.pos_indices.numpy()
             for slot, global_dof in enumerate(actuator.indices.numpy()):
                 env, local_dof = divmod(int(global_dof), env_stride)
                 articulation_dof = local_dof - first_dof
@@ -377,7 +388,8 @@ class NewtonActuatorControl(ArticulationActuatorControl):
                 if joint_name not in twin_slots:
                     continue
                 twin_slot = twin_slots[joint_name]
-                indices[slot] = global_dof if twin_slot is None else env * env_stride + first_dof + twin_slot
+                own_coord = int(coord_indices[slot])
+                indices[slot] = own_coord if twin_slot is None else own_coord + (twin_slot - articulation_dof)
                 mask[slot] = 0.0 if twin_slot is None else 1.0
             controller.bind_backlash_indices(
                 wp.array(indices, dtype=wp.uint32, device=self.device),

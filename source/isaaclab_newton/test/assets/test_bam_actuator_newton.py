@@ -221,6 +221,25 @@ gear teeth *are* that constraint: at MuJoCo's default limit reference a range th
 roughly twofold, which would read as twice the play the model declares.
 """
 
+FLOATING_BACKLASH_PENDULUM_USDA = BACKLASH_PENDULUM_USDA.replace(
+    """    def PhysicsFixedJoint "anchor"
+    {
+        rel physics:body1 = </Robot/Pivot>
+    }
+
+""",
+    "",
+)
+"""The play fixture with its anchor removed, i.e. on a floating base.
+
+The robot every deployed backlash plant lives on is floating-base, and a free joint spends seven
+positional coordinates against six degrees of freedom. The coordinate array the encoder binding is
+read against and the velocity array its degrees of freedom are numbered in therefore drift apart by
+one slot per environment, which an anchored fixture cannot show because there the two coincide.
+Nothing is simulated on this variant -- it falls -- and nothing needs to be: what it exists to
+measure is which slot the binding names.
+"""
+
 DT = 1.0 / 120.0
 """Physics timestep [s]."""
 
@@ -1133,6 +1152,14 @@ def backlash_pendulum_usd(tmp_path_factory) -> str:
     return str(path)
 
 
+@pytest.fixture(scope="module")
+def floating_backlash_pendulum_usd(tmp_path_factory) -> str:
+    """Write :data:`FLOATING_BACKLASH_PENDULUM_USDA` to a temporary file and return its path."""
+    path = tmp_path_factory.mktemp("bam_backlash_floating") / "floating_backlash_pendulum.usda"
+    path.write_text(FLOATING_BACKLASH_PENDULUM_USDA)
+    return str(path)
+
+
 def _backlash_robot_cfg(actuator_cfg) -> ArticulationCfg:
     """Return the fixture's articulation configuration, driven by *actuator_cfg*."""
     return ArticulationCfg(
@@ -1205,24 +1232,38 @@ def _unbind_backlash(controller: ControllerBam, device: str) -> None:
     )
 
 
-def _actuator_dof_indices() -> list[int]:
-    """Return the flat model DOF indices the scene's single BAM actuator drives."""
+def _scene_bam_actuator():
+    """Return the scene's single BAM actuator."""
     actuators = [
         actuator for actuator in NewtonManager._adapter.actuators if isinstance(actuator.controller, ControllerBam)
     ]
     assert len(actuators) == 1, "the fixture has exactly one BAM actuator"
-    return [int(index) for index in actuators[0].indices.numpy()]
+    return actuators[0]
+
+
+def _actuator_dof_indices() -> list[int]:
+    """Return the flat model DOF indices the scene's single BAM actuator drives."""
+    return [int(index) for index in _scene_bam_actuator().indices.numpy()]
 
 
 @pytest.mark.parametrize("device", test_devices())
-def test_each_servo_is_bound_to_the_play_hinge_in_series_with_it(native_sim, device, backlash_pendulum_usd):
+@pytest.mark.parametrize("base", ("anchored", "floating"))
+def test_each_servo_is_bound_to_the_play_hinge_in_series_with_it(
+    native_sim, device, base, backlash_pendulum_usd, floating_backlash_pendulum_usd
+):
     """The name lookup must produce the controller's per-DOF binding, DOF by DOF.
 
     The binding is a pair of flat indices into the *whole* model's position array, in the
     actuator's own DOF order (environment major). Everything about it is easy to get subtly
-    wrong -- the stride, the environment offset, the articulation's own DOF offset -- and every
+    wrong -- the stride, the environment offset, the articulation's own offset -- and every
     mistake reads a real angle from some other joint, so the expectation here is built from the
-    articulation's joint names and the model's DOF count rather than from the resolver.
+    articulation's joint names and the model's own coordinate count rather than from the resolver.
+
+    The array is indexed into *positions*, so the layout it must be numbered in is the coordinate
+    one, and that is not the layout the actuator's degrees of freedom are numbered in: a free joint
+    spends seven coordinates and six degrees of freedom, so the two drift by one slot per
+    environment. The parametrization runs the same expectation on both bases, because on an
+    anchored articulation the two layouts coincide and any confusion between them is invisible.
 
     A servo whose plant models no play takes a zero mask, and its index is then never
     dereferenced. It is still filled with the DOF's *own* position slot: the array is
@@ -1230,27 +1271,45 @@ def test_each_servo_is_bound_to_the_play_hinge_in_series_with_it(native_sim, dev
     index once an actuator covers a subset of the articulation's joints, which is exactly what a
     servo group on a plant with play hinges does.
     """
-    robot = _build_backlash_pendulum(native_sim, backlash_pendulum_usd, _backlash_actuator_cfg())
+    usd_path = backlash_pendulum_usd if base == "anchored" else floating_backlash_pendulum_usd
+    robot = _build_backlash_pendulum(native_sim, usd_path, _backlash_actuator_cfg())
     controller = _native_controller(robot)
     joint_names = robot.backend_joint_names
     assert set(joint_names) == {PLAYED_SERVO, PLAY_HINGE, RIGID_SERVO}
 
-    dofs_per_env = NewtonManager._model.joint_dof_count // NUM_ENVS
-    assert dofs_per_env == len(joint_names), "the fixture is the only articulation in the model"
+    model = NewtonManager._model
+    dofs_per_env = model.joint_dof_count // NUM_ENVS
+    coords_per_env = model.joint_coord_count // NUM_ENVS
+    # Whatever the root joint spends ahead of the articulation's own hinges, in each layout.
+    root_dofs = dofs_per_env - len(joint_names)
+    root_coords = coords_per_env - len(joint_names)
+    assert (root_dofs, root_coords) == ((0, 0) if base == "anchored" else (6, 7)), (
+        "the fixture is the only articulation in the model, on the base under test"
+    )
     slots = {name: joint_names.index(name) for name in joint_names}
 
     # The actuator drives the two servos and nothing else, in environment-major order.
-    driven = [(index // dofs_per_env, index % dofs_per_env) for index in _actuator_dof_indices()]
+    driven = [(index // dofs_per_env, index % dofs_per_env - root_dofs) for index in _actuator_dof_indices()]
     assert driven == [(env, slots[name]) for env in range(NUM_ENVS) for name in (PLAYED_SERVO, RIGID_SERVO)] or (
         driven == [(env, slots[name]) for env in range(NUM_ENVS) for name in (RIGID_SERVO, PLAYED_SERVO)]
     ), "the actuator must cover exactly the two servos, environment major"
+
+    def coordinate_of(env: int, slot: int) -> int:
+        return env * coords_per_env + root_coords + slot
+
+    # Newton's own numbering of the servos' positions, which is what says the formula above is the
+    # coordinate layout rather than a restatement of the resolver's arithmetic.
+    np.testing.assert_array_equal(
+        _scene_bam_actuator().pos_indices.numpy(),
+        np.array([coordinate_of(env, slot) for env, slot in driven], dtype=np.uint32),
+    )
 
     expected_mask = []
     expected_indices = []
     for env, slot in driven:
         played = slot == slots[PLAYED_SERVO]
         expected_mask.append(1.0 if played else 0.0)
-        expected_indices.append(env * dofs_per_env + (slots[PLAY_HINGE] if played else slot))
+        expected_indices.append(coordinate_of(env, slots[PLAY_HINGE] if played else slot))
 
     np.testing.assert_array_equal(controller.backlash_mask.numpy(), np.array(expected_mask, dtype=np.float32))
     np.testing.assert_array_equal(controller.backlash_pos_indices.numpy(), np.array(expected_indices, dtype=np.uint32))
