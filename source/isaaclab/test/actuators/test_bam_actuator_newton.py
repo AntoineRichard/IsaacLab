@@ -28,7 +28,7 @@ from newton.actuators import parse_actuator_prim
 
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
-from isaaclab.actuators import BamActuator, BamActuatorCfg, IdealPDActuatorCfg
+from isaaclab.actuators import BamActuator, BamActuatorCfg, BamBacklashActuatorCfg, IdealPDActuatorCfg
 from isaaclab.actuators.bam_model import BAM_XL330_M6_PARAMS_FILE, BamMotorParams
 from isaaclab.actuators.newton import (
     BAM_CONTROL_API,
@@ -40,6 +40,7 @@ from isaaclab.actuators.newton import (
 from isaaclab.sim.schemas.schemas_actuators import (
     _author_actuator_prims,
     _is_newton_native_actuator_cfg,
+    _validate_native_only_actuator_cfgs,
     _validate_newton_native_actuator_cfgs,
 )
 from isaaclab.test.utils import DeviceScope, test_devices
@@ -93,11 +94,19 @@ def _make_cfg(**overrides) -> BamActuatorCfg:
     return BamActuatorCfg(**kwargs)
 
 
-def _make_stage(cfg: BamActuatorCfg, joint_names: list[str] = JOINT_NAMES) -> Usd.Stage:
-    """Author an articulation over *joint_names*, driven by one BAM actuator group.
+def _make_backlash_cfg(**overrides) -> BamBacklashActuatorCfg:
+    """Build the encoder-through-play variant of :func:`_make_cfg`'s config."""
+    kwargs = {"joint_names_expr": [".*"], "vin": VIN, "kp_fw": KP_FW, "dt": DT}
+    kwargs.update(overrides)
+    return BamBacklashActuatorCfg(**kwargs)
 
-    The group covers whichever of the joints its ``joint_names_expr`` selects, so a fixture
-    can carry joints no actuator drives -- which is what a play hinge is.
+
+def _make_stage(cfg: BamActuatorCfg | dict[str, BamActuatorCfg], joint_names: list[str] = JOINT_NAMES) -> Usd.Stage:
+    """Author an articulation over *joint_names*, driven by the given BAM actuator group(s).
+
+    A group covers whichever of the joints its ``joint_names_expr`` selects, so a fixture can
+    carry joints no actuator drives -- which is what a play hinge is. A mapping authors several
+    groups at once, under the names it is keyed by.
     """
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.Xform.Define(stage, "/World/Robot")
@@ -106,7 +115,7 @@ def _make_stage(cfg: BamActuatorCfg, joint_names: list[str] = JOINT_NAMES) -> Us
         UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
         joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/Robot/{name}")
         joint.CreateBody1Rel().SetTargets([body.GetPath()])
-    _author_actuator_prims(stage, "/World/Robot", {"servo": cfg})
+    _author_actuator_prims(stage, "/World/Robot", cfg if isinstance(cfg, dict) else {"servo": cfg})
     return stage
 
 
@@ -198,6 +207,73 @@ def test_bam_cfg_is_rejected_on_a_host_adapter_backend():
     # The restriction is BAM's alone -- every other supported config still runs there, so the
     # flag cannot be passing by rejecting the whole native path.
     _validate_newton_native_actuator_cfgs({"legs": IdealPDActuatorCfg(joint_names_expr=[".*"])}, host_adapter=True)
+
+
+def test_the_backlash_cfg_is_accepted_by_the_same_native_gate():
+    """The backlash config is a BAM config: the native gate must take it unchanged.
+
+    It authors the same ``NewtonBamControlAPI`` token and runs the same controller class; the
+    only thing that differs is the per-DOF binding the Newton backend resolves afterwards. A
+    gate that keyed on the exact config type would reject it and there would be no path at all.
+    """
+    cfg = _make_backlash_cfg()
+    assert _is_newton_native_actuator_cfg(cfg)
+    _validate_newton_native_actuator_cfgs({"servo": cfg})
+
+
+def test_the_backlash_cfg_is_rejected_wherever_the_newton_controller_does_not_run():
+    """The backlash config must fail loudly off the Newton-native path, on both ways off it.
+
+    Its encoder view is an index into the *whole* joint-position array, which only Newton's
+    controller is handed; Isaac Lab's actuator loop sees one group's joints and cannot read a
+    joint outside it. There is deliberately no Isaac Lab-executed implementation, so the two
+    ways of ending up on that loop -- a backend that runs native actuators through the host
+    adapter, and ``use_newton_actuators=False`` -- both have to raise. Silently running the
+    plain servo would drop the modelled gear play and quietly change the plant a policy trains
+    against.
+    """
+    with pytest.raises(ValueError, match="requires the Newton backend"):
+        _validate_newton_native_actuator_cfgs({"servo": _make_backlash_cfg()}, host_adapter=True)
+
+    with pytest.raises(ValueError, match="use_newton_actuators"):
+        _validate_native_only_actuator_cfgs({"servo": _make_backlash_cfg()}, native_group_names=set())
+
+    # The same group *on* the native path passes, and a plain BAM group is unaffected either way.
+    _validate_native_only_actuator_cfgs({"servo": _make_backlash_cfg()}, native_group_names={"servo"})
+    _validate_native_only_actuator_cfgs({"servo": _make_cfg()}, native_group_names=set())
+
+
+def test_a_backlash_group_authors_its_flag_and_stays_a_separate_actuator():
+    """The authored flag has to reach the controller, and to keep the two kinds apart.
+
+    Newton merges structurally identical actuators, and the merge key is the controller class
+    plus its shared parameters. Without the flag a plain BAM group and a backlash group with
+    the same deployment settings would land in *one* actuator holding one index-and-mask array,
+    so the two would only be told apart per DOF. The flag is also what makes the plant's
+    encoder wiring visible on the prim rather than only in the Python config.
+    """
+    stage = _make_stage(
+        {
+            "plain": _make_cfg(joint_names_expr=[JOINT_NAMES[0]]),
+            "play": _make_backlash_cfg(joint_names_expr=[JOINT_NAMES[1]]),
+        }
+    )
+    flags = {
+        name: stage.GetPrimAtPath(f"/World/Robot/{group}_{name}_actuator").GetAttribute("newton:hasBacklash").Get()
+        for group, name in (("plain", JOINT_NAMES[0]), ("play", JOINT_NAMES[1]))
+    }
+    assert flags == {JOINT_NAMES[0]: 0, JOINT_NAMES[1]: 1}
+
+    adapter = NewtonActuatorAdapter.from_usd(
+        stage=stage,
+        joint_names=JOINT_NAMES,
+        num_envs=1,
+        num_joints=len(JOINT_NAMES),
+        device="cpu",
+        articulation_prim_path="/World/Robot",
+    )
+    assert len(adapter.actuators) == 2, "the flag must keep the two groups in separate actuators"
+    assert sorted(actuator.controller.has_backlash for actuator in adapter.actuators) == [0, 1]
 
 
 def test_authored_prim_resolves_to_the_bam_controller():

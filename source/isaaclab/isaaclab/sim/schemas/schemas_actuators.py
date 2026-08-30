@@ -93,6 +93,49 @@ def _is_solver_hosted_actuator_cfg(cfg: Any) -> bool:
     return isinstance(cfg, BamActuatorCfg)
 
 
+def _is_native_only_actuator_cfg(cfg: Any) -> bool:
+    """Return whether a config has no Isaac Lab-executed implementation to fall back on.
+
+    Every other explicit config runs either in Isaac Lab's Python actuator loop or as a Newton
+    component, so ``use_newton_actuators`` only chooses which.
+    :class:`~isaaclab.actuators.BamBacklashActuatorCfg` is the exception: its firmware feedback
+    is an index into the *whole* articulation's joint-position array, which only Newton's
+    controller is handed, while the Isaac Lab loop is given one group's joints and cannot read a
+    joint outside it. Running the plain servo instead would silently drop the modelled gear
+    play, so the configuration is refused rather than degraded.
+    """
+    from isaaclab.actuators.actuator_bam_cfg import BamBacklashActuatorCfg  # noqa: PLC0415
+
+    return isinstance(cfg, BamBacklashActuatorCfg)
+
+
+def _validate_native_only_actuator_cfgs(actuator_cfgs: dict[str, Any], native_group_names: set[str]) -> None:
+    """Reject a config that only the Newton-native path implements when it is not running there.
+
+    Args:
+        actuator_cfgs: Actuator configurations of one articulation, keyed by group name.
+        native_group_names: Groups the backend declared it executes natively. A group missing
+            from this set runs in Isaac Lab's actuator loop, whatever the reason.
+
+    Raises:
+        ValueError: If a group whose config has no Isaac Lab-executed implementation is not one
+            the backend executes natively.
+    """
+    degraded_groups = [
+        f"'{group_name}' ({type(cfg).__name__})"
+        for group_name, cfg in actuator_cfgs.items()
+        if _is_native_only_actuator_cfg(cfg) and group_name not in native_group_names
+    ]
+    if degraded_groups:
+        raise ValueError(
+            f"{', '.join(degraded_groups)} has no Isaac Lab-executed implementation and this actuator group is"
+            " not executed by the backend. Its firmware loop is closed on a joint outside the group, which only"
+            " the Newton actuator controller can read, and running the plain servo instead would silently drop"
+            " the modelled gear play. Set 'use_newton_actuators=True' and run on the Newton backend, or"
+            " configure the group with 'BamActuatorCfg' to accept a plant without play."
+        )
+
+
 def _validate_newton_native_actuator_cfgs(actuator_cfgs: dict[str, Any], *, host_adapter: bool = False) -> None:
     """Reject explicit actuator configurations the native actuator path cannot run.
 
@@ -448,10 +491,16 @@ def _resolve_bam_attributes(cfg: Any) -> tuple[dict[str, float | int], float]:
         The attribute mapping to author on the actuator prim, and the joint friction [N.m] to
         seed the driven joints with.
     """
+    from isaaclab.actuators.actuator_bam_cfg import BamBacklashActuatorCfg  # noqa: PLC0415
     from isaaclab.actuators.bam_model import BamMotorParams  # noqa: PLC0415
 
     params = BamMotorParams.from_json(cfg.params_file)
     attrs: dict[str, float | int] = {
+        # Whether this group's servos read their encoder through a play hinge. The indices
+        # themselves are a finalize-time property of the articulation and cannot be authored;
+        # what the prim carries is the fact that the plant has play, which is also what keeps a
+        # backlash group and a plain one in separate Newton actuators.
+        "has_backlash": int(isinstance(cfg, BamBacklashActuatorCfg)),
         "kp_fw": float(cfg.kp_fw) if cfg.kp_fw is not None else params.kp,
         "vin": float(cfg.vin) if cfg.vin is not None else params.vin,
         "sag_gain": 0.0,

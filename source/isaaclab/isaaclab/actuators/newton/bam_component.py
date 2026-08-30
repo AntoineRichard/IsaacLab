@@ -369,6 +369,7 @@ class ControllerBam(Controller):
 
     SHARED_PARAMS = {
         "params_file",
+        "has_backlash",
         "stribeck",
         "load_dependent",
         "quadratic",
@@ -568,6 +569,7 @@ class ControllerBam(Controller):
 
         resolved: dict[str, Any] = {
             "params_file": str(params_file),
+            "has_backlash": int(args.get("has_backlash", 0)),
             "stribeck": int(params.stribeck),
             "load_dependent": int(params.load_dependent),
             "quadratic": int(params.quadratic),
@@ -615,6 +617,7 @@ class ControllerBam(Controller):
         self,
         *,
         params_file: str,
+        has_backlash: int = 0,
         stribeck: int = 0,
         load_dependent: int = 0,
         quadratic: int = 0,
@@ -631,6 +634,11 @@ class ControllerBam(Controller):
         Args:
             params_file: Path of the BAM parameter file the constants were read from. Kept
                 for provenance and as part of Newton's actuator-grouping key.
+            has_backlash: Whether this group's servos read their encoder through a play hinge.
+                Part of the grouping key, so a plant with modelled gear play and one without
+                never share an actuator's index-and-mask arrays. The indices themselves are a
+                finalize-time property of the articulation and arrive through
+                :meth:`bind_backlash_indices`; this flag does not enable anything on its own.
             stribeck: Whether the Stribeck friction terms are active.
             load_dependent: Whether the gearbox friction grows with the transmitted torque.
             quadratic: Whether the quadratic load-coupling term is active.
@@ -646,6 +654,7 @@ class ControllerBam(Controller):
             ValueError: If a per-DOF array is missing or its shape does not match the others.
         """
         self.params_file = params_file
+        self.has_backlash = int(has_backlash)
         self.stribeck = int(stribeck)
         self.load_dependent = int(load_dependent)
         self.quadratic = int(quadratic)

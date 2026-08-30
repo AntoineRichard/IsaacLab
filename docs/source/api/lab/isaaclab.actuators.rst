@@ -29,6 +29,7 @@
     ActuatorNetLSTMCfg
     BamActuator
     BamActuatorCfg
+    BamBacklashActuatorCfg
     BamMotorParams
 
   .. rubric:: Functions
@@ -178,6 +179,12 @@ BAM Servo Model
   :show-inheritance:
 
 .. autoclass:: BamActuatorCfg
+  :members:
+  :inherited-members:
+  :show-inheritance:
+  :exclude-members: __init__, class_type
+
+.. autoclass:: BamBacklashActuatorCfg
   :members:
   :inherited-members:
   :show-inheritance:

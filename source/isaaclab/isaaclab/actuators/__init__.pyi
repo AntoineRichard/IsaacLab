@@ -17,6 +17,7 @@ __all__ = [
     "BAM_XL330_M6_PARAMS_FILE",
     "BamActuator",
     "BamActuatorCfg",
+    "BamBacklashActuatorCfg",
     "BamMotorParams",
     "DCMotor",
     "DelayedPDActuator",
@@ -32,7 +33,7 @@ __all__ = [
 ]
 
 from .actuator_bam import BamActuator
-from .actuator_bam_cfg import BamActuatorCfg
+from .actuator_bam_cfg import BamActuatorCfg, BamBacklashActuatorCfg
 from .actuator_base import ActuatorBase, resolve_joint_parameter
 from .actuator_base_cfg import ActuatorBaseCfg
 from .actuator_collection import ActuatorCollection, ActuatorTargetCommand, ActuatorOutputCommand
