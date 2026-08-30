@@ -329,6 +329,11 @@ def upright(env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg = Scen
     Returns:
         The reward in ``(0, 1]``. Shape is (num_envs,).
 
+    Note:
+        The tilt is NaN-guarded to its own worst case, so an environment whose frame has stopped
+        being a number earns nothing rather than poisoning the batch or collecting full marks. See
+        :func:`joint_pose_l2` for why no termination can catch this before the reward is computed.
+
     Raises:
         ValueError: If ``asset_cfg`` selects more than one body.
     """
@@ -345,6 +350,13 @@ def upright(env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg = Scen
         gravity_dir_w = torch.nn.functional.normalize(asset.data.GRAVITY_VEC_W.torch, dim=-1).unsqueeze(1)
         projected_gravity_b = math_utils.quat_apply_inverse(body_quat_w, gravity_dir_w).squeeze(1)
     xy_squared = torch.sum(torch.square(projected_gravity_b[:, :2]), dim=1)
+    # A diverged solver can leave the measured frame non-finite for one step, and the reset that
+    # repairs it runs after the reward is computed, so no termination can keep the NaN out of the
+    # reward buffer RSL-RL checks. The quantity is a squared sine and therefore lives in [0, 1], so
+    # an unmeasurable frame is scored as *fully* tilted -- the conservative end of its own range,
+    # which pays this environment nothing rather than the full marks a zero would. No-op on any
+    # finite frame.
+    xy_squared = torch.nan_to_num(xy_squared, nan=1.0, posinf=1.0, neginf=1.0)
     return torch.exp(-xy_squared / std**2)
 
 
@@ -2949,9 +2961,17 @@ class heading_hold_reward(ManagerTermBase):
         """
         asset: Articulation = env.scene[asset_cfg.name]
         heading = asset.data.heading_w.torch
-        self._reference_heading = torch.where(self._is_fresh, heading, self._reference_heading)
+        # Two NaN guards, both no-ops on a finite heading, both for the divergence
+        # :func:`joint_pose_l2` documents. The first keeps a heading that is not a number out of the
+        # *anchor*, which would otherwise persist for the rest of the episode; the second scores an
+        # unmeasurable heading as maximally wrong -- half a turn, the far end of the wrapped range --
+        # so a broken environment earns nothing instead of full marks.
+        self._reference_heading = torch.where(
+            self._is_fresh, torch.nan_to_num(heading, nan=0.0, posinf=0.0, neginf=0.0), self._reference_heading
+        )
         self._is_fresh[:] = False
         error = math_utils.wrap_to_pi(heading - self._reference_heading)
+        error = torch.nan_to_num(error, nan=math.pi, posinf=math.pi, neginf=math.pi)
         return torch.exp(-torch.square(error) / std**2)
 
 

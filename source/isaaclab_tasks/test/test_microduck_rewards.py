@@ -1530,6 +1530,25 @@ def test_the_state_reading_reward_kernels_survive_a_diverged_solver():
     assert torch.isfinite(penalty).all()
     torch.testing.assert_close(penalty, torch.tensor([0.0]))
 
+    # The two root-quaternion readers are guarded on the same idiom, against the divergence shape
+    # this capture did *not* contain: the root link's own orientation surviving is empirical from one
+    # event, not an invariant. Both are rewards rather than penalties, so their neutral value is a
+    # score of zero, and each guard takes its quantity to the far end of its own range to get there.
+    upright_env = _DummyEnv(
+        num_envs=1,
+        assets={
+            "robot": _DummyAsset(
+                body_link_quat_w=torch.full((1, 1, 4), nan),
+                GRAVITY_VEC_W=torch.tensor([[0.0, 0.0, -9.81]]),
+            )
+        },
+    )
+    reward = mdp.upright(
+        upright_env.as_env(), std=math.sqrt(0.08), asset_cfg=_entity("robot", body_ids=[0], body_names=["trunk_base"])
+    )
+    assert torch.isfinite(reward).all()
+    assert float(reward) < 1e-5
+
     # and the guards are invisible on a finite state: a 90 degree roll still scores its own tilt
     level = [0.0, 0.0, 0.0, 1.0]
     finite_env = _DummyEnv(
@@ -1845,6 +1864,35 @@ def test_heading_hold_reward_anchors_on_the_first_step_of_an_episode():
     torch.testing.assert_close(term(at_pi.as_env(), **cfg.params), torch.tensor([1.0]))
     just_past = _roller_env(heading=-math.pi + 0.4)
     torch.testing.assert_close(term(just_past.as_env(), **cfg.params), torch.tensor([math.exp(-1.0)]))
+
+
+def test_heading_hold_reward_survives_a_diverged_solver():
+    """The second root-quaternion reader, guarded on the same idiom as :func:`mdp.upright`.
+
+    Two things are checked, because the term is stateful and a NaN can do two different kinds of
+    damage. A heading that is not a number must not be scored as anything but maximally wrong -- half
+    a turn, the far end of the wrapped range, which pays essentially nothing -- and it must not be
+    written into the per-episode *anchor*, where it would poison every remaining step of that episode
+    rather than only the one the divergence happened on.
+    """
+    nan = float("nan")
+
+    # a broken heading on an anchored episode scores nothing and leaves the anchor alone
+    anchored = _roller_env(heading=0.5)
+    term, cfg = _heading_hold_term(anchored)
+    torch.testing.assert_close(term(anchored.as_env(), **cfg.params), torch.tensor([1.0]))
+    broken = _roller_env(heading=nan)
+    reward = term(broken.as_env(), **cfg.params)
+    assert torch.isfinite(reward).all()
+    assert float(reward) < 1e-10
+    # the episode recovers: the anchor is still the 0.5 rad it captured
+    torch.testing.assert_close(term(_roller_env(heading=0.5).as_env(), **cfg.params), torch.tensor([1.0]))
+
+    # a broken heading on the *anchoring* step must not become the reference
+    fresh = _roller_env(heading=nan)
+    term, cfg = _heading_hold_term(fresh)
+    assert torch.isfinite(term(fresh.as_env(), **cfg.params)).all()
+    assert torch.isfinite(term(_roller_env(heading=0.0).as_env(), **cfg.params)).all()
 
 
 ##
