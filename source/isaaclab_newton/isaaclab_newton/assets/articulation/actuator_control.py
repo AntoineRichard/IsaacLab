@@ -320,7 +320,11 @@ class NewtonActuatorControl(ArticulationActuatorControl):
 
         The indices are positions into the coordinate array, not degrees of freedom. On a
         floating-base articulation those two layouts differ, so the binding is built from the
-        actuator's ``pos_indices`` rather than from its DOF indices.
+        actuator's ``pos_indices`` rather than from its DOF indices. Locating a twin as an offset
+        from its servo's own coordinate assumes the articulation's joints are single-coordinate and
+        numbered in the same order as its degrees of freedom, which holds for the hinges a BAM servo
+        drives; a ball joint between a servo and its play hinge would need the offset taken from the
+        model's coordinate starts instead.
 
         Runs while the model is being built, right after the start-up randomization: the actuators
         exist (Newton finalizes a controller inside ``Actuator.__init__``) and no step, and hence
