@@ -18,6 +18,8 @@ friction disabled: when MuJoCo owns the friction budget, B deliberately emits th
 torque and lets the constraint solver do the clipping.
 """
 
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -40,13 +42,33 @@ from isaaclab.sim.schemas.schemas_actuators import (
     _is_newton_native_actuator_cfg,
     _validate_newton_native_actuator_cfgs,
 )
-from isaaclab.test.utils import test_devices
+from isaaclab.test.utils import DeviceScope, test_devices
 from isaaclab.utils.types import ArticulationActions
 
 pytestmark = pytest.mark.unit
 
 JOINT_NAMES = ["servo_0", "servo_1"]
 """Joints of the fixture articulation; two of them so the shared-supply sag is observable."""
+
+BACKLASH_JOINT_NAMES = ["servo_0", "passive_servo_0_backlash", "servo_1", "passive_servo_1_backlash"]
+"""Joints of the serial-play fixture: each servo followed by the hinge that carries its gear play.
+
+Interleaved, and named by the ``passive_<joint>_backlash`` convention, because that is what the
+backlash asset's converter emits -- an actuator that only worked on a contiguous servo block or on
+a fixed index offset would pass a tidier fixture and fail on the robot.
+"""
+
+SERVO_ONLY_EXPR = ["^(?!passive_).*"]
+"""Group selection that leaves the unactuated play hinges out, as the backlash asset uses."""
+
+SERVO_SLOTS = [index for index, name in enumerate(BACKLASH_JOINT_NAMES) if not name.startswith("passive_")]
+"""Positions of the driven joints in :data:`BACKLASH_JOINT_NAMES`."""
+
+PLAY_SLOTS = [index for index, name in enumerate(BACKLASH_JOINT_NAMES) if name.startswith("passive_")]
+"""Positions of the play hinges in :data:`BACKLASH_JOINT_NAMES`."""
+
+PLAY_LIMIT = math.radians(1.0)
+"""Half the gear play of one servo [rad], i.e. the reference plant's per-side backlash."""
 
 DT = 1.0 / 120.0
 """Physics timestep the actuators are stepped at [s]."""
@@ -71,11 +93,15 @@ def _make_cfg(**overrides) -> BamActuatorCfg:
     return BamActuatorCfg(**kwargs)
 
 
-def _make_stage(cfg: BamActuatorCfg) -> Usd.Stage:
-    """Author a two-joint articulation driven by one BAM actuator group."""
+def _make_stage(cfg: BamActuatorCfg, joint_names: list[str] = JOINT_NAMES) -> Usd.Stage:
+    """Author an articulation over *joint_names*, driven by one BAM actuator group.
+
+    The group covers whichever of the joints its ``joint_names_expr`` selects, so a fixture
+    can carry joints no actuator drives -- which is what a play hinge is.
+    """
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.Xform.Define(stage, "/World/Robot")
-    for index, name in enumerate(JOINT_NAMES):
+    for index, name in enumerate(joint_names):
         body = UsdGeom.Xform.Define(stage, f"/World/Robot/body_{index}")
         UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
         joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/Robot/{name}")
@@ -84,13 +110,15 @@ def _make_stage(cfg: BamActuatorCfg) -> Usd.Stage:
     return stage
 
 
-def _make_adapter(cfg: BamActuatorCfg, num_envs: int, device: str) -> NewtonActuatorAdapter:
+def _make_adapter(
+    cfg: BamActuatorCfg, num_envs: int, device: str, joint_names: list[str] = JOINT_NAMES
+) -> NewtonActuatorAdapter:
     """Author, parse and build the Newton actuator adapter for the fixture."""
     return NewtonActuatorAdapter.from_usd(
-        stage=_make_stage(cfg),
-        joint_names=JOINT_NAMES,
+        stage=_make_stage(cfg, joint_names),
+        joint_names=joint_names,
         num_envs=num_envs,
-        num_joints=len(JOINT_NAMES),
+        num_joints=len(joint_names),
         device=device,
         articulation_prim_path="/World/Robot",
     )
@@ -104,14 +132,15 @@ class _Harness:
     arbitrary trajectory and read back the effort it asks the solver to apply.
     """
 
-    def __init__(self, cfg: BamActuatorCfg, num_envs: int, device: str):
-        self.adapter = _make_adapter(cfg, num_envs, device)
+    def __init__(self, cfg: BamActuatorCfg, num_envs: int, device: str, joint_names: list[str] = JOINT_NAMES):
+        self.adapter = _make_adapter(cfg, num_envs, device, joint_names)
         assert len(self.adapter.actuators) == 1, "the fixture's joints must merge into one actuator"
         self.actuator = self.adapter.actuators[0]
         self.controller: ControllerBam = self.actuator.controller
         self.num_envs = num_envs
         self.device = device
-        shape = (num_envs, len(JOINT_NAMES))
+        self.joint_names = joint_names
+        shape = (num_envs, len(joint_names))
         self.state = PhysxActuatorWrapper.create(*shape, device)
         self.control = PhysxActuatorWrapper.create(*shape, device)
         self.joint_pos = wp.zeros(shape, dtype=wp.float32, device=device)
@@ -120,7 +149,7 @@ class _Harness:
         self.state.joint_q = self.joint_pos.reshape(-1)
         self.state.joint_qd = self.joint_vel.reshape(-1)
         self.control.joint_target_pos = self.target_pos.reshape(-1)
-        self.control.joint_target_vel = wp.zeros(num_envs * len(JOINT_NAMES), dtype=wp.float32, device=device)
+        self.control.joint_target_vel = wp.zeros(num_envs * len(joint_names), dtype=wp.float32, device=device)
         self.control.joint_act = None
         self.adapter.finalize(self.control)
 
@@ -475,3 +504,265 @@ def test_reset_restores_the_first_step_behaviour(device):
 
     np.testing.assert_allclose(after[0], first[0], atol=1e-6, rtol=0.0)
     assert np.abs(after[1] - first[1]).max() > 1e-9, "the untouched environment must keep its history"
+
+
+"""
+Encoder-through-backlash feedback.
+"""
+
+
+def _interleave(servo: np.ndarray, play: np.ndarray) -> np.ndarray:
+    """Lay per-servo and per-play values out over :data:`BACKLASH_JOINT_NAMES`' joint order."""
+    full = np.zeros((servo.shape[0], len(BACKLASH_JOINT_NAMES)))
+    full[:, SERVO_SLOTS] = servo
+    full[:, PLAY_SLOTS] = play
+    return full
+
+
+def _backlash_binding(device: str, mask: list[float], num_envs: int = 1) -> tuple[wp.array, wp.array]:
+    """Build the per-DOF binding :mod:`isaaclab_newton` will resolve from the joint names.
+
+    Returns the flat index of each driven DOF's ``passive_<joint>_backlash`` hinge in the
+    position array, and one mask entry per driven DOF, both in the actuator's DOF order
+    (environment major).
+    """
+    stride = len(BACKLASH_JOINT_NAMES)
+    indices = [PLAY_SLOTS[slot] + env * stride for env in range(num_envs) for slot in range(len(SERVO_SLOTS))]
+    return (
+        wp.array(np.array(indices, dtype=np.uint32), device=device),
+        wp.array(np.array(mask * num_envs, dtype=np.float32), device=device),
+    )
+
+
+def _make_bound_harness(device: str, mask: list[float], num_envs: int = 1) -> _Harness:
+    """Build the serial-play fixture with each servo bound to the hinge that follows it."""
+    harness = _Harness(
+        _make_cfg(joint_names_expr=SERVO_ONLY_EXPR), num_envs=num_envs, device=device, joint_names=BACKLASH_JOINT_NAMES
+    )
+    harness.controller.bind_backlash_indices(*_backlash_binding(device, mask, num_envs))
+    return harness
+
+
+def _reference_encoder_efforts(measured: np.ndarray, motor_vel: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Roll the shared BAM math core forward over a scripted sequence.
+
+    Built from :mod:`isaaclab.actuators.bam_model` rather than from either actuator, so the
+    expectation is an independent calculation and not the implementation restated. The only
+    backlash-specific input is *measured*, which the caller composes as ``servo + play * mask``:
+    upstream rewrites the firmware command's position feedback and nothing else
+    (``friction_dr_bam.py:101-104``), so the velocity that reaches the back-EMF, the Stribeck
+    coefficient and the stiction clip here is the motor-side one.
+
+    The fixture leaves the delay off, the friction scale at one and the supply sag at zero, so
+    the recursion carries only the three caches the controller keeps: the previous motor torque,
+    the previous applied torque and the previous velocity.
+
+    Args:
+        measured: Encoder-view positions the firmware closes its loop on [rad], shape
+            ``(steps, num_envs, num_joints)``.
+        motor_vel: Motor-side joint velocities [rad/s], same shape.
+        target: Commanded positions [rad], same shape.
+
+    Returns:
+        Applied efforts [N.m], same shape.
+    """
+    from isaaclab.actuators.bam_model import (  # noqa: PLC0415
+        apply_stiction_clip,
+        battery_sag,
+        compute_duty,
+        compute_friction_budget,
+        compute_motor_torque,
+        compute_stribeck_coeff,
+    )
+
+    params = BamMotorParams.from_json(BAM_XL330_M6_PARAMS_FILE)
+    steps, num_envs, num_joints = measured.shape
+    kp = torch.full((num_envs, 1), KP_FW)
+    vin = torch.full((num_envs, 1), VIN)
+    prev_motor = torch.zeros(num_envs, num_joints)
+    prev_applied = torch.zeros(num_envs, num_joints)
+    prev_vel = None
+
+    efforts = []
+    for step in range(steps):
+        q, dq, q_target = (torch.tensor(a[step], dtype=torch.float32) for a in (measured, motor_vel, target))
+        # A freshly built controller seeds its velocity cache, so the first step sees no
+        # acceleration and hence no estimated external torque.
+        if prev_vel is None:
+            prev_vel = dq
+        effective_vin = battery_sag(vin, prev_motor, torch.zeros(num_envs, 1), None)
+        duty = compute_duty(q_target, q, dq, kp, effective_vin, params)
+        motor = compute_motor_torque(duty, dq, effective_vin, params)
+        external = params.armature * (dq - prev_vel) / DT - prev_applied
+        budget = compute_friction_budget(prev_motor, external, compute_stribeck_coeff(dq, params), params, 1.0)
+        applied = apply_stiction_clip(motor, external, dq, budget, params.friction_viscous, DT, params.armature)
+        efforts.append(applied.numpy())
+        prev_motor, prev_applied, prev_vel = motor, applied, dq
+    return np.stack(efforts)
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_bound_encoder_closes_the_firmware_loop_through_the_play(device):
+    """The firmware error must be measured against ``servo + play``, not against the servo.
+
+    On the real servo the magnetic encoder sits on the *output* side of the gear play, so while
+    the rotor winds through the dead zone the position the firmware reads -- and hence its
+    proportional error -- does not move. That is the whole point of the backlash plant: without
+    it the play is a compliance the policy never sees, with it the policy inherits the dead
+    zone. The expectation is the shared math core stepped over the same scripted sequence with
+    the feedback composed the same way.
+
+    The two joints carry different masks on purpose: one reads through its hinge, the other does
+    not, and both are resolved inside the same kernel launch, so a mask applied per launch
+    rather than per DOF fails here.
+    """
+    mask = [1.0, 0.0]
+    harness = _make_bound_harness(device, mask)
+
+    rng = np.random.default_rng(11)
+    steps, shape = 12, (1, len(SERVO_SLOTS))
+    servo_pos = rng.uniform(-0.4, 0.4, (steps, *shape))
+    play_pos = rng.uniform(-PLAY_LIMIT, PLAY_LIMIT, (steps, *shape))
+    servo_vel = rng.uniform(-2.0, 2.0, (steps, *shape))
+    play_vel = rng.uniform(-2.0, 2.0, (steps, *shape))
+    target = rng.uniform(-0.4, 0.4, (steps, *shape))
+    zeros = np.zeros(shape)
+
+    got = np.stack(
+        [
+            harness.step(
+                _interleave(servo_pos[step], play_pos[step]),
+                _interleave(servo_vel[step], play_vel[step]),
+                _interleave(target[step], zeros),
+            )[:, SERVO_SLOTS]
+            for step in range(steps)
+        ]
+    )
+
+    expected = _reference_encoder_efforts(servo_pos + play_pos * np.array(mask), servo_vel, target)
+    np.testing.assert_allclose(got, expected, atol=1e-6, rtol=0.0)
+
+    # One degree of play is a small angle; the comparison above only means something if reading
+    # through it moves the torque by far more than the tolerance it was asserted at.
+    without_play = _reference_encoder_efforts(servo_pos, servo_vel, target)
+    assert np.abs(expected[..., 0] - without_play[..., 0]).max() > 1e-3
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_the_play_hinges_velocity_never_reaches_the_motor(device):
+    """Only the position feedback reads through the play; the velocity stays motor-side.
+
+    In this model the joint velocity drives the back-EMF, the Stribeck blend and the stopping
+    torque of the stiction clip -- rotor physics, not an encoder-derived firmware signal. The
+    reference implementation is explicit about leaving it alone
+    (``friction_dr_bam.py:78-80``), and summing the hinge in there would damp the motor against
+    a velocity its rotor never sees.
+    """
+    baseline = _make_bound_harness(device, [1.0, 1.0])
+    disturbed = _make_bound_harness(device, [1.0, 1.0])
+
+    rng = np.random.default_rng(5)
+    for step in range(6):
+        servo_pos = rng.uniform(-0.4, 0.4, (1, 2))
+        play_pos = rng.uniform(-PLAY_LIMIT, PLAY_LIMIT, (1, 2))
+        servo_vel = rng.uniform(-2.0, 2.0, (1, 2))
+        target = rng.uniform(-0.4, 0.4, (1, 2))
+        quiet = baseline.step(
+            _interleave(servo_pos, play_pos),
+            _interleave(servo_vel, np.zeros((1, 2))),
+            _interleave(target, np.zeros((1, 2))),
+        )
+        spinning = disturbed.step(
+            _interleave(servo_pos, play_pos),
+            _interleave(servo_vel, rng.uniform(-20.0, 20.0, (1, 2))),
+            _interleave(target, np.zeros((1, 2))),
+        )
+        np.testing.assert_array_equal(
+            spinning[:, SERVO_SLOTS], quiet[:, SERVO_SLOTS], err_msg=f"the hinge velocity leaked at step {step}"
+        )
+
+
+@pytest.mark.parametrize("device", test_devices())
+def test_a_zero_mask_reproduces_the_plain_controller_bit_for_bit(device):
+    """A joint with no play must reach exactly the torque it reached before the encoder view.
+
+    One configuration has to be safe on every model -- that is what makes the mask worth having
+    rather than a second controller class -- so a plant without play hinges may not cost
+    anything at all. Not "almost nothing": the sum the kernel now evaluates has to collapse to
+    the old expression exactly, or every policy trained against the plain asset faces a
+    different plant. The reference is the plain fixture, whose articulation has no play hinges
+    in it; the serial-play fixtures hold nonzero hinge positions throughout, so a mask that
+    leaked would show up immediately.
+    """
+    plain = _Harness(_make_cfg(), num_envs=1, device=device)
+    unbound = _Harness(
+        _make_cfg(joint_names_expr=SERVO_ONLY_EXPR), num_envs=1, device=device, joint_names=BACKLASH_JOINT_NAMES
+    )
+    zero_masked = _make_bound_harness(device, [0.0, 0.0])
+    engaged = _make_bound_harness(device, [1.0, 1.0])
+
+    rng = np.random.default_rng(3)
+    engaged_gap = 0.0
+    for step in range(8):
+        servo_pos = rng.uniform(-0.4, 0.4, (1, 2))
+        play_pos = rng.uniform(-PLAY_LIMIT, PLAY_LIMIT, (1, 2))
+        servo_vel = rng.uniform(-2.0, 2.0, (1, 2))
+        target = rng.uniform(-0.4, 0.4, (1, 2))
+        pos, vel, cmd = (
+            _interleave(servo_pos, play_pos),
+            _interleave(servo_vel, np.zeros((1, 2))),
+            _interleave(target, np.zeros((1, 2))),
+        )
+
+        reference = plain.step(servo_pos, servo_vel, target)
+        for name, harness in (("unbound", unbound), ("zero-masked", zero_masked)):
+            got = harness.step(pos, vel, cmd)[:, SERVO_SLOTS]
+            np.testing.assert_array_equal(got, reference, err_msg=f"the {name} controller diverged at step {step}")
+        engaged_gap = max(engaged_gap, np.abs(engaged.step(pos, vel, cmd)[:, SERVO_SLOTS] - reference).max())
+
+    # The mutation check the exactness above needs: the same fixture with the mask raised has to
+    # leave the plain controller's trajectory, or both halves of this test are asserting nothing.
+    assert engaged_gap > 1e-3, "raising the mask left the torque unchanged"
+
+
+@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
+def test_the_bound_encoder_view_replays_from_a_cuda_graph(device):
+    """The encoder feedback must run inside a captured graph, reading the live binding.
+
+    A controller that forced a host round trip would cost the whole decimation loop its capture,
+    so the property is asserted rather than assumed. The capture holds an even number of steps
+    on purpose: the actuator state is double-buffered and swapped in Python, so an odd capture
+    drops the last update on every replay -- the same reason the environment-level harness
+    captures an even decimation. Rebinding between replays is what shows the indices are read
+    from the controller's arrays on every launch rather than baked into the graph.
+    """
+    servo_pos, play_pos = np.array([[0.21, -0.13]]), np.array([[PLAY_LIMIT, -PLAY_LIMIT]])
+    pos = _interleave(servo_pos, play_pos)
+    vel = _interleave(np.array([[0.7, -0.9]]), np.zeros((1, 2)))
+    cmd = _interleave(np.array([[0.05, 0.05]]), np.zeros((1, 2)))
+    all_envs = torch.zeros(1, dtype=torch.long, device=device)
+
+    eager = _make_bound_harness(device, [1.0, 1.0])
+    eager.step(pos, vel, cmd)
+    expected = eager.step(pos, vel, cmd)[:, SERVO_SLOTS].copy()
+
+    captured = _make_bound_harness(device, [1.0, 1.0])
+    # Warp modules have to be resident before a capture; one eager step loads them, and the
+    # reset that follows puts the controller back to its first-step behaviour.
+    captured.step(pos, vel, cmd)
+    captured.reset(all_envs)
+    with wp.ScopedDevice(device), wp.ScopedCapture() as capture:
+        for _ in range(2):
+            captured.adapter.step(captured.state, captured.control, DT)
+
+    wp.capture_launch(capture.graph)
+    wp.synchronize_device(device)
+    np.testing.assert_allclose(captured.control.joint_f_2d.numpy()[:, SERVO_SLOTS], expected, atol=1e-6, rtol=0.0)
+
+    captured.controller.bind_backlash_indices(*_backlash_binding(device, [0.0, 0.0]))
+    captured.reset(all_envs)
+    wp.capture_launch(capture.graph)
+    wp.synchronize_device(device)
+    assert np.abs(captured.control.joint_f_2d.numpy()[:, SERVO_SLOTS] - expected).max() > 1e-3, (
+        "the replayed graph kept the old mask, so the binding was baked in at capture"
+    )
