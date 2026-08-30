@@ -38,17 +38,27 @@ import os
 
 import numpy as np
 import pytest
+import torch
 from isaaclab_newton.physics import NewtonCfg, NewtonManager
 
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 import isaaclab.sim as sim_utils
+from isaaclab.actuators.actuator_bam_cfg import BACKLASH_JOINT_TEMPLATE
+from isaaclab.actuators.newton import ControllerBam
 from isaaclab.assets import Articulation, ArticulationCfg
-from isaaclab.sim import SimulationCfg, SimulationContext
+from isaaclab.sim import SimulationCfg, SimulationContext, build_simulation_context
+from isaaclab.utils.string import resolve_matching_names_values
 
-from isaaclab_assets import MICRODUCK_ALLCOLLISIONS_CFG, MICRODUCK_CFG, MICRODUCK_ROLLERS_CFG
+from isaaclab_assets import (
+    MICRODUCK_ALLCOLLISIONS_CFG,
+    MICRODUCK_BACKLASH_CFG,
+    MICRODUCK_CFG,
+    MICRODUCK_ROLLERS_CFG,
+)
 from isaaclab_assets.robots.microduck import (
     MICRODUCK_ALLCOLLISIONS_USD_PATH,
+    MICRODUCK_BACKLASH_USD_PATH,
     MICRODUCK_ROLLERS_USD_PATH,
     MICRODUCK_USD_PATH,
 )
@@ -69,13 +79,6 @@ VARIANTS = ("allcollisions", "rollers", "walk_backlash")
 REFERENCE_MODEL = "walk"
 """The plain walking model, spawned here only as a reference to compare a variant against."""
 
-MICRODUCK_BACKLASH_USD_PATH = os.path.join(os.path.dirname(MICRODUCK_USD_PATH), "microduck_walk_backlash.usd")
-"""Path of the converted backlash asset.
-
-Spelled out rather than imported because no configuration spawns it yet; it moves into
-``isaaclab_assets.robots.microduck`` with ``MICRODUCK_BACKLASH_CFG``.
-"""
-
 VARIANT_USD_PATHS = {
     "allcollisions": MICRODUCK_ALLCOLLISIONS_USD_PATH,
     "rollers": MICRODUCK_ROLLERS_USD_PATH,
@@ -86,15 +89,21 @@ VARIANT_USD_PATHS = {
 VARIANT_CFGS = {
     "allcollisions": MICRODUCK_ALLCOLLISIONS_CFG,
     "rollers": MICRODUCK_ROLLERS_CFG,
+    "walk_backlash": MICRODUCK_BACKLASH_CFG,
 }
-"""Per variant that has one: the configuration that spawns it.
-
-The backlash model is converted before it is configured, so it is covered here from the USD side
-only until ``MICRODUCK_BACKLASH_CFG`` exists.
-"""
+"""Per variant: the configuration that spawns it."""
 
 CONFIGURED_VARIANTS = tuple(VARIANT_CFGS)
-"""The variants a configuration spawns, which is what the ``test_cfg_*`` cases are parametrized on."""
+"""Every configured variant, which is what the configuration-only cases are parametrized on."""
+
+LAB_EXECUTED_VARIANTS = ("allcollisions", "rollers")
+"""The variants whose configuration spawns on the Isaac Lab-executed actuator path.
+
+The backlash configuration is not one of them: its servo model reads an encoder on the far side of
+a joint outside its own group, which only the Newton-native controller is handed, so it *raises*
+off that path rather than silently dropping the play. It is spawned by :func:`backlash_native`
+instead, which is also where the cases that need it to step live.
+"""
 
 NUM_SERVO_JOINTS = 14
 """Joints every MicroDuck model drives, and the dimension of every MicroDuck action space.
@@ -188,6 +197,33 @@ The gear teeth *are* the limit constraint, so upstream's ``backlash`` class tune
 constant of twice the physics step and a near-rigid impedance -- and damps the play DOF. None of
 that survives a plain MJCF-to-USD conversion, and no actuator group owns these hinges, so an
 actuator model cannot republish the damping either.
+"""
+
+NUM_BACKLASH_ENVS = 4
+"""Environments the configured backlash model is spawned in.
+
+More than one, because every index the encoder binding resolves is into the *whole* model's
+position array: a per-environment stride that a single environment cannot tell apart from zero is
+the mistake the binding is easiest to get wrong in.
+"""
+
+BACKLASH_SETTLE_STEPS = 500
+"""Physics steps the configured backlash model is held at its home pose for, i.e. 2.5 s.
+
+Long enough for the 14 play hinges to take up their teeth under the weight of the limbs and for the
+servos to reach their stiction band, which is the transient the settle case has to look past.
+"""
+
+BACKLASH_QUASI_STATIC_STEPS = 100
+"""Trailing steps of that hold the drift is measured over, i.e. the last 0.5 s of it."""
+
+BACKLASH_HOME_DRIFT = np.deg2rad(0.1)
+"""Joint travel [rad] the hold may still show over its last :data:`BACKLASH_QUASI_STATIC_STEPS`.
+
+A tenth of a degree is a twentieth of the peak-to-peak play, so a hinge that keeps crossing its dead
+zone -- the shape a limit constraint that pumps energy takes on this plant -- cannot pass, while the
+creep a friction-loss constraint leaves behind can. The plain walking model, held the same way, ends
+at 7e-9 degrees, so the margin here is entirely the play.
 """
 
 PASSIVE_JOINTS = {
@@ -313,8 +349,114 @@ def mj_world_colliders(mj_models):
     return colliders
 
 
+def _skip_unless_converted_assets_exist() -> None:
+    """Skip the module unless every converted MicroDuck asset it reads has been generated."""
+    usd_paths = {**VARIANT_USD_PATHS, REFERENCE_MODEL: MICRODUCK_USD_PATH}
+    missing = {model: path for model, path in usd_paths.items() if not os.path.isfile(path)}
+    if missing:
+        commands = " ".join(f"--model {model}" for model in missing)
+        pytest.skip(
+            f"MicroDuck USD assets are missing: {sorted(missing.values())}. Generate them with 'uv run"
+            f" --extra importers python scripts/tools/convert_microduck.py' ({commands})."
+        )
+
+
 @pytest.fixture(scope="module")
-def newton_articulations():
+def backlash_native():
+    """The backlash configuration spawned on the Newton-native actuator path, then measured.
+
+    Its servo model runs on that path only -- see :data:`LAB_EXECUTED_VARIANTS` -- and what this
+    file has to read of it needs a simulation the fidelity one below is not: several environments,
+    and steps. :class:`~isaaclab.sim.SimulationContext` is a singleton, so this builds its own
+    simulation and tears it down again *before* yielding, and what it yields is measurements rather
+    than live objects. :func:`newton_articulations` requests it for no other reason than to order
+    the two.
+
+    Returns:
+        The joint inventory, the encoder binding the servo group installed, the resolved initial
+        state, and the trace of a hold at the home pose.
+    """
+    _skip_unless_converted_assets_exist()
+
+    device = "cuda:0"
+    sim_cfg = SimulationCfg(dt=0.005, device=device, use_newton_actuators=True, physics=NewtonCfg())
+    with build_simulation_context(device=device, gravity_enabled=True, add_ground_plane=False, sim_cfg=sim_cfg) as sim:
+        sim._app_control_on_stop_handle = None  # noqa: SLF001
+        # self-collision is on, and nothing filters one robot's shapes against another's
+        for index in range(NUM_BACKLASH_ENVS):
+            sim_utils.create_prim(f"/World/Env_{index}", "Xform", translation=(index * 1.0, 0.0, 0.0))
+        cfg = copy.deepcopy(MICRODUCK_BACKLASH_CFG)
+        cfg.prim_path = "/World/Env_[^/]*/Robot"
+        robot = Articulation(cfg)
+        sim.reset()
+        assert robot.is_initialized
+
+        actuators = [
+            actuator
+            for actuator in NewtonManager._adapter.actuators  # noqa: SLF001
+            if isinstance(actuator.controller, ControllerBam)
+        ]
+        assert len(actuators) == 1, "the servo group is one Newton BAM actuator"
+        controller = actuators[0].controller
+
+        # Where this robot's hinges sit in the model's DOF array, derived from the model rather
+        # than from the actuator wiring the binding cases check. Newton labels every environment
+        # with the prototype's prim path, so the labels place the hinges within one environment and
+        # the environment stride places that environment.
+        model = NewtonManager._model  # noqa: SLF001
+        env_stride = model.joint_dof_count // NUM_BACKLASH_ENVS
+        dof_starts = sorted(
+            int(dof)
+            for label, dof in zip(model.joint_label, model.joint_qd_start.numpy())
+            if label.startswith("/World/Env_0/Robot/")
+        )
+        assert len(dof_starts) == robot.num_joints * NUM_BACKLASH_ENVS, "every environment is one cloned robot"
+        first_hinge_dof = dof_starts[0]
+        assert [dof for dof in dof_starts if dof < env_stride] == list(
+            range(first_hinge_dof, first_hinge_dof + robot.num_joints)
+        ), "the robot's hinges must be one contiguous block of single-DOF joints after its floating base"
+
+        default_joint_pos = robot.data.default_joint_pos.torch.clone()
+        measurements = {
+            "joint_names": list(robot.joint_names),
+            "backend_joint_names": list(robot.backend_joint_names),
+            "num_joints": robot.num_joints,
+            "env_stride": env_stride,
+            "first_hinge_dof": first_hinge_dof,
+            "actuator_dof_indices": [int(index) for index in actuators[0].indices.numpy()],
+            "backlash_mask": controller.backlash_mask.numpy().copy(),
+            "backlash_pos_indices": controller.backlash_pos_indices.numpy().copy(),
+            "default_joint_pos": default_joint_pos[0].cpu().numpy(),
+            "joint_pos_limits": robot.data.joint_pos_limits.torch[0].cpu().numpy(),
+        }
+
+        # Hold the home pose with the robot hung by its trunk: the servos are commanded to it and
+        # the 14 play hinges are left to take up their teeth under the weight of the limbs. The
+        # base is rewritten every step rather than stood on a ground plane, because the plain
+        # walking model sinks through one in a bare stage too (a harness defect, not a plant one)
+        # and because a hanging robot loads every play hinge instead of only the ones a stance
+        # happens to load.
+        robot.write_joint_position_to_sim_index(position=default_joint_pos)
+        robot.write_joint_velocity_to_sim_index(velocity=torch.zeros_like(default_joint_pos))
+        robot.actuators.reset()
+        robot.actuators.target_command.set_position_index(value=default_joint_pos, full_data=True)
+        root_pose = robot.data.root_pose_w.torch.clone()
+        root_velocity = torch.zeros_like(robot.data.root_vel_w.torch)
+        joint_pos = []
+        for _ in range(BACKLASH_SETTLE_STEPS):
+            robot.write_root_pose_to_sim_index(root_pose=root_pose)
+            robot.write_root_velocity_to_sim_index(root_velocity=root_velocity)
+            robot.write_data_to_sim()
+            sim.step()
+            robot.update(sim.get_physics_dt())
+            joint_pos.append(robot.data.joint_pos.torch.cpu().numpy().copy())
+        measurements["home_joint_pos"] = np.stack(joint_pos)
+
+    return measurements
+
+
+@pytest.fixture(scope="module")
+def newton_articulations(backlash_native):
     """Every converted variant spawned on one Newton stage, bare and through its configuration.
 
     The bare articulations carry no actuators, so the fidelity assertions see what the USD authored
@@ -328,16 +470,14 @@ def newton_articulations():
     The bare articulations have no initial state, and the conversion clears the root transform, so
     they spawn with their feet below the origin. That is harmless here: none of these tests steps the
     simulation, and the stage carries no ground plane.
-    """
-    usd_paths = {**VARIANT_USD_PATHS, REFERENCE_MODEL: MICRODUCK_USD_PATH}
-    missing = {model: path for model, path in usd_paths.items() if not os.path.isfile(path)}
-    if missing:
-        commands = " ".join(f"--model {model}" for model in missing)
-        pytest.skip(
-            f"MicroDuck USD assets are missing: {sorted(missing.values())}. Generate them with 'uv run"
-            f" --extra importers python scripts/tools/convert_microduck.py' ({commands})."
-        )
 
+    Args:
+        backlash_native: Requested only so that its simulation is built and torn down before this
+            one. The two need different actuator paths and only one context can exist at a time.
+    """
+    _skip_unless_converted_assets_exist()
+
+    usd_paths = {**VARIANT_USD_PATHS, REFERENCE_MODEL: MICRODUCK_USD_PATH}
     sim_utils.create_new_stage()
     sim = SimulationContext(SimulationCfg(dt=0.005, device="cuda:0", physics=NewtonCfg()))
 
@@ -352,7 +492,7 @@ def newton_articulations():
         for model, usd_path in usd_paths.items()
     }
     configured = {}
-    for index, variant in enumerate(CONFIGURED_VARIANTS):
+    for index, variant in enumerate(LAB_EXECUTED_VARIANTS):
         variant_cfg = VARIANT_CFGS[variant]
         configured_cfg = copy.deepcopy(variant_cfg)
         configured_cfg.prim_path = f"/World/{variant}_configured"
@@ -378,7 +518,7 @@ def usd_articulations(newton_articulations):
 
 @pytest.fixture(scope="module")
 def configured_articulations(newton_articulations):
-    """Per variant that has a configuration: the articulation loaded through it."""
+    """Per variant in :data:`LAB_EXECUTED_VARIANTS`: the articulation loaded through it."""
     return newton_articulations[1]
 
 
@@ -412,6 +552,28 @@ def _newton_dof_indices(model, prim_path: str, joint_names) -> dict[str, int]:
         if label.startswith(f"{prim_path}/") and name in joint_names:
             indices[name] = int(dof_start[joint])
     return indices
+
+
+def _named_dof(backlash_native: dict, model_dof: int) -> tuple[int, str]:
+    """Return the environment and joint name a model DOF index of the played robot belongs to.
+
+    Newton holds one flat DOF array for the whole scene, so an index into it says nothing on its
+    own: the articulation's joints start after the six DOFs of its floating base and repeat every
+    environment. Naming an index back is what lets the encoder binding be read as a plant statement
+    -- *this servo, this hinge, this environment* -- rather than as arithmetic.
+
+    Args:
+        backlash_native: The measurements fixture.
+        model_dof: Index into the model's joint DOF array.
+
+    Returns:
+        The environment index and the articulation joint name, in backend joint order.
+    """
+    env, local_dof = divmod(model_dof, backlash_native["env_stride"])
+    joint = local_dof - backlash_native["first_hinge_dof"]
+    joint_names = backlash_native["backend_joint_names"]
+    assert 0 <= joint < len(joint_names), f"model DOF {model_dof} is not a joint of the played robot"
+    return env, joint_names[joint]
 
 
 def _ancestor_names(prim: Usd.Prim) -> set[str]:
@@ -800,7 +962,7 @@ def test_backlash_servo_joints_match_the_plain_walk_asset(usd_articulations):
     assert {joint_prims[name].GetTypeName() for name in servo_names} == {"PhysicsRevoluteJoint"}
 
 
-@pytest.mark.parametrize("variant", CONFIGURED_VARIANTS)
+@pytest.mark.parametrize("variant", LAB_EXECUTED_VARIANTS)
 def test_cfg_drives_the_servos_and_leaves_the_wheels_free(configured_articulations, variant):
     """The configuration reuses the walking model's servo group and actuates only the servos.
 
@@ -817,7 +979,7 @@ def test_cfg_drives_the_servos_and_leaves_the_wheels_free(configured_articulatio
     assert servos.cfg == MICRODUCK_CFG.actuators["servos"]
 
 
-@pytest.mark.parametrize("variant", CONFIGURED_VARIANTS)
+@pytest.mark.parametrize("variant", LAB_EXECUTED_VARIANTS)
 def test_cfg_default_joint_pos_is_the_home_pose(configured_articulations, variant):
     """Every servo resets to its upstream ``HOME_FRAME`` value and every wheel to zero."""
     robot = configured_articulations[variant]
@@ -839,3 +1001,117 @@ def test_cfg_reports_a_missing_asset_with_the_command_that_makes_it(tmp_path, va
         spawn.func("/World/Robot", spawn)
 
     assert f"convert_microduck.py --model {variant}" in str(excinfo.value)
+
+
+def test_backlash_cfg_drives_the_servos_and_leaves_the_play_hinges_free(backlash_native):
+    """The played robot spawns whole and its action space is still the same 14 servos.
+
+    The play hinges are joints nothing drives -- their range *is* the gear teeth -- so the servo
+    group's ``^(?!passive_).*`` expression has to leave all 14 of them out while the articulation
+    keeps all 28 joints.
+    """
+    joint_names = backlash_native["joint_names"]
+    assert backlash_native["num_joints"] == NUM_JOINTS["walk_backlash"]
+    assert set(joint_names) - set(HOME_POSE) == BACKLASH_JOINTS
+
+    driven = [_named_dof(backlash_native, dof) for dof in backlash_native["actuator_dof_indices"]]
+    assert len(driven) == NUM_SERVO_JOINTS * NUM_BACKLASH_ENVS
+    assert {name for _, name in driven} == set(HOME_POSE)
+    assert {env for env, _ in driven} == set(range(NUM_BACKLASH_ENVS))
+
+
+def test_backlash_cfg_binds_every_servo_to_the_play_hinge_in_series_with_it(backlash_native):
+    """All 14 servos find their twin, on the real robot rather than on a two-joint fixture.
+
+    This is the only case that can see a naming drift in the conversion. A servo whose plant carries
+    no ``passive_<servo>_backlash`` hinge is *meant* to take a zero mask and keep the plain servo's
+    behaviour -- that is the model's degrade-to-plain contract -- so a conversion that renamed the
+    hinges would leave every mask at zero and quietly train against the plain plant instead. The
+    twin each servo is actually bound to is asserted too, because the binding indexes the whole
+    model's position array: on a robot whose joint order interleaves the two, an off-by-one stride
+    reads a real angle off the wrong joint.
+    """
+    mask = backlash_native["backlash_mask"]
+    bound = backlash_native["backlash_pos_indices"]
+    driven = backlash_native["actuator_dof_indices"]
+
+    assert len(mask) == len(bound) == NUM_SERVO_JOINTS * NUM_BACKLASH_ENVS
+    assert (mask == 1.0).all(), f"{int((mask == 0.0).sum())} of {len(mask)} servos found no play hinge"
+
+    for servo_dof, encoder_dof in zip(driven, bound):
+        servo_env, servo = _named_dof(backlash_native, servo_dof)
+        encoder_env, encoder = _named_dof(backlash_native, int(encoder_dof))
+        assert encoder == BACKLASH_JOINT_TEMPLATE.format(joint=servo), f"{servo} reads {encoder}"
+        assert encoder_env == servo_env, f"{servo} of environment {servo_env} reads environment {encoder_env}"
+
+    # the play hinges are interleaved with the servos, so neither filling below can pass by accident
+    assert list(bound) != list(range(len(bound)))
+    assert list(bound) != driven
+
+
+def test_backlash_cfg_rests_the_play_hinges_centred(backlash_native):
+    """The servos reset to the home pose and the play hinges to the middle of their range.
+
+    Zero is the only resting angle that leaves the same play available in both directions, and it
+    has to be inside the range rather than on it: a hinge reset onto its own limit starts every
+    episode with a constraint row already pushing back.
+    """
+    default_joint_pos = backlash_native["default_joint_pos"]
+    limits = backlash_native["joint_pos_limits"]
+
+    for index, name in enumerate(backlash_native["joint_names"]):
+        if name in BACKLASH_JOINTS:
+            assert default_joint_pos[index] == pytest.approx(0.0, abs=1e-9), name
+            assert limits[index, 0] == pytest.approx(-BACKLASH_LIMIT_RAD, abs=1e-6), name
+            assert limits[index, 1] == pytest.approx(BACKLASH_LIMIT_RAD, abs=1e-6), name
+        else:
+            assert default_joint_pos[index] == pytest.approx(HOME_POSE[name], abs=1e-6), name
+        assert limits[index, 0] < default_joint_pos[index] < limits[index, 1], name
+
+
+def test_backlash_cfg_comes_to_rest_holding_the_home_pose(backlash_native):
+    """Held at the home pose under load, the played plant stays finite and comes to rest.
+
+    Fourteen hinges riding a two-degree limit is the regime this model adds, and it is the one the
+    port was least sure of: a limit constraint that pumps energy shows up here first. The walking
+    model's own history is that an underdamped joint limit took it non-finite within a few hundred
+    steps, and there are now 14 more limits, all of them active from the first step.
+
+    The hold is *not* asserted to end at the home pose. The teeth start centred, so every limb falls
+    through its dead zone before the gear train picks it up, and a servo whose encoder sits on the
+    far side of that play can end up somewhere else entirely -- which is backlash rather than a
+    defect. What has to hold is that the motion stops.
+    """
+    joint_pos = backlash_native["home_joint_pos"]
+    assert np.isfinite(joint_pos).all()
+
+    quasi_static = joint_pos[-BACKLASH_QUASI_STATIC_STEPS:]
+    drift = np.abs(quasi_static[-1] - quasi_static[0]).max()
+    assert drift < BACKLASH_HOME_DRIFT, f"the pose still drifts by {np.rad2deg(drift):.4f} deg over the last steps"
+
+    # ...and that the hold was not a no-op: the teeth are taken up, so the play hinges did move
+    play = [index for index, name in enumerate(backlash_native["joint_names"]) if name in BACKLASH_JOINTS]
+    assert np.abs(joint_pos[-1][:, play]).max() > 0.5 * BACKLASH_LIMIT_RAD, "no play hinge left its centred rest"
+
+
+def test_the_played_plant_needs_its_own_configuration(backlash_native, usd_articulations):
+    """The played initial state cannot be folded into :data:`MICRODUCK_CFG`, and this is why.
+
+    The reference implementation adds the play hinges' home angle to the one configuration it has
+    and relies on first-match-wins, which costs nothing there. Isaac Lab resolves an initial state
+    strictly: a pattern that matches no joint is an error, so a shared configuration naming the play
+    hinges would stop the three models that do not have them from spawning at all. Both pairings
+    that a task actually uses are asserted to resolve, so this pins the split rather than only the
+    failure it avoids.
+    """
+    plain_joint_names = list(usd_articulations[REFERENCE_MODEL][0].joint_names)
+    played_joint_names = backlash_native["joint_names"]
+
+    for cfg, joint_names in (
+        (MICRODUCK_CFG, plain_joint_names),
+        (MICRODUCK_BACKLASH_CFG, played_joint_names),
+    ):
+        resolve_matching_names_values(cfg.init_state.joint_pos, joint_names)
+
+    with pytest.raises(ValueError, match="Not all regular expressions are matched"):
+        resolve_matching_names_values(MICRODUCK_BACKLASH_CFG.init_state.joint_pos, plain_joint_names)

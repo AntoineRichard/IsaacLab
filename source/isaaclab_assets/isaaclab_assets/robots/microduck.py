@@ -20,6 +20,11 @@ nothing drives:
   rolling wheels. **18 joints**, of which the four wheel hinges are undriven -- and it stands 2.4 cm
   taller than the other two, which its configuration does not know (see its own documentation).
 
+A fourth model twins the walking one: :data:`MICRODUCK_BACKLASH_CFG` splits every servo in two so
+that its gearbox play is a joint of its own. **28 joints**, of which the 14
+``passive_<servo>_backlash`` hinges are undriven, and the only one of the four that needs the
+Newton-native actuator path.
+
 The assets they spawn are converted from the upstream MJCFs and are generated rather than committed;
 see ``ATTRIBUTION.md`` next to :data:`MICRODUCK_USD_PATH` for their provenance and
 ``scripts/tools/convert_microduck.py`` for the conversion.
@@ -30,12 +35,13 @@ directly rather than converted, because its MJCF is a single analytic sphere.
 """
 
 import copy
+import dataclasses
 import os
 
 from pxr import Gf, Usd, UsdPhysics
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg, BamMotorParams
+from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg, BamBacklashActuatorCfg, BamMotorParams
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.assets.rigid_object import RigidObjectCfg
 from isaaclab.sim.spawners.materials import UsdPhysicsRigidBodyMaterialCfg
@@ -54,6 +60,9 @@ MICRODUCK_ALLCOLLISIONS_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_
 
 MICRODUCK_ROLLERS_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_rollers.usd")
 """Path of the converted MicroDuck roller asset."""
+
+MICRODUCK_BACKLASH_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_walk_backlash.usd")
+"""Path of the converted MicroDuck walking asset with the servos' gear play modelled."""
 
 
 def _regenerate_command(usd_path: str) -> str:
@@ -362,6 +371,65 @@ else). Their home position is zero, which is the MJCF's, so they are not listed 
     or re-measures is one decision, taken once, at the task level. This configuration's job is to
     carry the MJCF faithfully; it deliberately does not guess at the answer by fixing one member of
     that group in isolation.
+"""
+
+
+def _microduck_backlash_cfg() -> ArticulationCfg:
+    """Return :data:`MICRODUCK_CFG` respawned from the model whose gear play is a second joint.
+
+    Two things separate this model from the other three, and both of them are why it cannot share
+    their configuration:
+
+    * its 14 play hinges need an initial angle, and Isaac Lab resolves an initial state strictly, so
+      naming them in the shared configuration would stop the models without them from spawning;
+    * its servos read their encoder through those hinges, which is a different servo model.
+
+    Returns:
+        A configuration that is :data:`MICRODUCK_CFG` in every parameter, on the played plant.
+    """
+    cfg = _microduck_variant_cfg(MICRODUCK_BACKLASH_USD_PATH)
+    # The two configurations are the same servo deployment by construction: the backlash model adds
+    # no parameter, so it is built from the fields of the one the other models use rather than from
+    # a second copy of the values.
+    servos = cfg.actuators["servos"]
+    cfg.actuators["servos"] = BamBacklashActuatorCfg(
+        **{field.name: getattr(servos, field.name) for field in dataclasses.fields(servos)}
+    )
+    # The play rests centred, which is the only angle that leaves the same play in both directions.
+    # The key is disjoint from every servo pattern above it: Isaac Lab rejects an initial state whose
+    # patterns overlap, so the reference implementation's first-match-wins ordering is not available.
+    cfg.init_state.joint_pos[".*_backlash"] = 0.0
+    return cfg
+
+
+MICRODUCK_BACKLASH_CFG = _microduck_backlash_cfg()
+"""Configuration for the MicroDuck biped on upstream's gear-backlash model.
+
+The walking robot with each servo's gearbox play modelled explicitly: a ``passive_<servo>_backlash``
+hinge in series with every servo, carrying plus or minus one degree of free travel. The link angle
+is the two summed, and the servo's magnetic encoder sits on the far side of the play, so the
+firmware closes its position loop on the sum -- which is what
+:class:`~isaaclab.actuators.BamBacklashActuatorCfg` adds to the servo group.
+
+**28 joints, still 14 actions.** The play hinges are joints nothing drives: their range *is* the
+gear teeth, and the servo group's ``^(?!passive_).*`` expression -- upstream's own, carried by
+:data:`MICRODUCK_CFG` -- already leaves them out. They are interleaved with the servos in the
+articulation's joint order, so anything that indexes MicroDuck's joints positionally rather than by
+name reads the wrong joint on this model.
+
+.. warning::
+
+    **This configuration runs on the Newton-native actuator path only**
+    (``use_newton_actuators=True`` on MJWarp) and raises anywhere else. Its servo model reads a
+    joint outside its own group, which is something Isaac Lab's actuator loop is not handed; running
+    the plain servo instead would silently drop the play the model exists for.
+
+Everything else is :data:`MICRODUCK_CFG`'s, including the joint dynamics the conversion drops and
+does not restore. In particular there is still no ``friction``, for the reason spelled out there,
+and ``viscous_friction`` is still :data:`MICRODUCK_JOINT_DAMPING` -- a servo property, republished
+by the native controller onto the DOFs the group drives. The play hinges are *not* among those, so
+their own damping is the asset's to carry, and the conversion authors it (``mjc:damping``) together
+with the limit-constraint parameters that make the teeth as stiff as upstream's.
 """
 
 
