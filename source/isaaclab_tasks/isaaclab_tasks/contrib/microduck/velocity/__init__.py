@@ -35,6 +35,20 @@ gym.register(
     },
 )
 
+# The gear-backlash twin of the flat task. It reuses the base velocity runner, as upstream does:
+# the twin is an A/B experiment on the plant, so a different set of hyper-parameters would confound
+# the comparison it exists to make.
+gym.register(
+    id="IsaacContrib-Velocity-Flat-MicroDuck-Backlash",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.backlash_env_cfg:MicroDuckVelocityBacklashFlatEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:MicroDuckPPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
 gym.register(
     id="IsaacContrib-Velocity-Swizzle-MicroDuck",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
