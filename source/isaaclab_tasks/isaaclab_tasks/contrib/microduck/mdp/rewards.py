@@ -46,6 +46,7 @@ from isaaclab.utils.string import resolve_matching_names_values
 
 from . import observations as _observations
 from .events import ball_kick_direction, roulade_roll_state
+from .events import pickplace_latch_state as _pickplace_state
 
 if TYPE_CHECKING:
     from isaaclab.assets import Articulation, RigidObject
@@ -4499,3 +4500,269 @@ def leg_antisymmetry(
     joint_pos = asset.data.joint_pos.torch
     scissor = -torch.abs(joint_pos[:, left_joint_cfg.joint_ids] - joint_pos[:, right_joint_cfg.joint_ids]).mean(dim=-1)
     return _spin_gate(env, command_name, rate_max, accel_end, hold_end, brake_end) * scissor
+
+
+##
+# Pick-and-place (no upstream counterpart; see ``artifacts/microduck/pickplace/DESIGN.md``).
+##
+
+
+def _pickplace_target_pos_w(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """World position [m] of the commanded drop point. Shape is (num_envs, 3)."""
+    return env.command_manager.get_term(command_name).target_pos_w
+
+
+class pickplace_approach_progress(_PotentialProgress):
+    """Reward closing the horizontal distance to the object, and charge opening it, until it is held.
+
+    **Potential-based on purpose** (design document, ruling R-PP7). A Gaussian on the distance would
+    pay a policy for parking near the object for the rest of the episode; a one-step difference pays
+    exactly zero for standing anywhere and sums to zero over any closed path, so the only way to
+    collect it is to actually arrive. Over an episode it telescopes to the net distance closed.
+
+    It falls silent once the object is latched: its job is over at the pick-up, and
+    :class:`pickplace_carry_progress` takes over. Leaving it live would pay the policy a second time
+    for walking back and forth past an object it was already carrying.
+    """
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ) -> torch.Tensor:
+        """Difference the robot-to-object distance against the previous control step.
+
+        Args:
+            env: The environment instance.
+            asset_cfg: The articulation whose root the distance is measured from.
+            object_cfg: The rigid object being approached.
+
+        Returns:
+            The distance [m] closed since the previous step, zero once the object is held. Shape is
+            (num_envs,).
+        """
+        robot: Articulation = env.scene[asset_cfg.name]
+        obj: RigidObject = env.scene[object_cfg.name]
+        distance = torch.linalg.norm(
+            obj.data.root_link_pos_w.torch[:, :2] - robot.data.root_link_pos_w.torch[:, :2], dim=-1
+        )
+        # the potential is advanced whatever the latch state, so that a latch and a later break do
+        # not hand the policy the whole carried distance as one step of progress
+        progress = -self._advance(torch.nan_to_num(distance, nan=0.0, posinf=0.0, neginf=0.0))
+        return torch.where(_pickplace_state(env).latched, torch.zeros_like(progress), progress)
+
+
+class pickplace_carry_progress(_PotentialProgress):
+    """Reward closing the horizontal distance from the object to the drop point, while carrying it.
+
+    The mirror of :class:`pickplace_approach_progress` and potential-based for the same reason. It is
+    gated on the latch rather than on proximity, so an object that rolled to the target on its own --
+    or was kicked there -- earns nothing: this task is carrying, not shooting.
+
+    The potential is advanced on every step whether or not the object is held, so that picking an
+    object up next to the target and putting it down does not bank the distance it travelled while
+    loose.
+    """
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str = "place_target",
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ) -> torch.Tensor:
+        """Difference the object-to-target distance against the previous control step.
+
+        Args:
+            env: The environment instance.
+            command_name: Name of the drop-point command term.
+            object_cfg: The rigid object being carried.
+
+        Returns:
+            The distance [m] closed since the previous step, zero unless the object is held. Shape is
+            (num_envs,).
+        """
+        obj: RigidObject = env.scene[object_cfg.name]
+        target_pos_w = _pickplace_target_pos_w(env, command_name)
+        distance = torch.linalg.norm(obj.data.root_link_pos_w.torch[:, :2] - target_pos_w[:, :2], dim=-1)
+        progress = -self._advance(torch.nan_to_num(distance, nan=0.0, posinf=0.0, neginf=0.0))
+        return torch.where(_pickplace_state(env).latched, progress, torch.zeros_like(progress))
+
+
+def pickplace_carry_hold(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Pay a flat rate for having the object in the mouth, until it has been placed.
+
+    **This term exists because of the reward-hacking audit, not because carrying deserves a
+    subsidy** (design document, ruling R-PP6). :func:`pickplace_mouth_to_object` pays up to its full
+    weight for hovering the mouth at the object and is gated off the moment the object is latched, so
+    a stack without this term makes *refusing to pick the object up* strictly dominant. Its weight
+    must stay above ``mouth_to_object``'s; the environment test asserts that inequality.
+
+    It stops at the placement rather than at the release, so a policy cannot stand next to a
+    correctly placed object collecting it for the rest of the episode.
+
+    Args:
+        env: The environment instance.
+
+    Returns:
+        1.0 while the object is held and 0.0 otherwise. Shape is (num_envs,).
+    """
+    state = _pickplace_state(env)
+    return (state.latched & ~state.succeeded).float()
+
+
+def pickplace_mouth_to_object(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    std: float,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    mouth_offset_b: Sequence[float] = (0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Reward bringing the mouth tip onto the object, until it is held.
+
+    The fine half of the approach: :class:`pickplace_approach_progress` walks the robot to within a
+    body length and this folds the head down the last few centimetres. It is a hover basin by
+    construction -- a policy that never latches collects it forever -- which is priced rather than
+    prevented; see :func:`pickplace_carry_hold`.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the single body the mouth tip is attached to.
+        std: Width [m] of the Gaussian kernel on the mouth-to-object distance.
+        object_cfg: The rigid object being reached for.
+        mouth_offset_b: Mouth-tip position [m] in the carrying body's frame.
+
+    Returns:
+        The reward in ``[0, 1]``. Shape is (num_envs,).
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    mouth_pos_w, _ = _mouth_tip_pose_w(env, asset_cfg, mouth_offset_b)
+    distance = torch.linalg.norm(obj.data.root_link_pos_w.torch - mouth_pos_w, dim=-1)
+    proximity = torch.exp(-((torch.nan_to_num(distance, nan=1e3, posinf=1e3, neginf=1e3) / std) ** 2))
+    return torch.where(_pickplace_state(env).latched, torch.zeros_like(proximity), proximity)
+
+
+def pickplace_mouth_down(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    mouth_axis_b: Sequence[float],
+    std: float,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    mouth_offset_b: Sequence[float] = (0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Reward the mouth pointing at the floor while it is near the object, and charge it pointing up.
+
+    The same signed cosine as the ground-pick task's :func:`mouth_perpendicular_phased`, and signed
+    for the same reason: reaching an object mouth-*up* is a different, useless posture that a term
+    which merely failed to pay would leave the proximity reward free to find.
+
+    Where the ground-pick task gates on a clock, this gates on **proximity to the object**, because
+    this task has no clock -- the phases emerge from the latch rather than being scheduled.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the single body the mouth tip is attached to.
+        mouth_axis_b: The mouth's pointing axis [-] in that body's frame.
+        std: Width [m] of the Gaussian proximity gate on the mouth-to-object distance.
+        object_cfg: The rigid object being reached for.
+        mouth_offset_b: Mouth-tip position [m] in the carrying body's frame.
+
+    Returns:
+        The reward in ``[-1, 1]``. Shape is (num_envs,).
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    mouth_pos_w, body_quat_w = _mouth_tip_pose_w(env, asset_cfg, mouth_offset_b)
+    axis = torch.tensor(tuple(mouth_axis_b), dtype=body_quat_w.dtype, device=body_quat_w.device)
+    axis = torch.nn.functional.normalize(axis, dim=-1).expand(body_quat_w.shape[0], 3)
+    alignment = -math_utils.quat_apply(body_quat_w, axis)[:, 2]
+    distance = torch.linalg.norm(obj.data.root_link_pos_w.torch - mouth_pos_w, dim=-1)
+    gate = torch.exp(-((torch.nan_to_num(distance, nan=1e3, posinf=1e3, neginf=1e3) / std) ** 2))
+    reward = gate * torch.nan_to_num(alignment, nan=0.0, posinf=0.0, neginf=0.0)
+    return torch.where(_pickplace_state(env).latched, torch.zeros_like(reward), reward)
+
+
+def pickplace_object_clearance(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Reward holding the object clear of the ground while carrying it.
+
+    Deliberately weak: dragging the object to the drop point is still a solved task, and a strong
+    lift reward on a 0.13 m robot would ask the head to do something the neck cannot afford during a
+    walk. It exists to break the tie in favour of the carry that looks like a carry.
+
+    Args:
+        env: The environment instance.
+        target_height: Object-centre height [m] above the environment's ground the kernel peaks at.
+        std: Width [m] of the Gaussian kernel on that height.
+        asset_cfg: The rigid object being carried.
+
+    Returns:
+        The reward in ``[0, 1]``, zero unless the object is held. Shape is (num_envs,).
+    """
+    obj: RigidObject = env.scene[asset_cfg.name]
+    height = obj.data.root_link_pos_w.torch[:, 2] - env.scene.env_origins[:, 2]
+    height = torch.nan_to_num(height, nan=1e3, posinf=1e3, neginf=1e3)
+    clearance = torch.exp(-(((height - target_height) / std) ** 2))
+    return torch.where(_pickplace_state(env).latched, clearance, torch.zeros_like(clearance))
+
+
+def pickplace_latch_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Pay once, on the step the mouth closes on the object.
+
+    One-shot rather than a per-step subsidy: holding the object is already paid for by
+    :func:`pickplace_carry_hold`, and a per-step latch reward would be the same term twice.
+
+    Args:
+        env: The environment instance.
+
+    Returns:
+        1.0 on the latch edge and 0.0 elsewhere. Shape is (num_envs,).
+    """
+    return _pickplace_state(env).latch_edge.float()
+
+
+def pickplace_place_success(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Pay once, on the step the object is set down at the drop point.
+
+    The release edge *is* the success edge -- a release cannot fire away from the target -- so this
+    is the task's terminal reward without a termination. It fires at most once per episode because
+    the state machine's ``succeeded`` flag is sticky (design document, ruling R-PP8).
+
+    Args:
+        env: The environment instance.
+
+    Returns:
+        1.0 on the release edge and 0.0 elsewhere. Shape is (num_envs,).
+    """
+    return _pickplace_state(env).release_edge.float()
+
+
+def pickplace_place_precision(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str = "place_target",
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Score how close the object was to the drop point at the moment it was released.
+
+    Evaluated **only** on the release edge, so it cannot be integrated by loitering over the target
+    with the object still in the mouth. Together with :func:`pickplace_place_success` it is the
+    difference between "inside the tolerance" and "on the spot".
+
+    Args:
+        env: The environment instance.
+        std: Width [m] of the Gaussian kernel on the planar placement error.
+        command_name: Name of the drop-point command term.
+        object_cfg: The rigid object that was placed.
+
+    Returns:
+        The reward in ``[0, 1]``, zero on every step but the release. Shape is (num_envs,).
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    target_pos_w = _pickplace_target_pos_w(env, command_name)
+    error = torch.linalg.norm(obj.data.root_link_pos_w.torch[:, :2] - target_pos_w[:, :2], dim=-1)
+    precision = torch.exp(-((torch.nan_to_num(error, nan=1e3, posinf=1e3, neginf=1e3) / std) ** 2))
+    return _pickplace_state(env).release_edge.float() * precision

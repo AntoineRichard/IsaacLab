@@ -28,7 +28,7 @@ from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.utils.buffers import CircularBuffer
 from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_from_angle_axis
 
-from .events import encoder_bias
+from .events import encoder_bias, pickplace_latch_state
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -496,8 +496,68 @@ def foot_height_safe(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg) -> torch.T
 
 
 """
-Ball state, for the ball-kick critic.
+Free-body state in the robot's frame: the ball-kick critic's, and the pick-and-place actor's.
 """
+
+
+def object_pos_in_base(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Position of a free rigid body relative to the robot base, in the base frame.
+
+    Ported from addendum section 6.4 (``ball_pos_in_base``), and generalized over the entity name
+    because two tasks read the same quantity of two different props. There is no stock counterpart --
+    the closest, :func:`isaaclab.envs.mdp.object_pos_in_robot_root_frame`, resolves the robot through
+    a different entity convention and is written for the manipulation tasks.
+
+    The rotation is the full base orientation rather than a yaw-only one, as upstream's is, so a
+    tilted robot's reading tilts with it. That is also the frame a camera bolted to the robot would
+    report in, which is why the pick-and-place task can put this term in its **actor** group and
+    swap it for a perception term later without reshaping anything else.
+
+    The read is guarded against non-finite values where upstream's is not. No MicroDuck task
+    NaN-checks a free body -- every termination reads the robot only -- so an object the solver had
+    ejected would otherwise reach the learner through this term and nothing else.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The rigid object to locate.
+        robot_cfg: The articulation whose root link frame the position is expressed in.
+
+    Returns:
+        The object position [m] in the base frame. Shape is (num_envs, 3).
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[asset_cfg.name]
+    relative_pos_w = obj.data.root_link_pos_w.torch - robot.data.root_link_pos_w.torch
+    return _finite(quat_apply_inverse(robot.data.root_link_quat_w.torch, relative_pos_w))
+
+
+def object_vel_in_base(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Linear velocity of a free rigid body, in the robot base frame.
+
+    Ported from addendum section 6.4 (``ball_vel_in_base``), and generalized alongside
+    :func:`object_pos_in_base`. Upstream rotates the body's *world* velocity into the base frame
+    without subtracting the base's own velocity, so a robot walking toward a stationary object reads
+    a zero object velocity rather than a closing one; that is reproduced.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The rigid object whose linear velocity is read.
+        robot_cfg: The articulation whose root link frame the velocity is expressed in.
+
+    Returns:
+        The object velocity [m/s] in the base frame. Shape is (num_envs, 3).
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[asset_cfg.name]
+    return _finite(quat_apply_inverse(robot.data.root_link_quat_w.torch, obj.data.root_link_lin_vel_w.torch))
 
 
 def ball_pos_in_base(
@@ -507,18 +567,10 @@ def ball_pos_in_base(
 ) -> torch.Tensor:
     """Position of the ball relative to the robot base, in the base frame.
 
-    Ported from addendum section 6.4 (``ball_pos_in_base``). This is a **privileged** observation:
-    the deployed robot has no ball sensing at all, so it is written to the critic group only and the
-    actor stays blind to the ball. There is no stock counterpart -- the closest,
-    :func:`isaaclab.envs.mdp.object_pos_in_robot_root_frame`, resolves the robot through a different
-    entity convention and is written for the manipulation tasks.
-
-    The rotation is the full base orientation rather than a yaw-only one, as upstream's is, so a
-    tilted robot's reading tilts with it.
-
-    Both ball terms are guarded against non-finite reads where upstream's are not. Nothing in the
-    ball-kick task NaN-checks the ball -- its termination reads the robot only -- so a free body the
-    solver had ejected would otherwise reach the learner through these two terms and nothing else.
+    The ball-kick task's named entry point into :func:`object_pos_in_base`, differing only in which
+    scene entity it defaults to. It is a **privileged** observation there: the deployed robot has no
+    ball sensing at all, so it is written to the critic group only and the actor stays blind to the
+    ball.
 
     Args:
         env: The environment instance.
@@ -528,10 +580,7 @@ def ball_pos_in_base(
     Returns:
         The ball position [m] in the base frame. Shape is (num_envs, 3).
     """
-    robot: Articulation = env.scene[robot_cfg.name]
-    ball: RigidObject = env.scene[asset_cfg.name]
-    relative_pos_w = ball.data.root_link_pos_w.torch - robot.data.root_link_pos_w.torch
-    return _finite(quat_apply_inverse(robot.data.root_link_quat_w.torch, relative_pos_w))
+    return object_pos_in_base(env, asset_cfg, robot_cfg)
 
 
 def ball_vel_in_base(
@@ -541,10 +590,8 @@ def ball_vel_in_base(
 ) -> torch.Tensor:
     """Linear velocity of the ball, in the robot base frame.
 
-    Ported from addendum section 6.4 (``ball_vel_in_base``). Privileged, for the same reason as
-    :func:`ball_pos_in_base`. Upstream rotates the ball's *world* velocity into the base frame
-    without subtracting the base's own velocity, so a robot walking toward a stationary ball reads a
-    zero ball velocity rather than a closing one; that is reproduced.
+    The ball-kick task's named entry point into :func:`object_vel_in_base`. Privileged, for the same
+    reason as :func:`ball_pos_in_base`.
 
     Args:
         env: The environment instance.
@@ -554,6 +601,80 @@ def ball_vel_in_base(
     Returns:
         The ball velocity [m/s] in the base frame. Shape is (num_envs, 3).
     """
-    robot: Articulation = env.scene[robot_cfg.name]
-    ball: RigidObject = env.scene[asset_cfg.name]
-    return _finite(quat_apply_inverse(robot.data.root_link_quat_w.torch, ball.data.root_link_lin_vel_w.torch))
+    return object_vel_in_base(env, asset_cfg, robot_cfg)
+
+
+"""
+Pick-and-place latch state.
+"""
+
+
+def mouth_to_object_in_base(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    mouth_offset_b: Sequence[float] = (0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Offset from the mouth tip to the object centre, in the robot base frame.
+
+    The latch geometry, so the value function can see a latch coming rather than having to infer it
+    from the object position and the joint angles. Privileged: it is the critic's, not the actor's,
+    because the actor is supposed to work this out from :func:`object_pos_in_base` and its own
+    proprioception, exactly as it will have to in v2 with a camera.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: The articulation and the single body the mouth tip is rigidly attached to.
+        object_cfg: The rigid object being reached for.
+        mouth_offset_b: Mouth-tip position [m] in that body's frame. Defaults to the body origin.
+
+    Returns:
+        The mouth-to-object offset [m] in the base frame. Shape is (num_envs, 3).
+
+    Raises:
+        ValueError: If ``asset_cfg`` does not select exactly one body.
+    """
+    robot: Articulation = env.scene[asset_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    if asset_cfg.body_names is None or len(asset_cfg.body_ids) != 1:
+        raise ValueError(
+            "The mouth-to-object offset measures one body the mouth tip is attached to; 'asset_cfg'"
+            f" must select exactly one by name. Received: {asset_cfg.body_names}."
+        )
+    body_pos_w = robot.data.body_link_pos_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    body_quat_w = robot.data.body_link_quat_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    offset = torch.tensor(tuple(mouth_offset_b), dtype=body_pos_w.dtype, device=body_pos_w.device)
+    mouth_pos_w = body_pos_w + quat_apply(body_quat_w, offset.expand_as(body_pos_w))
+    relative_pos_w = obj.data.root_link_pos_w.torch - mouth_pos_w
+    return _finite(quat_apply_inverse(robot.data.root_link_quat_w.torch, relative_pos_w))
+
+
+def pickplace_latched_flag(env: ManagerBasedEnv) -> torch.Tensor:
+    """Whether the mouth is currently holding the object, as a single observation column.
+
+    An **actor** observation, and legitimately so on a task whose other two non-proprioceptive rows
+    are a camera percept and a command: the latch is the robot's own controller state, so a deployed
+    runtime knows it without sensing anything.
+
+    Args:
+        env: The environment instance.
+
+    Returns:
+        1.0 where the object is held and 0.0 elsewhere. Shape is (num_envs, 1).
+    """
+    return pickplace_latch_state(env).latched.float().unsqueeze(-1)
+
+
+def pickplace_succeeded_flag(env: ManagerBasedEnv) -> torch.Tensor:
+    """Whether the object has already been placed this episode, as a single observation column.
+
+    Privileged, unlike :func:`pickplace_latched_flag`: it is episode bookkeeping rather than
+    controller state, and the actor has no business conditioning on it.
+
+    Args:
+        env: The environment instance.
+
+    Returns:
+        1.0 where the episode has succeeded and 0.0 elsewhere. Shape is (num_envs, 1).
+    """
+    return pickplace_latch_state(env).succeeded.float().unsqueeze(-1)

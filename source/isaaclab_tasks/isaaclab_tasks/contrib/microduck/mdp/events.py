@@ -994,3 +994,301 @@ def apply_mouth_payload_force(
         env_ids=env_ids,
         is_global=True,
     )
+
+
+class PickPlaceLatchState:
+    """Per-environment bookkeeping of the pick-and-place task's mouth latch.
+
+    Four boolean vectors, allocated once and shared: the two *states* survive across control steps,
+    and the two *edges* are rewritten every step by :func:`update_pickplace_latch` and consumed by
+    the one-shot rewards in the same step. Keeping them in one object rather than in four separate
+    lazily-allocated tensors is what makes the transition order in
+    :func:`update_pickplace_latch` a single, auditable place.
+
+    This task has no upstream counterpart; see ``artifacts/microduck/pickplace/DESIGN.md`` §1 for
+    the transition table these fields implement and the rulings behind it.
+    """
+
+    def __init__(self, num_envs: int, device: str) -> None:
+        """Allocate the four vectors, all false.
+
+        Args:
+            num_envs: Number of environments.
+            device: Device the environment's tensors live on.
+        """
+        self.latched = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        """Whether the mouth is currently holding the object. Shape is (num_envs,)."""
+
+        self.succeeded = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        """Whether the object has already been placed this episode. Shape is (num_envs,).
+
+        **Sticky**: nothing clears it before the episode ends. It gates the latch edge and both
+        one-shot place rewards, which is what stops a policy from farming them by picking the object
+        back up (design document, ruling R-PP8).
+        """
+
+        self.latch_edge = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        """Whether the latch formed on this control step. Shape is (num_envs,)."""
+
+        self.release_edge = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        """Whether the object was released at the target on this control step. Shape is (num_envs,).
+
+        This is the success edge: a release cannot fire away from the target, so the two are the same
+        event seen from the state machine and from the reward stack.
+        """
+
+
+_PICKPLACE_STATE_ATTR = "_microduck_pickplace_state"
+"""Attribute the pick-and-place latch bookkeeping is cached under on the environment."""
+
+
+def pickplace_latch_state(env: ManagerBasedEnv) -> PickPlaceLatchState:
+    """The shared pick-and-place latch state, allocated on first use.
+
+    Lazily allocated and cached on the environment, as the encoder bias and the ground-pick payload
+    are: the interval event that drives the latch, the reset event that clears it, the two
+    observations that report it and the six rewards that gate on it are eight different terms that
+    have to address one set of buffers.
+
+    Args:
+        env: The environment the latch is bookkept for.
+
+    Returns:
+        The shared state. The same object on every call for a given environment.
+    """
+    state: PickPlaceLatchState | None = getattr(env, _PICKPLACE_STATE_ATTR, None)
+    if state is None:
+        state = PickPlaceLatchState(env.num_envs, env.device)
+        setattr(env, _PICKPLACE_STATE_ATTR, state)
+    return state
+
+
+def reset_pickplace_latch(env: ManagerBasedEnv, env_ids: torch.Tensor | None) -> None:
+    """Drop whatever the mouth was holding and forget whether the episode had succeeded.
+
+    Must be declared **after** the event that re-places the object: a latch that survived the
+    placement would spring-load the object back toward a mouth it is no longer near, and the first
+    step of the new episode would break it with a 2 N jerk on the head.
+
+    Args:
+        env: The environment instance.
+        env_ids: Environments to clear. None clears every environment.
+    """
+    state = pickplace_latch_state(env)
+    index = slice(None) if env_ids is None else env_ids
+    state.latched[index] = False
+    state.succeeded[index] = False
+    state.latch_edge[index] = False
+    state.release_edge[index] = False
+
+
+def reset_object_in_reach(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    distance_range: tuple[float, float],
+    bearing_range: tuple[float, float],
+    object_radius: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Set the object down in front of the robot, at a drawn distance and bearing in its yaw frame.
+
+    A polar draw rather than the ball-kick task's fixed offset with box noise
+    (:func:`reset_ball_in_front_of_foot`): the pick-and-place curriculum widens an annulus and a
+    bearing wedge together, which a box cannot express. The yaw frame is shared with that term and is
+    load-bearing for the same reason -- the ground-state reset draws a uniformly random heading, so a
+    world-frame offset would put the object behind the robot on half the episodes.
+
+    The object is set down at rest, exactly touching the ground, with an identity orientation.
+
+    This term reads the robot's root pose, so it must run **after** every reset event that writes it.
+    Isaac Lab fires reset events in configuration declaration order.
+
+    Args:
+        env: The environment holding the two assets.
+        env_ids: The environments to reset. Defaults to None, which resets all of them.
+        distance_range: ``(low, high)`` distance [m] from the robot root to the object centre.
+        bearing_range: ``(low, high)`` bearing [rad] of the object from the robot's heading. Zero is
+            straight ahead and positive is to its left.
+        object_radius: Radius [m] of the object, which is how high its centre is set above the
+            ground.
+        asset_cfg: The rigid object to place.
+        robot_cfg: The articulation whose root pose the placement is measured from.
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    num_resets = len(env_ids)
+    if num_resets == 0:
+        return
+
+    robot: Articulation = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[asset_cfg.name]
+
+    root_pos = robot.data.root_link_pos_w.torch[env_ids]
+    quat = robot.data.root_link_quat_w.torch[env_ids]
+    # Isaac Lab quaternions are (x, y, z, w) -- scalar last. Reading the scalar from slot 0 instead
+    # yields a plausible-looking yaw that is simply wrong; see the design document's erratum E-1.
+    qx, qy, qz, qw = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    yaw = torch.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+
+    scale = torch.rand(num_resets, 2, device=env.device)
+    distance = distance_range[0] + scale[:, 0] * (distance_range[1] - distance_range[0])
+    bearing = bearing_range[0] + scale[:, 1] * (bearing_range[1] - bearing_range[0])
+    heading = yaw + bearing
+
+    pose = torch.zeros(num_resets, 7, device=env.device, dtype=root_pos.dtype)
+    pose[:, 0] = root_pos[:, 0] + distance * torch.cos(heading)
+    pose[:, 1] = root_pos[:, 1] + distance * torch.sin(heading)
+    pose[:, 2] = env.scene.env_origins[env_ids, 2] + object_radius
+    pose[:, 6] = 1.0  # (x, y, z, w) identity
+    obj.write_root_link_pose_to_sim_index(root_pose=pose, env_ids=env_ids)
+    obj.write_root_com_velocity_to_sim_index(
+        root_velocity=torch.zeros(num_resets, 6, device=env.device, dtype=root_pos.dtype), env_ids=env_ids
+    )
+
+
+def update_pickplace_latch(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    command_name: str,
+    mouth_offset_b: Sequence[float],
+    mouth_axis_b: Sequence[float],
+    hold_distance: float,
+    latch_radius: float,
+    max_rel_speed: float,
+    stiffness: float,
+    damping: float,
+    break_force: float,
+    place_tolerance: float,
+    place_max_height: float,
+) -> None:
+    """Advance the mouth latch by one control step and write the wrenches it implies.
+
+    This is the whole of the task's "take it, carry it, put it down" mechanism (design document
+    ruling R-PP1). The mouth is not a gripper -- there is no actuated jaw close on this robot -- so
+    what holds the object is a **compliant virtual weld**: while latched, a three-degree-of-freedom
+    spring-damper pulls the object toward an anchor rigidly attached to the mouth, and the *equal and
+    opposite* wrench is written onto the mouth's body. The object stays a fully dynamic rigid body
+    throughout, so the robot genuinely carries its weight and its inertia; a kinematically slaved
+    object would move correctly and weigh nothing.
+
+    The transitions are evaluated in a fixed order and the order is behaviour:
+
+    1. **break** -- a latch whose spring would need more than ``break_force`` gives way. The grip is
+       force-*limited*, not force-clamped, because a clamped constraint is a winch: it would let the
+       policy drag the object through geometry (ruling R-PP2).
+    2. **release** -- a still-latched object inside ``place_tolerance`` of the commanded target and
+       below ``place_max_height`` is set down. This edge is the success edge; ``succeeded`` is sticky
+       for the rest of the episode.
+    3. **latch** -- an unlatched object within ``latch_radius`` of the mouth tip and moving slowly
+       relative to it is picked up, unless the episode has already succeeded.
+
+    Evaluating the break before the latch is what stops a break from being a no-op: an object that
+    was torn loose is still inside the latch radius on that step, so a latch evaluated first would
+    immediately re-form it.
+
+    Note:
+        Registered as an **interval event on a zero-width interval**, which fires every control step
+        for every environment. That is where Isaac Lab writes state, and it is the same placement --
+        and the same reasoning -- as the ground-pick task's :func:`apply_mouth_payload_force`: a
+        load-bearing physics hook parked in the reward stack is the thing a later cleanup deletes.
+        The two terms write the same body's wrench buffer with ``set_forces_and_torques_index``, so
+        no task may configure both.
+
+    Args:
+        env: The environment holding the robot and the object.
+        env_ids: Environments to advance. None advances every environment.
+        asset_cfg: The articulation and the single body the mouth tip is rigidly attached to.
+        object_cfg: The rigid object being picked up.
+        command_name: Name of the :class:`~isaaclab_tasks.contrib.microduck.mdp.commands.
+            PickPlaceTargetCommand` term the drop point is read from.
+        mouth_offset_b: Mouth-tip position [m] in the carrying body's frame.
+        mouth_axis_b: The mouth's pointing direction [-] in that body's frame.
+        hold_distance: Distance [m] from the mouth tip to the object centre the spring holds at,
+            measured along the mouth axis. It is the object's radius plus a standoff, so a held
+            object rests against the jaw rather than being pulled into it.
+        latch_radius: Mouth-tip-to-centre distance [m] within which the object can be picked up.
+        max_rel_speed: Relative speed [m/s] above which the object is moving too fast to be caught.
+        stiffness: Spring constant [N/m] of the virtual weld.
+        damping: Damping coefficient [N·s/m] of the virtual weld.
+        break_force: Force magnitude [N] above which the grip gives way.
+        place_tolerance: Planar distance [m] from the target within which the object is released.
+        place_max_height: Object centre height [m] above the environment's ground below which the
+            release may fire, so that placing is setting down rather than dropping.
+
+    Raises:
+        ValueError: If ``asset_cfg`` does not select exactly one body.
+    """
+    robot: Articulation = env.scene[asset_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    if asset_cfg.body_names is None or len(asset_cfg.body_ids) != 1:
+        raise ValueError(
+            "The latch measures one body the mouth tip is attached to; 'asset_cfg' must select"
+            f" exactly one by name. Received: {asset_cfg.body_names}."
+        )
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+
+    state = pickplace_latch_state(env)
+
+    body_pos_w = robot.data.body_link_pos_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    body_quat_w = robot.data.body_link_quat_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    body_lin_vel_w = robot.data.body_link_lin_vel_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    body_ang_vel_w = robot.data.body_link_ang_vel_w.torch[:, asset_cfg.body_ids].squeeze(1)
+
+    offset = torch.tensor(tuple(mouth_offset_b), dtype=body_pos_w.dtype, device=body_pos_w.device)
+    mouth_pos_w = body_pos_w + quat_apply(body_quat_w, offset.expand_as(body_pos_w))
+    axis = torch.tensor(tuple(mouth_axis_b), dtype=body_pos_w.dtype, device=body_pos_w.device)
+    axis_w = quat_apply(body_quat_w, torch.nn.functional.normalize(axis, dim=-1).expand_as(body_pos_w))
+
+    # The point the spring pulls from: one hold distance out along the mouth axis, so the object's
+    # surface sits just off the jaw shell rather than inside it.
+    anchor_pos_w = mouth_pos_w + hold_distance * axis_w
+    anchor_vel_w = body_lin_vel_w + torch.linalg.cross(body_ang_vel_w, anchor_pos_w - body_pos_w)
+
+    object_pos_w = obj.data.root_link_pos_w.torch
+    object_vel_w = obj.data.root_link_lin_vel_w.torch
+
+    spring = stiffness * (anchor_pos_w - object_pos_w) - damping * (object_vel_w - anchor_vel_w)
+    spring = torch.nan_to_num(spring, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # 1. break
+    overloaded = state.latched & (torch.linalg.norm(spring, dim=-1) > break_force)
+    state.latched &= ~overloaded
+
+    # 2. release, which is also the success edge
+    target_pos_w = env.command_manager.get_term(command_name).target_pos_w
+    place_error = torch.linalg.norm(object_pos_w[:, :2] - target_pos_w[:, :2], dim=-1)
+    object_height = object_pos_w[:, 2] - env.scene.env_origins[:, 2]
+    released = state.latched & (place_error < place_tolerance) & (object_height < place_max_height)
+    state.latched &= ~released
+    state.succeeded |= released
+    state.release_edge = released
+
+    # 3. latch
+    reach = torch.linalg.norm(object_pos_w - mouth_pos_w, dim=-1)
+    closing_speed = torch.linalg.norm(object_vel_w - anchor_vel_w, dim=-1)
+    # ``~overloaded`` is what makes a break mean something: an object that has just been torn loose
+    # is still inside the latch radius on the step it comes off, so without it the grip limit would
+    # be a no-op. A release needs no such guard -- it sets ``succeeded``, which already gates this.
+    caught = ~state.latched & ~state.succeeded & ~overloaded & (reach < latch_radius) & (closing_speed < max_rel_speed)
+    state.latched |= caught
+    state.latch_edge = caught
+
+    forces = torch.where(state.latched.unsqueeze(-1), spring, torch.zeros_like(spring))
+    # The object's half acts at its centre of mass, which is the point the spring is anchored to, so
+    # the two wrenches share a line of action and the pair adds no net torque to the scene.
+    obj.permanent_wrench_composer.set_forces_and_torques_index(
+        forces=forces[env_ids].unsqueeze(1),
+        env_ids=env_ids,
+        is_global=True,
+    )
+    robot.permanent_wrench_composer.set_forces_and_torques_index(
+        forces=-forces[env_ids].unsqueeze(1),
+        positions=anchor_pos_w[env_ids].unsqueeze(1),
+        body_ids=asset_cfg.body_ids,
+        env_ids=env_ids,
+        is_global=True,
+    )

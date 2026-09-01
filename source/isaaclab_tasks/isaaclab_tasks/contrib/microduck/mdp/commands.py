@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import MISSING
 from typing import TYPE_CHECKING
 
 import torch
 
+import isaaclab.sim as sim_utils
 from isaaclab.envs.mdp.commands import UniformVelocityCommand
 from isaaclab.envs.mdp.commands.commands_cfg import UniformVelocityCommandCfg
 from isaaclab.managers import CommandTerm, CommandTermCfg
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.utils import math as math_utils
 from isaaclab.utils.configclass import configclass
 
@@ -636,4 +639,175 @@ class GroundPickPhaseCommandCfg(UniformVelocityCommandCfg):
     Upstream's default and the ground-pick task's value, so that environments do not oscillate in
     lockstep. Its two roller trick tasks pass False instead, because their deployed cycle starts from
     a standing button press.
+    """
+
+
+_PICKPLACE_TARGET_MARKER_CFG = VisualizationMarkersCfg(
+    prim_path="/Visuals/Command/pickplace_target",
+    markers={
+        "target": sim_utils.SphereCfg(
+            radius=0.02,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.9, 0.2)),
+        ),
+    },
+)
+"""Marker drawn at the pick-and-place drop point.
+
+The stock :data:`~isaaclab.markers.config.SPHERE_MARKER_CFG` is 0.05 m across, which on a 0.13 m
+robot would hide both the object and the head that has to reach it; this is a fifth of that.
+"""
+
+
+class PickPlaceTargetCommand(CommandTerm):
+    """Where the pick-and-place task is asked to put the object down.
+
+    A drop point drawn once per episode in polar coordinates -- a distance and a bearing -- around
+    the object's own spawn, in the robot's reset yaw frame. It is published to the policy as the
+    offset from the robot base to that point, expressed in the **base frame**, which is what makes
+    it a live command: it rotates as the robot turns, so a policy that walks past the target sees the
+    goal move behind it.
+
+    Drawing around the object rather than around the robot is what keeps the carry length under
+    control independently of the approach length; the two are separate curriculum stages
+    (``artifacts/microduck/pickplace/DESIGN.md`` §5.7).
+
+    The polar frame is the robot's reset yaw for the same reason the object placement uses it: the
+    ground-state reset spawns the robot at a uniformly random heading, so a world-frame bearing
+    would mean nothing.
+
+    Note:
+        This term reads the object's **placed** pose, which works because Isaac Lab applies reset
+        *events* before it resets the command manager (:meth:`~isaaclab.envs.ManagerBasedRLEnv.
+        _reset_idx`). That ordering is behaviour, not housekeeping: a command manager that resampled
+        first would scatter the drop points around wherever the object had been left by the previous
+        episode.
+
+    There are no metrics: the placement error is scored by the reward stack on the release edge, and
+    a per-step error metric would report a distance nothing is tracking for most of the episode.
+    """
+
+    cfg: PickPlaceTargetCommandCfg
+    """Configuration for the command term."""
+
+    def __init__(self, cfg: PickPlaceTargetCommandCfg, env: ManagerBasedRLEnv):
+        """Initialize the command term.
+
+        Args:
+            cfg: The configuration parameters for the command term.
+            env: The environment object.
+        """
+        super().__init__(cfg, env)
+
+        self.robot = env.scene[cfg.asset_name]
+        self.object = env.scene[cfg.object_name]
+
+        self._target_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._command = torch.zeros(self.num_envs, 3, device=self.device)
+
+    def __str__(self) -> str:
+        msg = "PickPlaceTargetCommand:\n"
+        msg += f"\tCommand dimension: {tuple(self.command.shape[1:])}\n"
+        msg += f"\tDistance range: {self.cfg.ranges[0]} m\n"
+        msg += f"\tBearing range: {self.cfg.ranges[1]} rad\n"
+        return msg
+
+    """
+    Properties
+    """
+
+    @property
+    def command(self) -> torch.Tensor:
+        """Offset [m] from the robot base to the drop point, in the base frame. Shape is (num_envs, 3)."""
+        return self._command
+
+    @property
+    def target_pos_w(self) -> torch.Tensor:
+        """The drop point [m] in world coordinates. Shape is (num_envs, 3).
+
+        The latch state machine and the two place rewards read this rather than un-rotating
+        :attr:`command`, because they compare it against world-frame object positions and the round
+        trip would only lose precision.
+        """
+        return self._target_pos_w
+
+    """
+    Implementation specific functions.
+    """
+
+    def _update_metrics(self):
+        pass
+
+    def _update_command(self):
+        self._command = math_utils.quat_apply_inverse(
+            self.robot.data.root_link_quat_w.torch, self._target_pos_w - self.robot.data.root_link_pos_w.torch
+        )
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        num_envs = len(env_ids)
+        if num_envs == 0:
+            return
+        # a curriculum that reshaped the tuple would silently leave one axis holding its last draw
+        assert len(self.cfg.ranges) == 2, (
+            "The drop point is drawn in polar coordinates, so the configuration lists exactly two"
+            f" ranges -- distance then bearing. Received {len(self.cfg.ranges)}."
+        )
+
+        quat = self.robot.data.root_link_quat_w.torch[env_ids]
+        # Isaac Lab quaternions are (x, y, z, w) -- scalar last; see the design document's erratum E-1
+        qx, qy, qz, qw = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+        yaw = torch.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+
+        scale = torch.rand(num_envs, 2, device=self.device)
+        (dist_low, dist_high), (bearing_low, bearing_high) = self.cfg.ranges
+        distance = dist_low + scale[:, 0] * (dist_high - dist_low)
+        heading = yaw + bearing_low + scale[:, 1] * (bearing_high - bearing_low)
+
+        object_pos_w = self.object.data.root_link_pos_w.torch[env_ids]
+        self._target_pos_w[env_ids, 0] = object_pos_w[:, 0] + distance * torch.cos(heading)
+        self._target_pos_w[env_ids, 1] = object_pos_w[:, 1] + distance * torch.sin(heading)
+        # the drop point is on the ground, at the height the object's centre rests at
+        self._target_pos_w[env_ids, 2] = object_pos_w[:, 2]
+
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        if debug_vis:
+            if not hasattr(self, "target_visualizer"):
+                self.target_visualizer = VisualizationMarkers(self.cfg.target_visualizer_cfg)
+            self.target_visualizer.set_visibility(True)
+        elif hasattr(self, "target_visualizer"):
+            self.target_visualizer.set_visibility(False)
+
+    def _debug_vis_callback(self, event):
+        self.target_visualizer.visualize(translations=self._target_pos_w)
+
+
+@configclass
+class PickPlaceTargetCommandCfg(CommandTermCfg):
+    """Configuration for the pick-and-place drop-point command term.
+
+    Please refer to the :class:`PickPlaceTargetCommand` class for more details.
+    """
+
+    class_type: type[PickPlaceTargetCommand] = PickPlaceTargetCommand
+
+    asset_name: str = MISSING
+    """Name of the articulation the drop point is expressed relative to."""
+
+    object_name: str = "object"
+    """Name of the rigid object the drop point is drawn around. Defaults to ``"object"``."""
+
+    ranges: tuple[tuple[float, float], ...] = ((0.15, 0.35), (-math.pi, math.pi))
+    """``(low, high)`` for the distance [m] and then the bearing [rad] of the drop point.
+
+    Deliberately the same *shape* as :attr:`UniformPoseDeltaCommandCfg.ranges`, so that the family's
+    existing :func:`~isaaclab_tasks.contrib.microduck.mdp.curriculums.command_range_stages` term
+    widens it without needing a task-specific twin. Left as a plain tuple for the same reason: a
+    curriculum reassigns it wholesale.
+    """
+
+    target_visualizer_cfg: VisualizationMarkersCfg = _PICKPLACE_TARGET_MARKER_CFG
+    """Marker drawn at the drop point when ``debug_vis`` is on.
+
+    Only the position is visualized; the drop point carries no orientation. It exists for the demo
+    captures (``artifacts/microduck/VIDEO_COMMANDS.md``), where a target the viewer cannot see makes
+    a successful placement indistinguishable from a dropped object.
     """
