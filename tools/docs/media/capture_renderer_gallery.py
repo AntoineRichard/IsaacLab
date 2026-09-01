@@ -78,11 +78,79 @@ def snapshot_camera_tensor(data: Any) -> Any:
     return data.detach().to(device="cpu", copy=True)
 
 
+def motion_vectors_to_image(data: Any) -> Any:
+    """Colorize motion vectors and overlay sparse image-space direction arrows."""
+    import numpy as np
+    import torch
+    from PIL import Image, ImageDraw
+
+    data = snapshot_camera_tensor(data)
+    uv = data[..., :2].float()
+    raw_magnitude = torch.linalg.vector_norm(uv, dim=-1)
+    max_magnitude = max(float(raw_magnitude.quantile(0.99)), 1.0e-6)
+    normalized_uv = (uv / max_magnitude).clamp(-1.0, 1.0)
+    normalized_magnitude = torch.linalg.vector_norm(normalized_uv, dim=-1).clamp(0.0, 1.0)
+    array = (
+        torch.cat(((normalized_uv + 1.0) * 0.5, normalized_magnitude.unsqueeze(-1)), dim=-1)
+        .mul(255)
+        .to(torch.uint8)
+        .numpy()
+    )
+    image = Image.fromarray(np.ascontiguousarray(array).copy(), mode="RGB")
+    draw = ImageDraw.Draw(image)
+
+    uv_array = normalized_uv.numpy()
+    magnitude_array = normalized_magnitude.numpy()
+    height, width = magnitude_array.shape
+    grid_spacing = max(min(height, width) // 10, 16)
+    arrow_length = grid_spacing * 0.45
+    head_length = max(grid_spacing * 0.18, 4.0)
+
+    for cell_y in range(0, height, grid_spacing):
+        for cell_x in range(0, width, grid_spacing):
+            cell = magnitude_array[
+                cell_y : min(cell_y + grid_spacing, height),
+                cell_x : min(cell_x + grid_spacing, width),
+            ]
+            if cell.size == 0 or float(cell.max()) < 0.08:
+                continue
+            local_y, local_x = np.unravel_index(int(cell.argmax()), cell.shape)
+            y = cell_y + int(local_y)
+            x = cell_x + int(local_x)
+            direction = uv_array[y, x].copy()
+            # Image-space v points up, while raster screen y points down.
+            direction[1] *= -1.0
+            direction_length = float(np.linalg.norm(direction))
+            if direction_length < 1.0e-6:
+                continue
+
+            unit = direction / direction_length
+            end = np.array((x, y), dtype=np.float32) + unit * arrow_length * float(magnitude_array[y, x])
+            start_xy = (float(x), float(y))
+            end_xy = (float(end[0]), float(end[1]))
+            draw.line((start_xy, end_xy), fill=(0, 0, 0), width=4)
+            draw.line((start_xy, end_xy), fill=(255, 255, 255), width=2)
+
+            perpendicular = np.array((-unit[1], unit[0]), dtype=np.float32)
+            head_base = end - unit * head_length
+            head_half_width = head_length * 0.55
+            draw.polygon(
+                (
+                    end_xy,
+                    tuple(head_base + perpendicular * head_half_width),
+                    tuple(head_base - perpendicular * head_half_width),
+                ),
+                fill=(255, 255, 255),
+            )
+
+    return image
+
+
 def thumbnail_frame_index(frame_count: int) -> int:
-    """Select the third captured frame so temporal outputs have motion history."""
-    if frame_count < 3:
-        raise ValueError("At least three animation frames are required to capture thumbnails.")
-    return 2
+    """Select the sixth captured frame so temporal outputs have useful motion history."""
+    if frame_count < 6:
+        raise ValueError("At least six animation frames are required to capture thumbnails.")
+    return 5
 
 
 def renderer_requires_kit(renderer: str) -> bool:
@@ -129,8 +197,8 @@ def _parse_args() -> argparse.Namespace:
         parser.error(f"Scene does not exist: {args.scene}")
     if args.width < 1 or args.height < 1:
         parser.error("Image width and height must be positive.")
-    if args.frames < 3:
-        parser.error("At least three animation frames are required.")
+    if args.frames < 6:
+        parser.error("At least six animation frames are required.")
     if args.physics_steps_per_frame < 1:
         parser.error("Physics steps per frame must be positive.")
     if args.warmup_steps < 0:
@@ -261,11 +329,7 @@ def _capture(args: argparse.Namespace) -> None:
             else:
                 array = CameraFrameColorizer.colorize(data, "segmentation")
         elif output_name == "motion_vectors":
-            uv = data[..., :2].float()
-            max_magnitude = max(float(uv.abs().quantile(0.99)), 1.0e-6)
-            uv = (uv / max_magnitude).clamp(-1.0, 1.0)
-            magnitude = torch.linalg.vector_norm(uv, dim=-1, keepdim=True).clamp(0.0, 1.0)
-            array = torch.cat(((uv + 1.0) * 0.5, magnitude), dim=-1).mul(255).to(torch.uint8).numpy()
+            return motion_vectors_to_image(data)
         else:
             array = data[..., :3].numpy()
             if array.dtype != np.uint8:
