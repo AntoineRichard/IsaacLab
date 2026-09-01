@@ -49,7 +49,7 @@ Changed
   remain as named entry points for the ball-kick critic and behave identically; the pick-and-place
   task reads the same kernels for its own prop through ``object_pos_in_base`` and
   ``object_vel_in_base``. No caller needs to change.
-* Made the grip **force-limited rather than force-clamped**: above ``2 N`` the latch breaks and the
+* Made the grip **force-limited rather than force-clamped**: above ``6 N`` the latch breaks and the
   object is dropped. A clamped constraint is a winch, and a policy that found one would drag the
   object through the scene rather than carry it. The break is evaluated *before* the latch in the
   same step, so an object that has just been torn loose -- and is therefore still inside the latch
@@ -60,14 +60,38 @@ Changed
   family. The release edge is therefore also the success edge, and the success flag is sticky for the
   rest of the episode, so the one-shot placement bonuses cannot be farmed by picking the object back
   up.
-* Made both distance rewards **potential-based rather than Gaussian on the distance**. A closed path
-  sums to exactly zero and standing anywhere pays exactly zero, so there is no range at which
-  loitering is profitable -- which a level-based term would create at every range.
-* Sized ``carry_hold`` from the reward-hacking audit rather than by taste. ``mouth_to_object`` pays
-  its full weight for holding the mouth on the object without picking it up and is gated off the
-  moment the object is latched, so any carry bonus at or below it makes *refusing to pick the object
-  up* strictly dominant. The inequality is asserted in the environment test, from the weights and
-  again from measured rewards under physics.
+* Made both distance rewards pay only for arriving rather than for being near, so there is no range
+  at which loitering is profitable -- which a Gaussian on the distance would create at every range.
+* Re-derived the grip spring against the rate it is **actually integrated at**. The wrench is written
+  once per control step by an interval event and the wrench composer is permanent, so the force is
+  held constant across all four physics substeps: the spring is a zero-order hold at 50 Hz, not at
+  200 Hz. Deriving the stiffness against the physics step understated ``omega * dt`` by the
+  decimation factor -- 1.03 rather than the 0.26 claimed -- at a damping ratio of 0.32. It rang, the
+  object lagged its anchor by up to 91 mm, and the spring broke its own grip limit roughly every
+  control step. At the shipped ``25 N/m`` and ``0.9 N.s/m`` the figures are 0.82 and 0.73, and the
+  measured mean grip life goes from 20 control steps to 138. The break force was raised from 2 N,
+  which had been set against the object's weight and sat *below* the transient a normal carry
+  produces; a limit below the working transient is not a grip limit.
+* Sized the whole reward stack in **episode-return units** rather than mixing units across the
+  sparse and shaped terms. Reward weights are *rates* -- the reward manager multiplies every term by
+  the control step -- so a one-shot bonus contributes ``weight * dt`` to the return, not ``weight``.
+  Reading the shaped terms per step and the one-shot terms in absolute units left the entire task
+  objective worth 4.26 against 80 for holding the object and standing still, which a first long
+  training run duly exploited: it spent 2255 iterations farming a one-control-step grip that paid the
+  latch bonus ~444 times an episode, never delivered the object once, and drew 88 % of its return
+  from that single term. Two tests now assert the budget instead of reasoning about it -- delivering
+  must beat every shortcut with margin, and no single term may exceed half the positive budget.
+* Capped the latch bonus at **one payment per episode** with a sticky ``has_latched`` flag. An event
+  a policy can re-trigger at will needs a per-episode cap, not a "not yet finished" gate; the
+  sticky ``succeeded`` flag guarded the placement bonuses and nothing guarded this one.
+* Made ``carry_progress`` a **ratchet** rather than a one-step potential. As a potential it masked
+  its *negative* half while the object was unlatched, so a policy could carry the object halfway in,
+  bank the gain, drop it, let a 70 mm sphere roll back out for free and sell the same ground again.
+  The ratchet pays only for ground closer than the closest the object has reached in the episode and
+  tightens that mark whether or not the object is held, which bounds an episode's total payout by
+  the distance the object started from the drop point. ``approach_progress`` stays a symmetric
+  potential: it is not farmable the same way, because the robot cannot move away from the object
+  without being charged for it, and a symmetric term gives the denser learning signal.
 * Reused the existing ``MICRODUCK_BALL_CFG`` prop rather than authoring a new one. At 15 g it sits
   inside the 10-40 g mouth-payload band the ground-pick task already validates at the same attachment
   point, and its mass, hollow-shell inertia, collision and material are pinned by that asset's own
