@@ -4565,17 +4565,48 @@ class pickplace_approach_progress(_PotentialProgress):
         return torch.where(_pickplace_state(env).latched, torch.zeros_like(progress), progress)
 
 
-class pickplace_carry_progress(_PotentialProgress):
-    """Reward closing the horizontal distance from the object to the drop point, while carrying it.
+class pickplace_carry_progress(ManagerTermBase):
+    """Reward the object reaching ground closer to the drop point than it has been this episode.
 
-    The mirror of :class:`pickplace_approach_progress` and potential-based for the same reason. It is
-    gated on the latch rather than on proximity, so an object that rolled to the target on its own --
-    or was kicked there -- earns nothing: this task is carrying, not shooting.
+    A **ratchet**, not the one-step potential this started as, and the difference is a farm (ruling
+    R-PP17). The potential version masked its *negative* half while the object was unlatched, so a
+    policy could carry the object halfway in, bank the gain, drop it, let a 70 mm sphere roll back
+    out for free, re-grasp, and sell the same ground again. The ball's own mobility is what made that
+    cheap.
 
-    The potential is advanced on every step whether or not the object is held, so that picking an
-    object up next to the target and putting it down does not bank the distance it travelled while
-    loose.
+    The ratchet closes it and buys a property worth stating: **whatever the policy does, the total
+    this term can pay in an episode is the distance the object started from the drop point.** The
+    best-distance mark is tightened whether or not the object is held, so ground the object covers
+    loose is consumed rather than bankable; the payment is still gated on the latch, so an object
+    that rolls to the target on its own earns nothing. This task is carrying, not shooting.
+
+    :class:`pickplace_approach_progress` is deliberately *not* a ratchet. It is a symmetric potential
+    because it cannot be farmed the same way -- the robot cannot move away from the object without
+    being charged for it, since nothing masks its negative half -- and a symmetric term gives the
+    denser learning signal of the two.
     """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        """Allocate the per-environment best-distance mark.
+
+        Args:
+            cfg: The term configuration.
+            env: The environment instance.
+        """
+        super().__init__(cfg, env)
+
+        self._best = torch.full((env.num_envs,), float("inf"), device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Release the ratchet for the environments that restarted.
+
+        Args:
+            env_ids: The environment ids. Defaults to None, in which case all are released.
+        """
+        if env_ids is None:
+            self._best[:] = float("inf")
+        else:
+            self._best[env_ids] = float("inf")
 
     def __call__(
         self,
@@ -4583,7 +4614,7 @@ class pickplace_carry_progress(_PotentialProgress):
         command_name: str = "place_target",
         object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ) -> torch.Tensor:
-        """Difference the object-to-target distance against the previous control step.
+        """Pay for ground closer to the drop point than the object has reached this episode.
 
         Args:
             env: The environment instance.
@@ -4591,14 +4622,18 @@ class pickplace_carry_progress(_PotentialProgress):
             object_cfg: The rigid object being carried.
 
         Returns:
-            The distance [m] closed since the previous step, zero unless the object is held. Shape is
-            (num_envs,).
+            The newly closed distance [m], zero unless the object is held. Shape is (num_envs,).
         """
         obj: RigidObject = env.scene[object_cfg.name]
         target_pos_w = _pickplace_target_pos_w(env, command_name)
         distance = torch.linalg.norm(obj.data.root_link_pos_w.torch[:, :2] - target_pos_w[:, :2], dim=-1)
-        progress = -self._advance(torch.nan_to_num(distance, nan=0.0, posinf=0.0, neginf=0.0))
-        return torch.where(_pickplace_state(env).latched, progress, torch.zeros_like(progress))
+        distance = torch.nan_to_num(distance, nan=0.0, posinf=0.0, neginf=0.0)
+        # the first evaluation of an episode sets the mark rather than paying out the whole distance
+        gain = torch.where(
+            torch.isfinite(self._best), (self._best - distance).clamp(min=0.0), torch.zeros_like(distance)
+        )
+        self._best = torch.minimum(self._best, distance)
+        return torch.where(_pickplace_state(env).latched, gain, torch.zeros_like(gain))
 
 
 def pickplace_carry_hold(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -4724,16 +4759,23 @@ def pickplace_object_clearance(
 def pickplace_latch_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Pay once, on the step the mouth closes on the object.
 
-    One-shot rather than a per-step subsidy: holding the object is already paid for by
-    :func:`pickplace_carry_hold`, and a per-step latch reward would be the same term twice.
+    Paid on the episode's **first** pick-up only, not on every latch edge (ruling R-PP17). The
+    unbounded version was the defect that wrecked the first long training run: a policy found a grip
+    that lasted exactly one control step, re-formed it every step, and collected this bonus ~444
+    times an episode -- 88 % of its whole return -- while never once delivering the object. Any
+    bonus on an event the policy can re-trigger at will needs a per-episode cap.
+
+    It is a discovery bootstrap, and one payment is all a bootstrap needs: holding the object is
+    already paid for by :func:`pickplace_carry_hold`, and carrying it by
+    :class:`pickplace_carry_progress`.
 
     Args:
         env: The environment instance.
 
     Returns:
-        1.0 on the latch edge and 0.0 elsewhere. Shape is (num_envs,).
+        1.0 on the first latch edge of the episode and 0.0 elsewhere. Shape is (num_envs,).
     """
-    return _pickplace_state(env).latch_edge.float()
+    return _pickplace_state(env).first_latch_edge.float()
 
 
 def pickplace_place_success(env: ManagerBasedRLEnv) -> torch.Tensor:

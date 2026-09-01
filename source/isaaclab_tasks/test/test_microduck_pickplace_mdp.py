@@ -812,3 +812,121 @@ def test_the_approach_block_stays_off_after_a_successful_placement():
         mdp.pickplace_mouth_down(env.as_env(), mouth_axis_b=(0.0, 0.0, -1.0), std=0.15, **mouth),
         torch.tensor([0.0]),
     )
+
+
+##
+# Reward-farm regressions (see ruling R-PP17)
+##
+
+
+def test_the_latch_bonus_pays_once_per_episode_however_often_the_object_is_regrasped():
+    """The farm that wrecked the first OSMO run, in one test.
+
+    The bonus used to fire on *every* latch edge, gated only on ``succeeded`` -- and since a run that
+    never delivers never succeeds, it fired without bound. The trained policy found a latch that
+    lasted exactly one control step and collected the bonus ~444 times per episode, which was 88 % of
+    its entire return. ``succeeded`` was made sticky to stop the *place* bonus being farmed; nothing
+    did the same for the *latch* bonus.
+    """
+    env = _latch_env(mouth_pos=[[0.0, 0.0, 0.05]], object_pos=[[0.0, 0.0, 0.02]], target_pos=[[1.0, 0.0, 0.035]])
+
+    _update_latch(env)
+    torch.testing.assert_close(mdp.pickplace_latch_bonus(env.as_env()), torch.tensor([1.0]))
+
+    paid = 0.0
+    for _ in range(20):
+        # break the grip, then let it re-form on the very next step -- the exact chatter cycle the
+        # trained policy discovered
+        _update_latch(env, break_force=1e-6)
+        paid += float(mdp.pickplace_latch_bonus(env.as_env())[0])
+        _update_latch(env)
+        paid += float(mdp.pickplace_latch_bonus(env.as_env())[0])
+        assert mdp.pickplace_latch_state(env.as_env()).latched.tolist() == [True]
+
+    assert paid == 0.0, "re-grasping paid again; the latch bonus is farmable"
+
+
+def test_the_latch_bonus_is_restored_by_a_reset():
+    """Once per *episode*, not once per environment lifetime."""
+    env = _latch_env(mouth_pos=[[0.0, 0.0, 0.05]], object_pos=[[0.0, 0.0, 0.02]], target_pos=[[1.0, 0.0, 0.035]])
+    _update_latch(env)
+    assert float(mdp.pickplace_latch_bonus(env.as_env())[0]) == 1.0
+
+    mdp.reset_pickplace_latch(env.as_env(), None)
+    _update_latch(env)
+
+    torch.testing.assert_close(mdp.pickplace_latch_bonus(env.as_env()), torch.tensor([1.0]))
+
+
+def _carry_env(distance: float) -> _DummyEnv:
+    """A latched environment whose object sits ``distance`` ahead of the drop point."""
+    env = _latch_env(mouth_pos=[[0.0, 0.0, 0.5]], object_pos=[[distance, 0.0, 0.035]], target_pos=[[0.0, 0.0, 0.035]])
+    mdp.pickplace_latch_state(env.as_env()).latched[:] = True
+    return env
+
+
+def test_the_carry_progress_cannot_be_farmed_by_dropping_and_re_carrying():
+    """The second farm, and it is the ball's own mobility that opens it.
+
+    The term used to be a symmetric one-step potential whose negative half was **masked while
+    unlatched**. So a policy could carry the object halfway in and bank the gain, drop it, let a
+    70 mm sphere roll back out for free, re-grasp and bank the same ground again. The fix is a
+    ratchet: only ground closer than the closest the object has *ever* been this episode pays.
+    """
+    env = _carry_env(0.5)
+    term = _reward_term(mdp.pickplace_carry_progress, env)
+    obj = env.scene["object"].data.root_link_pos_w.torch
+    state = mdp.pickplace_latch_state(env.as_env())
+
+    term(env.as_env())  # baseline
+    obj[:, 0] = 0.3
+    first = float(term(env.as_env())[0])
+    assert first == pytest.approx(0.2)
+
+    # drop it and let it roll back out; the ratchet is tightened whatever the latch state, so the
+    # ground it gives back is not re-sellable
+    state.latched[:] = False
+    obj[:, 0] = 0.5
+    assert float(term(env.as_env())[0]) == pytest.approx(0.0)
+
+    state.latched[:] = True
+    obj[:, 0] = 0.3
+    assert float(term(env.as_env())[0]) == pytest.approx(0.0), "re-carrying the same ground paid twice"
+
+    # and genuinely new ground still pays
+    obj[:, 0] = 0.25
+    assert float(term(env.as_env())[0]) == pytest.approx(0.05)
+
+
+def test_the_carry_progress_total_is_bounded_by_the_initial_distance():
+    """The invariant a ratchet buys, and the one a masked potential does not.
+
+    Whatever the policy does -- however many times it grabs, drops, circles and re-grabs -- the sum
+    this term can ever pay in an episode is the distance the object started from the drop point.
+    """
+    start = 0.5
+    env = _carry_env(start)
+    term = _reward_term(mdp.pickplace_carry_progress, env)
+    obj = env.scene["object"].data.root_link_pos_w.torch
+    state = mdp.pickplace_latch_state(env.as_env())
+
+    total = float(term(env.as_env())[0])
+    for step in range(60):
+        # a deliberately adversarial walk: in, out, in again, latched and unlatched by turns
+        obj[:, 0] = start * (0.5 + 0.5 * math.cos(step))
+        state.latched[:] = bool(step % 3)
+        total += float(term(env.as_env())[0])
+
+    assert total <= start + 1e-6, f"paid {total} for an object that started {start} m out"
+
+
+def test_the_carry_progress_still_pays_nothing_for_an_object_that_arrives_on_its_own():
+    """The ratchet must not quietly undo the "carrying, not shooting" gate."""
+    env = _carry_env(0.5)
+    term = _reward_term(mdp.pickplace_carry_progress, env)
+    mdp.pickplace_latch_state(env.as_env()).latched[:] = False
+    term(env.as_env())
+
+    env.scene["object"].data.root_link_pos_w.torch[:, 0] = 0.1
+
+    torch.testing.assert_close(term(env.as_env()), torch.tensor([0.0]))

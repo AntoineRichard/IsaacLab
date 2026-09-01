@@ -1027,8 +1027,29 @@ class PickPlaceLatchState:
         back up (design document, ruling R-PP8).
         """
 
+        self.has_latched = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        """Whether the object has been picked up at all this episode. Shape is (num_envs,).
+
+        **Sticky**, like :attr:`succeeded`, and for a lesson learned the expensive way: the latch
+        bonus used to pay on every edge, and a trained policy found a grip that lasted one control
+        step and collected it ~444 times an episode (ruling R-PP17). An event a policy can
+        re-trigger at will needs a per-episode cap, not just a "not yet finished" gate.
+        """
+
         self.latch_edge = torch.zeros(num_envs, dtype=torch.bool, device=device)
-        """Whether the latch formed on this control step. Shape is (num_envs,)."""
+        """Whether the latch formed on this control step. Shape is (num_envs,).
+
+        The raw state-machine edge, which fires on every pick-up. It is *not* what the latch bonus
+        reads; see :attr:`first_latch_edge`.
+        """
+
+        self.first_latch_edge = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        """Whether this control step is the episode's **first** pick-up. Shape is (num_envs,).
+
+        What the latch bonus is paid on. Keeping it separate from :attr:`latch_edge` keeps the state
+        machine honest -- a re-grasp really is a latch edge -- and puts the "pay once" decision in
+        the reward stack where it belongs.
+        """
 
         self.release_edge = torch.zeros(num_envs, dtype=torch.bool, device=device)
         """Whether the object was released at the target on this control step. Shape is (num_envs,).
@@ -1078,7 +1099,9 @@ def reset_pickplace_latch(env: ManagerBasedEnv, env_ids: torch.Tensor | None) ->
     index = slice(None) if env_ids is None else env_ids
     state.latched[index] = False
     state.succeeded[index] = False
+    state.has_latched[index] = False
     state.latch_edge[index] = False
+    state.first_latch_edge[index] = False
     state.release_edge[index] = False
 
 
@@ -1276,6 +1299,8 @@ def update_pickplace_latch(
     caught = ~state.latched & ~state.succeeded & ~overloaded & (reach < latch_radius) & (closing_speed < max_rel_speed)
     state.latched |= caught
     state.latch_edge = caught
+    state.first_latch_edge = caught & ~state.has_latched
+    state.has_latched |= caught
 
     forces = torch.where(state.latched.unsqueeze(-1), spring, torch.zeros_like(spring))
     # The object's half acts at its centre of mass, which is the point the spring is anchored to, so

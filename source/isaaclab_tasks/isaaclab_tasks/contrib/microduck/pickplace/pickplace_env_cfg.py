@@ -105,29 +105,47 @@ Derived from the object's own radius rather than restated, so a change of prop c
 spring holding at a distance the geometry no longer has.
 """
 
-MICRODUCK_LATCH_STIFFNESS = 40.0
+MICRODUCK_LATCH_STIFFNESS = 25.0
 """Spring constant [N/m] of the virtual weld.
 
-**Derived, not chosen.** An explicit spring on a body of mass ``m`` integrated at step ``dt`` is
-stable for ``sqrt(k/m) * dt <~ 0.3``. With the object's 0.015 kg and this environment's 0.005 s
-physics step that bounds ``k`` at about 54 N/m; 40 gives ``omega * dt = 0.26`` and leaves margin for
-the mass to be changed by a fifth without re-deriving anything. The static sag under the object's own
-weight is ``mg/k = 3.7 mm``, invisible against the 35 mm radius.
+**Derived against the rate the spring is actually integrated at**, which is the correction ruling
+R-PP17 forced. The wrench is written by an interval event once per *control* step and the composer
+is permanent, so the force is held constant across all four physics substeps: the spring is a
+zero-order hold at 50 Hz, not at 200 Hz. The first version of this constant derived ``k`` against the
+0.005 s physics step, concluded ``omega * dt = 0.26``, and shipped a spring whose true figure was
+``omega * dt = 1.03`` -- four times past the accuracy bound and badly underdamped. It rang, the
+object lagged its anchor by up to 91 mm, and the grip broke roughly every control step.
 
-:func:`test_the_latch_spring_is_stable_at_the_configured_physics_step` reproduces that derivation, so
-raising this without redoing it fails rather than diverging in training.
+At the shipped 25 N/m and the object's 0.015 kg, ``omega = 40.8 rad/s`` and ``omega * dt = 0.82``
+against the 0.02 s control step. Static sag under the object's own weight is ``mg/k = 5.9 mm``, small
+against the 35 mm radius. Measured with ``diag_latch_chatter.py``: 138 control steps of mean grip
+life against 20 for the original constants.
+
+:func:`test_the_latch_spring_is_integrated_at_the_control_rate_not_the_physics_rate` reproduces the
+derivation **against the control step**, so repeating the original mistake fails here rather than
+four hours into a training run.
 """
 
-MICRODUCK_LATCH_DAMPING = 0.5
-"""Damping coefficient [N·s/m] of the virtual weld, a damping ratio of 0.32 at the shipped mass."""
+MICRODUCK_LATCH_DAMPING = 0.9
+"""Damping coefficient [N·s/m] of the virtual weld.
 
-MICRODUCK_LATCH_BREAK_FORCE = 2.0
+A damping ratio of 0.73 at the shipped mass and stiffness, against the 0.32 that rang. It is bounded
+above as well as below: a zero-order-hold damper is unstable once ``c * dt / m`` reaches 2, which at
+the control step and the object's mass caps ``c`` at 1.5.
+"""
+
+MICRODUCK_LATCH_BREAK_FORCE = 6.0
 """Force [N] above which the grip gives way and the object is dropped.
 
 The grip is force-**limited**, not force-clamped, and that is the anti-exploit (ruling R-PP2): a
 clamped constraint is a winch, and a policy that found one would drag the object through the scene
-rather than carry it. 2 N is about thirteen times the object's weight and a quarter of the robot's,
-so it survives a normal carry and a normal stumble and yields to anything worth exploiting.
+rather than carry it.
+
+**Raised from 2 N after R-PP17.** 2 N was set against the object's *weight* -- thirteen times it --
+and never against the transient the grip actually sees when the head moves, which measured 2.7 N at
+the shipped spring and 3.7 N at the original one. A limit below the normal working transient is not
+a grip limit, it is a grip. 6 N is 41 times the object's weight and 0.83 times the robot's, so it
+still cannot be used to hoist the robot, and it leaves a 2.2x margin over the measured transient.
 
 It is provably out of reach on the step a latch forms; see
 :func:`test_a_latch_can_never_break_on_the_step_it_forms`.
@@ -769,12 +787,12 @@ class RewardsCfg:
 
     approach_progress = RewTerm(
         func=mdp.pickplace_approach_progress,
-        weight=20.0,
+        weight=2000.0,
         params={"object_cfg": _OBJECT_CFG},
     )
     mouth_to_object = RewTerm(
         func=mdp.pickplace_mouth_to_object,
-        weight=3.0,
+        weight=1.0,
         params={
             "asset_cfg": _MOUTH_BODY_CFG,
             "object_cfg": _OBJECT_CFG,
@@ -786,7 +804,7 @@ class RewardsCfg:
     # than merely unpaid, because reaching an object mouth-up is a different, useless posture.
     mouth_down = RewTerm(
         func=mdp.pickplace_mouth_down,
-        weight=1.0,
+        weight=0.5,
         params={
             "asset_cfg": _MOUTH_BODY_CFG,
             "object_cfg": _OBJECT_CFG,
@@ -800,21 +818,21 @@ class RewardsCfg:
     # Pick.
     ##
 
-    latch_bonus = RewTerm(func=mdp.pickplace_latch_bonus, weight=30.0)
+    latch_bonus = RewTerm(func=mdp.pickplace_latch_bonus, weight=1000.0)
 
     ##
     # Carry.
     ##
 
-    carry_hold = RewTerm(func=mdp.pickplace_carry_hold, weight=4.0)
+    carry_hold = RewTerm(func=mdp.pickplace_carry_hold, weight=1.5)
     carry_progress = RewTerm(
         func=mdp.pickplace_carry_progress,
-        weight=40.0,
+        weight=3000.0,
         params={"command_name": "place_target", "object_cfg": _OBJECT_CFG},
     )
     object_clearance = RewTerm(
         func=mdp.pickplace_object_clearance,
-        weight=1.0,
+        weight=0.5,
         params={"asset_cfg": _OBJECT_CFG, "target_height": MICRODUCK_CARRY_HEIGHT, "std": 0.03},
     )
 
@@ -822,10 +840,10 @@ class RewardsCfg:
     # Place.
     ##
 
-    place_success = RewTerm(func=mdp.pickplace_place_success, weight=100.0)
+    place_success = RewTerm(func=mdp.pickplace_place_success, weight=5000.0)
     place_precision = RewTerm(
         func=mdp.pickplace_place_precision,
-        weight=50.0,
+        weight=2500.0,
         params={"command_name": "place_target", "object_cfg": _OBJECT_CFG, "std": MICRODUCK_PLACE_TOLERANCE},
     )
 
@@ -842,7 +860,7 @@ class RewardsCfg:
     # to walk: a strong both-soles-down reward is a standing-still reward on a locomotion task.
     feet_grounded = RewTerm(
         func=mdp.feet_grounded_reward,
-        weight=1.0,
+        weight=0.5,
         params={"sensor_cfg": _FEET_GROUND_SENSOR_CFG},
     )
     # Terrain-filtered, so this charges face-planting into the floor and never charges pressing the

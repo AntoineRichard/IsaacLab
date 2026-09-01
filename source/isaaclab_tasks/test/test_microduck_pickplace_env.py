@@ -158,22 +158,25 @@ EXPECTED_MOUTH_BODY_NAMES = ["jaw_soft"]
 """The body the mouth tip is rigidly attached to."""
 
 EXPECTED_REWARD_WEIGHTS = {
-    # approach, live until the object is held or placed
-    "approach_progress": 20.0,
-    "mouth_to_object": 3.0,
-    "mouth_down": 1.0,
-    # pick
-    "latch_bonus": 30.0,
+    # Approach, live until the object is held or placed. Weights are **rates**: the reward manager
+    # multiplies every term by the 0.02 s control step, so the sparse terms carry large weights and
+    # the per-step terms small ones. Reading these as if they were episode-return figures is the
+    # mistake that produced ruling R-PP17.
+    "approach_progress": 2000.0,
+    "mouth_to_object": 1.0,
+    "mouth_down": 0.5,
+    # pick -- one payment per episode
+    "latch_bonus": 1000.0,
     # carry
-    "carry_hold": 4.0,
-    "carry_progress": 40.0,
-    "object_clearance": 1.0,
-    # place
-    "place_success": 100.0,
-    "place_precision": 50.0,
+    "carry_hold": 1.5,
+    "carry_progress": 3000.0,
+    "object_clearance": 0.5,
+    # place -- one payment per episode
+    "place_success": 5000.0,
+    "place_precision": 2500.0,
     # posture floor
     "upright": 0.2,
-    "feet_grounded": 1.0,
+    "feet_grounded": 0.5,
     "head_impact_penalty": -2.0,
     "self_collisions": -1.0,
     "dof_pos_limits": -1.0,
@@ -230,25 +233,27 @@ def test_the_carry_bonus_outbids_hovering_at_the_object():
     rewards = MicroDuckPickPlaceFlatEnvCfg().rewards
 
     assert rewards.carry_hold.weight > rewards.mouth_to_object.weight
-    # and the one-shot mass past the latch dwarfs both, so the tie-break is never close
-    assert rewards.latch_bonus.weight > 5.0 * rewards.mouth_to_object.weight
-    assert rewards.place_success.weight + rewards.place_precision.weight > 100.0
+    # This is a *per-step* inequality and that is all it is. Whether holding beats hovering over a
+    # whole episode is a different question in different units, and answering it by eye here is what
+    # went wrong the first time; ``test_delivering_the_object_pays_more_than_any_shortcut`` answers
+    # it in episode-return units instead.
 
 
 @pytest.mark.unit
-def test_the_two_distance_rewards_are_potential_based_rather_than_gaussian():
-    """A Gaussian on the distance pays for loitering at range; a potential pays only for arriving.
+def test_neither_distance_reward_pays_for_loitering_at_range():
+    """A Gaussian on the distance pays for parking near the goal; these pay only for arriving.
 
-    Asserted structurally -- both terms are the family's ``_PotentialProgress`` subclasses, which is
-    what gives them the reset re-baselining and the telescoping property the kernel tests measure.
+    Both are stateful and neither takes a kernel width, which a level-based term would need. What
+    each does with its state differs and is asserted in
+    :func:`test_the_carry_progress_is_a_ratchet_and_the_approach_is_not`; both share the property
+    that their total payout across an episode is bounded by the distance the episode started with.
     """
     rewards = MicroDuckPickPlaceFlatEnvCfg().rewards
 
     assert rewards.approach_progress.func is mdp.pickplace_approach_progress
     assert rewards.carry_progress.func is mdp.pickplace_carry_progress
-    assert issubclass(mdp.pickplace_approach_progress, mdp.upright_progress.__bases__[0])
-    assert issubclass(mdp.pickplace_carry_progress, mdp.upright_progress.__bases__[0])
-    # neither carries a kernel width, which is what a level-based term would need
+    for term in (mdp.pickplace_approach_progress, mdp.pickplace_carry_progress):
+        assert issubclass(term, mdp.upright_progress.__bases__[0].__bases__[0])
     assert "std" not in rewards.approach_progress.params
     assert "std" not in rewards.carry_progress.params
 
@@ -294,22 +299,47 @@ def test_the_flat_foot_penalty_is_absent_because_this_task_walks():
 
 
 @pytest.mark.unit
-def test_the_latch_spring_is_stable_at_the_configured_physics_step():
-    """The stiffness is derived from the object's mass and the step, not chosen (ruling R-PP1).
+def test_the_latch_spring_is_integrated_at_the_control_rate_not_the_physics_rate():
+    """The derivation ruling R-PP17 corrected, pinned so the original mistake cannot come back.
 
-    An explicit spring integrates stably while ``sqrt(k/m) * dt`` stays well under one. This
-    reproduces the derivation from the three numbers the environment actually ships, so raising the
-    stiffness without redoing it fails here rather than diverging four hours into a training run.
+    The wrench is written by an interval event once per **control** step and the wrench composer is
+    permanent, so the force is held constant across all four physics substeps: the spring is a
+    zero-order hold at 50 Hz. Deriving the stiffness against the 0.005 s physics step -- which the
+    first version did -- understates ``omega * dt`` by the decimation factor of four, and the spring
+    that shipped rang hard enough to break its own grip roughly every control step.
     """
-    dt = MicroDuckPickPlaceFlatEnvCfg().sim.dt
-    omega = math.sqrt(MICRODUCK_LATCH_STIFFNESS / MICRODUCK_LATCH_OBJECT_MASS)
+    cfg = MicroDuckPickPlaceFlatEnvCfg()
+    control_dt = cfg.sim.dt * cfg.decimation
+    assert control_dt == pytest.approx(0.02)
 
-    assert omega * dt < 0.3
-    # under-damped but well away from a bouncing grip
+    omega = math.sqrt(MICRODUCK_LATCH_STIFFNESS / MICRODUCK_LATCH_OBJECT_MASS)
+    # the bound that matters, against the step the force is actually held over
+    assert omega * control_dt < 1.0
+    # and the physics-step figure is *not* what this is judged on -- stated so the two cannot be
+    # confused again by someone reading only the assertion
+    assert omega * cfg.sim.dt < omega * control_dt
+
+    # damped well enough not to ring, and below the zero-order-hold damper's own stability cap
     damping_ratio = MICRODUCK_LATCH_DAMPING / (2.0 * math.sqrt(MICRODUCK_LATCH_STIFFNESS * MICRODUCK_LATCH_OBJECT_MASS))
-    assert 0.2 < damping_ratio < 0.7
+    assert 0.6 < damping_ratio < 1.2
+    assert MICRODUCK_LATCH_DAMPING * control_dt / MICRODUCK_LATCH_OBJECT_MASS < 2.0
+
     # and the object sags by millimetres under its own weight, not by a radius
     assert MICRODUCK_LATCH_OBJECT_MASS * 9.81 / MICRODUCK_LATCH_STIFFNESS < 0.2 * MICRODUCK_BALL_RADIUS
+
+
+@pytest.mark.unit
+def test_the_grip_limit_sits_above_the_transient_a_normal_carry_produces():
+    """A limit below the working transient is not a grip limit, it is a grip (ruling R-PP17).
+
+    The original 6 N was 2 N, set against the object's *weight* and never against the force the
+    spring actually develops when the head moves -- measured at 2.7 N with ``diag_latch_chatter.py``.
+    """
+    measured_transient = 2.74
+
+    assert 2.0 * measured_transient < MICRODUCK_LATCH_BREAK_FORCE
+    # but still far too weak to hoist the robot, which is what makes it a grip and not a winch
+    assert MICRODUCK_LATCH_BREAK_FORCE < 0.737 * 9.81
 
 
 @pytest.mark.unit
@@ -1052,3 +1082,119 @@ def test_the_grip_gives_way_rather_than_dragging_the_object_through_the_scene():
 def test_environment_steps_with_random_actions():
     """The registered task builds, resets, and steps without producing invalid signals."""
     _run_environments(TASK_NAME, device="cuda", num_envs=2, num_steps=10)
+
+
+##
+# Reward budget in episode-return units (ruling R-PP17)
+##
+
+EPISODE_STEPS = 1000
+"""Control steps in a 20 s episode at the 50 Hz control rate."""
+
+CONTROL_DT = 0.02
+"""Seconds per control step. **Every** reward term is multiplied by this before it is summed.
+
+``RewardManager.compute`` does ``value = func(...) * weight * dt`` (``reward_manager.py:154``), so a
+weight is a *rate* and a one-shot bonus contributes ``weight * dt`` to the episode return, not
+``weight``. Missing that factor is what made the first long run trainable only as a farm: the entire
+task objective came to 4.26 against 80 for holding the object and doing nothing (ruling R-PP17).
+"""
+
+
+def _returns(rewards) -> dict[str, float]:
+    """Episode-return contribution of each strategy, in the units the learner actually optimizes."""
+
+    def r(name: str, occurrences: float) -> float:
+        return getattr(rewards, name).weight * CONTROL_DT * occurrences
+
+    return {
+        # walk over, pick it up, carry it 0.6 m, set it down on the spot, having held it 300 steps
+        "deliver": (
+            r("approach_progress", 0.45)
+            + r("latch_bonus", 1)
+            + r("carry_progress", 0.60)
+            + r("carry_hold", 300)
+            + r("place_success", 1)
+            + r("place_precision", 1)
+        ),
+        # pick it up and stand there for the rest of the episode
+        "hold_forever": r("approach_progress", 0.45) + r("latch_bonus", 1) + r("carry_hold", EPISODE_STEPS),
+        # park the mouth on it and never commit
+        "hover_forever": (
+            r("approach_progress", 0.45) + r("mouth_to_object", EPISODE_STEPS) + r("mouth_down", EPISODE_STEPS)
+        ),
+    }
+
+
+@pytest.mark.unit
+def test_delivering_the_object_pays_more_than_any_shortcut():
+    """The budget the first long run did not have, expressed where the learner sees it.
+
+    Weights are rates, so comparing a one-shot bonus against a per-step term without the ``dt``
+    factor compares two different units -- which is exactly the mistake that let a policy spend
+    2255 iterations farming a one-step grip. This asserts the ordering in episode-return units, and
+    with real margin rather than a hair.
+    """
+    returns = _returns(MicroDuckPickPlaceFlatEnvCfg().rewards)
+
+    assert returns["deliver"] > 2.5 * returns["hold_forever"]
+    assert returns["deliver"] > 3.0 * returns["hover_forever"]
+    # and the per-step tie-break of ruling R-PP6 still points the right way at the moment of choice
+    assert returns["hold_forever"] > returns["hover_forever"]
+
+
+@pytest.mark.unit
+def test_no_single_reward_term_can_dominate_the_return_on_its_own():
+    """The symptom that made the defect visible: one term was 88 % of the return.
+
+    Bounds every term by what it can pay across a whole episode, so a term that is accidentally
+    worth more than the task cannot be introduced quietly.
+    """
+    rewards = MicroDuckPickPlaceFlatEnvCfg().rewards
+    # the most any one term can pay in an episode: per-step terms saturate for the whole episode,
+    # one-shot terms fire once, and the two distance terms are bounded by their own geometry
+    ceilings = {
+        "approach_progress": 0.45,
+        "carry_progress": 0.60,
+        "latch_bonus": 1,
+        "place_success": 1,
+        "place_precision": 1,
+        "carry_hold": EPISODE_STEPS,
+        "mouth_to_object": EPISODE_STEPS,
+        "mouth_down": EPISODE_STEPS,
+        "object_clearance": EPISODE_STEPS,
+        "upright": EPISODE_STEPS,
+        "feet_grounded": EPISODE_STEPS,
+    }
+    contributions = {n: getattr(rewards, n).weight * CONTROL_DT * c for n, c in ceilings.items()}
+    total = sum(contributions.values())
+
+    for name, value in contributions.items():
+        assert value < 0.5 * total, f"{name} alone is {value / total:.0%} of the positive budget"
+
+
+@pytest.mark.unit
+def test_the_latch_bonus_is_capped_at_one_payment_per_episode():
+    """An event the policy can re-trigger at will needs a per-episode cap, not a progress gate."""
+    assert MicroDuckPickPlaceFlatEnvCfg().rewards.latch_bonus.func is mdp.pickplace_latch_bonus
+    # the state machine keeps the raw edge and the first-of-episode edge apart, and the reward reads
+    # the capped one
+    state = mdp.PickPlaceLatchState(2, "cpu")
+    assert hasattr(state, "has_latched")
+    assert hasattr(state, "first_latch_edge")
+
+
+@pytest.mark.unit
+def test_the_carry_progress_is_a_ratchet_and_the_approach_is_not():
+    """The asymmetry is deliberate and is the kind of thing that needs a reason on the record.
+
+    Carry is farmable as a masked potential because the object can give ground back for free once
+    dropped; approach is not, because the robot cannot move away from the object without being
+    charged for it.
+    """
+    rewards = MicroDuckPickPlaceFlatEnvCfg().rewards
+
+    assert issubclass(mdp.pickplace_carry_progress, mdp.upright_progress.__bases__[0].__bases__[0])
+    assert not issubclass(mdp.pickplace_carry_progress, mdp.upright_progress.__bases__[0])
+    assert issubclass(mdp.pickplace_approach_progress, mdp.upright_progress.__bases__[0])
+    assert rewards.carry_progress.func is mdp.pickplace_carry_progress
