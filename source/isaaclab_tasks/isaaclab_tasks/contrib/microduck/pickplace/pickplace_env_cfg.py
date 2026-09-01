@@ -879,6 +879,21 @@ class RewardsCfg:
         params={"sensor_cfg": _SELF_COLLISION_SENSOR_CFG, "saturate": True},
     )
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-1.0)
+    # **Falling has to be priced, not merely terminated** (ruling R-PP19). Ending an episode is only
+    # a cost when the rest of the episode was worth something, and this stack's mass sits in a
+    # one-shot delivery bonus the policy can collect in the first second -- so a fall cost nothing,
+    # and the second training run duly learned to grab the object, dive at the drop point and topple.
+    # It delivered on 93 % of episodes, in 40 control steps, with ``upright`` at 0.0003.
+    #
+    # Keyed to the two fall terms only. ``nan_state`` is deliberately excluded: a diverged solver is
+    # not a policy decision and charging for it teaches avoidance of nothing. The stock term *sums*
+    # its keys, so an episode that trips both fall gates on the same step is charged twice; that is
+    # rare, and it only makes falling more expensive, which is the direction of travel.
+    fell_penalty = RewTerm(
+        func=mdp.is_terminated_term,
+        weight=-5000.0,
+        params={"term_keys": ["fell_over", "fell_low"]},
+    )
 
     ##
     # Regularization, the velocity family's and lighter than the ground-pick task's.

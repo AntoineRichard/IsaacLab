@@ -180,6 +180,7 @@ EXPECTED_REWARD_WEIGHTS = {
     "head_impact_penalty": -2.0,
     "self_collisions": -1.0,
     "dof_pos_limits": -1.0,
+    "fell_penalty": -5000.0,
     # regularization
     "body_ang_vel": -0.05,
     "angular_momentum": -0.02,
@@ -448,6 +449,24 @@ def test_the_carry_is_never_asked_to_be_longer_than_the_approach_already_solved(
 
     assert target_stages[0]["ranges"][0][1] <= 2.0 * object_stages[0]["params"]["distance_range"][1]
     assert target_stages[-1]["step"] < object_stages[-1]["step"]
+
+
+@pytest.mark.unit
+def test_falling_is_priced_and_not_merely_terminated():
+    """A termination is only a penalty if the rest of the episode was worth something.
+
+    This stack's mass is a one-shot delivery bonus the policy can collect in the first second, so
+    ending the episode early cost nothing and the second training run learned to deliver by diving.
+    The penalty is keyed to the fall terms alone -- a diverged solver is not a policy decision.
+    """
+    rewards = MicroDuckPickPlaceFlatEnvCfg().rewards
+
+    assert rewards.fell_penalty.func is mdp.is_terminated_term
+    assert rewards.fell_penalty.weight < 0.0
+    assert set(rewards.fell_penalty.params["term_keys"]) == {"fell_over", "fell_low"}
+    assert "nan_state" not in rewards.fell_penalty.params["term_keys"]
+    # and it costs a meaningful fraction of a delivery, or it prices nothing
+    assert abs(rewards.fell_penalty.weight) > 0.5 * rewards.place_success.weight
 
 
 @pytest.mark.unit
@@ -877,9 +896,13 @@ def test_a_scripted_pick_carry_and_place_scores_the_whole_stack_end_to_end():
     env = None
     try:
         env_cfg = _scripted_env(num_envs=4)
-        # a scripted rollout must not be recycled underneath the measurement
+        # A scripted rollout must not be recycled underneath the measurement. Dropping the two fall
+        # terminations means dropping the reward that prices them: ``is_terminated_term`` resolves
+        # its keys at construction and raises if they name nothing, so the two are coupled and any
+        # tool that disables the fall gates has to disable the penalty with them.
         env_cfg.terminations.fell_over = None
         env_cfg.terminations.fell_low = None
+        env_cfg.rewards.fell_penalty = None
         env = gym.make(TASK_NAME, cfg=env_cfg)
         env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
         unwrapped = env.unwrapped
@@ -1123,6 +1146,18 @@ def _returns(rewards) -> dict[str, float]:
         "hover_forever": (
             r("approach_progress", 0.45) + r("mouth_to_object", EPISODE_STEPS) + r("mouth_down", EPISODE_STEPS)
         ),
+        # grab it, dive at the drop point and topple: it delivers, in 40 control steps, and forfeits
+        # the rest of the episode -- which the second training run found and which cost nothing until
+        # falling was priced
+        "dive_and_topple": (
+            r("approach_progress", 0.10)
+            + r("latch_bonus", 1)
+            + r("carry_progress", 0.20)
+            + r("carry_hold", 40)
+            + r("place_success", 1)
+            + r("place_precision", 0.7)
+            + r("fell_penalty", 1)
+        ),
     }
 
 
@@ -1139,6 +1174,12 @@ def test_delivering_the_object_pays_more_than_any_shortcut():
 
     assert returns["deliver"] > 2.5 * returns["hold_forever"]
     assert returns["deliver"] > 3.0 * returns["hover_forever"]
+    # ... and than delivering by throwing yourself at the target, which satisfies the literal
+    # success criterion and is not the task
+    assert returns["deliver"] > 2.5 * returns["dive_and_topple"]
+    # but diving still beats never touching the object, so the delivery gradient survives the fix:
+    # a policy that has not yet learned to walk must still be paid for getting the object there
+    assert returns["dive_and_topple"] > returns["hover_forever"]
     # and the per-step tie-break of ruling R-PP6 still points the right way at the moment of choice
     assert returns["hold_forever"] > returns["hover_forever"]
 

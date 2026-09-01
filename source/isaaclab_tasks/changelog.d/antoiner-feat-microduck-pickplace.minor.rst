@@ -96,6 +96,14 @@ Changed
   inside the 10-40 g mouth-payload band the ground-pick task already validates at the same attachment
   point, and its mass, hollow-shell inertia, collision and material are pinned by that asset's own
   fidelity tests. ``isaaclab_assets`` is therefore untouched.
+* Priced falling rather than merely terminating on it. A termination is only a penalty when the rest
+  of the episode was worth something, and this stack's mass is a one-shot delivery bonus a policy can
+  collect in the first second -- so a fall cost nothing, and a training run learned to grab the
+  object, dive at the drop point and topple. It satisfied the literal success criterion on 93 % of
+  episodes, in 40 control steps, with the uprightness reward at 0.0003. ``fell_penalty`` charges the
+  two fall terminations; ``nan_state`` is deliberately excluded, because a diverged solver is not a
+  policy decision. Note the coupling this introduces: ``is_terminated_term`` resolves its keys at
+  construction, so any configuration that disables the fall terminations must disable this term too.
 * Gated the fall termination on tilt **and** height, as two separate stock terms. The family's
   velocity-stand investigation found that tilt-only gating opened a lie-flat reward-hacking basin: a
   robot folded flat stays nominally inside a 70-degree bound while doing nothing the task asks for.
