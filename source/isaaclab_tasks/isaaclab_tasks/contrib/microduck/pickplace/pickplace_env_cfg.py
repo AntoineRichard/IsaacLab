@@ -240,16 +240,38 @@ class MicroDuckPickPlacePhysicsCfg(PresetCfg):
 
     newton_mjwarp = NewtonCfg(
         solver_cfg=MJWarpSolverCfg(
-            # PROVISIONAL -- see ``artifacts/microduck/pickplace/progress.md``. These are the
-            # ball-kick task's measured budgets plus headroom, and they are *not* yet this task's
-            # own measurement. The T10 precedent requires profiling at 256/2048/4096 under random
-            # actions with the tilt termination dropped and the pushes forced to full magnitude,
-            # which is an open acceptance item.
+            # Measured, not inherited. Profiling under random actions -- the regime where the
+            # robots collapse onto the floor and grind every collider and the object into it, with
+            # *both* fall terminations dropped and the pushes forced to full magnitude -- peaks at
+            # **32 contacts and 90 constraints** per environment. Logs:
+            # ``artifacts/microduck/profile_microduck_contacts_pickplace_{256,2048,4096}envs.log``,
+            # from ``artifacts/microduck/profile_microduck_contacts.py``.
             #
-            # The floor to expect is ball-kick's 30 contacts / 86 constraints: same robot, same
-            # ball, same plane. This task should sit above it, because a held object adds a
-            # *persistent* mouth-shell contact that ball-kick never has -- the ball there is either
-            # on the ground or in flight.
+            # Profiled at three sizes, because the smallest one undercuts the contact tail:
+            #
+            # ============  =========  =========  ===========  ========
+            # environments  peak ncon  peak nefc  median ncon  overflow
+            # ============  =========  =========  ===========  ========
+            # 256                  29         90           26         0
+            # 2048                 32         90           26         0
+            # 4096                 32         90           27         0
+            # ============  =========  =========  ===========  ========
+            #
+            # 4096 is this task's own training default and therefore the size that matters. Both
+            # peaks **saturate** from 2048 upward, which is what says the tail has been sampled
+            # rather than that it keeps growing.
+            #
+            # Two contacts and four constraints above the ball-kick task's 30/86 on the same robot,
+            # the same ball and the same plane, which is the expected direction: a held object adds
+            # a *persistent* mouth-shell contact that ball-kick never has, its ball being either on
+            # the ground or in flight.
+            #
+            # ``njmax`` is a hard per-environment cap and carries the margin: 128 against 90 is 38
+            # constraints, about nine further pyramidal contacts' worth. ``nconmax`` is a
+            # per-environment *share* of one shared pool rather than a cap, so an environment
+            # spiking past 40 borrows from the pool; at 4096 environments the shipped share provides
+            # 163 840 contacts against a measured worst-case total of 51 505, and the measured mean
+            # is 12.4 per environment.
             njmax=128,
             nconmax=40,
             # the mjlab template's flat solver profile, which every sibling inherits unchanged

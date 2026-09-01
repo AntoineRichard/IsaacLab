@@ -630,18 +630,35 @@ def test_the_runner_differs_from_the_velocity_one_in_the_two_fields_every_siblin
     assert differing == {"experiment_name", "max_iterations"}
 
 
-@pytest.mark.unit
-def test_the_solver_budget_is_flagged_as_provisional_until_it_is_profiled():
-    """The contact profile is an open acceptance item, and the configuration says so in one place.
+MEASURED_PEAK_CONTACTS = 32
+MEASURED_PEAK_CONSTRAINTS = 90
+"""Worst-case per-environment demand, profiled at 256/2048/4096 environments under random actions.
 
-    A held object adds a persistent mouth-shell contact the ball-kick task never has, so inheriting
-    its budget silently is exactly the T10 failure this guard exists to make visible.
+From ``artifacts/microduck/profile_microduck_contacts_pickplace_{256,2048,4096}envs.log``. Both peaks
+saturate from 2048 upward, which is what says the tail was sampled. Transcribed here rather than
+imported so the budget below cannot be lowered under the measurement it was sized against.
+"""
+
+
+@pytest.mark.unit
+def test_the_solver_budget_covers_the_measured_worst_case():
+    """Measured rather than inherited, per the family's T10 precedent.
+
+    A held object adds a persistent mouth-shell contact the ball-kick task never has -- its ball is
+    either on the ground or in flight -- so inheriting that task's budget would have been two
+    contacts short.
     """
     solver = MicroDuckPickPlaceFlatEnvCfg().sim.physics.newton_mjwarp.solver_cfg
 
-    # above the ball-kick task's measured 30-contact peak on the same robot and the same ball
+    # ``njmax`` is a hard per-environment cap, so it carries real margin over the peak: at least
+    # eight further pyramidal contacts' worth, four constraint rows each. Overflowing it is a
+    # silently wrong simulation rather than a slow one, which is why this is the bound with margin.
+    assert solver.njmax >= MEASURED_PEAK_CONSTRAINTS + 4 * 8
+    # ``nconmax`` is a per-environment share of one shared pool rather than a cap, so it sits just
+    # above the peak
+    assert solver.nconmax >= MEASURED_PEAK_CONTACTS
+    # and above the ball-kick task's, on the same robot and the same ball
     assert solver.nconmax > 36
-    assert solver.njmax >= 128
     # the iteration counts are the family's template, unchanged
     assert (solver.iterations, solver.ls_iterations) == (10, 20)
 
