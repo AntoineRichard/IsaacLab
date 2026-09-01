@@ -78,6 +78,16 @@ def snapshot_camera_tensor(data: Any) -> Any:
     return data.detach().to(device="cpu", copy=True)
 
 
+def depth_display_bounds(data: Any) -> tuple[float, float]:
+    """Return finite frame bounds capped by the gallery depth range."""
+    import torch
+
+    finite_depth = data[torch.isfinite(data)]
+    if finite_depth.numel() == 0:
+        return 2.0, 13.0
+    return min(float(finite_depth.min()), 2.0), min(float(finite_depth.max()), 13.0)
+
+
 def motion_vectors_to_image(data: Any) -> Any:
     """Colorize motion vectors and overlay sparse image-space direction arrows."""
     import numpy as np
@@ -169,7 +179,7 @@ def add_gallery_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--renderer-backend", choices=tuple(_RENDERER_SLUGS), required=True)
     parser.add_argument("--capture-group", choices=("standard", *_SIMPLE_SHADING_MODES), default="standard")
     parser.add_argument("--newton-shadows", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--scene", type=Path, default=script_dir / "renderer_gallery_scene.usda")
+    parser.add_argument("--scene", type=Path, required=True)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -320,7 +330,8 @@ def _capture(args: argparse.Namespace) -> None:
     def tensor_to_image(data: torch.Tensor, output_name: str) -> Image.Image:
         data = snapshot_camera_tensor(data)
         if output_name == "depth":
-            array = CameraFrameColorizer.colorize(data, "depth", depth_min=2.0, depth_max=13.0)
+            depth_min, depth_max = depth_display_bounds(data)
+            array = CameraFrameColorizer.colorize(data, "depth", depth_min=depth_min, depth_max=depth_max)
         elif output_name == "normals":
             array = CameraFrameColorizer.colorize(data, "normals")
         elif output_name in {"semantic_segmentation", "instance_segmentation"}:

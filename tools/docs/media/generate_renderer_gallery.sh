@@ -7,6 +7,17 @@
 
 set -euo pipefail
 
+if [[ "$#" -ne 1 ]]; then
+    echo "Usage: $0 /path/to/renderer-gallery-scene.usda" >&2
+    exit 1
+fi
+
+SCENE_PATH="$1"
+if [[ ! -f "${SCENE_PATH}" ]]; then
+    echo "Error: scene does not exist: ${SCENE_PATH}" >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 OUTPUT_DIR="${REPO_ROOT}/docs/source/_static/overview/sensors"
@@ -17,6 +28,7 @@ SIMPLE_SHADING_MODES=(
     simple_shading_full_mdl
 )
 COMMON_ARGS=(
+    --scene "${SCENE_PATH}"
     --output-dir "${OUTPUT_DIR}"
     --width 640
     --height 360

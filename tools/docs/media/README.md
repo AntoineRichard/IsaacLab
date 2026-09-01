@@ -15,12 +15,13 @@ runtime packages installed by their `uv run --extra` commands.
 
 ## Renderer gallery
 
-The renderer gallery compares Newton Warp, OVRTX, and Isaac RTX camera outputs
-using the editable `renderer_gallery_scene.usda` stage. Regenerate all RGB
-animations and still output modes from the repository root with:
+The renderer gallery compares Newton Warp, OVRTX, and Isaac RTX camera outputs.
+Pass the shared editable USD stage when regenerating all RGB animations and
+still output modes:
 
 ```bash
-OMNI_KIT_ACCEPT_EULA=Y tools/docs/media/generate_renderer_gallery.sh
+OMNI_KIT_ACCEPT_EULA=Y tools/docs/media/generate_renderer_gallery.sh \
+    /path/to/renderer-gallery-scene.usda
 ```
 
 The generator launches the kit-less renderers separately from Isaac RTX because
