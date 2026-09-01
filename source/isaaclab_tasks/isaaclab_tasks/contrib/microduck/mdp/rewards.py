@@ -4512,6 +4512,18 @@ def _pickplace_target_pos_w(env: ManagerBasedRLEnv, command_name: str) -> torch.
     return env.command_manager.get_term(command_name).target_pos_w
 
 
+def _pickplace_done(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Whether the approach block has nothing left to ask for. Shape is (num_envs,).
+
+    True once the object is in the mouth **or** already placed. Closing the ``succeeded`` half
+    matters: after a placement the object is unlatched and lying under the head, so an approach
+    reward gated on the latch alone would switch back on and pay the policy to hover over -- and
+    nudge -- an object it has already delivered.
+    """
+    state = _pickplace_state(env)
+    return state.latched | state.succeeded
+
+
 class pickplace_approach_progress(_PotentialProgress):
     """Reward closing the horizontal distance to the object, and charge opening it, until it is held.
 
@@ -4639,7 +4651,7 @@ def pickplace_mouth_to_object(
     mouth_pos_w, _ = _mouth_tip_pose_w(env, asset_cfg, mouth_offset_b)
     distance = torch.linalg.norm(obj.data.root_link_pos_w.torch - mouth_pos_w, dim=-1)
     proximity = torch.exp(-((torch.nan_to_num(distance, nan=1e3, posinf=1e3, neginf=1e3) / std) ** 2))
-    return torch.where(_pickplace_state(env).latched, torch.zeros_like(proximity), proximity)
+    return torch.where(_pickplace_done(env), torch.zeros_like(proximity), proximity)
 
 
 def pickplace_mouth_down(
@@ -4678,7 +4690,7 @@ def pickplace_mouth_down(
     distance = torch.linalg.norm(obj.data.root_link_pos_w.torch - mouth_pos_w, dim=-1)
     gate = torch.exp(-((torch.nan_to_num(distance, nan=1e3, posinf=1e3, neginf=1e3) / std) ** 2))
     reward = gate * torch.nan_to_num(alignment, nan=0.0, posinf=0.0, neginf=0.0)
-    return torch.where(_pickplace_state(env).latched, torch.zeros_like(reward), reward)
+    return torch.where(_pickplace_done(env), torch.zeros_like(reward), reward)
 
 
 def pickplace_object_clearance(

@@ -792,3 +792,23 @@ def test_the_object_clearance_prefers_a_lift_to_a_drag_and_only_while_held():
 
     env.scene["object"].data.root_link_pos_w.torch[:, 2] = 0.045 + 0.03
     torch.testing.assert_close(mdp.pickplace_object_clearance(env.as_env(), **params), torch.tensor([math.exp(-1.0)]))
+
+
+def test_the_approach_block_stays_off_after_a_successful_placement():
+    """A placed object is lying under the head, so a latch-only gate would switch the approach
+    reward back on and pay the policy to hover over -- and nudge -- what it had just delivered."""
+    env = _latch_env(mouth_pos=[[0.0, 0.0, 0.05]], object_pos=[[0.0, 0.0, 0.02]], target_pos=[[0.0, 0.0, 0.035]])
+    mouth = dict(
+        asset_cfg=_entity("robot", body_ids=MOUTH_BODY_IDS, body_names=["jaw_soft"]),
+        object_cfg=_entity("object"),
+        mouth_offset_b=(0.0, 0.0, 0.0),
+    )
+    _update_latch(env)
+    _update_latch(env)  # releases at the target
+    assert mdp.pickplace_latch_state(env.as_env()).succeeded.tolist() == [True]
+
+    torch.testing.assert_close(mdp.pickplace_mouth_to_object(env.as_env(), std=0.05, **mouth), torch.tensor([0.0]))
+    torch.testing.assert_close(
+        mdp.pickplace_mouth_down(env.as_env(), mouth_axis_b=(0.0, 0.0, -1.0), std=0.15, **mouth),
+        torch.tensor([0.0]),
+    )
