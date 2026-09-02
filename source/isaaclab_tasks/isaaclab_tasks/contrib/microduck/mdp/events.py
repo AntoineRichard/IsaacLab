@@ -1317,3 +1317,69 @@ def update_pickplace_latch(
         env_ids=env_ids,
         is_global=True,
     )
+
+
+def drive_beak_from_latch(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    mouth_offset_b: Sequence[float],
+    open_distance: float,
+    closed_angle: float,
+    open_angle: float,
+) -> None:
+    """Open the beak as the mouth nears the object and shut it once the object is held.
+
+    The fifteenth servo is **not a policy output** -- the real robot runs a fourteen-action network
+    and drives the mouth from higher-level control, "beak to the floor, one button". This is that
+    higher-level control: a geometric rule, evaluated where Isaac Lab writes state, exactly as
+    :func:`update_pickplace_latch` is.
+
+    Open while the object is within ``open_distance`` of the mouth tip and not yet held; shut
+    otherwise, which covers both the approach from far away and the whole carry. The beak therefore
+    closes on the object at the same moment the latch forms, so what the latch models and what the
+    robot does are the same event rather than two that happen to coincide.
+
+    Args:
+        env: The environment instance.
+        env_ids: Environments to drive. None drives every environment.
+        asset_cfg: The articulation, the single body the mouth tip hangs off, and the beak joint.
+        object_cfg: The rigid object being reached for.
+        mouth_offset_b: Mouth-tip position [m] in the carrying body's frame.
+        open_distance: Mouth-tip-to-object distance [m] within which the beak opens. Set it wider
+            than the latch radius, or the beak would still be shut at the moment it should be
+            closing on something.
+        closed_angle: Jaw angle [rad] with the beak shut.
+        open_angle: Jaw angle [rad] with the beak fully open.
+
+    Raises:
+        ValueError: If ``asset_cfg`` does not select exactly one body and exactly one joint.
+    """
+    robot: Articulation = env.scene[asset_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    if asset_cfg.body_names is None or len(asset_cfg.body_ids) != 1:
+        raise ValueError(
+            "The beak is driven from one body the mouth tip is attached to; 'asset_cfg' must select"
+            f" exactly one by name. Received: {asset_cfg.body_names}."
+        )
+    if asset_cfg.joint_names is None or len(asset_cfg.joint_ids) != 1:
+        raise ValueError(
+            f"The beak is one joint; 'asset_cfg' must select exactly one by name. Received: {asset_cfg.joint_names}."
+        )
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+
+    body_pos_w = robot.data.body_link_pos_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    body_quat_w = robot.data.body_link_quat_w.torch[:, asset_cfg.body_ids].squeeze(1)
+    offset = torch.tensor(tuple(mouth_offset_b), dtype=body_pos_w.dtype, device=body_pos_w.device)
+    mouth_pos_w = body_pos_w + quat_apply(body_quat_w, offset.expand_as(body_pos_w))
+
+    reach = torch.linalg.norm(obj.data.root_link_pos_w.torch - mouth_pos_w, dim=-1)
+    state = pickplace_latch_state(env)
+    gaping = (reach < open_distance) & ~state.latched & ~state.succeeded
+    angle = torch.where(gaping, torch.full_like(reach, open_angle), torch.full_like(reach, closed_angle))
+
+    target = robot.data.joint_pos_target.torch.clone()
+    target[:, asset_cfg.joint_ids[0]] = angle
+    robot.set_joint_position_target_index(target=target[env_ids], env_ids=env_ids)

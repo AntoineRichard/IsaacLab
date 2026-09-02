@@ -23,3 +23,14 @@ gym.register(
         "default_agent": "rsl_rl",
     },
 )
+
+gym.register(
+    id="IsaacContrib-PickPlace-Beak-Flat-MicroDuck",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.beak_env_cfg:MicroDuckPickPlaceBeakFlatEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:MicroDuckPickPlacePPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)

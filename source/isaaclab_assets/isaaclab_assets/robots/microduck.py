@@ -35,7 +35,7 @@ import os
 from pxr import Gf, Usd, UsdPhysics
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg, BamMotorParams
+from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg, BamMotorParams, ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.assets.rigid_object import RigidObjectCfg
 from isaaclab.sim.spawners.materials import UsdPhysicsRigidBodyMaterialCfg
@@ -54,6 +54,9 @@ MICRODUCK_ALLCOLLISIONS_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_
 
 MICRODUCK_ROLLERS_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_rollers.usd")
 """Path of the converted MicroDuck roller asset."""
+
+MICRODUCK_BEAK_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_beak.usd")
+"""Path of the converted MicroDuck asset whose beak opens."""
 
 
 def _regenerate_command(usd_path: str) -> str:
@@ -331,6 +334,27 @@ Everything else, including the servo group and the joint dynamics the conversion
 :data:`MICRODUCK_CFG`'s.
 """
 
+MICRODUCK_BEAK_JOINT_NAME = "mouth"
+"""The fifteenth servo, which opens the beak.
+
+Named for upstream's own wire order, where ``mouth`` sits at index 9 of 15 between ``head_roll`` and
+``right_hip_yaw`` (``scripts/bake-duck-mesh.py`` in ``pollen-robotics/microduck``).
+"""
+
+MICRODUCK_BEAK_CLOSED = -0.08726646259971647
+"""Jaw angle [rad] with the beak shut, upstream's ``MOUTH_CLOSED`` of -5 degrees.
+
+Reproduced independently from the meshes: sweeping the jaw about its measured hinge puts the minimum
+gap to the upper mouth surface at 0.06 mm at exactly this angle. See
+``artifacts/microduck/pickplace/BEAK.md``.
+"""
+
+MICRODUCK_BEAK_OPEN = 0.5235987755982988
+"""Jaw angle [rad] with the beak fully open, upstream's ``MOUTH_OPEN`` of +30 degrees.
+
+The gape there is **17.4 mm**, which is the hard upper bound on what this robot can pick up.
+"""
+
 MICRODUCK_ROLLERS_CFG = _microduck_variant_cfg(MICRODUCK_ROLLERS_USD_PATH)
 """Configuration for the MicroDuck biped on upstream's roller model.
 
@@ -362,6 +386,69 @@ else). Their home position is zero, which is the MJCF's, so they are not listed 
     or re-measures is one decision, taken once, at the task level. This configuration's job is to
     carry the MJCF faithfully; it deliberately does not guess at the answer by fixing one member of
     that group in isolation.
+"""
+
+
+MICRODUCK_BEAK_CFG = _microduck_variant_cfg(MICRODUCK_BEAK_USD_PATH)
+MICRODUCK_BEAK_CFG.init_state.joint_pos = {
+    **MICRODUCK_CFG.init_state.joint_pos,
+    # a duck at rest has its beak shut, and the mesh's own baked pose is 5 degrees open
+    MICRODUCK_BEAK_JOINT_NAME: MICRODUCK_BEAK_CLOSED,
+}
+MICRODUCK_BEAK_CFG.actuators = {
+    # The fourteen policy servos, named rather than matched. The other variants select them with
+    # upstream's ``^(?!passive_).*``, which would sweep the fifteenth joint into the same group and
+    # silently widen the action space; this model is the one where that expression stops being safe.
+    "servos": copy.deepcopy(MICRODUCK_CFG.actuators["servos"]).replace(
+        joint_names_expr=[
+            "left_hip_yaw",
+            "left_hip_roll",
+            "left_hip_pitch",
+            "left_knee",
+            "left_ankle",
+            "neck_pitch",
+            "head_pitch",
+            "head_yaw",
+            "head_roll",
+            "right_hip_yaw",
+            "right_hip_roll",
+            "right_hip_pitch",
+            "right_knee",
+            "right_ankle",
+        ],
+    ),
+    # The beak, on its own group and its own controller. It is deliberately **not** a policy output:
+    # upstream's networks are fourteen actions with this joint skipped, and the real runtime drives
+    # the mouth from higher-level control -- "beak to the floor, one button". A task opens and shuts
+    # it by writing this joint's target, not by handing the policy a fifteenth action.
+    "beak": ImplicitActuatorCfg(
+        joint_names_expr=[MICRODUCK_BEAK_JOINT_NAME],
+        effort_limit=MICRODUCK_SERVO_EFFORT_LIMIT,
+        velocity_limit=10.0,
+        stiffness=2.0,
+        damping=0.05,
+    ),
+}
+"""Configuration for the MicroDuck biped with a beak that opens.
+
+**The one MicroDuck model with no upstream MJCF.** The real robot has fifteen servos and the
+fifteenth, ``mouth``, drives a grasping beak; every upstream RL model welds that jaw on as a fixed
+geom and says so outright -- ``scripts/bake-duck-mesh.py`` notes that "``mouth`` is a servo without
+an MJCF joint (the jaw is a fixed geom), so it never appears in a bake". This variant is patched from
+``robot_allcollisions.xml`` by
+:func:`~scripts.tools.convert_microduck.split_beak_into_hinged_body`, which moves both ``jaw`` geoms
+onto a hinged child body at a pivot **measured from the pinned meshes** and re-splits the head's
+inertial so the composite mass, centre of mass and inertia are unchanged.
+
+Two consequences worth stating before anyone trains on it:
+
+* **It cannot be accuracy-gated against upstream.** A fifteenth joint changes the state vector, so
+  the golden trajectories diverge by construction. Every other task keeps
+  :data:`MICRODUCK_ALLCOLLISIONS_USD_PATH` and its gates untouched.
+* **The action space is still fourteen.** The beak has its own actuator group precisely so that a
+  task's action term, which selects the servos by name, cannot pick it up.
+
+See ``artifacts/microduck/pickplace/BEAK.md`` for the hinge measurement and its cross-checks.
 """
 
 

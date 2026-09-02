@@ -25,6 +25,7 @@ __all__ = [
     "apply_mouth_payload_force",
     "ball_forward_velocity",
     "ball_kick_direction",
+    "drive_beak_from_latch",
     "ball_pos_in_base",
     "ball_speed_overshoot_penalty",
     "ball_vel_in_base",
@@ -191,6 +192,7 @@ from .curriculums import (
 )
 from .events import (
     PickPlaceLatchState,
+    drive_beak_from_latch,
     RouladeRollState,
     apply_mouth_payload_force,
     ball_kick_direction,

@@ -40,6 +40,7 @@ See ``ATTRIBUTION.md`` next to the generated asset for the provenance of the sou
 
 import dataclasses
 import os
+from collections.abc import Callable
 
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -114,6 +115,14 @@ class MicroDuckModel:
     is not mistaken for one.
     """
 
+    mjcf_patch: Callable[[str, str], None] | None = None
+    """Transform applied to the upstream MJCF before conversion, if this model patches one.
+
+    Set only on models with no upstream MJCF of their own. The callable takes the source and
+    destination paths; the destination is written into a scratch directory whose ``assets`` resolves
+    to the upstream one, so ``meshdir`` keeps working.
+    """
+
     @property
     def mjcf_repo_path(self) -> str:
         """Path of the source MJCF inside the upstream repository."""
@@ -123,6 +132,166 @@ class MicroDuckModel:
     def usd_path(self) -> str:
         """Default output path of the converted asset."""
         return os.path.join(MICRODUCK_USD_DIR, f"microduck_{self.name}.usd")
+
+
+##
+# The beak hinge.
+#
+# The real MicroDuck has **fifteen** servos; the fifteenth is named ``mouth`` and drives a grasping
+# beak. Upstream's RL models all carry fourteen actuators and weld the jaw on as a fixed geom --
+# deliberately, and they say so: ``scripts/bake-duck-mesh.py`` in ``pollen-robotics/microduck`` notes
+# that "``mouth`` is a servo without an MJCF joint (the jaw is a fixed geom), so it never appears in
+# a bake". There is therefore no upstream model to convert, and the ``beak`` variant patches one.
+#
+# The three numbers below are **measured from the pinned upstream meshes**, not guessed; the
+# derivation, the cross-checks and the residuals are in ``artifacts/microduck/pickplace/BEAK.md``.
+##
+
+MICRODUCK_BEAK_PIVOT = (0.00292, 0.0, -0.01800)
+"""Position [m] of the jaw hinge in the ``jaw_soft`` head-body frame.
+
+Found by intersecting the face normals of every y-perpendicular cylinder in the jaw's root region
+and taking the Hough peak, independently on two meshes: ``jaw`` gives (2.91, -17.92) mm with a
+6.07 mm bore and ``bottom_head_shell`` gives (2.93, -18.16) mm with a 9.19 mm one -- agreeing to
+0.02 mm in x and 0.24 mm in z, with the jaw's boss seated inside the shell's larger bearing seat.
+The pivot height also coincides with the ``-0.018`` every head geom is placed at, so the CAD origin
+of the head parts is the hinge itself.
+"""
+
+MICRODUCK_BEAK_AXIS = (0.0, 1.0, 0.0)
+"""Hinge axis [-] in the head-body frame. Every head part is symmetric about ``y = 0`` at +/-45.7 mm,
+so the sagittal axis is the only candidate."""
+
+MICRODUCK_BEAK_RANGE = (-0.08726646259971647, 0.5235987755982988)
+"""Jaw travel [rad]: -5 degrees closed, +30 degrees fully open.
+
+These are upstream's own ``MOUTH_CLOSED`` and ``MOUTH_OPEN`` from ``duck-control/src/model.rs``, and
+the closed end **reproduces from the geometry**: sweeping the jaw about the measured pivot puts its
+minimum gap to ``soft_mouth_top`` -- the upper surface it shuts against -- at 0.06 mm at exactly
+-5.0 degrees. Two independent sources, one number. The mesh's own baked pose is therefore 5 degrees
+open, which is why zero is inside the range rather than at its end.
+
+Full gape is **17.4 mm**, which is the hard bound on what this robot can pick up.
+"""
+
+MICRODUCK_BEAK_JOINT_NAME = "mouth"
+"""Name of the hinge, matching the fifteenth entry of upstream's servo wire order."""
+
+MICRODUCK_BEAK_BODY_NAME = "beak"
+"""Name of the body the jaw geoms move onto."""
+
+MICRODUCK_BEAK_DENSITY = 1240.0
+"""Density [kg/m^3] the beak's mass is taken at, PLA.
+
+The ``jaw`` mesh is watertight at 9.36 cm^3, so this makes the beak 11.6 g of the head assembly's
+188.8 g. The remainder is left on the head, and the *composite* mass, centre of mass and inertia are
+preserved exactly -- splitting a body must not change the robot. That invariant is asserted by
+``test_microduck_beak_asset.py`` rather than trusted.
+"""
+
+
+def split_beak_into_hinged_body(source_mjcf: str, dest_mjcf: str) -> None:
+    """Write a copy of the all-collisions MJCF whose jaw is a hinged child body.
+
+    Moves both ``jaw`` geoms -- the visual and the collision one -- off the ``jaw_soft`` head body
+    onto a new child at :data:`MICRODUCK_BEAK_PIVOT`, hinged about :data:`MICRODUCK_BEAK_AXIS` over
+    :data:`MICRODUCK_BEAK_RANGE`, and re-splits the head's inertial between the two so the composite
+    is unchanged.
+
+    No actuator is added. The mouth is not part of any policy on the real robot -- fourteen actions
+    with this joint skipped -- so the action space must not grow; the asset configuration drives it
+    from a separate actuator group instead.
+
+    Args:
+        source_mjcf: Path of the upstream all-collisions MJCF.
+        dest_mjcf: Path to write the patched MJCF to. Its directory must resolve the same
+            ``meshdir`` as the source.
+
+    Raises:
+        RuntimeError: If the source does not have the expected head body and jaw geoms.
+    """
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+    import trimesh  # noqa: PLC0415
+
+    tree = ET.parse(source_mjcf)
+    root = tree.getroot()
+    head = next((b for b in root.iter("body") if b.get("name") == "jaw_soft"), None)
+    if head is None:
+        raise RuntimeError(f"{source_mjcf} has no 'jaw_soft' body to hinge a beak off.")
+    jaw_geoms = [g for g in head.findall("geom") if g.get("mesh") == "jaw"]
+    if not jaw_geoms:
+        raise RuntimeError(f"{source_mjcf} has no 'jaw' geoms on 'jaw_soft'.")
+
+    # -- mass properties -------------------------------------------------------------------------
+    mesh_dir = os.path.join(os.path.dirname(os.path.abspath(source_mjcf)), root.find("compiler").get("meshdir", "."))
+    jaw_mesh = trimesh.load(os.path.join(mesh_dir, "jaw.stl"))
+    geom_pos = np.array([float(v) for v in jaw_geoms[0].get("pos", "0 0 0").split()])
+    geom_quat = np.array([float(v) for v in jaw_geoms[0].get("quat", "1 0 0 0").split()])
+    w, x, y, z = geom_quat / np.linalg.norm(geom_quat)
+    rot = np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+    jaw_mesh.vertices = jaw_mesh.vertices @ rot.T + geom_pos
+    jaw_mesh.density = MICRODUCK_BEAK_DENSITY
+
+    inertial = head.find("inertial")
+    head_mass = float(inertial.get("mass"))
+    head_com = np.array([float(v) for v in inertial.get("pos").split()])
+    ixx, iyy, izz, ixy, ixz, iyz = (float(v) for v in inertial.get("fullinertia").split())
+    head_inertia = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]])
+
+    def about_origin(mass, com, inertia):
+        """Shift an inertia from a body's own centre of mass to the body frame origin."""
+        return inertia + mass * (np.dot(com, com) * np.eye(3) - np.outer(com, com))
+
+    beak_mass = float(jaw_mesh.mass)
+    beak_com = np.array(jaw_mesh.center_mass)
+    beak_inertia = np.array(jaw_mesh.moment_inertia)
+
+    rest_mass = head_mass - beak_mass
+    rest_com = (head_mass * head_com - beak_mass * beak_com) / rest_mass
+    rest_inertia = about_origin(head_mass, head_com, head_inertia) - about_origin(beak_mass, beak_com, beak_inertia)
+    rest_inertia -= rest_mass * (np.dot(rest_com, rest_com) * np.eye(3) - np.outer(rest_com, rest_com))
+
+    def write_inertial(element, mass, com, inertia):
+        element.set("mass", f"{mass:.9g}")
+        element.set("pos", " ".join(f"{v:.9g}" for v in com))
+        element.set(
+            "fullinertia",
+            " ".join(
+                f"{v:.9g}"
+                for v in (inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2])
+            ),
+        )
+
+    write_inertial(inertial, rest_mass, rest_com, rest_inertia)
+
+    # -- the hinged body -------------------------------------------------------------------------
+    pivot = np.array(MICRODUCK_BEAK_PIVOT)
+    beak = ET.SubElement(head, "body")
+    beak.set("name", MICRODUCK_BEAK_BODY_NAME)
+    beak.set("pos", " ".join(f"{v:.9g}" for v in pivot))
+    joint = ET.SubElement(beak, "joint")
+    joint.set("name", MICRODUCK_BEAK_JOINT_NAME)
+    joint.set("type", "hinge")
+    joint.set("axis", " ".join(f"{v:.9g}" for v in MICRODUCK_BEAK_AXIS))
+    joint.set("range", " ".join(f"{v:.17g}" for v in MICRODUCK_BEAK_RANGE))
+    beak_inertial = ET.SubElement(beak, "inertial")
+    write_inertial(beak_inertial, beak_mass, beak_com - pivot, beak_inertia)
+    for geom in jaw_geoms:
+        head.remove(geom)
+        pos = np.array([float(v) for v in geom.get("pos", "0 0 0").split()]) - pivot
+        geom.set("pos", " ".join(f"{v:.9g}" for v in pos))
+        beak.append(geom)
+
+    ET.indent(tree, space="  ")
+    tree.write(dest_mjcf, encoding="utf-8", xml_declaration=True)
 
 
 MICRODUCK_MODELS = {
@@ -154,6 +323,26 @@ MICRODUCK_MODELS = {
                     "bottom_head_shell",
                 }
             ),
+        ),
+        # No upstream MJCF: patched from ``robot_allcollisions.xml`` by
+        # :func:`split_beak_into_hinged_body`, which hinges the jaw so the beak can open. Its
+        # world-contact set is the all-collisions one -- the jaw still reaches the ground, it just
+        # does so on a joint now.
+        MicroDuckModel(
+            name="beak",
+            mjcf_filename="robot_allcollisions.xml",
+            world_collider_geom_names=frozenset({"left_foot_collision", "right_foot_collision"}),
+            world_collider_meshes=frozenset(
+                {
+                    "np_f970",
+                    "hip_l",
+                    "leg",
+                    "top_head_shell",
+                    "jaw",
+                    "bottom_head_shell",
+                }
+            ),
+            mjcf_patch=split_beak_into_hinged_body,
         ),
         # ``robot_allcollisions_rollers.xml``: the all-collisions set with the two soles replaced by
         # the four tires. This MJCF names no geom at all.
@@ -439,6 +628,8 @@ def main():
         help="Path to store the flattened USD file. Defaults to the model's asset shipped with isaaclab_assets.",
     )
     add_launcher_args(parser)
+    import tempfile  # noqa: PLC0415
+
     args_cli = parser.parse_args()
     model = MICRODUCK_MODELS[args_cli.model]
 
@@ -452,8 +643,6 @@ def main():
             " 'isaacsim-asset-isolated' importer wheel, but neither is installed."
         )
 
-    import tempfile  # noqa: PLC0415
-
     from isaaclab.physics import PhysicsCfg  # noqa: PLC0415
     from isaaclab.sim.converters import MjcfConverter, MjcfConverterCfg  # noqa: PLC0415
     from isaaclab.utils.assets import check_file_path  # noqa: PLC0415
@@ -462,6 +651,19 @@ def main():
     if not check_file_path(mjcf_path):
         raise ValueError(f"Invalid file path: {mjcf_path}")
     dest_path = os.path.abspath(args_cli.output or model.usd_path)
+
+    patch_dir = None
+    if model.mjcf_patch is not None:
+        # The patched MJCF has to sit somewhere its ``meshdir`` still resolves, and writing into the
+        # upstream checkout would mutate a shared cache. A scratch directory with ``assets``
+        # symlinked back is the same thing without the side effect.
+        patch_dir = tempfile.TemporaryDirectory(prefix="microduck_beak_")
+        source_dir = os.path.dirname(mjcf_path)
+        os.symlink(os.path.join(source_dir, "assets"), os.path.join(patch_dir.name, "assets"))
+        patched = os.path.join(patch_dir.name, f"robot_{model.name}.xml")
+        model.mjcf_patch(mjcf_path, patched)
+        print(f"Patched {mjcf_path} -> {patched}")
+        mjcf_path = patched
 
     with launch_simulation(cfg=PhysicsCfg(), launcher_args=args_cli):
         # The layered asset is an intermediate: only the flattened file is shipped, and keeping the
@@ -477,6 +679,8 @@ def main():
             )
             flatten_to_single_file(converter.usd_path, dest_path, model)
 
+    if patch_dir is not None:
+        patch_dir.cleanup()
     print(f"Converted {mjcf_path} to {dest_path}")
 
 
