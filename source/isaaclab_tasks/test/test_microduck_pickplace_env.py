@@ -183,7 +183,9 @@ EXPECTED_REWARD_WEIGHTS = {
     "place_precision": 2500.0,
     # posture floor
     "upright": 0.2,
-    "feet_grounded": 0.5,
+    "carry_upright": 3.0,
+    "return_upright": 12.0,
+    "feet_grounded": 1.0,
     "head_impact_penalty": -2.0,
     "self_collisions": -1.0,
     "dof_pos_limits": -1.0,
@@ -1158,9 +1160,29 @@ def _returns(rewards) -> dict[str, float]:
             + r("carry_hold", 300)
             + r("place_success", 1)
             + r("place_precision", 1)
+            + r("carry_upright", 300)
+            + r("return_upright", 500)
+            + r("feet_grounded", EPISODE_STEPS)
         ),
-        # pick it up and stand there for the rest of the episode
-        "hold_forever": r("approach_progress", 0.45) + r("latch_bonus", 1) + r("carry_hold", EPISODE_STEPS),
+        # carry it the whole way but on your belly: every gated posture term is forfeited, which is
+        # exactly what the second-to-last training run did (ruling R-PP21)
+        "deliver_but_crawl": (
+            r("approach_progress", 0.45)
+            + r("latch_bonus", 1)
+            + r("carry_progress", 0.60)
+            + r("carry_hold", 300)
+            + r("place_success", 1)
+            + r("place_precision", 1)
+        ),
+        # pick it up and stand there for the rest of the episode, upright -- which is the strongest
+        # form of the shortcut, because it collects the per-step carry terms *and* the posture floor
+        "hold_forever": (
+            r("approach_progress", 0.45)
+            + r("latch_bonus", 1)
+            + r("carry_hold", EPISODE_STEPS)
+            + r("carry_upright", EPISODE_STEPS)
+            + r("feet_grounded", EPISODE_STEPS)
+        ),
         # park the mouth on it and never commit
         "hover_forever": (
             r("approach_progress", 0.45) + r("mouth_to_object", EPISODE_STEPS) + r("mouth_down", EPISODE_STEPS)
@@ -1191,6 +1213,8 @@ def test_delivering_the_object_pays_more_than_any_shortcut():
     """
     returns = _returns(MicroDuckPickPlaceFlatEnvCfg().rewards)
 
+    # standing beats crawling by a clear margin, which is the whole of ruling R-PP21's repair
+    assert returns["deliver"] > 1.5 * returns["deliver_but_crawl"]
     assert returns["deliver"] > 2.5 * returns["hold_forever"]
     assert returns["deliver"] > 3.0 * returns["hover_forever"]
     # ... and than delivering by throwing yourself at the target, which satisfies the literal

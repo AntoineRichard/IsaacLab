@@ -865,11 +865,28 @@ class RewardsCfg:
         weight=0.2,
         params={"std": math.sqrt(0.05), "asset_cfg": _TRUNK_BODY_CFG},
     )
+    # Gated uprightness, which is what the ungated term above cannot provide (ruling R-PP21). The
+    # pick needs a deep fold, so ``upright`` has to stay weak; the *carry* and the *return* do not,
+    # and leaving them uncovered produced a policy that folded flat in half a second and shuffled the
+    # object along on its belly for the rest of the episode. Sized so that carrying upright is worth
+    # roughly what carrying at all is: the choice between standing and crawling should not be close.
+    carry_upright = RewTerm(
+        func=mdp.pickplace_upright_while_carrying,
+        weight=3.0,
+        params={"std": math.sqrt(0.05), "asset_cfg": _TRUNK_BODY_CFG},
+    )
+    # The return-to-stand cut in ruling R-PP14 and restored here. The ground-pick task's return block
+    # is the largest in its stack, with the note that the bend is easy and the clean return is not.
+    return_upright = RewTerm(
+        func=mdp.pickplace_upright_after_placing,
+        weight=12.0,
+        params={"std": math.sqrt(0.05), "asset_cfg": _TRUNK_BODY_CFG},
+    )
     # Weaker than the ground-pick task's 3.0, because that task has no swing phase and this one has
     # to walk: a strong both-soles-down reward is a standing-still reward on a locomotion task.
     feet_grounded = RewTerm(
         func=mdp.feet_grounded_reward,
-        weight=0.5,
+        weight=1.0,
         params={"sensor_cfg": _FEET_GROUND_SENSOR_CFG},
     )
     # Terrain-filtered, so this charges face-planting into the floor and never charges pressing the

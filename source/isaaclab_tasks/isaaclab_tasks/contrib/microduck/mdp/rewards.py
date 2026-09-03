@@ -4820,3 +4820,57 @@ def pickplace_place_precision(
     error = torch.linalg.norm(obj.data.root_link_pos_w.torch[:, :2] - target_pos_w[:, :2], dim=-1)
     precision = torch.exp(-((torch.nan_to_num(error, nan=1e3, posinf=1e3, neginf=1e3) / std) ** 2))
     return _pickplace_state(env).release_edge.float() * precision
+
+
+def pickplace_upright_while_carrying(
+    env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward standing up straight, but only while the object is being carried.
+
+    The ungated :func:`upright` term is deliberately weak on this task, for the ground-pick task's
+    reason: the pick *requires* a deep forward fold, and a strong always-on uprightness reward would
+    price it out. What that leaves uncovered is the **carry**, and a training run duly found the gap
+    -- it folded flat within half a second, shuffled the object along the floor on its belly and
+    never stood up once, with the ungated term reading 15 % of maximum (ruling R-PP21).
+
+    Gating on the latch is what lets the two coexist: fold freely to reach the object, then stand to
+    carry it. The gate is the same latch state every other phase term reads, so the phases stay
+    emergent rather than scheduled.
+
+    Args:
+        env: The environment instance.
+        std: Width of the Gaussian kernel on the trunk's gravity tilt.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1]``, zero unless the object is held. Shape is (num_envs,).
+    """
+    state = _pickplace_state(env)
+    reward = upright(env, std=std, asset_cfg=asset_cfg)
+    return torch.where(state.latched & ~state.succeeded, reward, torch.zeros_like(reward))
+
+
+def pickplace_upright_after_placing(
+    env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward standing up straight once the object has been placed.
+
+    The return-to-stand the design cut in ruling R-PP14, restored for the reason R-PP21 uncovered.
+    Cutting it was defensible when the posture floor was a comparable share of the budget; once the
+    rescale made the task objective dominant, "stand back up afterwards" stopped being worth anything
+    and the robot simply stayed down.
+
+    The ground-pick task had already learned this lesson and its return block is the largest in that
+    stack, with the note that the bend is easy and the clean return is not. That precedent was in
+    front of me and I cut the block anyway.
+
+    Args:
+        env: The environment instance.
+        std: Width of the Gaussian kernel on the trunk's gravity tilt.
+        asset_cfg: The articulation whose root link carries the trunk.
+
+    Returns:
+        The reward in ``[0, 1]``, zero until the object has been placed. Shape is (num_envs,).
+    """
+    reward = upright(env, std=std, asset_cfg=asset_cfg)
+    return torch.where(_pickplace_state(env).succeeded, reward, torch.zeros_like(reward))

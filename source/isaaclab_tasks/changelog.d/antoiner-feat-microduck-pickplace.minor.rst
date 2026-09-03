@@ -114,6 +114,15 @@ Changed
   inside the 10-40 g mouth-payload band the ground-pick task already validates at the same attachment
   point, and its mass, hollow-shell inertia, collision and material are pinned by that asset's own
   fidelity tests. ``isaaclab_assets`` is therefore untouched.
+* Rewarded uprightness **where it is wanted**, gated on the latch, which the ungated posture floor
+  could not do. The pick requires a deep forward fold, so the always-on term has to stay weak -- and
+  a training run found the gap that leaves: it folded flat within half a second, shuffled the object
+  along the floor on its belly for the whole episode and never stood up, with the ungated term
+  reading 15 % of maximum. ``carry_upright`` pays for standing while the object is held and
+  ``return_upright`` for standing once it has been placed. The split between their weights is itself
+  an anti-farm: the per-step carry term is modest because a large one would make "pick it up and
+  stand there" attractive, while the return term is large because it is gated on success and the only
+  route to that gate is delivering the object.
 * Priced falling rather than merely terminating on it. A termination is only a penalty when the rest
   of the episode was worth something, and this stack's mass is a one-shot delivery bonus a policy can
   collect in the first second -- so a fall cost nothing, and a training run learned to grab the
