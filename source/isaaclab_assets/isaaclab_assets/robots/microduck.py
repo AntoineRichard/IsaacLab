@@ -353,7 +353,9 @@ gap to the upper mouth surface at 0.06 mm at exactly this angle. See
 MICRODUCK_BEAK_OPEN = 0.5235987755982988
 """Jaw angle [rad] with the beak fully open, upstream's ``MOUTH_OPEN`` of +30 degrees.
 
-The gape there is **17.4 mm**, which is the hard upper bound on what this robot can pick up.
+The aperture at the mouth line there is **31.1 mm**, which is the bound on what this robot can
+pick up. See ``artifacts/microduck/pickplace/BEAK.md``; note that a *minimum* gap of 17.4 mm also
+falls out of the same sweep and is not the aperture.
 """
 
 MICRODUCK_ROLLERS_CFG = _microduck_variant_cfg(MICRODUCK_ROLLERS_USD_PATH)
@@ -534,17 +536,25 @@ def _spawn_microduck_ball(
 # Marble prop.
 #
 # The ball above is upstream's floorball, sized for kicking. Nothing about it is sized for the beak:
-# it is 70 mm across and the beak opens 17.4 mm, so it cannot be picked up even in principle. This is
+# it is 70 mm across and the beak opens 31 mm, so it cannot be picked up even in principle. This is
 # the prop for tasks where the robot is meant to *hold* something.
 ##
 
-MICRODUCK_MARBLE_RADIUS = 0.006
-"""Radius [m] of the marble prop: 12 mm across.
+MICRODUCK_MARBLE_RADIUS = 0.010
+"""Radius [m] of the marble prop: 20 mm across.
 
-Sized against the **beak**, not against the robot. The measured full gape is 17.4 mm
-(``artifacts/microduck/pickplace/BEAK.md``), so 12 mm leaves 5.4 mm of clearance -- enough that the
-beak visibly closes on the marble rather than butting against it, and small enough that a 25 cm duck
-carrying it reads as carrying something rather than balancing on it.
+Sized against the **beak**, not against the robot. The measured aperture at the mouth line is
+**31.1 mm** at full open (``artifacts/microduck/pickplace/BEAK.md``), so 20 mm leaves 11 mm of
+clearance: enough that the marble seats between the mandibles rather than being pinched at the very
+tip, and large enough to read on a recording of a 25 cm robot.
+
+.. note::
+
+    An earlier version of this constant was 12 mm, sized against a **17.4 mm** figure that was not
+    the aperture at all -- it was the minimum distance from any front-half jaw vertex to the upper
+    mouth surface, which is dominated by vertices near the hinge where the mandibles barely separate.
+    The aperture is measured on the vertices that actually touch when the beak is shut, all of which
+    lie at the tip. The correct figure is nearly twice the wrong one.
 """
 
 MICRODUCK_MARBLE_DENSITY = 2500.0
@@ -553,8 +563,8 @@ MICRODUCK_MARBLE_DENSITY = 2500.0
 MICRODUCK_MARBLE_MASS = 4.0 / 3.0 * math.pi * MICRODUCK_MARBLE_RADIUS**3 * MICRODUCK_MARBLE_DENSITY
 """Mass [kg] of the marble, ~2.26 g -- derived from its own radius and density rather than stated.
 
-0.3 % of the robot's 0.74 kg, against the ball's 2.0 %. A duck picking up a marble should barely
-notice it, and the latch spring is sized from this number rather than around it; see
+1.4 % of the robot's 0.74 kg, against the ball's 2.0 %. The latch spring is sized from this number
+rather than around it; see
 :data:`~isaaclab_tasks.contrib.microduck.pickplace.pickplace_env_cfg.MICRODUCK_LATCH_STIFFNESS`.
 """
 

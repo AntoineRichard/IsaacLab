@@ -280,15 +280,15 @@ class MicroDuckPickPlacePhysicsCfg(PresetCfg):
             # Measured, not inherited, and **re-measured after the prop changed**. Profiling under
             # random actions -- the regime where the robots collapse onto the floor and grind every
             # collider and the object into it, with both fall terminations dropped and the pushes
-            # forced to full magnitude -- peaks at **28 contacts and 94 constraints** per
+            # forced to full magnitude -- peaks at **30 contacts and 94 constraints** per
             # environment at 4096. Log:
-            # ``artifacts/microduck/profile_microduck_contacts_pickplace_marble_4096envs.log``.
+            # ``artifacts/microduck/profile_microduck_contacts_pickplace_marble20_4096envs.log``.
             #
             # ==================  =========  =========  ===========
             # prop                peak ncon  peak nefc  median ncon
             # ==================  =========  =========  ===========
             # 70 mm ball                 32         90           27
-            # 12 mm marble               28         94           25
+            # 20 mm marble               30         94           25
             # ==================  =========  =========  ===========
             #
             # Note the constraint peak went **up** while the contact peak went down: a smaller prop

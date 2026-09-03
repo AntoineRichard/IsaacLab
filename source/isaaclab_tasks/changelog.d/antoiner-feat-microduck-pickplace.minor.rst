@@ -93,9 +93,10 @@ Changed
   potential: it is not farmable the same way, because the robot cannot move away from the object
   without being charged for it, and a symmetric term gives the denser learning signal.
 * Sized the prop against the **beak** rather than against the robot. The task shipped for three
-  training runs carrying ``MICRODUCK_BALL_CFG``, upstream's 70 mm floorball, which is four times
-  wider than the beak opens -- so it could never be grasped, only leaned on, and the recordings show
-  exactly that. ``MICRODUCK_MARBLE_CFG`` is a 12 mm glass marble against a measured 17.4 mm gape.
+  training runs carrying ``MICRODUCK_BALL_CFG``, upstream's 70 mm floorball, which is more than twice
+  as wide as the beak opens -- so it could never be grasped, only leaned on, and the recordings show
+  exactly that. ``MICRODUCK_MARBLE_CFG`` is a 20 mm glass marble against a measured 31.1 mm aperture,
+  taken on the jaw vertices that actually meet the upper mouth surface when the beak is shut.
 * Derived every latch constant from the prop instead of hand-picking them. The stiffness is
   ``m * (omega*dt / dt)^2`` at a chosen dimensionless stiffness, the damping from a damping ratio and
   the break force from a multiple of the object's weight, so a change of prop carries all of them.

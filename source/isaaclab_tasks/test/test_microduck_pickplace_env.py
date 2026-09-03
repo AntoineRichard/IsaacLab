@@ -639,7 +639,7 @@ def test_the_task_runs_the_all_collisions_robot_and_a_prop_the_beak_can_hold():
 
     assert "allcollisions" in cfg.scene.robot.spawn.usd_path
     assert cfg.scene.terrain.terrain_type == "plane"
-    # the purpose-built marble, not the ball-kick floorball: 12 mm against a 17.4 mm gape
+    # the purpose-built marble, not the ball-kick floorball: 20 mm against a 31 mm aperture
     assert cfg.scene.object.spawn.radius == pytest.approx(MICRODUCK_MARBLE_RADIUS)
     assert cfg.scene.object.spawn.mass_props.mass == pytest.approx(MICRODUCK_LATCH_OBJECT_MASS)
 
@@ -696,12 +696,12 @@ def test_the_runner_differs_from_the_velocity_one_in_the_two_fields_every_siblin
     assert differing == {"experiment_name", "max_iterations"}
 
 
-MEASURED_PEAK_CONTACTS = 28
+MEASURED_PEAK_CONTACTS = 30
 MEASURED_PEAK_CONSTRAINTS = 94
 """Worst-case per-environment demand under random actions, re-measured after the prop change.
 
-From ``artifacts/microduck/profile_microduck_contacts_pickplace_marble_4096envs.log``. Swapping the
-70 mm ball for a 12 mm marble takes the contact peak from 32 to 28 and *raises* the constraint peak
+From ``artifacts/microduck/profile_microduck_contacts_pickplace_marble20_4096envs.log``. Swapping the
+70 mm ball for a 20 mm marble takes the contact peak from 32 to 30 and *raises* the constraint peak
 from 90 to 94 -- a smaller prop is not uniformly cheaper, which is why the budget is re-measured on a
 prop change rather than assumed to be covered by the old one. Transcribed here rather than imported
 so the budget below cannot be lowered under the measurement it was sized against.
@@ -1264,15 +1264,20 @@ def test_the_carry_progress_is_a_ratchet_and_the_approach_is_not():
 def test_the_object_fits_inside_the_beak():
     """The invariant the prop change exists to satisfy.
 
-    The measured full gape is 17.4 mm (``artifacts/microduck/pickplace/BEAK.md``). The task shipped
-    for three training runs with a 70 mm ball -- four times wider than the beak opens -- which is why
-    the recordings show a duck leaning on a sphere rather than picking anything up. A prop that does
-    not fit is not a pick-and-place prop, however well the rest of the stack scores.
+    The measured aperture at the mouth line is 31.1 mm at full open
+    (``artifacts/microduck/pickplace/BEAK.md``). The task shipped for three training runs with a
+    70 mm ball -- more than twice as wide as the beak opens -- which is why the recordings show a duck
+    leaning on a sphere rather than picking anything up. A prop that does not fit is not a
+    pick-and-place prop, however well the rest of the stack scores.
     """
-    # Measured, not derived. Sweeping the jaw about its hinge and taking the minimum distance to
-    # ``soft_mouth_top`` gives 17.39 mm at full open; the beak *tip* travels 36.5 mm over the same
-    # sweep, and confusing the two would overstate what the robot can hold by a factor of two.
-    gape = 0.0174
+    # Measured on the vertices that actually touch when the beak is shut -- the mouth line, which
+    # lies entirely at the tip. Rotating those to full open gives 31.1 mm median.
+    #
+    # An earlier version of this test used 17.4 mm, which was the *minimum* distance from any
+    # front-half jaw vertex to the upper surface. Most of those vertices sit near the hinge where the
+    # mandibles barely separate, so that figure understated the aperture by nearly half and the prop
+    # was sized down to match it.
+    gape = 0.0311
     assert pytest.approx(math.radians(35.0), abs=1e-6) == MICRODUCK_BEAK_OPEN - MICRODUCK_BEAK_CLOSED
 
     assert gape > 2.0 * MICRODUCK_MARBLE_RADIUS
