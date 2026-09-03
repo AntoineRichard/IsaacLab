@@ -30,6 +30,7 @@ directly rather than converted, because its MJCF is a single analytic sphere.
 """
 
 import copy
+import math
 import os
 
 from pxr import Gf, Usd, UsdPhysics
@@ -527,6 +528,64 @@ def _spawn_microduck_ball(
     inertia = 2.0 / 3.0 * cfg.mass_props.mass * cfg.radius**2
     UsdPhysics.MassAPI.Apply(prim).CreateDiagonalInertiaAttr().Set(Gf.Vec3f(inertia, inertia, inertia))
     return prim
+
+
+##
+# Marble prop.
+#
+# The ball above is upstream's floorball, sized for kicking. Nothing about it is sized for the beak:
+# it is 70 mm across and the beak opens 17.4 mm, so it cannot be picked up even in principle. This is
+# the prop for tasks where the robot is meant to *hold* something.
+##
+
+MICRODUCK_MARBLE_RADIUS = 0.006
+"""Radius [m] of the marble prop: 12 mm across.
+
+Sized against the **beak**, not against the robot. The measured full gape is 17.4 mm
+(``artifacts/microduck/pickplace/BEAK.md``), so 12 mm leaves 5.4 mm of clearance -- enough that the
+beak visibly closes on the marble rather than butting against it, and small enough that a 25 cm duck
+carrying it reads as carrying something rather than balancing on it.
+"""
+
+MICRODUCK_MARBLE_DENSITY = 2500.0
+"""Density [kg/m^3] of the marble, soda-lime glass."""
+
+MICRODUCK_MARBLE_MASS = 4.0 / 3.0 * math.pi * MICRODUCK_MARBLE_RADIUS**3 * MICRODUCK_MARBLE_DENSITY
+"""Mass [kg] of the marble, ~2.26 g -- derived from its own radius and density rather than stated.
+
+0.3 % of the robot's 0.74 kg, against the ball's 2.0 %. A duck picking up a marble should barely
+notice it, and the latch spring is sized from this number rather than around it; see
+:data:`~isaaclab_tasks.contrib.microduck.pickplace.pickplace_env_cfg.MICRODUCK_LATCH_STIFFNESS`.
+"""
+
+MICRODUCK_MARBLE_CFG = RigidObjectCfg(
+    spawn=sim_utils.SphereCfg(
+        radius=MICRODUCK_MARBLE_RADIUS,
+        # solver-common schemas rather than the PhysX ones, as the ball uses: this prop has no
+        # backend-specific property and the tasks that spawn it run on MJWarp
+        rigid_props=sim_utils.RigidBodyBaseCfg(),
+        collision_props=sim_utils.CollisionBaseCfg(),
+        mass_props=sim_utils.MassPropertiesCfg(mass=MICRODUCK_MARBLE_MASS),
+        physics_material=UsdPhysicsRigidBodyMaterialCfg(
+            static_friction=0.6,
+            dynamic_friction=0.6,
+            # MuJoCo has no restitution coefficient -- its bounce comes out of the contact solver
+            # reference -- and a marble that bounced away from the beak would be a different task
+            restitution=0.0,
+        ),
+        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.45, 0.95)),
+    ),
+    init_state=RigidObjectCfg.InitialStateCfg(pos=(0.15, 0.0, MICRODUCK_MARBLE_RADIUS)),
+)
+"""A 12 mm glass marble, sized so the MicroDuck's beak can actually close on it.
+
+Unlike :data:`MICRODUCK_BALL_CFG` this carries **no custom spawner**. The ball needs one because its
+MJCF states a hollow-shell inertia that the geometry does not imply; a marble is solid, and a sphere
+prim carrying a mass already resolves to the ``(2/5) m r^2`` a solid sphere has. Its inertia works
+out at 3.3e-8 kg m^2, comfortably above the 1e-10 floor Newton silently inflates.
+
+Blue rather than the ball's orange, so a frame with both in it is unambiguous.
+"""
 
 
 MICRODUCK_BALL_CFG = RigidObjectCfg(

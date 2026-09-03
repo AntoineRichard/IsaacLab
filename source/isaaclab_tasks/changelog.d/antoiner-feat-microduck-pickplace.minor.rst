@@ -92,6 +92,23 @@ Changed
   the distance the object started from the drop point. ``approach_progress`` stays a symmetric
   potential: it is not farmable the same way, because the robot cannot move away from the object
   without being charged for it, and a symmetric term gives the denser learning signal.
+* Sized the prop against the **beak** rather than against the robot. The task shipped for three
+  training runs carrying ``MICRODUCK_BALL_CFG``, upstream's 70 mm floorball, which is four times
+  wider than the beak opens -- so it could never be grasped, only leaned on, and the recordings show
+  exactly that. ``MICRODUCK_MARBLE_CFG`` is a 12 mm glass marble against a measured 17.4 mm gape.
+* Derived every latch constant from the prop instead of hand-picking them. The stiffness is
+  ``m * (omega*dt / dt)^2`` at a chosen dimensionless stiffness, the damping from a damping ratio and
+  the break force from a multiple of the object's weight, so a change of prop carries all of them.
+  This is the real repair for the earlier stiffness defect: a hand-picked spring is only correct for
+  the prop it was picked against, and this task has now changed prop once. The formula reproduces the
+  previous hand-picked values for the ball to three significant figures.
+* Derived the placement height from the prop as well, which the scripted acceptance test caught on
+  the prop change: the literal it replaced was sized against a 35 mm-radius ball, where it meant
+  "surface within 25 mm of the floor", and on a 6 mm marble the same number would have counted a
+  marble still held at head height as placed.
+* Re-measured the contact budget after the prop change rather than assuming the old one covered it.
+  The contact peak falls from 32 to 28 and the constraint peak *rises* from 90 to 94 -- a smaller
+  prop is not uniformly cheaper.
 * Reused the existing ``MICRODUCK_BALL_CFG`` prop rather than authoring a new one. At 15 g it sits
   inside the 10-40 g mouth-payload band the ground-pick task already validates at the same attachment
   point, and its mass, hollow-shell inertia, collision and material are pinned by that asset's own

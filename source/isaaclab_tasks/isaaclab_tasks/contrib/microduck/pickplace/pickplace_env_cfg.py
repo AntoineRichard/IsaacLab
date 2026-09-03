@@ -82,8 +82,8 @@ from isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg import (
 )
 from isaaclab_tasks.utils import PresetCfg
 
-from isaaclab_assets import MICRODUCK_ALLCOLLISIONS_CFG, MICRODUCK_BALL_CFG
-from isaaclab_assets.robots.microduck import MICRODUCK_BALL_MASS, MICRODUCK_BALL_RADIUS
+from isaaclab_assets import MICRODUCK_ALLCOLLISIONS_CFG, MICRODUCK_MARBLE_CFG
+from isaaclab_assets.robots.microduck import MICRODUCK_MARBLE_MASS, MICRODUCK_MARBLE_RADIUS
 
 ##
 # The latch (design document §1)
@@ -98,63 +98,76 @@ against the shell, which is what holding something in a mouth looks like and wha
 contact in the budget profiled below.
 """
 
-MICRODUCK_LATCH_HOLD_DISTANCE = MICRODUCK_BALL_RADIUS + MICRODUCK_LATCH_STANDOFF
+MICRODUCK_LATCH_OBJECT_MASS = MICRODUCK_MARBLE_MASS
+"""Mass [kg] of the object the latch is sized for. Every spring constant below derives from it."""
+
+MICRODUCK_LATCH_HOLD_DISTANCE = MICRODUCK_MARBLE_RADIUS + MICRODUCK_LATCH_STANDOFF
 """Mouth-tip-to-object-centre distance [m] the latch spring holds at, along the mouth axis.
 
-Derived from the object's own radius rather than restated, so a change of prop cannot leave the
-spring holding at a distance the geometry no longer has.
+Derived from the object's own radius, so a change of prop cannot leave the spring holding at a
+distance the geometry no longer has.
 """
 
-MICRODUCK_LATCH_STIFFNESS = 25.0
-"""Spring constant [N/m] of the virtual weld.
+MICRODUCK_LATCH_OMEGA_DT = 0.82
+"""Dimensionless stiffness of the virtual weld: ``omega * dt`` at the **control** step.
 
-**Derived against the rate the spring is actually integrated at**, which is the correction ruling
-R-PP17 forced. The wrench is written by an interval event once per *control* step and the composer
-is permanent, so the force is held constant across all four physics substeps: the spring is a
-zero-order hold at 50 Hz, not at 200 Hz. The first version of this constant derived ``k`` against the
-0.005 s physics step, concluded ``omega * dt = 0.26``, and shipped a spring whose true figure was
-``omega * dt = 1.03`` -- four times past the accuracy bound and badly underdamped. It rang, the
-object lagged its anchor by up to 91 mm, and the grip broke roughly every control step.
+This is the one number that is chosen rather than derived, and everything else about the spring
+falls out of it. It is expressed this way because of ruling R-PP17: the wrench is written once per
+control step by an interval event and the wrench composer is permanent, so the force is a zero-order
+hold at 50 Hz, not at the 200 Hz physics rate. The original constants were derived against the
+physics step, which understated this figure by the decimation factor of four -- the shipped spring
+was really at 1.03, four times past the accuracy bound -- and it rang hard enough to break its own
+grip roughly every control step.
 
-At the shipped 25 N/m and the object's 0.015 kg, ``omega = 40.8 rad/s`` and ``omega * dt = 0.82``
-against the 0.02 s control step. Static sag under the object's own weight is ``mg/k = 5.9 mm``, small
-against the 35 mm radius. Measured with ``diag_latch_chatter.py``: 138 control steps of mean grip
-life against 20 for the original constants.
+0.82 is what the measurement settled on: 138 control steps of mean grip life against 20 at the
+original constants (``artifacts/microduck/pickplace/diag_latch_chatter.py``).
 
-:func:`test_the_latch_spring_is_integrated_at_the_control_rate_not_the_physics_rate` reproduces the
-derivation **against the control step**, so repeating the original mistake fails here rather than
-four hours into a training run.
+Note the consequence, which no choice of prop escapes: static sag is ``g / omega^2``, so it is
+**mass-independent** and capped by the control rate at about 5.9 mm whatever the object weighs.
 """
 
-MICRODUCK_LATCH_DAMPING = 0.9
-"""Damping coefficient [N·s/m] of the virtual weld.
+MICRODUCK_LATCH_DAMPING_RATIO = 0.73
+"""Damping ratio of the virtual weld, against the 0.32 that rang.
 
-A damping ratio of 0.73 at the shipped mass and stiffness, against the 0.32 that rang. It is bounded
-above as well as below: a zero-order-hold damper is unstable once ``c * dt / m`` reaches 2, which at
-the control step and the object's mass caps ``c`` at 1.5.
+Bounded above as well as below: a zero-order-hold damper goes unstable once ``c * dt / m`` reaches 2,
+which caps the ratio near 1.1 at this stiffness.
 """
 
-MICRODUCK_LATCH_BREAK_FORCE = 6.0
+MICRODUCK_LATCH_BREAK_WEIGHTS = 41.0
+"""Grip strength, as a multiple of the object's own weight.
+
+Expressed as a ratio rather than a force because the transient the grip has to survive is
+``m * a`` -- it scales with the object, and so must the limit. **Ruling R-PP17 was partly this
+mistake**: 2 N was set against the ball's weight and never against the transient a carry produces,
+which measured 2.74 N, so the limit sat *below* normal working load. 41x weight is what the corrected
+6 N was for the ball, carried across as the invariant.
+"""
+
+MICRODUCK_LATCH_STIFFNESS = MICRODUCK_LATCH_OBJECT_MASS * (MICRODUCK_LATCH_OMEGA_DT / 0.02) ** 2
+"""Spring constant [N/m] of the virtual weld, derived from the object's mass and the control step.
+
+**Derived, not chosen** -- which is the actual repair for R-PP17. A hand-picked stiffness is only
+correct for the prop it was picked against, and this task has now changed prop once.
+"""
+
+MICRODUCK_LATCH_DAMPING = (
+    2.0 * MICRODUCK_LATCH_DAMPING_RATIO * (MICRODUCK_LATCH_STIFFNESS * MICRODUCK_LATCH_OBJECT_MASS) ** 0.5
+)
+"""Damping coefficient [N.s/m] of the virtual weld, derived from the ratio above."""
+
+MICRODUCK_LATCH_BREAK_FORCE = MICRODUCK_LATCH_BREAK_WEIGHTS * MICRODUCK_LATCH_OBJECT_MASS * 9.81
 """Force [N] above which the grip gives way and the object is dropped.
 
 The grip is force-**limited**, not force-clamped, and that is the anti-exploit (ruling R-PP2): a
 clamped constraint is a winch, and a policy that found one would drag the object through the scene
-rather than carry it.
-
-**Raised from 2 N after R-PP17.** 2 N was set against the object's *weight* -- thirteen times it --
-and never against the transient the grip actually sees when the head moves, which measured 2.7 N at
-the shipped spring and 3.7 N at the original one. A limit below the normal working transient is not
-a grip limit, it is a grip. 6 N is 41 times the object's weight and 0.83 times the robot's, so it
-still cannot be used to hoist the robot, and it leaves a 2.2x margin over the measured transient.
-
-It is provably out of reach on the step a latch forms; see
-:func:`test_a_latch_can_never_break_on_the_step_it_forms`.
+rather than carry it. Derived from the object's weight so the ratio, which is the physical invariant,
+survives a change of prop.
 """
 
-MICRODUCK_LATCH_RADIUS = 0.055
+MICRODUCK_LATCH_RADIUS = MICRODUCK_MARBLE_RADIUS + 0.020
 """Mouth-tip-to-centre distance [m] within which the object can be picked up.
 
-The object's 35 mm radius plus 20 mm, so the mouth tip has to be within 20 mm of the object's
+The object's radius plus 20 mm, so the mouth tip has to be within 20 mm of the object's
 *surface*. It is the knob the pick difficulty is tuned with, and it is deliberately not on a
 curriculum: what the curriculum widens is where the object is, not how accurately it must be met.
 """
@@ -177,11 +190,17 @@ The release edge **is** the success edge: a release cannot fire away from the ta
 short" is not a thing the policy can be paid for -- it can only break the latch, which pays nothing.
 """
 
-MICRODUCK_PLACE_MAX_HEIGHT = 0.06
+MICRODUCK_PLACE_CLEARANCE = 0.025
+"""How close the object's *surface* must get to the floor before a release counts [m]."""
+
+MICRODUCK_PLACE_MAX_HEIGHT = MICRODUCK_MARBLE_RADIUS + MICRODUCK_PLACE_CLEARANCE
 """Object-centre height [m] above the ground below which the release may fire.
 
-Placing is setting the object down, not dropping it from head height. At the object's 35 mm radius
-this asks for the surface to be within 25 mm of the floor.
+Placing is setting the object down, not dropping it from head height. **Derived from the prop**: the
+literal 0.06 this replaced was sized against a 35 mm-radius ball, where it meant "surface within
+25 mm of the floor", and on a 6 mm marble the same number would have meant 54 mm -- loose enough to
+count a marble still held at head height as placed. Caught by the scripted acceptance test on the
+prop change, which is what that test is for.
 """
 
 MICRODUCK_CARRY_HEIGHT = 0.045
@@ -258,38 +277,28 @@ class MicroDuckPickPlacePhysicsCfg(PresetCfg):
 
     newton_mjwarp = NewtonCfg(
         solver_cfg=MJWarpSolverCfg(
-            # Measured, not inherited. Profiling under random actions -- the regime where the
-            # robots collapse onto the floor and grind every collider and the object into it, with
-            # *both* fall terminations dropped and the pushes forced to full magnitude -- peaks at
-            # **32 contacts and 90 constraints** per environment. Logs:
-            # ``artifacts/microduck/profile_microduck_contacts_pickplace_{256,2048,4096}envs.log``,
-            # from ``artifacts/microduck/profile_microduck_contacts.py``.
+            # Measured, not inherited, and **re-measured after the prop changed**. Profiling under
+            # random actions -- the regime where the robots collapse onto the floor and grind every
+            # collider and the object into it, with both fall terminations dropped and the pushes
+            # forced to full magnitude -- peaks at **28 contacts and 94 constraints** per
+            # environment at 4096. Log:
+            # ``artifacts/microduck/profile_microduck_contacts_pickplace_marble_4096envs.log``.
             #
-            # Profiled at three sizes, because the smallest one undercuts the contact tail:
+            # ==================  =========  =========  ===========
+            # prop                peak ncon  peak nefc  median ncon
+            # ==================  =========  =========  ===========
+            # 70 mm ball                 32         90           27
+            # 12 mm marble               28         94           25
+            # ==================  =========  =========  ===========
             #
-            # ============  =========  =========  ===========  ========
-            # environments  peak ncon  peak nefc  median ncon  overflow
-            # ============  =========  =========  ===========  ========
-            # 256                  29         90           26         0
-            # 2048                 32         90           26         0
-            # 4096                 32         90           27         0
-            # ============  =========  =========  ===========  ========
+            # Note the constraint peak went **up** while the contact peak went down: a smaller prop
+            # is not uniformly cheaper, so a prop change re-measures rather than assuming the old
+            # budget covers it.
             #
-            # 4096 is this task's own training default and therefore the size that matters. Both
-            # peaks **saturate** from 2048 upward, which is what says the tail has been sampled
-            # rather than that it keeps growing.
-            #
-            # Two contacts and four constraints above the ball-kick task's 30/86 on the same robot,
-            # the same ball and the same plane, which is the expected direction: a held object adds
-            # a *persistent* mouth-shell contact that ball-kick never has, its ball being either on
-            # the ground or in flight.
-            #
-            # ``njmax`` is a hard per-environment cap and carries the margin: 128 against 90 is 38
-            # constraints, about nine further pyramidal contacts' worth. ``nconmax`` is a
-            # per-environment *share* of one shared pool rather than a cap, so an environment
-            # spiking past 40 borrows from the pool; at 4096 environments the shipped share provides
-            # 163 840 contacts against a measured worst-case total of 51 505, and the measured mean
-            # is 12.4 per environment.
+            # ``njmax`` is a hard per-environment cap and the margin is now the tight one: 128
+            # against 94 is 34 constraints, about eight further pyramidal contacts' worth, which is
+            # the floor the test asserts. ``nconmax`` is a per-environment *share* of one shared
+            # pool rather than a cap, so it sits just above the peak.
             njmax=128,
             nconmax=40,
             # the mjlab template's flat solver profile, which every sibling inherits unchanged
@@ -348,7 +357,7 @@ class MicroDuckPickPlaceSceneCfg(InteractiveSceneCfg):
     # mouth-payload band the ground-pick task already validates at the same attachment point, and its
     # mass, hollow-shell inertia, collision and material are pinned by the asset's own fidelity
     # tests. Its position here is only what it has before the first reset.
-    object = MICRODUCK_BALL_CFG.replace(prim_path="{ENV_REGEX_NS}/Object")
+    object = MICRODUCK_MARBLE_CFG.replace(prim_path="{ENV_REGEX_NS}/Object")
 
     # Feet and trunk, as every task in the family does. This one feeds the three critic foot terms.
     contact_forces = ContactSensorCfg(
@@ -662,7 +671,7 @@ class EventsCfg:
         params={
             "distance_range": (0.06, 0.12),
             "bearing_range": (-math.radians(20.0), math.radians(20.0)),
-            "object_radius": MICRODUCK_BALL_RADIUS,
+            "object_radius": MICRODUCK_MARBLE_RADIUS,
             "asset_cfg": _OBJECT_CFG,
         },
     )
@@ -1096,10 +1105,3 @@ class MicroDuckPickPlaceFlatEnvCfg(ManagerBasedRLEnvCfg):
             self.scene.self_collision.update_period = self.sim.dt
         # MicroDuck stands 0.13 m tall, so the stock viewer distance frames empty ground.
         self.sim.default_visualizer_cfg = VisualizerCfg(eye=(0.8, 0.8, 0.4), lookat=(0.0, 0.0, 0.1))
-
-
-# Read at module scope so a change to the prop's mass cannot silently invalidate the stiffness
-# derivation documented on :data:`MICRODUCK_LATCH_STIFFNESS`; the environment test recomputes the
-# bound from these three numbers.
-MICRODUCK_LATCH_OBJECT_MASS = MICRODUCK_BALL_MASS
-"""Mass [kg] of the object the latch spring is sized against."""

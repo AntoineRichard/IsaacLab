@@ -48,6 +48,7 @@ from isaaclab_tasks.contrib.microduck.pickplace.pickplace_env_cfg import (
     MICRODUCK_LATCH_HOLD_DISTANCE,
     MICRODUCK_LATCH_MAX_REL_SPEED,
     MICRODUCK_LATCH_OBJECT_MASS,
+    MICRODUCK_LATCH_OMEGA_DT,
     MICRODUCK_LATCH_RADIUS,
     MICRODUCK_LATCH_STIFFNESS,
     MICRODUCK_PLACE_MAX_HEIGHT,
@@ -56,7 +57,13 @@ from isaaclab_tasks.contrib.microduck.pickplace.pickplace_env_cfg import (
 )
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
-from isaaclab_assets.robots.microduck import MICRODUCK_ALLCOLLISIONS_USD_PATH, MICRODUCK_BALL_RADIUS
+from isaaclab_assets.robots.microduck import (
+    MICRODUCK_ALLCOLLISIONS_USD_PATH,
+    MICRODUCK_BEAK_CLOSED,
+    MICRODUCK_BEAK_OPEN,
+    MICRODUCK_MARBLE_MASS,
+    MICRODUCK_MARBLE_RADIUS,
+)
 
 # Local imports should be imported last
 from env_test_utils import _run_environments  # isort: skip
@@ -325,8 +332,15 @@ def test_the_latch_spring_is_integrated_at_the_control_rate_not_the_physics_rate
     assert 0.6 < damping_ratio < 1.2
     assert MICRODUCK_LATCH_DAMPING * control_dt / MICRODUCK_LATCH_OBJECT_MASS < 2.0
 
-    # and the object sags by millimetres under its own weight, not by a radius
-    assert MICRODUCK_LATCH_OBJECT_MASS * 9.81 / MICRODUCK_LATCH_STIFFNESS < 0.2 * MICRODUCK_BALL_RADIUS
+    # Static sag is ``mg/k``, which reduces to ``g / omega^2`` -- **mass-independent**, and capped by
+    # the control rate rather than by the prop. It is about 5.8 mm at this stiffness whatever the
+    # object weighs, which on a 6 mm marble is a whole radius: a held marble hangs noticeably below
+    # its anchor. That is a real limit of a compliant weld at 50 Hz and not something a smaller prop
+    # escapes, so what is asserted is that it stays small against the *latch radius* -- the distance
+    # that decides whether the grip survives -- rather than against the object.
+    sag = MICRODUCK_LATCH_OBJECT_MASS * 9.81 / MICRODUCK_LATCH_STIFFNESS
+    assert sag == pytest.approx(9.81 / (MICRODUCK_LATCH_OMEGA_DT / control_dt) ** 2, rel=1e-6)
+    assert sag < 0.5 * MICRODUCK_LATCH_RADIUS
 
 
 @pytest.mark.unit
@@ -336,9 +350,12 @@ def test_the_grip_limit_sits_above_the_transient_a_normal_carry_produces():
     The original 6 N was 2 N, set against the object's *weight* and never against the force the
     spring actually develops when the head moves -- measured at 2.7 N with ``diag_latch_chatter.py``.
     """
-    measured_transient = 2.74
+    # Recorded as a ratio, not a force: the transient is ``m * a``, so it scales with the object and
+    # the task has since changed prop. ``diag_latch_chatter.py`` measured 2.74 N on the 15 g ball,
+    # which is 18.6 weights. Pinning the newton figure would pass for the wrong reason on a marble.
+    transient_in_weights = 2.74 / (0.015 * 9.81)
 
-    assert 2.0 * measured_transient < MICRODUCK_LATCH_BREAK_FORCE
+    assert 2.0 * transient_in_weights * MICRODUCK_LATCH_OBJECT_MASS * 9.81 < MICRODUCK_LATCH_BREAK_FORCE
     # but still far too weak to hoist the robot, which is what makes it a grip and not a winch
     assert MICRODUCK_LATCH_BREAK_FORCE < 0.737 * 9.81
 
@@ -361,8 +378,8 @@ def test_the_grip_cannot_break_on_the_step_it_forms():
 @pytest.mark.unit
 def test_the_hold_distance_is_derived_from_the_props_own_radius():
     """A change of prop must not leave the spring holding at a distance the geometry no longer has."""
-    assert MICRODUCK_LATCH_HOLD_DISTANCE > MICRODUCK_BALL_RADIUS
-    assert pytest.approx(0.005) == MICRODUCK_LATCH_HOLD_DISTANCE - MICRODUCK_BALL_RADIUS
+    assert MICRODUCK_LATCH_HOLD_DISTANCE > MICRODUCK_MARBLE_RADIUS
+    assert pytest.approx(0.005) == MICRODUCK_LATCH_HOLD_DISTANCE - MICRODUCK_MARBLE_RADIUS
     # and the latch radius leaves the mouth a real reach beyond the surface it holds at
     assert MICRODUCK_LATCH_RADIUS > MICRODUCK_LATCH_HOLD_DISTANCE
 
@@ -376,7 +393,7 @@ def test_the_release_gate_asks_the_object_to_be_set_down_rather_than_dropped():
     assert params["place_max_height"] == pytest.approx(MICRODUCK_PLACE_MAX_HEIGHT)
     # a placement height the object can reach while resting on the ground, so a successful placement
     # is not asked to hover
-    assert MICRODUCK_PLACE_MAX_HEIGHT > MICRODUCK_BALL_RADIUS
+    assert MICRODUCK_PLACE_MAX_HEIGHT > MICRODUCK_MARBLE_RADIUS
     # and the precision reward is scored on the same tolerance the release fires at
     assert MicroDuckPickPlaceFlatEnvCfg().rewards.place_precision.params["std"] == pytest.approx(
         MICRODUCK_PLACE_TOLERANCE
@@ -616,14 +633,14 @@ def test_every_object_selection_names_the_scene_entity_the_prop_is_registered_as
 
 
 @pytest.mark.unit
-def test_the_task_runs_the_all_collisions_robot_and_reuses_the_existing_prop():
+def test_the_task_runs_the_all_collisions_robot_and_a_prop_the_beak_can_hold():
     """The head shells are what the mouth presses the object with, so the model is not optional."""
     cfg = MicroDuckPickPlaceFlatEnvCfg()
 
     assert "allcollisions" in cfg.scene.robot.spawn.usd_path
     assert cfg.scene.terrain.terrain_type == "plane"
-    # the prop is the ball-kick task's, authored procedurally, so this task needs no new asset
-    assert cfg.scene.object.spawn.radius == pytest.approx(MICRODUCK_BALL_RADIUS)
+    # the purpose-built marble, not the ball-kick floorball: 12 mm against a 17.4 mm gape
+    assert cfg.scene.object.spawn.radius == pytest.approx(MICRODUCK_MARBLE_RADIUS)
     assert cfg.scene.object.spawn.mass_props.mass == pytest.approx(MICRODUCK_LATCH_OBJECT_MASS)
 
 
@@ -679,13 +696,15 @@ def test_the_runner_differs_from_the_velocity_one_in_the_two_fields_every_siblin
     assert differing == {"experiment_name", "max_iterations"}
 
 
-MEASURED_PEAK_CONTACTS = 32
-MEASURED_PEAK_CONSTRAINTS = 90
-"""Worst-case per-environment demand, profiled at 256/2048/4096 environments under random actions.
+MEASURED_PEAK_CONTACTS = 28
+MEASURED_PEAK_CONSTRAINTS = 94
+"""Worst-case per-environment demand under random actions, re-measured after the prop change.
 
-From ``artifacts/microduck/profile_microduck_contacts_pickplace_{256,2048,4096}envs.log``. Both peaks
-saturate from 2048 upward, which is what says the tail was sampled. Transcribed here rather than
-imported so the budget below cannot be lowered under the measurement it was sized against.
+From ``artifacts/microduck/profile_microduck_contacts_pickplace_marble_4096envs.log``. Swapping the
+70 mm ball for a 12 mm marble takes the contact peak from 32 to 28 and *raises* the constraint peak
+from 90 to 94 -- a smaller prop is not uniformly cheaper, which is why the budget is re-measured on a
+prop change rather than assumed to be covered by the old one. Transcribed here rather than imported
+so the budget below cannot be lowered under the measurement it was sized against.
 """
 
 
@@ -774,7 +793,7 @@ def _fold_robot_over(unwrapped) -> None:
     """
     robot = unwrapped.scene["robot"]
     pose = torch.zeros(unwrapped.num_envs, 7, device=unwrapped.device)
-    pose[:, :3] = unwrapped.scene.env_origins + torch.tensor([0.0, 0.0, 0.07], device=unwrapped.device)
+    pose[:, :3] = unwrapped.scene.env_origins + torch.tensor([0.0, 0.0, 0.030], device=unwrapped.device)
     # 90 degrees about +y, in Isaac Lab's (x, y, z, w) layout -- scalar last (design document E-1)
     pose[:, 1] = math.sin(math.pi / 4.0)
     pose[:, 6] = math.cos(math.pi / 4.0)
@@ -849,7 +868,7 @@ def test_the_reset_puts_the_object_in_reach_and_the_drop_point_beyond_it():
         # the object sits on the ground of its own environment, one radius up
         torch.testing.assert_close(
             obj.data.root_link_pos_w.torch[:, 2] - origins[:, 2],
-            torch.full_like(origins[:, 2], MICRODUCK_BALL_RADIUS),
+            torch.full_like(origins[:, 2], MICRODUCK_MARBLE_RADIUS),
             atol=2e-3,
             rtol=0.0,
         )
@@ -1046,9 +1065,9 @@ def test_the_carried_object_loads_the_robot_rather_than_riding_for_free():
         robot_force = _world_force(robot_composer)
         object_force = _world_force(object_composer)
 
-        # the robot really feels it: a 1 cm stretch at 40 N/m is 0.4 N, several times the object's
-        # own weight, and the two halves cancel
-        assert float(object_force.norm(dim=-1).min()) > 0.2
+        # the robot really feels it: the force is the spring's own, so it is checked against the
+        # stiffness rather than against a literal that only held for the prop it was written for
+        assert float(object_force.norm(dim=-1).min()) > 0.5 * MICRODUCK_LATCH_STIFFNESS * 0.01
         torch.testing.assert_close(robot_force, -object_force, atol=1e-4, rtol=1e-3)
         # and it arrives as a moment about the head, not as a force at its centre of mass
         assert float(robot_composer.out_torque_b.torch.norm(dim=-1).sum(dim=-1).min()) > 0.0
@@ -1239,3 +1258,43 @@ def test_the_carry_progress_is_a_ratchet_and_the_approach_is_not():
     assert not issubclass(mdp.pickplace_carry_progress, mdp.upright_progress.__bases__[0])
     assert issubclass(mdp.pickplace_approach_progress, mdp.upright_progress.__bases__[0])
     assert rewards.carry_progress.func is mdp.pickplace_carry_progress
+
+
+@pytest.mark.unit
+def test_the_object_fits_inside_the_beak():
+    """The invariant the prop change exists to satisfy.
+
+    The measured full gape is 17.4 mm (``artifacts/microduck/pickplace/BEAK.md``). The task shipped
+    for three training runs with a 70 mm ball -- four times wider than the beak opens -- which is why
+    the recordings show a duck leaning on a sphere rather than picking anything up. A prop that does
+    not fit is not a pick-and-place prop, however well the rest of the stack scores.
+    """
+    # Measured, not derived. Sweeping the jaw about its hinge and taking the minimum distance to
+    # ``soft_mouth_top`` gives 17.39 mm at full open; the beak *tip* travels 36.5 mm over the same
+    # sweep, and confusing the two would overstate what the robot can hold by a factor of two.
+    gape = 0.0174
+    assert pytest.approx(math.radians(35.0), abs=1e-6) == MICRODUCK_BEAK_OPEN - MICRODUCK_BEAK_CLOSED
+
+    assert gape > 2.0 * MICRODUCK_MARBLE_RADIUS
+    # with real clearance, so the beak visibly closes on it rather than butting against it
+    assert 0.75 * gape > 2.0 * MICRODUCK_MARBLE_RADIUS
+
+
+@pytest.mark.unit
+def test_every_latch_constant_derives_from_the_prop_rather_than_being_a_literal():
+    """Ruling R-PP17's actual repair: a hand-picked spring is only right for the prop it was picked
+    for, and this task has now changed prop once.
+
+    Reproduces each constant from the object's mass and the control step, so a future prop change
+    cannot leave a stale number behind -- which is what happened when the stiffness was derived
+    against the physics rate and then never revisited.
+    """
+    cfg = MicroDuckPickPlaceFlatEnvCfg()
+    control_dt = cfg.sim.dt * cfg.decimation
+    m = MICRODUCK_LATCH_OBJECT_MASS
+
+    assert m == pytest.approx(MICRODUCK_MARBLE_MASS)
+    assert math.sqrt(MICRODUCK_LATCH_STIFFNESS / m) * control_dt == pytest.approx(0.82, abs=1e-6)
+    ratio = MICRODUCK_LATCH_DAMPING / (2.0 * math.sqrt(MICRODUCK_LATCH_STIFFNESS * m))
+    assert ratio == pytest.approx(0.73, abs=1e-6)
+    assert MICRODUCK_LATCH_BREAK_FORCE / (m * 9.81) == pytest.approx(41.0, abs=1e-6)
