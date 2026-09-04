@@ -4874,3 +4874,42 @@ def pickplace_upright_after_placing(
     """
     reward = upright(env, std=std, asset_cfg=asset_cfg)
     return torch.where(_pickplace_state(env).succeeded, reward, torch.zeros_like(reward))
+
+
+def lift_height(
+    env: ManagerBasedRLEnv,
+    rest_height: float,
+    lift_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Reward holding the object clear of the ground, in proportion to how high it is held.
+
+    The lift task's whole objective, and deliberately **dense** rather than a bonus on a height
+    threshold. Two reasons, both learned the hard way on the pick-and-place task:
+
+    * A one-shot bonus large enough to dominate a stack pays ``weight * dt`` in a single control
+      step, which is a spike of order a thousand times the typical per-step reward and a plausible
+      source of the advantage variance that stopped that task's policy ever annealing its
+      exploration noise. A dense term of the same total mass has no spike at all.
+    * "Lifted it for a moment" and "lifted it and held it" should not score alike. Paying per step
+      makes the sustained hold worth more than the instant, without a second term to say so.
+
+    The ramp saturates at ``lift_height`` rather than growing without bound, so there is no reward
+    for flinging the object upward -- the objective is a lift, not a throw.
+
+    Args:
+        env: The environment instance.
+        rest_height: Object-centre height [m] above the environment's ground when it is lying on the
+            floor, below which the lift has not started. Its own radius.
+        lift_height: Object-centre height [m] at which the ramp saturates and the lift counts as
+            complete.
+        asset_cfg: The rigid object being lifted.
+
+    Returns:
+        The reward in ``[0, 1]``, zero unless the object is held. Shape is (num_envs,).
+    """
+    obj: RigidObject = env.scene[asset_cfg.name]
+    height = obj.data.root_link_pos_w.torch[:, 2] - env.scene.env_origins[:, 2]
+    height = torch.nan_to_num(height, nan=0.0, posinf=0.0, neginf=0.0)
+    ramp = ((height - rest_height) / max(lift_height - rest_height, 1e-6)).clamp(0.0, 1.0)
+    return torch.where(_pickplace_state(env).latched, ramp, torch.zeros_like(ramp))

@@ -1175,7 +1175,6 @@ def update_pickplace_latch(
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg,
-    command_name: str,
     mouth_offset_b: Sequence[float],
     mouth_axis_b: Sequence[float],
     hold_distance: float,
@@ -1184,8 +1183,9 @@ def update_pickplace_latch(
     stiffness: float,
     damping: float,
     break_force: float,
-    place_tolerance: float,
-    place_max_height: float,
+    command_name: str | None = None,
+    place_tolerance: float = 0.0,
+    place_max_height: float = 0.0,
 ) -> None:
     """Advance the mouth latch by one control step and write the wrenches it implies.
 
@@ -1226,7 +1226,9 @@ def update_pickplace_latch(
         asset_cfg: The articulation and the single body the mouth tip is rigidly attached to.
         object_cfg: The rigid object being picked up.
         command_name: Name of the :class:`~isaaclab_tasks.contrib.microduck.mdp.commands.
-            PickPlaceTargetCommand` term the drop point is read from.
+            PickPlaceTargetCommand` term the drop point is read from. **None disables the release
+            entirely**, which is what a task with nothing to place the object on wants -- the lift
+            task grabs and holds, and never lets go. The two placement bounds are then unused.
         mouth_offset_b: Mouth-tip position [m] in the carrying body's frame.
         mouth_axis_b: The mouth's pointing direction [-] in that body's frame.
         hold_distance: Distance [m] from the mouth tip to the object centre the spring holds at,
@@ -1281,11 +1283,14 @@ def update_pickplace_latch(
     overloaded = state.latched & (torch.linalg.norm(spring, dim=-1) > break_force)
     state.latched &= ~overloaded
 
-    # 2. release, which is also the success edge
-    target_pos_w = env.command_manager.get_term(command_name).target_pos_w
-    place_error = torch.linalg.norm(object_pos_w[:, :2] - target_pos_w[:, :2], dim=-1)
-    object_height = object_pos_w[:, 2] - env.scene.env_origins[:, 2]
-    released = state.latched & (place_error < place_tolerance) & (object_height < place_max_height)
+    # 2. release, which is also the success edge. A task with no drop point never reaches it.
+    if command_name is None:
+        released = torch.zeros_like(state.latched)
+    else:
+        target_pos_w = env.command_manager.get_term(command_name).target_pos_w
+        place_error = torch.linalg.norm(object_pos_w[:, :2] - target_pos_w[:, :2], dim=-1)
+        object_height = object_pos_w[:, 2] - env.scene.env_origins[:, 2]
+        released = state.latched & (place_error < place_tolerance) & (object_height < place_max_height)
     state.latched &= ~released
     state.succeeded |= released
     state.release_edge = released
