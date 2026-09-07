@@ -31,12 +31,36 @@ def test_depth_display_bounds_reject_frame_with_no_finite_samples():
         capture_renderer_gallery.depth_display_bounds(depth)
 
 
-def test_gallery_capture_requires_explicit_scene_path():
+def test_gallery_capture_defaults_to_published_scene():
     parser = argparse.ArgumentParser()
     capture_renderer_gallery.add_gallery_arguments(parser)
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--renderer-backend", "newton"])
+    args = parser.parse_args(["--renderer-backend", "newton"])
+
+    assert args.scene == (
+        "omniverse://isaac-dev.ov.nvidia.com/Isaac/IsaacLab/Docs/Renderers/renderer_gallery_scene.usda"
+    )
+
+
+def test_gallery_scene_preserves_nucleus_uri():
+    scene_uri = "omniverse://example.com/path/to/scene.usda"
+
+    assert capture_renderer_gallery.resolve_gallery_scene(scene_uri) == scene_uri
+
+
+def test_gallery_scene_resolves_existing_local_path(tmp_path, monkeypatch):
+    scene_path = tmp_path / "scene.usda"
+    scene_path.touch()
+    monkeypatch.chdir(tmp_path)
+
+    assert capture_renderer_gallery.resolve_gallery_scene("scene.usda") == str(scene_path)
+
+
+def test_gallery_scene_rejects_missing_local_path(tmp_path):
+    scene_path = tmp_path / "missing.usda"
+
+    with pytest.raises(ValueError, match="Scene does not exist"):
+        capture_renderer_gallery.resolve_gallery_scene(str(scene_path))
 
 
 def test_thumbnail_uses_sixth_captured_frame():

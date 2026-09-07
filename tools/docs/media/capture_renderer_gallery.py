@@ -41,6 +41,7 @@ _RTX_ONLY_MODES = (
 _RENDERER_SLUGS = {"newton": "newton", "ovrtx": "ovrtx", "isaac_rtx": "isaac-rtx"}
 _SIMPLE_SHADING_MODES = tuple(mode.output_name for mode in _RTX_ONLY_MODES if mode.output_name.startswith("simple_"))
 _OVRTX_AMBIENT_LIGHT_SETTING = "float omni:rtx:rt:ambientLight:intensity = 1.0"
+_DEFAULT_GALLERY_SCENE = "omniverse://isaac-dev.ov.nvidia.com/Isaac/IsaacLab/Docs/Renderers/renderer_gallery_scene.usda"
 
 
 def gallery_modes(renderer: str) -> tuple[GalleryMode, ...]:
@@ -173,13 +174,24 @@ def gallery_stage_paths() -> tuple[str, str]:
     return "/World/envs/env_0/Scene", "/World/envs/env_.*/Scene/Camera"
 
 
+def resolve_gallery_scene(scene: str) -> str:
+    """Preserve a Nucleus URI or resolve and validate a local scene path."""
+    if scene.startswith("omniverse://"):
+        return scene
+
+    scene_path = Path(scene).expanduser().resolve()
+    if not scene_path.is_file():
+        raise ValueError(f"Scene does not exist: {scene_path}")
+    return str(scene_path)
+
+
 def add_gallery_arguments(parser: argparse.ArgumentParser) -> None:
     """Add renderer-gallery arguments without colliding with AppLauncher options."""
     script_dir = Path(__file__).resolve().parent
     parser.add_argument("--renderer-backend", choices=tuple(_RENDERER_SLUGS), required=True)
     parser.add_argument("--capture-group", choices=("standard", *_SIMPLE_SHADING_MODES), default="standard")
     parser.add_argument("--newton-shadows", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--scene", type=Path, required=True)
+    parser.add_argument("--scene", type=resolve_gallery_scene, default=_DEFAULT_GALLERY_SCENE)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -201,10 +213,7 @@ def _parse_args() -> argparse.Namespace:
     AppLauncher.add_app_launcher_args(parser)
     parser.set_defaults(enable_cameras=True, headless=True)
     args = parser.parse_args()
-    args.scene = args.scene.expanduser().resolve()
     args.output_dir = args.output_dir.expanduser().resolve()
-    if not args.scene.is_file():
-        parser.error(f"Scene does not exist: {args.scene}")
     if args.width < 1 or args.height < 1:
         parser.error("Image width and height must be positive.")
     if args.frames < 6:
