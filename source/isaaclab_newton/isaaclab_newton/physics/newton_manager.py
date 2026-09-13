@@ -604,6 +604,9 @@ class NewtonManager(PhysicsManager):
         its device arrays. The cached collision pipeline, contacts and any
         captured CUDA graph reference the old buffers, so they are released here
         and rebuilt against the re-finalized model by :meth:`initialize_solver`.
+        Model-bound execution hooks are cleared before ``MODEL_INIT``; owners
+        register their new hooks during ``PHYSICS_READY``. Lifecycle subscriptions
+        survive the rebuild. Registrations before the first model build are retained.
         This avoids the illegal CUDA memory access (CUDA error 700) that would
         otherwise occur on the first step after a hard reset.
 
@@ -620,6 +623,11 @@ class NewtonManager(PhysicsManager):
             NewtonManager._graph_capture_pending = False
             NewtonManager._collision_pipeline = None
             NewtonManager._contacts = None
+
+            if cls._model is not None:
+                NewtonManager._post_actuator_callbacks.clear()
+                NewtonManager._state_force_callbacks.clear()
+                NewtonManager._post_step_callbacks.clear()
 
             cls.start_simulation()
             cls.initialize_solver()
@@ -1606,6 +1614,11 @@ class NewtonManager(PhysicsManager):
             cls.instantiate_builder_from_stage()
         cls._register_builder_attributes(cls._builder)
 
+        # Retire the shared model-owned adapter before owners release their bindings.
+        # PHYSICS_READY builds its replacement lazily against the new model.
+        NewtonManager._adapter = None
+        NewtonManager._use_newton_actuators_active = False
+
         logger.info("Dispatching MODEL_INIT callbacks")
         cls.dispatch_event(PhysicsEvent.MODEL_INIT)
 
@@ -1645,14 +1658,6 @@ class NewtonManager(PhysicsManager):
         NewtonManager._control = cls._model.control()
         # The initial body-state update from joint coordinates is deferred to the tail of
         # initialize_solver(), where it runs through the solver-specialized FK delegate after the solver is initialized.
-
-        # The single global actuator adapter is built lazily on the first
-        # call to ``activate_newton_actuator_path`` from any Newton-fast-path
-        # articulation after this point. Assign through the explicit base
-        # class so external readers (which import ``NewtonManager`` directly)
-        # observe the canonical state regardless of which subclass is active.
-        NewtonManager._adapter = None
-        NewtonManager._use_newton_actuators_active = False
 
         # Newton's final reset-mask slot selects global entities in world -1.
         # Isaac Lab resets local environments only, so that slot remains false.
@@ -2381,21 +2386,20 @@ class NewtonManager(PhysicsManager):
         cls._eval_fk(None, None)
         cls._mark_transforms_dirty()
 
-        # Fully graphable Newton actuators defer capture until ``set_decimation``
-        # provides the environment's final decimation value. Other paths capture
-        # the solver here; non-graphable actuators otherwise leave it eager.
-        if not cls._is_all_graphable():
-            cls._capture_or_defer_graph()
+        # Schedule capture on every model build, including hard resets that retain
+        # decimation. Native actuator graphs wait until the first requested step.
+        cls._capture_or_defer_graph()
 
     @classmethod
     def _capture_or_defer_graph(cls) -> None:
         """Capture (or schedule deferred capture of) the CUDA graph.
 
-        Called by :meth:`start_simulation` and :meth:`set_decimation`
+        Called by :meth:`initialize_solver` and :meth:`set_decimation`
         whenever the graph needs to be (re-)captured.
 
         * **No USDRT / headless**: captures immediately via
-          ``wp.ScopedCapture`` unless the solver requires reset-dependent setup.
+          ``wp.ScopedCapture`` unless native actuators need final decimation or
+          the solver requires reset-dependent setup.
         * **RTX active**: defers capture to the first :meth:`step` call
           via :meth:`_capture_relaxed_graph`, because RTX background
           streams are not yet idle during initialisation.
@@ -2418,10 +2422,13 @@ class NewtonManager(PhysicsManager):
 
         if use_cuda_graph:
             with Timer(name="newton_cuda_graph", msg="CUDA graph took:", activity="Capturing CUDA graph"):
-                if cls._usdrt_stage is None and not cls._requires_initial_reset_before_graph_capture():
-                    simulate = cls._simulate_full if cls._is_all_graphable() else cls._simulate_physics_only
+                if (
+                    cls._usdrt_stage is None
+                    and not cls._requires_initial_reset_before_graph_capture()
+                    and not cls._is_all_graphable()
+                ):
                     with _paused_gc(), wp.ScopedCapture(device=device) as capture:
-                        simulate()
+                        cls._simulate_physics_only()
                     NewtonManager._graph = capture.graph
                     logger.info("Newton CUDA graph captured (standard Warp mode)")
 
@@ -2432,11 +2439,11 @@ class NewtonManager(PhysicsManager):
                     if isinstance(cls._solver, SolverKamino):
                         wp.capture_launch(cls._graph)
                 else:
-                    # RTX capture and reset-dependent headless capture both wait until
-                    # the first step. RTX retains its existing relaxed capture path.
+                    # Native actuators need the final decimation; reset-dependent solvers
+                    # and RTX also wait until the first step.
                     NewtonManager._graph = None
                     NewtonManager._graph_capture_pending = True
-                    reason = "initial environment reset" if cls._usdrt_stage is None else "RTX active"
+                    reason = "scene initialization" if cls._usdrt_stage is None else "RTX active"
                     logger.info("Newton CUDA graph capture deferred until first step() (%s)", reason)
         else:
             NewtonManager._graph = None
@@ -3425,24 +3432,6 @@ class NewtonManager(PhysicsManager):
         cls._adapter.finalize(cls._control)
 
     @classmethod
-    def _invalidate_callback_graph(cls) -> None:
-        """Discard captured hooks and defer recapture until the next physics step."""
-        NewtonManager._graph = None
-        cfg = PhysicsManager._cfg
-        device = PhysicsManager._device
-        sim = PhysicsManager._sim
-        NewtonManager._graph_capture_pending = bool(
-            cls._solver is not None
-            and cfg is not None
-            and cfg.use_cuda_graph
-            and device is not None
-            and "cuda" in device
-            and sim is not None
-            # Owners also mutate hooks through NewtonManager, bypassing solver overrides on cls.
-            and sim.physics_manager._supports_cuda_graph_capture()
-        )
-
-    @classmethod
     def register_post_actuator_callback(cls, callback: Callable[[], None]) -> None:
         """Append a hook to the list invoked after the actuator step on every iteration.
 
@@ -3452,25 +3441,17 @@ class NewtonManager(PhysicsManager):
         so kernel writes to ``state``/``control`` are visible to the
         integrator on the same iteration. Multiple articulations register
         their own implicit-DOF telemetry / FF-routing kernels here; all
-        registered callbacks fire in registration order each step. Changing hooks
-        invalidates any captured graph; recapture occurs on the next physics step.
+        registered callbacks fire in registration order each step. Register during
+        ``PHYSICS_READY`` on each model build; hard reset clears execution hooks.
         """
-        NewtonManager._post_actuator_callbacks.append(callback)
-        cls._invalidate_callback_graph()
-
-    @classmethod
-    def unregister_post_actuator_callback(cls, callback: Callable[[], None]) -> None:
-        """Remove a post-actuator callback; repeated removal is a safe no-op."""
-        with contextlib.suppress(ValueError):
-            NewtonManager._post_actuator_callbacks.remove(callback)
-            cls._invalidate_callback_graph()
+        cls._post_actuator_callbacks.append(callback)
 
     @classmethod
     def register_state_force_callback(cls, callback: Callable[[State], None]) -> None:
         """Register a graph-safe callback that applies forces before every solver substep.
 
-        Changing hooks invalidates any captured graph; recapture occurs on the
-        next physics step. Register before solver initialization for initial capture.
+        Register during ``PHYSICS_READY`` on each model build, before solver
+        initialization and CUDA graph capture. Hard reset clears execution hooks.
 
         Args:
             callback: Function that adds forces [N, N·m] to the provided state.
@@ -3478,14 +3459,6 @@ class NewtonManager(PhysicsManager):
         if callback in NewtonManager._state_force_callbacks:
             return
         NewtonManager._state_force_callbacks.append(callback)
-        cls._invalidate_callback_graph()
-
-    @classmethod
-    def unregister_state_force_callback(cls, callback: Callable[[State], None]) -> None:
-        """Remove a state-force callback; repeated removal is a safe no-op."""
-        with contextlib.suppress(ValueError):
-            NewtonManager._state_force_callbacks.remove(callback)
-            cls._invalidate_callback_graph()
 
     @classmethod
     def register_post_step_callback(cls, callback: Callable[[], None]) -> None:
@@ -3500,14 +3473,12 @@ class NewtonManager(PhysicsManager):
         decimation iterations (and their solver substeps) have completed -- not
         once per substep and not once per decimation iteration. Callbacks must be
         graph-safe (fixed shapes, no host branching on device data) and must be
-        registered before initial capture when possible. Changing hooks invalidates
-        any captured graph; recapture occurs on the next physics step.
-        Articulations with non-identity ordering
+        registered before capture. Articulations with non-identity ordering
         register their backend-to-user state republish here; all registered
-        callbacks fire in registration order each step.
+        callbacks fire in registration order each step. Register during
+        ``PHYSICS_READY`` on each model build; hard reset clears execution hooks.
         """
-        NewtonManager._post_step_callbacks.append(callback)
-        cls._invalidate_callback_graph()
+        cls._post_step_callbacks.append(callback)
 
     @classmethod
     def unregister_post_step_callback(cls, callback: Callable[[], None]) -> None:
@@ -3521,8 +3492,7 @@ class NewtonManager(PhysicsManager):
         tolerant deregistration of other handles.
         """
         with contextlib.suppress(ValueError):
-            NewtonManager._post_step_callbacks.remove(callback)
-            cls._invalidate_callback_graph()
+            cls._post_step_callbacks.remove(callback)
 
     @classmethod
     def create_fixed_tendon_control(cls, articulation):
