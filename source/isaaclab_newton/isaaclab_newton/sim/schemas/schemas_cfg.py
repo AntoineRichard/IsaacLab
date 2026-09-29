@@ -200,9 +200,8 @@ class MujocoJointCfg(JointDriveFragment):
     in non-positive direct format, ``(-stiffness [s^-2], -damping [s^-1])``. Written to
     ``mjc:solreflimit`` as a two-element array and applied by MuJoCo as ``jnt_solref``, verbatim:
     authoring it opts the joint out of the force-space conversion of Newton's ``limit_ke`` /
-    ``limit_kd`` gains *and* out of the default-``solref`` retag of
-    :attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref`, so an
-    explicitly authored pair always wins. MuJoCo's own default is ``(0.02, 1.0)``; a joint that
+    ``limit_kd`` gains, so an explicitly authored pair always wins.
+    MuJoCo's own default is ``(0.02, 1.0)``; a joint that
     overshoots its limits under load needs a shorter time constant, and no less than twice the
     physics time step.
     """

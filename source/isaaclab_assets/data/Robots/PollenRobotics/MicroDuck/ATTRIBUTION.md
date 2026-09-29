@@ -34,7 +34,7 @@ than as a runtime or maintenance dependency of this branch.
 
 The distributed USDs additionally apply `MjcJointAPI` to every revolute joint. This lets Newton's
 MuJoCo importer supply the implicit joint-limit `solreflimit = (0.02, 1.0)` when no value was authored,
-without Isaac Lab's global joint-limit override. The backlash hinges retain their explicitly authored
+without a global joint-limit override. The backlash hinges retain their explicitly authored
 `(0.01, 1.0)` limits. This metadata update changed no numeric joint properties, masses, or inertias.
 
 The exports were produced by selecting the importer's `physx` physics variant, flattening its

@@ -939,8 +939,6 @@ def test_the_episode_and_simulation_rates_match_upstream():
     assert cfg.decimation == 4
     assert cfg.sim.dt == pytest.approx(0.005)
     assert cfg.episode_length_s == pytest.approx(6.0)
-    # the joint damping the asset restores is only stable with MuJoCo's default limit solref
-    assert cfg.sim.physics.default.solver_cfg.use_mujoco_default_joint_limit_solref is True
 
 
 @pytest.mark.unit

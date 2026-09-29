@@ -16,7 +16,6 @@ from newton.solvers import SolverMuJoCo
 
 from isaaclab.physics import PhysicsManager
 
-from .mjwarp_joint_limits import apply_mujoco_default_joint_limit_solref
 from .mjwarp_manager_cfg import MJWarpSolverCfg
 from .mjwarp_tendon_control import MjWarpTendonControl
 from .newton_manager import NewtonManager
@@ -52,13 +51,7 @@ class NewtonMJWarpManager(NewtonManager):
         ignored deprecated ``ls_parallel`` field are not forwarded. Sets
         :attr:`NewtonManager._needs_collision_pipeline` to
         ``True`` only when ``use_mujoco_contacts=False``.
-
-        Joint-limit ``solref`` parity is applied here, on the finalized model
-        and before the solver compiles it (see
-        :mod:`~isaaclab_newton.physics.mjwarp_joint_limits`).
         """
-        if solver_cfg.use_mujoco_default_joint_limit_solref:
-            apply_mujoco_default_joint_limit_solref(model)
         NewtonManager._solver = cls._create_solver(model, solver_cfg)
         NewtonManager._use_single_state = True
         NewtonManager._needs_collision_pipeline = not solver_cfg.use_mujoco_contacts

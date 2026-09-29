@@ -504,7 +504,6 @@ def test_the_solver_budget_covers_the_always_active_limit_rows():
     assert solver.nconmax == base_solver.nconmax
     # and the rest of the solver profile is the base task's
     assert (solver.iterations, solver.ls_iterations) == (base_solver.iterations, base_solver.ls_iterations)
-    assert solver.use_mujoco_default_joint_limit_solref is True
 
 
 @pytest.mark.unit

@@ -130,12 +130,8 @@ MuJoCo's ``dof_damping`` is not carried by the MJCF-to-USD conversion (it is wri
 ``mjc:damping``, outside the schema resolvers Isaac Lab passes to Newton), so the configuration has
 to restore it either way; the only question was which value.
 
-.. warning::
-
-    This value requires MJWarp's MuJoCo-parity joint limits to be enabled, i.e.
-    :attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref` left at
-    its default of ``True``. Turning that escape hatch off without also restoring ``0.053`` here
-    reproduces the divergence described below.
+The distributed USDs apply ``MjcJointAPI`` so Newton supplies MuJoCo's critically damped
+``solreflimit = (0.02, 1.0)`` on the servo joints.
 
 **Why it used to be 0.053.** The 10x inflated MJCF value was a workaround for a solver defect, not a
 plant property. Newton's unauthored joint-limit gains (``limit_ke = 1e4`` / ``limit_kd = 1e1``)
@@ -146,8 +142,7 @@ robot instead of MuJoCo's critically damped ``(0.02, 1.0)`` -- so every limit co
 bisection that isolated the limit constraint as necessary and sufficient is in
 ``artifacts/microduck/mjlab_repro/report.md`` (E4).
 
-The defect is fixed at the backend layer, by the flag named in the warning above: unauthored joint
-limits now resolve to MuJoCo's default ``solreflimit`` of ``(0.02, 1.0)``. With that in place,
+With the USDs declaring MuJoCo joint semantics through ``MjcJointAPI``,
 dropping the damping to upstream's
 value cuts the golden-trajectory joint RMSE against upstream mjlab by **82%** (0.0440 -> 0.0079 rad)
 and the attitude error by 87%, and makes MicroDuck fall on exactly upstream's step -- see
@@ -238,13 +233,8 @@ the solver has -- and it is what keeps the integration stable there.
 **The joint damping now matches upstream's deployment.** Both paths integrate MicroDuck at the
 ``m6`` fit's ``friction_viscous``, which is what upstream's BAM binding republishes into
 ``dof_damping`` every step. The earlier 10x inflated value (the MJCF's ``0.053``) was a workaround
-for the underdamped joint-limit conversion, now fixed on the backend -- see
-:data:`MICRODUCK_JOINT_DAMPING`, and note that this configuration is only stable while
-:attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref` stays
-enabled. The Task-11 reading of the divergence as a plant-level instability of the
-MJCF -> USD -> Newton -> MJWarp path was correct about the path and wrong about the cause: the
-``DelayedPDActuatorCfg`` configuration diverged at ~0.0054 for the same solver reason, not because
-of the servo model.
+for the underdamped joint-limit conversion. The distributed USDs now apply ``MjcJointAPI``
+to obtain MuJoCo defaults directly; see :data:`MICRODUCK_JOINT_DAMPING`.
 
 The armature is left to the USD, which carries the MJCF's 0.0018 -- the same value the BAM fit
 identifies.
