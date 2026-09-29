@@ -3,15 +3,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from typing import TYPE_CHECKING
-
 from isaaclab.utils.configclass import configclass
 
 from .actuator_base_cfg import ActuatorBaseCfg
 from .bam_model import BAM_XL330_M6_PARAMS_FILE
-
-if TYPE_CHECKING:
-    from .actuator_bam import BamActuator
 
 
 @configclass
@@ -29,24 +24,21 @@ class BamActuatorCfg(ActuatorBaseCfg):
         position loop runs in the firmware domain, parameterized by :attr:`kp_fw`, and its
         damping is the physical back-EMF of the motor.
 
-    Note:
-        The model owns the joint dry friction on both paths, so the Isaac Lab-executed path
-        resolves the group's joints to zero solver static and dynamic friction and warns if
-        :attr:`~isaaclab.actuators.ActuatorBaseCfg.friction` or
-        :attr:`~isaaclab.actuators.ActuatorBaseCfg.dynamic_friction` is configured. Only
-        :attr:`~isaaclab.actuators.ActuatorBaseCfg.viscous_friction` is left to the solver,
-        because a torque-level model still needs it to damp the joint the way the reference
-        implementation's per-step ``dof_damping`` does.
+    This model requires ``use_newton_actuators=True`` with the Newton backend. On MuJoCo Warp,
+    the controller publishes its friction budget and viscous damping into the solver and reads
+    the external load from its generalized forces. Other Newton solvers use the controller's
+    torque-level friction approximation.
     """
 
-    class_type: type["BamActuator"] | str = "{DIR}.actuator_bam:BamActuator"
+    class_type: type | None = None
+    """No Isaac Lab-executed model; Newton constructs the controller from its USD schema."""
 
     stiffness: dict[str, float] | float | None = None
     """Unused by this model. Defaults to None so that a configuration validates unset.
 
     Configuration validation rejects an object that still holds the inherited ``MISSING``
     sentinel, so the field is defaulted here rather than left required.
-    Setting it to anything but None warns, since the value would be silently dropped.
+    Leave it unset; the firmware gain is configured with :attr:`kp_fw`.
     """
 
     damping: dict[str, float] | float | None = None
@@ -94,10 +86,9 @@ class BamActuatorCfg(ActuatorBaseCfg):
     """Range to sample the per-environment friction-budget scale from [-].
 
     The scale multiplies the whole velocity-independent friction budget (Coulomb, Stribeck
-    and load-dependent terms). Sampled once at construction; the sample is the value that
-    :meth:`~isaaclab.actuators.BamActuator.reset_friction_scale` restores. Per-episode
-    friction randomization is applied by an event calling
-    :meth:`~isaaclab.actuators.BamActuator.set_friction_scale`. If None, the scale is 1.
+    and load-dependent terms). Sampled once at construction. Per-episode friction randomization
+    writes the controller's ``friction_scale`` through
+    :func:`~isaaclab.actuators.newton.write_group_parameter`. If None, the scale is 1.
     """
 
     min_delay: int = 0
@@ -113,28 +104,15 @@ class BamActuatorCfg(ActuatorBaseCfg):
     """Number of physics steps between lag resamples. Defaults to 0, which resamples every step.
 
     When positive, a phase offset in ``[0, delay_update_period)`` staggers the resamples rather
-    than synchronizing them. The Isaac Lab-executed model draws that offset, and the lag itself,
-    once per environment for the whole joint group; the Newton-native controller draws both per
-    driven joint, because a Newton actuator component is handed no environment structure. The
-    two agree in distribution, not sample for sample.
+    than synchronizing them. The Newton controller draws the phase and lag per driven joint.
     """
 
     stiff_frictionloss: bool = True
     """Stiffen the joint friction constraint on a solver that applies the friction itself [-].
 
-    Only used on the Newton-native path (``use_newton_actuators=True``) with the MuJoCo Warp
-    solver, which has no noslip solver: its friction-loss constraint stays soft and a
-    statically held joint creeps. Setting this replaces the constraint's solver reference with
-    the stiff, timestep-independent form the reference implementation uses. Ignored by the
-    Isaac Lab-executed model, whose stiction clip acts at the torque level.
-    """
-
-    dt: float | None = None
-    """Physics timestep the actuator is stepped at [s].
-
-    If None, it is read from the running simulation at construction. The model needs it to
-    size the stopping torque of its static-friction clip and to differentiate the joint
-    velocities, neither of which the base actuator interface provides.
+    MuJoCo Warp has no noslip solver: its friction-loss constraint stays soft and a statically
+    held joint creeps. Setting this replaces the constraint's solver reference with the stiff,
+    timestep-independent form the reference implementation uses.
     """
 
 

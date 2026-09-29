@@ -12,26 +12,11 @@ model but hands its torque to a Newton/MJWarp articulation, which owns the rigid
 instead. This harness drives both with the *same* position trajectory and reports how far apart
 the two joint angles drift.
 
-The two implementations under test
-----------------------------------
-``--impl`` selects which port is compared against the reference. Both are built from the same
-:class:`~isaaclab.actuators.BamActuatorCfg` on the same fixture; the switch between them is
-:attr:`~isaaclab.sim.SimulationCfg.use_newton_actuators`:
-
-``lab``
-    **Implementation A**, :class:`~isaaclab.actuators.BamActuator`: the model runs in Python
-    between the physics steps and writes a joint-effort command. It applies BAM's static
-    friction itself, by clipping the torque, and it *estimates* the external load from the
-    rotor momentum balance. This is the structure the reference has, so the comparison is
-    between two spellings of one algorithm.
-``newton``
-    **Implementation B**, :class:`~isaaclab.actuators.newton.ControllerBam`: the model runs as
-    a Warp controller inside the Newton actuator path. It publishes the friction budget into
-    MuJoCo's ``dof_frictionloss`` and lets the solver clip, and it *reads* the external load
-    out of the solver's generalized forces. Both differences are real modelling changes
-    against the reference and are what this run measures; neither is a bug to be tuned away.
-    Consequently ``efforts`` means something different on this path -- see
-    :class:`ActuatorRollout` -- and B's total error is **not** required to be below A's.
+The Newton-native Warp controller publishes its friction budget into MuJoCo's
+``dof_frictionloss`` and reads the external load from the solver's generalized forces.
+The reference's torque-level stiction and its integrator differ from the constraint solver,
+so this offline comparison measures the resulting trajectory gap. Routine tests use recorded
+upstream golden data and do not require the upstream package.
 
 What is matched, and what is not
 --------------------------------
@@ -65,33 +50,6 @@ setup difference:
   isolates. Sweeping ``--dt`` shows the rest of the comparison inheriting the same first-order
   scaling.
 
-The deviations under measurement
---------------------------------
-:class:`~isaaclab.actuators.BamActuator` runs *outside* the solver, which costs it two things
-the reference gets for free:
-
-1. **The external torque is estimated, not read.** Upstream passes the true bias torque into
-   the friction budget and the stopping-torque test; Isaac Lab reconstructs it from the rotor
-   momentum balance, ``armature * ddq - tau_applied_prev``, which is exact only while the link
-   is not accelerating. ``ext_torque_*`` reports that residual against the load the pendulum
-   really applies, and ``budget_error_*`` reports how much of it survives into the friction
-   budget -- the only channel through which it can move the simulation.
-2. **The stiction clip is sized with the rotor inertia alone.** Upstream's stopping torque uses
-   the full ``m L^2 + armature``; the actuator only knows its own armature, so it
-   underestimates the torque needed to arrest the joint by the link's share (reported as
-   ``link_inertia_fraction``).
-
-:class:`~isaaclab.actuators.newton.ControllerBam` closes both -- it reads the load, and MuJoCo's
-friction-loss constraint arrests the joint with the true articulated inertia -- and pays for
-them with a third deviation the reference does not have:
-
-3. **The friction is a constraint, not a torque clip.** ``dof_frictionloss`` is enforced by the
-   solver, jointly with everything else, and MuJoCo's friction-loss constraint is compliant: a
-   "held" joint creeps instead of stopping dead. The same two keys stay meaningful --
-   ``ext_torque_*`` is now the residual of the *read* load, which is exact but one physics step
-   old, and ``budget_error_*`` what remains of it in the budget -- so the two implementations
-   are decomposed onto one scale, and the constraint's compliance is what is left over.
-
 Ablations
 ---------
 ``--ablation`` selects which terms are active, on **both** sides simultaneously. The BAM
@@ -101,8 +59,7 @@ Ablations
     ``m6`` -- everything on. The headline number.
 ``no-load-friction``
     ``m2`` -- Coulomb + Stribeck friction only. The load-dependent budget vanishes, so the
-    estimated external torque no longer feeds the friction and only its (much weaker) path
-    through the stopping-torque test survives.
+    external load no longer enters the friction budget.
 ``plant``
     ``m1`` with ``kt``, ``friction_base`` and ``friction_viscous`` zeroed, released from
     :data:`PLANT_INITIAL_ANGLE`. Both actuators produce exactly zero torque, so this compares
@@ -114,7 +71,7 @@ Usage
 .. code-block:: bash
 
     uv run --with /path/to/checkouts/bam python scripts/tools/bam_parity_rollout.py \
-        --impl lab --ablation full
+        --ablation full
 
 The run aborts unless the installed ``bam`` really is the pinned reference revision; a local
 checkout is accepted as long as its ``git`` HEAD matches and its working tree is clean, so the
@@ -130,29 +87,15 @@ import math
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-from bam.actuator import VoltageControlledActuator
-from bam.model import Model, load_model_from_dict
-from bam.simulate import Simulator
-
-# Running this file by path puts ``scripts/tools`` on ``sys.path``, so the sibling generator
-# that owns the reference revision pin -- and the guard that enforces it -- is importable.
-# Sharing both keeps the goldens and this harness from drifting onto different ``bam`` commits
-# or onto two variants of one provenance policy.
-from generate_bam_goldens import resolve_installed_bam_revision
 
 from isaaclab.actuators import BAM_XL330_M6_PARAMS_FILE, BamActuatorCfg
-from isaaclab.actuators.bam_model import (
-    BamMotorParams,
-    apply_stiction_clip,
-    compute_duty,
-    compute_friction_budget,
-    compute_motor_torque,
-    compute_stribeck_coeff,
-)
+
+if TYPE_CHECKING:
+    from bam.model import Model
 
 # Rollout definition -- a linear chirp swept over the servo's usable band.
 DT = 0.005
@@ -188,14 +131,6 @@ PLANT_INITIAL_ANGLE = 0.6
 
 INERTIA_MISMATCH_TOLERANCE = 1e-5
 """Largest relative disagreement allowed between the two sides' effective inertia [-]."""
-
-REPLAY_TOLERANCE = 1e-5
-"""Largest deviation allowed when replaying the actuator pipeline over its own rollout [N.m].
-
-The replay runs in double precision over a single-precision rollout, so it can never match the
-recorded efforts exactly; the tolerance only has to be tight enough to catch a replay that
-stopped describing the same model.
-"""
 
 # Actuator configuration -- fixed supply, nominal firmware gain, no randomization.
 KP_FW = 200.0
@@ -377,6 +312,9 @@ def build_reference_model(parameters: dict[str, Any]) -> Model:
     ``error_gain``, ``max_pwm`` or ``max_current``, this fails instead of quietly comparing two
     differently-configured servos.
     """
+    from bam.actuator import VoltageControlledActuator
+    from bam.model import load_model_from_dict
+
     model = load_model_from_dict(parameters)
     actuator = model.actuator
     _require(
@@ -435,6 +373,8 @@ def run_reference_rollout(model: Model, rollout: Rollout) -> tuple[np.ndarray, n
         Joint positions [rad] and velocities [rad/s], each of shape ``(num_steps,)``, sampled
         *before* the step that follows them.
     """
+    from bam.simulate import Simulator
+
     log = {
         "dt": rollout.dt,
         "mass": PENDULUM_MASS,
@@ -453,30 +393,19 @@ def run_reference_rollout(model: Model, rollout: Rollout) -> tuple[np.ndarray, n
 
 @dataclass(frozen=True)
 class ActuatorRollout:
-    """One Isaac Lab rollout, with the actuator telemetry its decomposition reads.
+    """Newton rollout state and solver-bound actuator telemetry.
 
-    Attributes:
-        positions: Joint positions [rad], sampled before the step that follows them, shape
-            ``(num_steps,)``.
-        velocities: Joint velocities [rad/s], sampled with ``positions``, shape ``(num_steps,)``.
-        efforts: Effort the actuator reported for each step [N.m], shape ``(num_steps,)``.
-            **The two implementations report different quantities here.** Implementation A
-            applies its stiction clip itself, so its effort is the whole joint torque;
-            implementation B hands the friction to MuJoCo, so its effort is the motor torque
-            alone and the friction the solver adds is not in it.
-        external_torque: Load the actuator sized its friction budget with [N.m], shape
-            ``(num_steps,)``, or None for implementation A, which never materializes its
-            estimate outside :meth:`~isaaclab.actuators.BamActuator.compute`.
-        friction_budget: Velocity-independent friction budget the actuator used [N.m], shape
-            ``(num_steps,)``, or None for implementation A. On implementation B this is the
-            value published into MuJoCo's ``dof_frictionloss``.
+    Positions [rad] and velocities [rad/s] are sampled before each step. Efforts [N.m]
+    are the commanded motor torque; the solver applies friction separately. External
+    torque [N.m] is the load read from the previous solve, and friction budget [N.m]
+    is the dry-friction limit published to the next solve. Arrays have shape ``(num_steps,)``.
     """
 
     positions: np.ndarray
     velocities: np.ndarray
     efforts: np.ndarray
-    external_torque: np.ndarray | None = None
-    friction_budget: np.ndarray | None = None
+    external_torque: np.ndarray
+    friction_budget: np.ndarray
 
     @property
     def state(self) -> tuple[np.ndarray, np.ndarray]:
@@ -487,12 +416,8 @@ class ActuatorRollout:
 def _native_bam_controller():
     """Return the Warp BAM controller the Newton actuator path built, checked to be live.
 
-    Newton owns the actuator objects, so the controller is reached through the manager's
-    adapter rather than through the articulation. Both of the properties asserted here decide
-    what the numbers in the report mean, so neither is assumed: ``solver_applies_friction``
-    says MuJoCo owns the stiction (rather than the controller falling back to implementation
-    A's torque-level clip), and a bound ``external_torque`` says the load is read from the
-    solver rather than estimated.
+    The bridge must publish solver friction and supply the external load for this
+    trajectory comparison to describe the supported Newton runtime.
 
     Returns:
         The single :class:`~isaaclab.actuators.newton.ControllerBam` of the fixture.
@@ -513,8 +438,7 @@ def _native_bam_controller():
     controller = controllers[0]
     _require(
         controller.solver_applies_friction,
-        "the BAM controller is applying implementation A's torque-level stiction clip, not the solver-side"
-        " friction constraint: the MuJoCo Warp bridge did not bind, so this run would measure implementation A.",
+        "the MuJoCo Warp friction bridge did not bind to the BAM controller",
     )
     _require(
         controller.external_torque is not None,
@@ -524,20 +448,11 @@ def _native_bam_controller():
 
 
 def run_isaaclab_rollout(
-    impl: str, params_file: Path, parameters: dict[str, Any], rollout: Rollout, device: str
+    params_file: Path, parameters: dict[str, Any], rollout: Rollout, device: str
 ) -> ActuatorRollout:
-    """Roll the goal trajectory through one of the two BAM implementations on Newton/MJWarp.
-
-    Both implementations are driven through the *same* fixture, the same
-    :class:`~isaaclab.actuators.BamActuatorCfg` and the same parameter file; the only
-    difference is :attr:`~isaaclab.sim.SimulationCfg.use_newton_actuators`, which is what
-    routes the configuration either to the Python-executed
-    :class:`~isaaclab.actuators.BamActuator` or to the Warp
-    :class:`~isaaclab.actuators.newton.ControllerBam`. That keeps the two rollouts comparable
-    with each other as well as with the reference.
+    """Roll the goal trajectory through the native BAM controller on Newton/MJWarp.
 
     Args:
-        impl: ``"lab"`` for implementation A or ``"newton"`` for implementation B.
         params_file: BAM parameter file the actuator is configured from.
         parameters: The same parameters as a dictionary, used to author the pendulum's inertia.
         rollout: The trajectory to drive.
@@ -554,7 +469,6 @@ def run_isaaclab_rollout(
     from isaaclab.assets import Articulation, ArticulationCfg
     from isaaclab.sim import SimulationCfg, build_simulation_context
 
-    native = impl == "newton"
     with tempfile.TemporaryDirectory() as scratch:
         usda_file = Path(scratch) / "bam_parity_pendulum.usda"
         usda_file.write_text(
@@ -565,8 +479,7 @@ def run_isaaclab_rollout(
             dt=rollout.dt,
             device=device,
             gravity=(0.0, 0.0, -GRAVITY),
-            # The only switch between the two implementations under test.
-            use_newton_actuators=native,
+            use_newton_actuators=True,
             physics=NewtonCfg(
                 solver_cfg=MJWarpSolverCfg(
                     njmax=20, nconmax=20, ls_iterations=20, integrator="implicitfast", impratio=1
@@ -574,12 +487,9 @@ def run_isaaclab_rollout(
                 # One substep, so the solver advances once per control period like the reference.
                 num_substeps=1,
                 debug_mode=False,
-                # Implementation B is a stateful Newton actuator, and this loop issues one
-                # command per physics step -- a decimation of one, which the backend refuses to
-                # CUDA-graph-capture because the double-buffered controller state would never
-                # advance across replays. Eager execution is the documented escape and costs
-                # nothing at this scale. Implementation A keeps the default.
-                use_cuda_graph=not native,
+                # One command per physics step needs eager execution because the controller's
+                # double-buffered state requires even decimation for CUDA graph capture.
+                use_cuda_graph=False,
             ),
         )
         with build_simulation_context(device=device, add_ground_plane=False, sim_cfg=sim_cfg) as sim:
@@ -596,14 +506,13 @@ def run_isaaclab_rollout(
                             params_file=str(params_file),
                             kp_fw=KP_FW,
                             vin=VIN,
-                            dt=rollout.dt,
                         )
                     },
                 )
             )
             sim.reset()
             _require(robot.is_initialized, "the pendulum articulation failed to initialize")
-            controller = _native_bam_controller() if native else None
+            controller = _native_bam_controller()
 
             robot.write_joint_position_to_sim_index(
                 position=torch.full_like(robot.data.joint_pos.torch, rollout.initial_angle)
@@ -620,28 +529,20 @@ def run_isaaclab_rollout(
                 target.fill_(float(step_target))
                 robot.actuators.target_command.set_position_index(value=target)
                 robot.write_data_to_sim()
-                # Implementation A computes its effort in ``write_data_to_sim``; implementation
-                # B's controller runs inside the physics step, so its telemetry is only valid
-                # once the step has been taken. Either way the effort recorded at index ``k``
-                # is the one computed from the state recorded at index ``k``.
-                if not native:
-                    efforts.append(float(robot.actuators.applied_effort.torch[0, 0]))
+                # The native controller runs inside sim.step; telemetry then corresponds to
+                # the state sampled above.
                 sim.step()
                 robot.update(rollout.dt)
-                if native:
-                    efforts.append(float(robot.actuators.applied_effort.torch[0, 0]))
-                    external_torque.append(float(controller.external_torque.numpy()[0]))
-                    friction_budget.append(float(controller.friction_budget.numpy()[0]))
-
-    def as_array(values: list[float]) -> np.ndarray | None:
-        return np.asarray(values, dtype=np.float64) if values else None
+                efforts.append(float(robot.actuators.applied_effort.torch[0, 0]))
+                external_torque.append(float(controller.external_torque.numpy()[0]))
+                friction_budget.append(float(controller.friction_budget.numpy()[0]))
 
     return ActuatorRollout(
         positions=np.asarray(positions, dtype=np.float64),
         velocities=np.asarray(velocities, dtype=np.float64),
         efforts=np.asarray(efforts, dtype=np.float64),
-        external_torque=as_array(external_torque),
-        friction_budget=as_array(friction_budget),
+        external_torque=np.asarray(external_torque, dtype=np.float64),
+        friction_budget=np.asarray(friction_budget, dtype=np.float64),
     )
 
 
@@ -664,183 +565,6 @@ def effective_inertia(rollout: Rollout, positions: np.ndarray, velocities: np.nd
     """
     _require(velocities[1] != 0.0, "the torque-free rollout did not move; the release angle cannot be an equilibrium")
     return float(gravity_torque(np.asarray(positions[0])) * rollout.dt / velocities[1])
-
-
-def _column(values: np.ndarray) -> torch.Tensor:
-    """Return ``values`` as the ``(N, 1)`` float64 tensor the math core operates on."""
-    return torch.as_tensor(values, dtype=torch.float64).reshape(-1, 1)
-
-
-def _replay_motor_torque(params: BamMotorParams, rollout: Rollout, trace: ActuatorRollout) -> torch.Tensor:
-    """Re-derive the motor-side torque of every step from the recorded state [N.m].
-
-    Runs the firmware and DC-motor stages of :mod:`isaaclab.actuators.bam_model` over the
-    trajectory that was actually driven. This is a pure function of ``(target, q, dq)`` here
-    because the harness configures nothing stateful ahead of it -- no supply sag, no gain
-    scaling, no command delay -- which is what makes replaying either implementation legitimate.
-    """
-    target, position = _column(rollout.goal), _column(trace.positions)
-    velocity = _column(trace.velocities)
-    kp = torch.full_like(target, KP_FW)
-    vin = torch.full_like(target, VIN)
-    return compute_motor_torque(compute_duty(target, position, velocity, kp, vin, params), velocity, vin, params)
-
-
-def external_torque_deviation(params_file: Path, rollout: Rollout, trace: ActuatorRollout) -> dict[str, float]:
-    """Quantify implementation A's estimated-external-torque deviation, and what reaches the model.
-
-    :meth:`~isaaclab.actuators.BamActuator._estimate_external_torque` reconstructs the load from
-    the rotor momentum balance, ``armature * ddq - tau_applied_prev``; the true external torque
-    on this pendulum is :func:`gravity_torque`. Their difference -- the link-side inertial term
-    the actuator cannot observe -- is the first of the two deviations this harness measures.
-
-    The raw torque residual overstates the deviation, because the estimate reaches the physics
-    only through the friction budget, whose external-side coefficients are small and
-    Stribeck-gated. The budget is therefore re-evaluated with the true load in place of the
-    estimate, and the difference is the part that actually perturbs the model.
-
-    Re-evaluating the budget means replaying the actuator's own pipeline over the recorded
-    state, which is possible here because nothing stateful is configured (no supply sag, gain
-    scaling or command delay). The replay is checked against the efforts the actuator really
-    applied: if it ever stopped reproducing them, the run fails rather than reporting a
-    decomposition of some other model.
-
-    Args:
-        params_file: BAM parameter file the rollout ran with.
-        rollout: The trajectory that was driven.
-        trace: The recorded implementation-A rollout.
-
-    Returns:
-        RMSE and peak of the torque residual and of the friction-budget error it causes [N.m],
-        alongside the peak true load and the mean budget they should be read against [N.m].
-    """
-    params = BamMotorParams.from_json(params_file)
-    velocity = _column(trace.velocities)
-    motor_torque = _replay_motor_torque(params, rollout, trace)
-
-    # Step 0 has no previous state to differentiate against; the actuator seeds its velocity
-    # cache there and reports zero acceleration, so the replay only covers step 1 onwards.
-    estimate = params.armature * (velocity[1:] - velocity[:-1]) / rollout.dt - _column(trace.efforts[:-1])
-    truth = _column(gravity_torque(trace.positions[1:]))
-    stribeck = compute_stribeck_coeff(velocity[1:], params)
-    budget = compute_friction_budget(motor_torque[:-1], estimate, stribeck, params)
-    replayed = apply_stiction_clip(
-        motor_torque[1:], estimate, velocity[1:], budget, params.friction_viscous, rollout.dt, params.armature
-    )
-    replay_error = float(torch.max(torch.abs(replayed - _column(trace.efforts[1:]))))
-    _require(
-        replay_error <= REPLAY_TOLERANCE,
-        f"replaying the actuator pipeline over the recorded rollout missed its efforts by {replay_error:.3e} N.m"
-        f" (tolerance {REPLAY_TOLERANCE:.0e}); the decomposition below would not describe the model that ran.",
-    )
-
-    true_budget = compute_friction_budget(motor_torque[:-1], truth, stribeck, params)
-    budget_error = (budget - true_budget).numpy()
-    residual = (estimate - truth).numpy()
-    return {
-        "ext_torque_rmse_nm": float(np.sqrt(np.mean(residual**2))),
-        "ext_torque_max_nm": float(np.max(np.abs(residual))),
-        "ext_torque_peak_load_nm": float(np.max(np.abs(truth.numpy()))),
-        "budget_error_rmse_nm": float(np.sqrt(np.mean(budget_error**2))),
-        "budget_error_max_nm": float(np.max(np.abs(budget_error))),
-        "budget_mean_nm": float(np.mean(true_budget.numpy())),
-        "replay_error_nm": replay_error,
-    }
-
-
-def solver_torque_deviation(params_file: Path, rollout: Rollout, trace: ActuatorRollout) -> dict[str, float]:
-    """Quantify what implementation B's *read* external torque costs, on the same scale as A's.
-
-    Implementation B does not estimate the load: the MuJoCo Warp bridge hands the controller the
-    generalized force the solver computed, and the controller publishes the resulting friction
-    budget into ``dof_frictionloss``. Both quantities are recorded during the rollout, so the
-    same two numbers implementation A is decomposed into can be measured directly rather than
-    replayed -- ``ext_torque_*`` is how far the read load sits from the pendulum's true
-    :func:`gravity_torque`, and ``budget_error_*`` is how much of that survives into the budget.
-
-    What is left of the deviation is *staleness*, not error: the gather reads generalized forces
-    MuJoCo evaluated at the start of the previous step, so the load is exact but one step old.
-    ``ext_torque_read_error_nm`` pins the "exact" half (measured at float32 resolution) and the
-    ``ext_torque_*`` statistics cost out the "one step old" half against the state the budget is
-    actually applied to -- the same convention :func:`external_torque_deviation` reports A's
-    estimator error in, so the two are directly comparable.
-
-    Three tripwires keep the decomposition honest about the model that ran, mirroring
-    :func:`external_torque_deviation`'s single replay:
-
-    * the motor stage is replayed from the recorded state and must reproduce the efforts the
-      Warp controller emitted -- which on this path *are* the motor torque, because the solver
-      owns the friction;
-    * the friction budget is recomputed from the recorded previous motor torque and the recorded
-      read load, and must reproduce the budget the controller published;
-    * the read load itself must equal the pendulum's closed-form load one step back.
-
-    Together they say the Warp kernels are evaluating the shared math core on the state this
-    decomposition assumes, without which the numbers below would describe some other model.
-
-    Args:
-        params_file: BAM parameter file the rollout ran with.
-        rollout: The trajectory that was driven.
-        trace: The recorded implementation-B rollout, including its telemetry.
-
-    Returns:
-        The same keys :func:`external_torque_deviation` returns, plus the budget replay error.
-    """
-    _require(
-        trace.external_torque is not None and trace.friction_budget is not None,
-        "the implementation-B rollout carries no controller telemetry to decompose",
-    )
-    params = BamMotorParams.from_json(params_file)
-    velocity = _column(trace.velocities)
-    motor_torque = _replay_motor_torque(params, rollout, trace)
-
-    replay_error = float(torch.max(torch.abs(motor_torque - _column(trace.efforts))))
-    _require(
-        replay_error <= REPLAY_TOLERANCE,
-        f"replaying the motor stage over the recorded rollout missed the controller's efforts by {replay_error:.3e}"
-        f" N.m (tolerance {REPLAY_TOLERANCE:.0e}); the decomposition below would not describe the model that ran.",
-    )
-
-    # The gather runs before the actuators, and it reads generalized forces MuJoCo evaluated at
-    # the *start* of the previous step, so the value recorded at step ``k`` is the exact load of
-    # the state recorded at step ``k - 1``. Checking that first separates the two things this
-    # channel can get wrong: whether the read is right (it is, to float32) and whether it is
-    # current (it is one step old, which is what ``ext_torque_*`` below then costs out).
-    read = _column(trace.external_torque[1:])
-    read_error = float(torch.max(torch.abs(read - _column(gravity_torque(trace.positions[:-1])))))
-    _require(
-        read_error <= REPLAY_TOLERANCE,
-        f"the load the controller read from the solver is off the pendulum's true load by {read_error:.3e} N.m"
-        f" (tolerance {REPLAY_TOLERANCE:.0e}) even one step back, so it is not the generalized force it claims"
-        " to be and the decomposition below would not describe the model that ran.",
-    )
-
-    # Step 0 is skipped: its gather precedes the first solve, exactly as A's estimator has no
-    # previous state at step 0.
-    truth = _column(gravity_torque(trace.positions[1:]))
-    stribeck = compute_stribeck_coeff(velocity[1:], params)
-    budget = compute_friction_budget(motor_torque[:-1], read, stribeck, params)
-    budget_replay_error = float(torch.max(torch.abs(budget - _column(trace.friction_budget[1:]))))
-    _require(
-        budget_replay_error <= REPLAY_TOLERANCE,
-        f"the friction budget the controller published differs from the math core's by {budget_replay_error:.3e} N.m"
-        f" (tolerance {REPLAY_TOLERANCE:.0e}); the decomposition below would not describe the model that ran.",
-    )
-
-    true_budget = compute_friction_budget(motor_torque[:-1], truth, stribeck, params)
-    budget_error = (budget - true_budget).numpy()
-    residual = (read - truth).numpy()
-    return {
-        "ext_torque_rmse_nm": float(np.sqrt(np.mean(residual**2))),
-        "ext_torque_max_nm": float(np.max(np.abs(residual))),
-        "ext_torque_peak_load_nm": float(np.max(np.abs(truth.numpy()))),
-        "budget_error_rmse_nm": float(np.sqrt(np.mean(budget_error**2))),
-        "budget_error_max_nm": float(np.max(np.abs(budget_error))),
-        "budget_mean_nm": float(np.mean(true_budget.numpy())),
-        "replay_error_nm": replay_error,
-        "budget_replay_error_nm": budget_replay_error,
-        "ext_torque_read_error_nm": read_error,
-    }
 
 
 def compare(lab: tuple[np.ndarray, np.ndarray], reference: tuple[np.ndarray, np.ndarray]) -> dict[str, float]:
@@ -891,26 +615,24 @@ def check_no_divergence(name: str, positions: np.ndarray, velocities: np.ndarray
     )
 
 
-def run(impl: str, ablation: Ablation, rollout: Rollout, device: str, bam_revision: str) -> dict[str, Any]:
+def run(ablation: Ablation, rollout: Rollout, device: str, bam_revision: str) -> dict[str, Any]:
     """Run one ablation on both simulators and collect every reported number."""
     parameters = build_parameters(ablation)
     reference_model = build_reference_model(parameters)
     reference_state = run_reference_rollout(reference_model, rollout)
     with tempfile.TemporaryDirectory() as scratch:
-        # One file, read by the actuator under test and by the replay that decomposes its error.
+        # The native controller and upstream reference receive the same parameter file.
         params_file = Path(scratch) / "bam_parity_params.json"
         params_file.write_text(json.dumps(parameters, indent=4))
-        trace = run_isaaclab_rollout(impl, params_file, parameters, rollout, device)
+        trace = run_isaaclab_rollout(params_file, parameters, rollout, device)
         lab_state = trace.state
 
         check_no_divergence("reference", *reference_state)
-        check_no_divergence(f"Isaac Lab ({impl})", *lab_state)
-        decompose = solver_torque_deviation if impl == "newton" else external_torque_deviation
-        deviation = decompose(params_file, rollout, trace)
+        check_no_divergence("Isaac Lab (Newton)", *lab_state)
 
     link_inertia = PENDULUM_MASS * PENDULUM_LENGTH**2
     results: dict[str, Any] = {
-        "impl": impl,
+        "impl": "newton",
         "ablation": ablation.name,
         "description": ablation.description,
         "bam_revision": bam_revision,
@@ -922,7 +644,6 @@ def run(impl: str, ablation: Ablation, rollout: Rollout, device: str, bam_revisi
         "overall": compare(lab_state, reference_state),
         "phases": phase_breakdown(rollout, lab_state, reference_state),
     }
-    results["overall"].update(deviation)
 
     if ablation.dead_motor:
         _require(
@@ -957,17 +678,6 @@ def report(results: dict[str, Any]) -> None:
     print(f"  RMSE velocity           {overall['rmse_velocity_rad_s']:10.4f} rad/s")
     print(f"  max |position error|    {overall['max_abs_position_error_deg']:10.4f} deg")
     print(f"  max |velocity error|    {overall['max_abs_velocity_error_rad_s']:10.4f} rad/s")
-    print(f"  ext-torque RMSE         {overall['ext_torque_rmse_nm']:10.6f} N.m")
-    print(f"  ext-torque max          {overall['ext_torque_max_nm']:10.6f} N.m")
-    print(f"  peak true load          {overall['ext_torque_peak_load_nm']:10.6f} N.m")
-    print(f"  budget error RMSE       {overall['budget_error_rmse_nm']:10.6f} N.m")
-    print(f"  budget error max        {overall['budget_error_max_nm']:10.6f} N.m")
-    print(f"  mean friction budget    {overall['budget_mean_nm']:10.6f} N.m")
-    print(f"  pipeline replay error   {overall['replay_error_nm']:10.3e} N.m")
-    if "budget_replay_error_nm" in overall:
-        print(f"  budget replay error     {overall['budget_replay_error_nm']:10.3e} N.m")
-        print(f"  ext-torque read error   {overall['ext_torque_read_error_nm']:10.3e} N.m")
-    print(f"  link share of inertia   {results['link_inertia_fraction']:10.4f} -")
     if "plant" in results:
         plant = results["plant"]
         print(f"  inertia (Isaac Lab)     {plant['lab_inertia_kg_m2']:10.8f} kg.m^2")
@@ -988,14 +698,6 @@ def report(results: dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--impl",
-        choices=("lab", "newton"),
-        default="lab",
-        help="Which BAM implementation to compare against the reference: the Lab-executed"
-        " actuator ('lab', implementation A) or the Newton-native Warp controller ('newton',"
-        " implementation B, whose friction is applied by the MuJoCo solver).",
-    )
-    parser.add_argument(
         "--ablation",
         choices=sorted(ABLATIONS),
         default="full",
@@ -1013,9 +715,12 @@ def main() -> None:
     parser.add_argument("--output-json", type=Path, default=None, help="Optional path to dump the results to.")
     args = parser.parse_args()
 
+    # The sibling generator owns the pinned revision and its provenance check.
+    from generate_bam_goldens import resolve_installed_bam_revision
+
     bam_revision = resolve_installed_bam_revision(allow_local_checkout=True)
     ablation = ABLATIONS[args.ablation]
-    results = run(args.impl, ablation, build_rollout(ablation, args.dt, args.duration), args.device, bam_revision)
+    results = run(ablation, build_rollout(ablation, args.dt, args.duration), args.device, bam_revision)
     report(results)
     if args.output_json is not None:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)

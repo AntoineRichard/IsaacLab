@@ -195,13 +195,12 @@ MICRODUCK_CFG = ArticulationCfg(
             vin_drop_gain_range=(0.0, 0.2),
             vin_min=6.0,
             # per-robot gearbox friction spread. The ``randomize_joint_friction`` reset event
-            # overwrites this every episode; the draw here is what a task without that event gets,
-            # and what ``reset_friction_scale`` restores.
+            # overwrites this every episode; otherwise the initial draw is held across resets.
             friction_scale_range=(0.9, 1.1),
             actuator_effort_limit=MICRODUCK_SERVO_EFFORT_LIMIT,
             # restored here because the conversion drops it; armature is left to the USD, which does
-            # carry the MJCF value, and the dry friction belongs to the BAM model rather than to the
-            # solver on either execution path
+            # carry the MJCF value. The native controller publishes its dry-friction budget
+            # into the solver every physics step
             viscous_friction=MICRODUCK_JOINT_DAMPING,
             # upstream delay_min_lag / delay_max_lag, in physics steps
             min_delay=3,
@@ -214,27 +213,16 @@ MICRODUCK_CFG = ArticulationCfg(
 No ``stiffness``/``damping``: the BAM model ignores both (its position loop is ``kp_fw`` and its
 damping is the motor's back-EMF) and warns if they are set.
 
-**No ``friction`` either, and that is deliberate.** The dry friction is the BAM model's, on both
-execution paths, exactly as in the reference: upstream's binding zeroes the MJCF's ``frictionloss``
-on every joint it drives and applies the load-dependent budget itself. Configuring the MJCF's
-0.0048 N·m here would be ignored on the Isaac Lab-executed path -- :class:`BamActuator` declares
-:attr:`~isaaclab.actuators.ActuatorBase.applies_joint_friction`, so the collection zeroes the
-group's solver friction and warns -- and overwritten every physics step on the Newton-native one.
+BAM requires Newton and ``use_newton_actuators=True``. With MJWarp its native controller
+publishes the load-dependent friction budget and viscous coefficient into the solver's
+``dof_frictionloss`` and ``dof_damping`` every physics step. No fixed ``friction`` is
+configured because it would be overwritten by that live budget.
 
-:data:`MICRODUCK_JOINT_DAMPING` is the one joint dynamic the conversion drops that the
-configuration still restores, and what it means depends on the execution path. With
-``use_newton_actuators=True`` on MJWarp it is a seed only: the native controller republishes the
-live friction budget and viscous coefficient into the solver's ``dof_frictionloss`` /
-``dof_damping`` every physics step, which is what the reference implementation does. With
-``use_newton_actuators=False`` the Isaac Lab-executed model clips the torque against its own budget
-instead and never writes to the solver, so this viscous term is the *only* joint-level dissipation
-the solver has -- and it is what keeps the integration stable there.
-
-**The joint damping now matches upstream's deployment.** Both paths integrate MicroDuck at the
-``m6`` fit's ``friction_viscous``, which is what upstream's BAM binding republishes into
-``dof_damping`` every step. The earlier 10x inflated value (the MJCF's ``0.053``) was a workaround
-for the underdamped joint-limit conversion. The distributed USDs now apply ``MjcJointAPI``
-to obtain MuJoCo defaults directly; see :data:`MICRODUCK_JOINT_DAMPING`.
+:data:`MICRODUCK_JOINT_DAMPING` restores the fitted viscous coefficient lost in conversion
+and seeds the solver before the first controller update. The ``m6`` fit's
+``friction_viscous`` matches upstream's deployed damping; the MJCF's ``0.053`` is ten times
+larger. The distributed USDs apply ``MjcJointAPI`` to obtain MuJoCo joint-limit defaults
+directly; see :data:`MICRODUCK_JOINT_DAMPING`.
 
 The armature is left to the USD, which carries the MJCF's 0.0018 -- the same value the BAM fit
 identifies.

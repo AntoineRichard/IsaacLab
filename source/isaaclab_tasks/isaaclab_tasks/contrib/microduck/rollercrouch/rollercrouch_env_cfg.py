@@ -371,9 +371,9 @@ class EventsCfg(RollersEventsCfg):
         and from the spin one, and the invariant it protects is met only by accident: the degenerate
         wheel event above is upstream's *sole* declarer of ``dof_frictionloss``, so deleting it as
         dead code would make upstream's BAM actuator raise at the first multi-environment step
-        (section 13.1). That interlock does not exist in this port, because Isaac Lab's BAM actuator
-        owns per-environment friction storage unconditionally rather than expanding a shared model
-        field -- which is why the event has no counterpart in any MicroDuck task here. The wheel event
+        (section 13.1). That interlock does not exist in this port: the native BAM controller and
+        MJWarp bridge require per-world friction storage independently of the wheel event. The
+        expansion event therefore has no counterpart in any MicroDuck task here. The wheel event
         is kept for its own sake, and ``test_microduck_rollercrouch_env.py`` pins both halves: that
         the per-environment storage exists without it, and that it is nonetheless still registered.
     """

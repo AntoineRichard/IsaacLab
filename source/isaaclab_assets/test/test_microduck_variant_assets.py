@@ -71,14 +71,8 @@ VARIANT_CFGS = {
 CONFIGURED_VARIANTS = tuple(VARIANT_CFGS)
 """Every configured variant, which is what the configuration-only cases are parametrized on."""
 
-LAB_EXECUTED_VARIANTS = ("allcollisions", "rollers")
-"""The variants whose configuration spawns on the Isaac Lab-executed actuator path.
-
-The backlash configuration is not one of them: its servo model reads an encoder on the far side of
-a joint outside its own group, which only the Newton-native controller is handed, so it *raises*
-off that path rather than silently dropping the play. It is spawned by :func:`backlash_native`
-instead, which is also where the cases that need it to step live.
-"""
+PLAIN_SERVO_VARIANTS = ("allcollisions", "rollers")
+"""Variants using plain servos; the backlash variant has a separate rollout fixture."""
 
 NUM_SERVO_JOINTS = 14
 """Joints every MicroDuck model drives, and the dimension of every MicroDuck action space.
@@ -321,12 +315,11 @@ def _skip_unless_converted_assets_exist() -> None:
 def backlash_native():
     """The backlash configuration spawned on the Newton-native actuator path, then measured.
 
-    Its servo model runs on that path only -- see :data:`LAB_EXECUTED_VARIANTS` -- and what this
-    file has to read of it needs a simulation the fidelity one below is not: several environments,
-    and steps. :class:`~isaaclab.sim.SimulationContext` is a singleton, so this builds its own
-    simulation and tears it down again *before* yielding, and what it yields is measurements rather
-    than live objects. :func:`newton_articulations` requests it for no other reason than to order
-    the two.
+    The backlash checks need several environments and simulation steps, whereas the
+    fidelity fixture below only inspects imported state. :class:`~isaaclab.sim.SimulationContext`
+    is a singleton, so this builds its own simulation and tears it down again *before* yielding.
+    It yields measurements rather than live objects. :func:`newton_articulations` requests it
+    only to order the two simulations.
 
     Returns:
         The joint inventory, the encoder binding the servo group installed, the resolved initial
@@ -451,13 +444,13 @@ def newton_articulations(backlash_native):
 
     Args:
         backlash_native: Requested only so that its simulation is built and torn down before this
-            one. The two need different actuator paths and only one context can exist at a time.
+            one. Only one simulation context can exist at a time.
     """
     _skip_unless_converted_assets_exist()
 
     usd_paths = {**VARIANT_USD_PATHS, REFERENCE_MODEL: MICRODUCK_USD_PATH}
     sim_utils.create_new_stage()
-    sim = SimulationContext(SimulationCfg(dt=0.005, device="cuda:0", use_newton_actuators=False, physics=NewtonCfg()))
+    sim = SimulationContext(SimulationCfg(dt=0.005, device="cuda:0", use_newton_actuators=True, physics=NewtonCfg()))
 
     bare = {
         model: Articulation(
@@ -470,7 +463,7 @@ def newton_articulations(backlash_native):
         for model, usd_path in usd_paths.items()
     }
     configured = {}
-    for index, variant in enumerate(LAB_EXECUTED_VARIANTS):
+    for index, variant in enumerate(PLAIN_SERVO_VARIANTS):
         variant_cfg = VARIANT_CFGS[variant]
         configured_cfg = copy.deepcopy(variant_cfg)
         configured_cfg.prim_path = f"/World/{variant}_configured"
@@ -498,7 +491,7 @@ def usd_articulations(newton_articulations):
 
 @pytest.fixture(scope="module")
 def configured_articulations(newton_articulations):
-    """Per variant in :data:`LAB_EXECUTED_VARIANTS`: the articulation loaded through it."""
+    """Per variant in :data:`PLAIN_SERVO_VARIANTS`: the articulation loaded through it."""
     return newton_articulations[1]
 
 
@@ -921,7 +914,7 @@ def test_backlash_servo_joints_match_the_plain_walk_asset(usd_articulations):
     assert {joint_prims[name].GetTypeName() for name in servo_names} == {"PhysicsRevoluteJoint"}
 
 
-@pytest.mark.parametrize("variant", LAB_EXECUTED_VARIANTS)
+@pytest.mark.parametrize("variant", PLAIN_SERVO_VARIANTS)
 def test_cfg_drives_the_servos_and_leaves_the_wheels_free(configured_articulations, variant):
     """The configuration reuses the walking model's servo group and actuates only the servos.
 
@@ -932,13 +925,20 @@ def test_cfg_drives_the_servos_and_leaves_the_wheels_free(configured_articulatio
     assert set(robot.actuators) == {"servos"}
 
     servos = robot.actuators["servos"]
-    assert len(servos.joint_names) == NUM_SERVO_JOINTS
-    assert set(servos.joint_names) == set(robot.joint_names) - PASSIVE_JOINTS[variant]
-    # the servo deployment itself is pinned by the walking model's suite; this pins that it is shared
-    assert servos.cfg == MICRODUCK_CFG.actuators["servos"]
+    model = NewtonManager.backend.model
+    driven_dofs = set(servos.indices.numpy().tolist())
+    driven_names = {
+        label.rsplit("/", 1)[-1]
+        for label, dof in zip(model.joint_label, model.joint_qd_start.numpy())
+        if label.startswith(robot.cfg.prim_path + "/") and int(dof) in driven_dofs
+    }
+    assert len(driven_names) == NUM_SERVO_JOINTS
+    assert driven_names == set(robot.joint_names) - PASSIVE_JOINTS[variant]
+    # The walking model's suite pins deployment; here the variants must share it.
+    assert robot.cfg.actuators["servos"] == MICRODUCK_CFG.actuators["servos"]
 
 
-@pytest.mark.parametrize("variant", LAB_EXECUTED_VARIANTS)
+@pytest.mark.parametrize("variant", PLAIN_SERVO_VARIANTS)
 def test_cfg_default_joint_pos_is_the_home_pose(configured_articulations, variant):
     """Every servo resets to its upstream ``HOME_FRAME`` value and every wheel to zero."""
     robot = configured_articulations[variant]

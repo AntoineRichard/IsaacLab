@@ -149,17 +149,11 @@ def randomize_bam_friction(
     filter admits implicit, ``IdealPDActuator`` and Newton-native groups only, and its explicit
     branch writes ``stiffness``/``damping``, which BAM never reads.
 
-    Both execution paths are covered, and the group is discovered from the *configuration* rather
-    than from the runtime object, because only the configuration is the same on both. With
-    ``use_newton_actuators=False`` the mapping entry is a
-    :class:`~isaaclab.actuators.BamActuator` and the scale is written through its public
-    randomization hook; with ``use_newton_actuators=True`` it is a Newton actuator object holding
-    the Warp-side controller, whose ``friction_scale`` carries the same name and meaning and is
-    reached through :func:`~isaaclab.actuators.newton.write_group_parameter`.
-
-    The scale is one number per environment, matching the reference implementation and
-    :attr:`~isaaclab.actuators.BamActuator.friction_scale`, so ``asset_cfg`` selects the
-    articulation only -- its joint selection is not used.
+    The scale is written through
+    :func:`~isaaclab.actuators.newton.write_group_parameter` to the native controller.
+    One number per environment is broadcast across the group's joints, matching the
+    reference implementation. ``asset_cfg`` selects the articulation only; its joint
+    selection is not used.
 
     Args:
         env: The environment holding the articulation.
@@ -167,7 +161,7 @@ def randomize_bam_friction(
         scale_range: The ``(low, high)`` bounds [-] of the friction-budget multiplier.
         asset_cfg: The articulation whose BAM groups are randomized. Only its name is used.
     """
-    from isaaclab.actuators import BamActuator, BamActuatorCfg  # noqa: PLC0415
+    from isaaclab.actuators import BamActuatorCfg  # noqa: PLC0415
     from isaaclab.actuators.newton import read_group_parameter, write_group_parameter  # noqa: PLC0415
 
     asset: Articulation = env.scene[asset_cfg.name]
@@ -179,21 +173,15 @@ def randomize_bam_friction(
         if not isinstance(actuator_cfg, BamActuatorCfg):
             continue
         scales = torch.empty(len(env_ids), 1, device=env.device).uniform_(*scale_range)
-        actuator = asset.actuators[name]
-        if isinstance(actuator, BamActuator):
-            actuator.set_friction_scale(env_ids, scales)
-        else:
-            # the native controller stores the scale per driven joint, so the per-environment
-            # draw is broadcast across the group's columns
-            num_group_joints = read_group_parameter(asset.actuators, name, "controller", "friction_scale").shape[1]
-            write_group_parameter(
-                asset.actuators,
-                name,
-                "controller",
-                "friction_scale",
-                values=scales.expand(len(env_ids), num_group_joints),
-                env_ids=env_ids,
-            )
+        num_group_joints = read_group_parameter(asset.actuators, name, "controller", "friction_scale").shape[1]
+        write_group_parameter(
+            asset.actuators,
+            name,
+            "controller",
+            "friction_scale",
+            values=scales.expand(len(env_ids), num_group_joints),
+            env_ids=env_ids,
+        )
 
 
 def _keyframe_joint_ids(env: ManagerBasedEnv, asset: Articulation, joint_names: tuple[str, ...]) -> list[int]:
@@ -710,7 +698,7 @@ def randomize_joint_dry_friction(
 
     The passive wheels are outside the BAM servo group's ``^(?!passive_).*`` selection, so nothing
     republishes over this write -- unlike the driven joints, whose solver friction the actuator owns
-    on both execution paths.
+    through the native controller.
 
     Args:
         env: The environment holding the articulation.

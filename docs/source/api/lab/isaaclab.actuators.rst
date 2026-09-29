@@ -27,7 +27,6 @@
     ActuatorNetMLPCfg
     ActuatorNetLSTM
     ActuatorNetLSTMCfg
-    BamActuator
     BamActuatorCfg
     BamBacklashActuatorCfg
     BamMotorParams
@@ -173,11 +172,6 @@ LSTM Network Actuator
 BAM Servo Model
 ---------------
 
-.. autoclass:: BamActuator
-  :members:
-  :inherited-members:
-  :show-inheritance:
-
 .. autoclass:: BamActuatorCfg
   :members:
   :inherited-members:
@@ -196,21 +190,6 @@ BAM Servo Model
 
 .. autodata:: BAM_XL330_M6_PARAMS_FILE
   :no-value:
-
-The stateless equations both BAM implementations share are not re-exported at the package root;
-their canonical home is :mod:`isaaclab.actuators.bam_model`:
-
-.. autofunction:: isaaclab.actuators.bam_model.compute_duty
-
-.. autofunction:: isaaclab.actuators.bam_model.compute_motor_torque
-
-.. autofunction:: isaaclab.actuators.bam_model.compute_stribeck_coeff
-
-.. autofunction:: isaaclab.actuators.bam_model.compute_friction_budget
-
-.. autofunction:: isaaclab.actuators.bam_model.apply_stiction_clip
-
-.. autofunction:: isaaclab.actuators.bam_model.battery_sag
 
 Newton Actuator Access
 ----------------------

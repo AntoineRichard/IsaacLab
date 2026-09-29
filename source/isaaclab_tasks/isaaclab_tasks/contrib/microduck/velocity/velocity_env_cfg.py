@@ -333,9 +333,9 @@ class MicroDuckPhysicsCfg(PresetCfg):
     MJWarp is also the only backend that can run this task as configured. The environment sets
     ``sim.use_newton_actuators = True``, and the BAM model is solver-hosted: it publishes its
     friction budget into the solver's joint dry friction and reads the external load back out, which
-    the PhysX family's host adapter provides neither of and rejects with a ``ValueError``. A PhysX
-    preset would therefore also have to force ``use_newton_actuators = False`` and accept the
-    Isaac Lab-executed model, which is a different plant -- so it is deliberately not offered here.
+    the PhysX family's host adapter provides neither of and rejects with a ``ValueError``. BAM
+    requires Newton with ``use_newton_actuators = True``; these tasks select MJWarp for its
+    solver-hosted friction, and no PhysX preset is offered.
     """
 
     newton_mjwarp = NewtonCfg(
@@ -665,9 +665,9 @@ class EventsCfg:
     Reference section 2.6. Upstream's ``base_com`` term is deliberately absent: it selects zero
     bodies upstream and MicroDuck never fills it in, so it is a documented no-op there (reference
     section 2.6a). Its ``expand_bam_friction_fields`` term has no counterpart because it only
-    registers MuJoCo's ``dof_frictionloss``/``dof_damping`` for per-world expansion, which the BAM
-    actuator's per-environment storage already is; its ``reset_action_history`` has none because
-    Isaac Lab's action manager resets its own buffers.
+    registers MuJoCo's ``dof_frictionloss``/``dof_damping`` for per-world expansion. The native
+    BAM controller and MJWarp bridge already require per-world storage. Its ``reset_action_history``
+    has none because Isaac Lab's action manager resets its own buffers.
 
     The three randomizations upstream ships disabled -- motor gains, joint damping and base
     orientation -- are not carried over at all, since a term that is never enabled is not part of

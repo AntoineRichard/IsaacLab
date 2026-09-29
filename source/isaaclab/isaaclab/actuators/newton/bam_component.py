@@ -3,62 +3,19 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Newton-native BAM servo controller (implementation B).
+"""Newton-native BAM servo controller.
 
-:class:`ControllerBam` is a Warp port of the BAM voltage-domain servo model that runs as a
-:class:`newton.actuators.Controller` inside :class:`newton.actuators.Actuator`, i.e. on the
-Newton actuator fast path rather than in Python. Every formula is a 1:1 port of the shared
-math core in :mod:`isaaclab.actuators.bam_model`, and the identified constants are loaded
-from the *same* vendored parameter file that :class:`~isaaclab.actuators.BamActuator`
-(implementation A) reads, so the two paths cannot drift apart numerically.
+The Warp controller runs inside Newton's actuator pipeline. MuJoCo Warp supplies the external
+load and resolves the load-dependent friction budget alongside its other constraints through
+:mod:`isaaclab_newton.physics.mjwarp_actuator_bridge`.
 
-What differs from implementation A, and why
--------------------------------------------
+The controller owns the stochastic command delay, battery sag, firmware PWM controller, DC-motor
+equation and gearbox friction. Its encoder can include a serial play hinge for backlash. State is
+double-buffered and CUDA-graph-safe. Identified parameters are loaded by
+:class:`~isaaclab.actuators.BamMotorParams`.
 
-* **Friction is published to the solver, not clipped at the torque level.** When
-  :attr:`ControllerBam.solver_applies_friction` is set (the Newton/MJWarp backend does this
-  through :mod:`isaaclab_newton.physics.mjwarp_actuator_bridge`), the controller writes the
-  velocity-independent friction budget into :attr:`ControllerBam.friction_budget` and the
-  viscous coefficient into :attr:`ControllerBam.viscous_damping`, and the backend publishes
-  both into MuJoCo's ``dof_frictionloss`` / ``dof_damping`` every physics step. MuJoCo's
-  friction-loss constraint then performs the static-friction clipping, which resolves
-  stiction jointly with the other constraints instead of one joint at a time. This is what
-  the reference implementation does (``bam/mjlab.py``). When the flag is clear the controller
-  falls back to :func:`~isaaclab.actuators.bam_model.apply_stiction_clip`, which is exactly
-  implementation A's behaviour and is what a non-MuJoCo backend gets.
-* **The command delay is owned by the controller, and its lags are per DOF.** Newton's
-  :class:`~newton.actuators.Delay` has static per-DOF lags with no resampling, hold
-  probability, update period or phase, so BAM's stochastic delay policy cannot be expressed
-  by composing it. The ring buffer and the lag policy therefore live in
-  :class:`ControllerBam.State`. One consequence is a deliberate divergence from
-  implementation A: :meth:`~newton.actuators.Controller.finalize` hands the controller no
-  environment structure, so the lag is drawn per driven DOF rather than once per environment
-  for a whole joint group. The draw is from the same distribution under the same update
-  policy, so the two agree in distribution but not sample for sample.
-* **The effort limit is applied by the controller, not by a clamping component.** Newton
-  discovers an actuator prim's components through
-  ``pxr.Usd.Prim.GetAppliedSchemas``, falling back to the raw ``apiSchemas`` metadata *only
-  when that returns nothing*. ``NewtonBamControlAPI`` has no registered USD schema definition,
-  so USD drops it from the composed list; authoring a registered token such as
-  ``NewtonMaxEffortClampingAPI`` beside it would make the composed list non-empty and the BAM
-  controller would silently disappear from the parse. Folding the clamp into the control law
-  keeps BAM prims free of registered tokens, and matches
-  :meth:`~isaaclab.actuators.ActuatorBase._clip_effort`, which is where implementation A
-  applies the same limit.
-* **The external torque can come from the solver.** :attr:`ControllerBam.external_torque`,
-  when bound, replaces implementation A's rotor-momentum estimator with the true generalized
-  forces the load applies to the gearbox.
-* **The firmware can read its encoder through a serial play hinge.** Because a controller is
-  handed the *whole* position array plus per-DOF index arrays, rather than a slice of its own
-  joints, :meth:`ControllerBam.bind_backlash_indices` can point each driven DOF at a second
-  joint whose angle the encoder also sees. That is what a gearbox's backlash looks like when
-  it is modelled as a hinge: implementation A's ``compute`` only ever receives its own joints'
-  state and cannot express it without a new hook. Unbound, the controller is bit-for-bit the
-  plain servo.
-
-The controller is stateful and CUDA-graph-safe: all of its state is double-buffered Warp
-arrays, and every scalar that changes the kernel's control flow is fixed before graph
-capture.
+The effort clamp is part of the controller: mixing a registered clamping schema with the
+unregistered ``NewtonBamControlAPI`` token can hide BAM from Newton's actuator schema discovery.
 """
 
 from __future__ import annotations
@@ -124,13 +81,7 @@ def _bam_motor_kernel(
 ):
     """Delay the command, sag the supply and run the firmware + DC-motor stages.
 
-    Ports :func:`~isaaclab.actuators.bam_model.battery_sag`,
-    :func:`~isaaclab.actuators.bam_model.compute_duty` and
-    :func:`~isaaclab.actuators.bam_model.compute_motor_torque`, preceded by the command
-    delay that :meth:`isaaclab.actuators.BamActuator._apply_delay` implements.
-
-    The one departure from those functions is the position the firmware error is measured
-    against, which is the DOF's own angle plus a masked second angle -- see
+    The firmware error uses the DOF's own angle plus a masked second angle; see
     :meth:`ControllerBam.bind_backlash_indices`. The velocity is not treated that way, and
     deliberately so: it enters only the back-EMF, the Stribeck blend and the stiction clip,
     which are rotor physics rather than an encoder-derived firmware signal.
@@ -244,11 +195,9 @@ def _bam_friction_kernel(
 ):
     """Size the gearbox friction budget and emit the actuator torque.
 
-    Ports :func:`~isaaclab.actuators.bam_model.compute_stribeck_coeff`,
-    :func:`~isaaclab.actuators.bam_model.compute_friction_budget` and -- only when the
-    solver does not own the friction -- :func:`~isaaclab.actuators.bam_model.apply_stiction_clip`,
-    plus :meth:`isaaclab.actuators.BamActuator._estimate_external_torque` when no true
-    external torque is bound.
+    Uses the solver's external load when bound, otherwise a rotor-momentum estimate.
+    Solver-hosted execution publishes the budget for the solver to resolve; standalone
+    controller execution applies a torque-level stiction clip.
     """
     i = wp.tid()
 
@@ -362,9 +311,7 @@ class ControllerBam(Controller):
 
     Per-environment randomization is exposed through the parameter arrays :attr:`vin`,
     :attr:`sag_gain`, :attr:`friction_scale`, :attr:`kp_scale` and :attr:`kd_scale`, whose
-    names match :class:`~isaaclab.actuators.BamActuator`'s attributes so that a single event
-    term can drive both implementations through
-    :func:`~isaaclab.actuators.newton.write_group_parameter`.
+    values are updated through :func:`~isaaclab.actuators.newton.write_group_parameter`.
     """
 
     SHARED_PARAMS = {
@@ -385,7 +332,7 @@ class ControllerBam(Controller):
     """External torque on the gearbox [N.m], shape ``(N,)``, or None to use the estimator.
 
     A backend that can read the true generalized forces binds its own array here before the
-    first step; otherwise the controller falls back to implementation A's rotor-momentum
+    first step; otherwise the controller falls back to a rotor-momentum
     estimate ``armature * (dq - dq_prev) / dt - tau_applied_prev``.
     """
 
@@ -550,10 +497,8 @@ class ControllerBam(Controller):
         """Fill the BAM parameter set from the authored attributes and the fit file.
 
         The identified motor, firmware and friction constants come from the BAM parameter
-        file named by ``params_file`` -- the same file
-        :class:`~isaaclab.actuators.BamActuator` loads -- so the two implementations are
-        guaranteed to run the same numbers. Any of them may still be overridden per joint by
-        authoring the matching attribute.
+        file named by ``params_file``. Any of them may be overridden per joint by authoring
+        the matching attribute.
 
         Args:
             args: Authored attribute values, keyed by snake-case name.
@@ -956,8 +901,7 @@ def apply_bam_startup_sampling(controller: ControllerBam, cfg: Any) -> None:
     A USD prim is shared by every clone, so the ranges
     :class:`~isaaclab.actuators.BamActuatorCfg` exposes (``vin_range``,
     ``vin_drop_gain_range``, ``friction_scale_range``) cannot be authored per environment.
-    They are drawn here instead, once the actuator exists, which reproduces what
-    :class:`~isaaclab.actuators.BamActuator` does at construction: one value per environment,
+    They are drawn here instead, once the actuator exists: one value per environment,
     shared by that environment's joints and held constant across resets.
 
     Args:

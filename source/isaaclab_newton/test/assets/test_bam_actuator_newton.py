@@ -3,29 +3,15 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""End-to-end checks of the Lab-executed BAM actuator on a live Newton MJWarp articulation.
+"""End-to-end checks of Newton-native BAM on live MJWarp articulations.
 
-:class:`~isaaclab.actuators.BamActuator` is an explicit model: with
-``SimulationCfg.use_newton_actuators=False`` its efforts are computed in Python and written
-to the solver as a pure joint-effort command. The unit suite
-(``source/isaaclab/test/actuators/test_bam_actuator.py``) pins the model against the math
-core with hand-fed positions and velocities; these tests close the loop by letting MJWarp
-integrate the efforts and by checking that the resting state of a real pendulum is the one
-the model predicts.
-
-The asset is a fixed-base single-degree-of-freedom pendulum authored by the test itself, so
-the load is a closed-form ``m * g * L * cos(theta)`` and the analytic equilibrium follows
-from the math core alone. It is written to a temporary file rather than checked in: the
-repository does not track USD assets.
-
-The nearest existing sibling, ``test_newton_actuators_newton.py``, constructs an
-:class:`~isaaclab.app.AppLauncher` at import time and therefore cannot run without an Isaac
-Sim runtime. This file follows the Kit-less pattern of the Newton sensor suites instead
-(``test/sensors/test_joint_wrench_sensor.py``): no ``AppLauncher`` and a
-:func:`~isaaclab.sim.build_simulation_context` fixture. Nothing is fetched from Nucleus.
+The temporary pendulum assets have closed-form gravity loads. Their resting states are
+checked against independently calculated stiction-band bounds for the vendored XL330 fit.
+No Isaac Sim runtime or downloaded asset is needed.
 """
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -40,13 +26,7 @@ from isaaclab_newton.physics import (
 )
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import BamActuator, BamActuatorCfg, BamBacklashActuatorCfg
-from isaaclab.actuators.bam_model import (
-    BamMotorParams,
-    compute_duty,
-    compute_friction_budget,
-    compute_motor_torque,
-)
+from isaaclab.actuators import BamActuatorCfg, BamBacklashActuatorCfg
 from isaaclab.actuators.newton import ControllerBam, read_group_parameter, write_group_parameter
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.cloner import CloneCfg, clone_plan_from_env_0, replicate
@@ -259,9 +239,6 @@ KP_FW = 200.0
 INITIAL_ANGLE = 0.3
 """Angle the arm is released from [rad]. The commanded target is always 0."""
 
-ANGLE_TOLERANCE = math.radians(2.0)
-"""Accepted distance between the settled angle and the analytic equilibrium [rad]."""
-
 
 def _make_sim_cfg(device: str, use_newton_actuators: bool = False, use_cuda_graph: bool = True) -> SimulationCfg:
     """Build the MJWarp configuration used by every test in this module."""
@@ -329,25 +306,6 @@ def native_sim_eager(device):
         yield sim_ctx
 
 
-def _build_pendulum(sim, pendulum_usd: str) -> Articulation:
-    """Spawn :data:`NUM_ENVS` BAM-driven pendulums and initialize the simulation."""
-    for index in range(NUM_ENVS):
-        sim_utils.create_prim(f"/World/Env_{index}", "Xform", translation=(index * 1.0, 0.0, 1.0))
-    robot = Articulation(
-        ArticulationCfg(
-            prim_path="/World/Env_[^/]*/Robot",
-            spawn=sim_utils.UsdFileCfg(usd_path=pendulum_usd),
-            init_state=ArticulationCfg.InitialStateCfg(joint_pos={"joint": INITIAL_ANGLE}),
-            actuators={"servo": BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)},
-        )
-    )
-    clone_plan_from_env_0(CloneCfg(clone_template="/World/Env_{}"), [robot.cfg], NUM_ENVS, 1.0)
-    replicate(sim.get_clone_plan())
-    sim.reset()
-    assert robot.is_initialized
-    return robot
-
-
 def _gravity_load(robot: Articulation, sim) -> float:
     """Return the peak gravity torque ``m * g * L`` of the arm [N.m], read from the sim.
 
@@ -362,107 +320,25 @@ def _gravity_load(robot: Articulation, sim) -> float:
     return mass * abs(sim.cfg.gravity[2]) * lever
 
 
-def _bam_actuator_groups(robot: Articulation) -> dict[str, BamActuator]:
-    """Discover the BAM groups of an articulation the way an event term would.
+STICTION_BANDS = {
+    0.5: (0.007463133433448432, 0.031064942414470192),
+    1.0: (-0.0010575354059803614, 0.04929333851780336),
+    2.0: (-0.04128957832843019, 0.11684233352917653),
+}
+"""Static angle bounds [rad] for the pendulum at each friction multiplier.
 
-    :class:`~isaaclab.envs.mdp.randomize_actuator_gains` resolves its targets by iterating
-    ``asset.actuators`` -- an :class:`~isaaclab.actuators.ActuatorCollection`, which is a
-    public ``Mapping`` -- branching on the actuator kind, and then writing per-environment
-    rows on the live instances. A ``BamActuator`` is neither implicit, nor Newton-native, nor
-    an ``IdealPDActuator``, so that term skips it; a BAM randomization term performs the same
-    discovery and drives the model's own hooks instead. No helper on the actuator module is
-    needed for that: the collection's mapping interface is enough.
-    """
-    return {name: actuator for name, actuator in robot.actuators.items() if isinstance(actuator, BamActuator)}
-
-
-"""
-Reference calculation: the resting states the BAM math core predicts for this pendulum.
+Independently solved from ``|motor + gravity| = scale * friction`` at zero speed,
+using the vendored XL330 m6 fit, 200 firmware gain, 7.4 V, and a 0.00981 N.m peak
+load. Motor torque is linear throughout these intervals (neither PWM nor current
+saturates). Scalar bisection of each boundary gives the recorded values; the
+reference is deliberately fixed rather than recomputed with the controller.
 """
 
 
-def _static_terms(
-    angles: torch.Tensor, load: float, *, kp_scale: float
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return ``(motor torque, gravity torque, friction budget)`` of a joint held at rest.
-
-    All three come from :mod:`isaaclab.actuators.bam_model`, evaluated at zero velocity:
-
-    * the firmware controller and the DC-motor equation give the motor-side torque of a joint
-      standing at ``angles`` with a target of zero;
-    * the pendulum's load about the joint axis is ``m * g * L * cos(theta)``, because the arm's
-      centre of mass sits at ``(L, 0, 0)`` and the joint spins about ``+Y``;
-    * the friction budget is the one :meth:`~isaaclab.actuators.BamActuator.compute` sizes on
-      a resting joint. Its ``prev_tau`` is the previous step's motor torque, which at rest is
-      the motor torque above, and its ``ext_tau`` is the external load the model estimates.
-      At rest the estimator returns ``-tau_applied_prev``; a joint that is genuinely holding
-      applies exactly ``-tau_gravity`` (see :func:`_analytic_rest`), so the estimate is the
-      gravity torque. The Stribeck coefficient is 1 at zero velocity.
-
-    Args:
-        angles: Joint angles to evaluate [rad], shape ``(N,)``.
-        load: Peak gravity torque ``m * g * L`` [N.m].
-        kp_scale: Firmware gain multiplier the actuator is running with [-].
-
-    Returns:
-        Motor torque [N.m], gravity torque [N.m] and friction budget [N.m], each ``(N, 1)``.
-    """
-    params = BamMotorParams.from_json(BamActuatorCfg().params_file)
-    angles = angles.reshape(-1, 1).to(torch.float64)
-    zeros = torch.zeros_like(angles)
-    duty = compute_duty(
-        zeros,  # commanded target
-        angles,
-        zeros,  # at rest
-        torch.full_like(angles, KP_FW * kp_scale),
-        torch.full_like(angles, VIN),
-        params,
-    )
-    motor_tau = compute_motor_torque(duty, zeros, torch.full_like(angles, VIN), params)
-    gravity_tau = load * torch.cos(angles)
-    budget = compute_friction_budget(motor_tau, gravity_tau, torch.ones_like(angles), params, 1.0)
-    return motor_tau, gravity_tau, budget
-
-
-def _analytic_rest(load: float, *, kp_scale: float = 1.0, friction_scale: float = 1.0) -> tuple[float, float, float]:
-    """Return ``(equilibrium, band lower edge, band upper edge)`` of the resting joint [rad].
-
-    Two different quantities, both derived from :func:`_static_terms`:
-
-    * the **equilibrium** is the frictionless fixed point, the angle where the motor torque
-      exactly cancels the gravity load, ``tau_motor(theta) + tau_gravity(theta) = 0``. It is
-      the "PD + gravity" resting angle the joint would take with an ideal gearbox.
-    * the **stiction band** is the set of angles the joint can actually be held at. BAM's
-      static-friction clip returns ``-tau_ext`` -- it cancels the load outright -- whenever
-      the net torque fits inside the friction budget, so every angle with
-      ``|tau_motor + tau_gravity| <= budget`` is a resting state. The band is wider than a
-      symmetric interval around the equilibrium because the budget is load dependent: it
-      grows with the motor torque, which itself grows with the distance to the target.
-
-    The joint is released above the equilibrium and swings down onto it, so it comes to rest
-    at the first resting state it reaches, near the band's upper edge.
-
-    Args:
-        load: Peak gravity torque ``m * g * L`` [N.m].
-        kp_scale: Firmware gain multiplier the actuator is running with [-].
-        friction_scale: Friction-budget multiplier the actuator is running with [-].
-
-    Returns:
-        The equilibrium angle and the two edges of the stiction band [rad].
-    """
-    # Brackets the release angle with room to spare, at 1e-5 rad resolution -- two orders of
-    # magnitude finer than the acceptance tolerance.
-    angles = torch.linspace(-0.3, 0.6, 90001, dtype=torch.float64)
-    motor_tau, gravity_tau, budget = _static_terms(angles, load, kp_scale=kp_scale)
-    net_tau = (motor_tau + gravity_tau).squeeze(-1)
-    holds = net_tau.abs() <= (budget * friction_scale).squeeze(-1)
-
-    equilibrium = angles[net_tau.abs().argmin()]
-    inside = holds.nonzero().flatten()
-    assert len(inside) > 0, "the pendulum has no resting state; check the fixture's load"
-    # The band must be a single interval for "the first resting state reached" to be its edge.
-    assert holds[inside[0] : inside[-1] + 1].all(), "the stiction band is not a single interval"
-    return float(equilibrium), float(angles[inside[0]]), float(angles[inside[-1]])
+def _stiction_band(load: float, friction_scale: float = 1.0) -> tuple[float, float]:
+    """Return the recorded band after checking this is the reference pendulum load."""
+    assert load == pytest.approx(0.00981, rel=1e-6)
+    return STICTION_BANDS[friction_scale]
 
 
 """
@@ -510,9 +386,7 @@ def _assert_rest(
         positions: Recorded joint positions [rad].
         velocities: Recorded joint velocities [rad/s].
         efforts: Recorded applied efforts [N.m].
-        velocity_tolerance: Largest final speed that still counts as at rest [rad/s]. The
-            Newton-native path needs a looser one than the Isaac Lab-executed path; see
-            :data:`NATIVE_REST_TOLERANCE`.
+        velocity_tolerance: Largest final speed that still counts as at rest [rad/s].
 
     Returns:
         The final joint angle of each environment [rad].
@@ -523,132 +397,12 @@ def _assert_rest(
     return positions[-1].reshape(NUM_ENVS)
 
 
-"""
-Tests.
-"""
-
-
-@pytest.mark.parametrize("device", test_devices())
-def test_pendulum_settles_at_the_analytic_equilibrium(sim, device, pendulum_usd):
-    """Settle a BAM-driven pendulum on Newton and compare it against the math core.
-
-    This is the end-to-end proof that the Lab-executed model runs on a live MJWarp
-    articulation: the efforts it returns are integrated by the solver, and the state they
-    integrate to is the one the model's own equations predict.
-    """
-    robot = _build_pendulum(sim, pendulum_usd)
-    load = _gravity_load(robot, sim)
-
-    _release(robot)
-    final_angle = _assert_rest(*_settle(robot, sim))
-
-    equilibrium, band_low, band_high = _analytic_rest(load)
-    for env in range(NUM_ENVS):
-        angle = float(final_angle[env])
-        assert abs(angle - equilibrium) <= ANGLE_TOLERANCE
-        assert band_low <= angle <= band_high
-
-    # The static contract of the stiction clip: a held joint applies exactly minus the load.
-    holding_effort = robot.actuators.applied_effort.torch.reshape(NUM_ENVS)
-    expected_effort = -load * torch.cos(final_angle)
-    torch.testing.assert_close(holding_effort, expected_effort.to(holding_effort.dtype), atol=1e-5, rtol=0.0)
-
-
-@pytest.mark.parametrize("device", test_devices())
-def test_friction_randomization_changes_the_hanging_error(sim, device, pendulum_usd):
-    """Drive :meth:`BamActuator.set_friction_scale` per environment on the live actuator.
-
-    Friction decides how far short of the target the arm gives up, so a heavily randomized
-    environment must hang further out than a lightly randomized one. Restoring the scales
-    with :meth:`BamActuator.reset_friction_scale` must bring both back onto the unrandomized
-    resting state.
-    """
-    robot = _build_pendulum(sim, pendulum_usd)
-    load = _gravity_load(robot, sim)
-    actuator = _bam_actuator_groups(robot)["servo"]
-    env_ids = torch.arange(NUM_ENVS, device=robot.device)
-    scales = (0.5, 2.0)
-
-    actuator.set_friction_scale(env_ids, torch.tensor([[scales[0]], [scales[1]]], device=robot.device))
-    _release(robot)
-    randomized_angle = _assert_rest(*_settle(robot, sim))
-
-    # More friction, more hanging error: the arm is released above the target and stops
-    # earlier the wider its stiction band is.
-    assert float(randomized_angle[1]) > float(randomized_angle[0])
-    for env, scale in enumerate(scales):
-        _, band_low, band_high = _analytic_rest(load, friction_scale=scale)
-        assert band_low <= float(randomized_angle[env]) <= band_high
-
-    actuator.reset_friction_scale(env_ids)
-    torch.testing.assert_close(actuator.friction_scale, torch.ones_like(actuator.friction_scale))
-    _release(robot)
-    restored_angle = _assert_rest(*_settle(robot, sim))
-    equilibrium, band_low, band_high = _analytic_rest(load)
-    for env in range(NUM_ENVS):
-        assert abs(float(restored_angle[env]) - equilibrium) <= ANGLE_TOLERANCE
-        assert band_low <= float(restored_angle[env]) <= band_high
-
-
-@pytest.mark.parametrize("device", test_devices())
-def test_gain_randomization_changes_the_hanging_error(sim, device, pendulum_usd):
-    """Drive :meth:`BamActuator.set_gains` per environment on the live actuator.
-
-    A stiffer firmware gain both moves the equilibrium closer to the target and narrows the
-    stiction band, so the randomized environment must settle nearer the target.
-    :meth:`BamActuator.reset_gains` must restore both scales and the resting state.
-    """
-    robot = _build_pendulum(sim, pendulum_usd)
-    load = _gravity_load(robot, sim)
-    actuator = _bam_actuator_groups(robot)["servo"]
-    env_ids = torch.arange(NUM_ENVS, device=robot.device)
-    kp_scales = (1.0, 3.0)
-
-    actuator.set_gains(env_ids, kp_scale=torch.tensor([[kp_scales[0]], [kp_scales[1]]], device=robot.device))
-    _release(robot)
-    randomized_angle = _assert_rest(*_settle(robot, sim))
-
-    assert float(randomized_angle[1]) < float(randomized_angle[0])
-    for env, kp_scale in enumerate(kp_scales):
-        _, band_low, band_high = _analytic_rest(load, kp_scale=kp_scale)
-        assert band_low <= float(randomized_angle[env]) <= band_high
-
-    actuator.reset_gains(env_ids)
-    torch.testing.assert_close(actuator.kp_scale, torch.ones_like(actuator.kp_scale))
-    torch.testing.assert_close(actuator.kd_scale, torch.ones_like(actuator.kd_scale))
-    _release(robot)
-    restored_angle = _assert_rest(*_settle(robot, sim))
-    equilibrium, band_low, band_high = _analytic_rest(load)
-    for env in range(NUM_ENVS):
-        assert abs(float(restored_angle[env]) - equilibrium) <= ANGLE_TOLERANCE
-        assert band_low <= float(restored_angle[env]) <= band_high
-
-
-"""
-Newton-native path (implementation B).
-
-The same configuration, with ``use_newton_actuators=True``, runs the BAM pipeline as Warp
-kernels inside the actuator fast path and publishes its friction budget into MuJoCo's
-``dof_frictionloss`` instead of clipping the torque itself. Two contracts change with it and
-are asserted below:
-
-* the *held effort* is the bare motor torque, not ``-tau_gravity``. The load is cancelled by
-  the solver's friction-loss constraint, which does not show up in the actuator's telemetry;
-* the resting states are still the math core's stiction band. At rest the true external torque
-  the bridge reads (``-qfrc_bias + qfrc_constraint`` minus the actuator's own friction rows)
-  equals the gravity load, which is exactly what implementation A's estimator converges to,
-  and the budget is sized from the same previous motor torque. The band is therefore the same
-  interval :func:`_analytic_rest` returns; what differs is only *how* the joint is held inside
-  it -- by a constraint whose softness is countered by
-  :attr:`~isaaclab.actuators.BamActuatorCfg.stiff_frictionloss`.
-"""
-
 NATIVE_REST_TOLERANCE = 5e-3
 """Largest final speed the Newton-native path counts as at rest [rad/s].
 
 MuJoCo's friction-loss constraint is compliant, not a hard stop: even with the stiffened
 solver reference the reference implementation uses, a held joint keeps creeping at order
-1e-3 rad/s instead of stopping dead the way the torque-level clip of implementation A does.
+1e-3 rad/s.
 That is three orders of magnitude below the 0.6 rad/s the arm is released with, and the
 residual drift is bounded separately by :func:`_assert_creep_is_bounded`. Tightening this
 threshold would not measure a better actuator, only a stiffer constraint.
@@ -711,7 +465,7 @@ def _settle_with_friction_scales(robot: Articulation, sim, load: float) -> torch
     separation = float(settled[1]) - float(settled[0])
     assert separation > NATIVE_FRICTION_SEPARATION, f"the friction scales barely separated ({separation:.2e} rad)"
     for env, scale in enumerate(FRICTION_SCALES):
-        _, band_low, band_high = _analytic_rest(load, friction_scale=scale)
+        band_low, band_high = _stiction_band(load, friction_scale=scale)
         assert band_low <= float(settled[env]) <= band_high
     return settled
 
@@ -753,14 +507,38 @@ def _native_controller(robot: Articulation) -> ControllerBam:
     return controllers[0]
 
 
+def _assert_recorded_trajectory(robot: Articulation, sim, controller: ControllerBam) -> None:
+    """Replay the pre-cleanup native trajectory, including command reversals.
+
+    The fixture was recorded from isolated revision 3691a0bf04 on CUDA with the same
+    pendulum and deterministic configuration. It stores positions [rad], velocities
+    [rad/s], motor efforts [N.m], friction budgets [N.m], targets [rad], timestep [s]
+    and dependency versions. This guards native behavior during refactoring; the
+    static-band checks independently constrain the physical resting state.
+    """
+    _release(robot)
+    with np.load(Path(__file__).parent / "data" / "bam_pendulum_trajectory.npz") as golden:
+        assert sim.get_physics_dt() == float(golden["dt"])
+        traces = {name: [] for name in ("position", "velocity", "effort", "friction_budget")}
+        for target in golden["target"]:
+            robot.actuators.target_command.set_position_index(
+                value=torch.full_like(robot.data.joint_pos.torch, float(target))
+            )
+            robot.write_data_to_sim()
+            sim.step()
+            robot.update(sim.get_physics_dt())
+            traces["position"].append(robot.data.joint_pos.torch.cpu().numpy().copy())
+            traces["velocity"].append(robot.data.joint_vel.torch.cpu().numpy().copy())
+            traces["effort"].append(robot.actuators.applied_effort.torch.cpu().numpy().copy())
+            traces["friction_budget"].append(controller.friction_budget.numpy().copy())
+        for name, values in traces.items():
+            # CPU and CUDA solver reductions differ slightly; preserve a tight physical tolerance.
+            np.testing.assert_allclose(np.stack(values), golden[name], atol=2e-5, rtol=2e-4, err_msg=name)
+
+
 @pytest.mark.parametrize("device", test_devices())
 def test_native_pendulum_settles_inside_the_stiction_band(native_sim, device, pendulum_usd):
-    """Settle a Newton-native BAM pendulum and check it against the math core.
-
-    This is the end-to-end proof of implementation B: the Warp controller's motor torque and
-    the friction budget it publishes are integrated by MuJoCo, and the state they integrate to
-    is the one the shared math core predicts.
-    """
+    """Check a settled native pendulum against the recorded static-friction bounds."""
     robot = _build_native_pendulum(native_sim, pendulum_usd)
     load = _gravity_load(robot, native_sim)
     controller = _native_controller(robot)
@@ -771,12 +549,13 @@ def test_native_pendulum_settles_inside_the_stiction_band(native_sim, device, pe
     # solve; the per-step budget then overwrites the value.
     assert (NewtonManager.backend.model.joint_friction.numpy() > 0.0).all()
 
+    _assert_recorded_trajectory(robot, native_sim, controller)
     _release(robot)
     rollout = _settle(robot, native_sim)
     final_angle = _assert_rest(*rollout, velocity_tolerance=NATIVE_REST_TOLERANCE)
     _assert_creep_is_bounded(rollout[0])
 
-    _, band_low, band_high = _analytic_rest(load)
+    band_low, band_high = _stiction_band(load)
     for env in range(NUM_ENVS):
         assert band_low <= float(final_angle[env]) <= band_high
 
@@ -803,16 +582,9 @@ def test_native_pendulum_settles_inside_the_stiction_band(native_sim, device, pe
 
 @pytest.mark.parametrize("device", test_devices())
 def test_native_friction_randomization_changes_the_hanging_error(native_sim, device, pendulum_usd):
-    """Randomize ``friction_scale`` per environment through the group-parameter API.
-
-    This is the write path an environment's domain-randomization event uses, and it addresses
-    the controller by the same attribute name :class:`~isaaclab.actuators.BamActuator` exposes,
-    so one event term drives both implementations.
-    """
+    """Randomize ``friction_scale`` through the API used by environment events."""
     robot = _build_native_pendulum(native_sim, pendulum_usd)
 
-    # All five randomizable quantities are addressable under the names
-    # :class:`~isaaclab.actuators.BamActuator` uses, so a single event term covers both paths.
     for attr in ("vin", "sag_gain", "friction_scale", "kp_scale", "kd_scale"):
         values = read_group_parameter(robot.actuators, "servo", "controller", attr)
         assert values.shape == (NUM_ENVS, robot.num_joints)
@@ -1022,8 +794,8 @@ def test_each_articulation_configures_only_its_own_actuator(native_sim, device, 
 def test_startup_ranges_are_sampled_without_a_mujoco_solver(device, pendulum_usd):
     """Start-up randomization must not depend on which solver the scene runs.
 
-    The ranges feed the controller's kernels, not the solver, and implementation A samples them
-    on every backend. On a solver that cannot apply joint dry friction the BAM controller falls
+    The ranges feed the native controller's kernels. On a solver that cannot apply joint
+    dry friction the BAM controller falls
     back to its own stiction clip -- but the randomization is unaffected, which is only true
     because the sampling happens while the model is built, before any solver exists.
     """
@@ -1434,13 +1206,8 @@ def test_a_plant_without_play_hinges_degrades_to_the_plain_servo(device, pendulu
 
 
 @pytest.mark.parametrize("device", test_devices())
-def test_the_backlash_cfg_is_refused_on_the_isaac_lab_executed_path(sim, device, pendulum_usd):
-    """``use_newton_actuators=False`` must refuse the configuration rather than drop the play.
-
-    This fixture's simulation runs the Isaac Lab actuator loop, which is handed one group's
-    joints and cannot read the play hinge beside them. There is no degraded mode to fall back
-    to, so the refusal names the one-line fix instead of quietly training a policy against a
-    plant without the play its configuration asked for.
-    """
+@pytest.mark.parametrize("cfg_type", [BamActuatorCfg, BamBacklashActuatorCfg])
+def test_bam_cfg_is_refused_on_the_isaac_lab_executed_path(sim, device, pendulum_usd, cfg_type):
+    """Both BAM configurations require the native actuator loop."""
     with pytest.raises(ValueError, match="use_newton_actuators"):
-        _build_native_pendulum(sim, pendulum_usd, BamBacklashActuatorCfg(joint_names_expr=[".*"], kp_fw=KP_FW))
+        _build_native_pendulum(sim, pendulum_usd, cfg_type(joint_names_expr=[".*"], kp_fw=KP_FW))

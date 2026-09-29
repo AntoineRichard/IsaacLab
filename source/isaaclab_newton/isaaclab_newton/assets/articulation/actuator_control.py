@@ -441,10 +441,8 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             return
         solver = SimulationManager._solver
         if not MjWarpActuatorBridge.is_available(solver):
-            # Only MuJoCo's solver can apply joint dry friction, so on any other solver the
-            # controller keeps the torque-level stiction clip -- the Isaac Lab-executed model's
-            # own behaviour. Documented backend fidelity difference, not a failure. The
-            # start-up randomization has already been applied and is unaffected.
+            # Other Newton solvers use the controller's torque-level friction approximation.
+            # Start-up randomization has already been applied and is unaffected.
             logger.warning(
                 "BAM actuators run with in-controller stiction clipping: the active solver does not"
                 " expose the MuJoCo Warp model needed to publish a per-step joint friction budget."

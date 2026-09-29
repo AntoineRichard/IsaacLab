@@ -15,7 +15,6 @@ __all__ = [
     "ActuatorNetLSTMCfg",
     "ActuatorNetMLPCfg",
     "BAM_XL330_M6_PARAMS_FILE",
-    "BamActuator",
     "BamActuatorCfg",
     "BamBacklashActuatorCfg",
     "BamMotorParams",
@@ -32,7 +31,6 @@ __all__ = [
     "resolve_joint_parameter",
 ]
 
-from .actuator_bam import BamActuator
 from .actuator_bam_cfg import BamActuatorCfg, BamBacklashActuatorCfg
 from .actuator_base import ActuatorBase, resolve_joint_parameter
 from .actuator_base_cfg import ActuatorBaseCfg

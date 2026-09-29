@@ -51,7 +51,6 @@ def _resolve_actuator_class(class_type: type | str) -> type:
 def _is_newton_native_actuator_cfg(cfg: Any) -> bool:
     """Return whether an actuator config can be authored as a Newton actuator."""
     from ...actuators import DCMotorCfg, DelayedPDActuatorCfg  # noqa: PLC0415
-    from ...actuators.actuator_bam import BamActuator  # noqa: PLC0415
     from ...actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
     from ...actuators.actuator_net import ActuatorNetLSTM, ActuatorNetMLP  # noqa: PLC0415
     from ...actuators.actuator_net_cfg import ActuatorNetLSTMCfg, ActuatorNetMLPCfg  # noqa: PLC0415
@@ -63,13 +62,15 @@ def _is_newton_native_actuator_cfg(cfg: Any) -> bool:
     )
     from ...actuators.actuator_pd_cfg import IdealPDActuatorCfg, RemotizedPDActuatorCfg  # noqa: PLC0415
 
+    if isinstance(cfg, BamActuatorCfg):
+        return cfg.class_type is None
+
     supported_cfg_types = (
         (ActuatorNetMLPCfg, ActuatorNetMLP),
         (ActuatorNetLSTMCfg, ActuatorNetLSTM),
         (RemotizedPDActuatorCfg, RemotizedPDActuator),
         (DelayedPDActuatorCfg, DelayedPDActuator),
         (DCMotorCfg, DCMotor),
-        (BamActuatorCfg, BamActuator),
         (IdealPDActuatorCfg, IdealPDActuator),
     )
     try:
@@ -98,19 +99,10 @@ def _is_solver_hosted_actuator_cfg(cfg: Any) -> bool:
 
 
 def _is_native_only_actuator_cfg(cfg: Any) -> bool:
-    """Return whether a config has no Isaac Lab-executed implementation to fall back on.
+    """Return whether a config requires the Newton-native actuator path."""
+    from ...actuators.actuator_bam_cfg import BamActuatorCfg  # noqa: PLC0415
 
-    Every other explicit config runs either in Isaac Lab's Python actuator loop or as a Newton
-    component, so ``use_newton_actuators`` only chooses which.
-    :class:`~isaaclab.actuators.BamBacklashActuatorCfg` is the exception: its firmware feedback
-    is an index into the *whole* articulation's joint-position array, which only Newton's
-    controller is handed, while the Isaac Lab loop is given one group's joints and cannot read a
-    joint outside it. Running the plain servo instead would silently drop the modelled gear
-    play, so the configuration is refused rather than degraded.
-    """
-    from ...actuators.actuator_bam_cfg import BamBacklashActuatorCfg  # noqa: PLC0415
-
-    return isinstance(cfg, BamBacklashActuatorCfg)
+    return isinstance(cfg, BamActuatorCfg)
 
 
 def _validate_native_only_actuator_cfgs(actuator_cfgs: dict[str, Any], native_group_names: set[str]) -> None:
@@ -133,10 +125,7 @@ def _validate_native_only_actuator_cfgs(actuator_cfgs: dict[str, Any], native_gr
     if degraded_groups:
         raise ValueError(
             f"{', '.join(degraded_groups)} has no Isaac Lab-executed implementation and this actuator group is"
-            " not executed by the backend. Its firmware loop is closed on a joint outside the group, which only"
-            " the Newton actuator controller can read, and running the plain servo instead would silently drop"
-            " the modelled gear play. Set 'use_newton_actuators=True' and run on the Newton backend, or"
-            " configure the group with 'BamActuatorCfg' to accept a plant without play."
+            " not executed by the backend. Set 'use_newton_actuators=True' and run on the Newton backend."
         )
 
 
@@ -178,7 +167,7 @@ def validate_newton_native_actuator_cfgs(actuator_cfgs: dict[str, Any], *, host_
             f"Native actuator execution of {', '.join(solver_hosted_groups)} requires the Newton backend: the model"
             " publishes its friction budget into the solver's joint dry friction and reads the external load back"
             " out of the solver, and this backend runs native actuators through the host adapter, which provides"
-            " neither. Set 'use_newton_actuators=False' to run the Isaac Lab-executed model on this backend."
+            " neither. Use the Newton backend."
         )
 
 

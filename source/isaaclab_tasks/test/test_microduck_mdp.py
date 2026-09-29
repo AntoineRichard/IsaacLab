@@ -611,13 +611,7 @@ def test_the_encoder_terms_degrade_to_the_plain_ones_on_a_model_without_play_hin
 
 
 class _ActuatedRobot(_DummyRobot):
-    """Articulation double carrying an actuator collection and the configuration that built it.
-
-    The event resolves its targets from the *configuration*, which is identical on both execution
-    paths, and dispatches on the runtime entry, which is not: a
-    :class:`~isaaclab.actuators.BamActuator` when Isaac Lab executes the model and a Newton actuator
-    object when the solver does.
-    """
+    """Articulation double carrying native groups and their configurations."""
 
     def __init__(self, actuators: dict, actuator_cfgs: dict, num_envs: int, device: str) -> None:
         super().__init__(num_envs, device)
@@ -625,62 +619,12 @@ class _ActuatedRobot(_DummyRobot):
         self.cfg = SimpleNamespace(actuators=actuator_cfgs)
 
 
-def _bam_cfg(**kwargs) -> BamActuatorCfg:
-    """Upstream's MicroDuck servo settings, at an explicit ``dt`` so no simulation is needed."""
-    return BamActuatorCfg(joint_names_expr=[".*"], dt=0.005, **kwargs)
+@pytest.mark.parametrize("selection", ["all", "tensor", "slice"])
+def test_bam_friction_randomization_reaches_the_native_path_through_the_group_parameter_api(monkeypatch, selection):
+    """Draw one scale per selected environment and address only BAM groups.
 
-
-def _lab_path_env(num_envs: int = 64) -> _DummyEnv:
-    """An environment whose servo group is the Isaac Lab-executed BAM actuator."""
-    env = _DummyEnv(num_envs=num_envs)
-    cfg = _bam_cfg()
-    actuator = cfg.class_type(cfg, joint_names=JOINT_NAMES, joint_ids=slice(None), num_envs=num_envs, device=env.device)
-    env.scene["robot"] = _ActuatedRobot({"servos": actuator}, {"servos": cfg}, num_envs, env.device)
-    return env
-
-
-def test_bam_friction_randomization_draws_one_scale_per_environment():
-    """Every environment gets its own multiplier inside the range, on the Isaac Lab path."""
-    torch.manual_seed(0)
-    env = _lab_path_env()
-    actuator = env.scene["robot"].actuators["servos"]
-
-    mdp.randomize_bam_friction(cast("ManagerBasedEnv", env), None, scale_range=BAM_FRICTION_SCALE_RANGE)
-
-    scale = actuator.friction_scale
-    assert scale.shape == (env.num_envs, 1)
-    assert torch.all(scale >= BAM_FRICTION_SCALE_RANGE[0])
-    assert torch.all(scale <= BAM_FRICTION_SCALE_RANGE[1])
-    # a per-robot draw, not one gearbox shared by the whole batch
-    assert scale.std() > 0.0
-
-
-@pytest.mark.parametrize("use_slice", [False, True])
-def test_bam_friction_randomization_leaves_the_environments_it_was_not_given_alone(use_slice):
-    """A reset resamples the environments that reset, which is what the event mode promises."""
-    torch.manual_seed(0)
-    env = _lab_path_env(num_envs=8)
-    actuator = env.scene["robot"].actuators["servos"]
-    actuator.friction_scale.fill_(1.0)
-    env_ids = torch.tensor([1, 4], device=env.device)
-
-    mdp.randomize_bam_friction(
-        cast("ManagerBasedEnv", env), slice(1, 5, 3) if use_slice else env_ids, scale_range=(3.0, 4.0)
-    )
-
-    scale = actuator.friction_scale
-    assert torch.all(scale[env_ids] >= 3.0)
-    untouched = [index for index in range(env.num_envs) if index not in env_ids.tolist()]
-    torch.testing.assert_close(scale[untouched], torch.ones(len(untouched), 1))
-
-
-def test_bam_friction_randomization_reaches_the_native_path_through_the_group_parameter_api(monkeypatch):
-    """On the Newton-native path the group entry is not a ``BamActuator``, so the write differs.
-
-    The write itself is covered against a live solver by
-    ``isaaclab_newton/test/assets/test_bam_actuator_newton.py``; what is checked here is that the
-    term reaches it at all -- the ``isinstance`` discovery the Isaac Lab path uses finds nothing on
-    this one -- and that a non-BAM group in the same articulation is left alone.
+    The live solver suite covers the parameter API's writes; this checks the event's
+    group filtering, environment selection and per-robot broadcast contract.
     """
     from isaaclab.actuators import newton as newton_actuators
 
@@ -689,7 +633,10 @@ def test_bam_friction_randomization_reaches_the_native_path_through_the_group_pa
     env = _DummyEnv(num_envs=num_envs)
     env.scene["robot"] = _ActuatedRobot(
         {"servos": object(), "wheels": object()},
-        {"servos": _bam_cfg(), "wheels": IdealPDActuatorCfg(joint_names_expr=[".*"], stiffness=1.0, damping=0.1)},
+        {
+            "servos": BamActuatorCfg(joint_names_expr=[".*"]),
+            "wheels": IdealPDActuatorCfg(joint_names_expr=[".*"], stiffness=1.0, damping=0.1),
+        },
         num_envs,
         env.device,
     )
@@ -706,9 +653,10 @@ def test_bam_friction_randomization_reaches_the_native_path_through_the_group_pa
             {"name": name, "component": component, "attr": attr, "values": values, "env_ids": env_ids}
         ),
     )
-    env_ids = torch.tensor([0, 2, 5], device=env.device)
+    env_ids = torch.arange(num_envs) if selection == "all" else torch.tensor([1, 4, 7])
+    selector = None if selection == "all" else slice(1, 8, 3) if selection == "slice" else env_ids
 
-    mdp.randomize_bam_friction(cast("ManagerBasedEnv", env), env_ids, scale_range=BAM_FRICTION_SCALE_RANGE)
+    mdp.randomize_bam_friction(cast("ManagerBasedEnv", env), selector, scale_range=BAM_FRICTION_SCALE_RANGE)
 
     assert len(writes) == 1, "only the BAM group is addressed"
     write = writes[0]

@@ -6,8 +6,8 @@ Added
   masked joint. This models a gearbox whose backlash is a hinge in series with the servo: the real
   servo's magnetic encoder sits on the output side of the play, so while the rotor winds through the
   dead zone the measured position, and hence the proportional error, does not move. The velocities
-  stay motor-side, since in this model they drive only the back-EMF, the Stribeck blend and the
-  stiction clip, which are rotor physics rather than an encoder-derived firmware signal. The
+  stay motor-side, since they drive the back-EMF and the velocity-dependent friction terms
+  rather than an encoder-derived firmware signal. The
   binding is per DOF, so a DOF with no play hinge takes a zero mask and reproduces the plain servo
   bit for bit -- one configuration therefore covers plants with and without modelled play. The mask
   gates the read itself rather than weighting it by zero, so a masked-off DOF is unaffected by

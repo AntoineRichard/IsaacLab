@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Tests for the Newton-native BAM actuator component (implementation B).
+"""Tests for the Newton-native BAM actuator component.
 
 The suite drives the real construction path -- author ``NewtonActuator`` prims from a
 :class:`~isaaclab.actuators.BamActuatorCfg`, parse them back with
@@ -11,14 +11,12 @@ The suite drives the real construction path -- author ``NewtonActuator`` prims f
 :class:`~newton.actuators.Actuator` -- so a break anywhere between the config and the Warp
 kernels shows up here. No simulator is involved: the joint state is supplied by the test.
 
-The centrepiece is the A/B cross-check, which steps implementation A
-(:class:`~isaaclab.actuators.BamActuator`) and implementation B over the same trajectory and
-requires their torques to agree. That comparison is only meaningful with the solver-side
-friction disabled: when MuJoCo owns the friction budget, B deliberately emits the bare motor
-torque and lets the constraint solver do the clipping.
+Motor and friction outputs are checked against upstream BAM golden data. The harness
+supplies the solver's external load and reads the motor torque and published friction budget.
 """
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -28,7 +26,7 @@ from newton.actuators import parse_actuator_prim
 
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
-from isaaclab.actuators import BamActuator, BamActuatorCfg, BamBacklashActuatorCfg, IdealPDActuatorCfg
+from isaaclab.actuators import BamActuatorCfg, BamBacklashActuatorCfg, IdealPDActuatorCfg
 from isaaclab.actuators.bam_model import BAM_XL330_M6_PARAMS_FILE, BamMotorParams
 from isaaclab.actuators.newton import (
     BAM_CONTROL_API,
@@ -44,7 +42,6 @@ from isaaclab.sim.schemas.schemas_actuators import (
     validate_newton_native_actuator_cfgs,
 )
 from isaaclab.test.utils import DeviceScope, test_devices
-from isaaclab.utils.types import ArticulationActions
 
 pytestmark = pytest.mark.unit
 
@@ -80,23 +77,17 @@ VIN = 7.4
 KP_FW = 200.0
 """Firmware proportional gain the fixture is configured with [-]."""
 
-CROSS_CHECK_STEPS = 50
-"""Steps of the A/B cross-check, short enough to stay clear of integration drift."""
-
-CROSS_CHECK_TOLERANCE = 1e-4
-"""Accepted per-step torque difference between implementations A and B [N.m]."""
-
 
 def _make_cfg(**overrides) -> BamActuatorCfg:
     """Build the BAM config the fixture articulation is authored from."""
-    kwargs = {"joint_names_expr": [".*"], "vin": VIN, "kp_fw": KP_FW, "dt": DT}
+    kwargs = {"joint_names_expr": [".*"], "vin": VIN, "kp_fw": KP_FW}
     kwargs.update(overrides)
     return BamActuatorCfg(**kwargs)
 
 
 def _make_backlash_cfg(**overrides) -> BamBacklashActuatorCfg:
     """Build the encoder-through-play variant of :func:`_make_cfg`'s config."""
-    kwargs = {"joint_names_expr": [".*"], "vin": VIN, "kp_fw": KP_FW, "dt": DT}
+    kwargs = {"joint_names_expr": [".*"], "vin": VIN, "kp_fw": KP_FW}
     kwargs.update(overrides)
     return BamBacklashActuatorCfg(**kwargs)
 
@@ -146,6 +137,8 @@ class _Harness:
         assert len(self.adapter.actuators) == 1, "the fixture's joints must merge into one actuator"
         self.actuator = self.adapter.actuators[0]
         self.controller: ControllerBam = self.actuator.controller
+        self.controller.solver_applies_friction = True
+        self.controller.external_torque = wp.zeros(len(self.controller.motor_torque), dtype=wp.float32, device=device)
         self.num_envs = num_envs
         self.device = device
         self.joint_names = joint_names
@@ -198,8 +191,7 @@ def test_bam_cfg_is_rejected_on_a_host_adapter_backend():
     the solver's joint dry friction and reads the external load back out of the solver's
     generalized forces. A backend that steps native actuators through the shared host adapter
     (PhysX, OVPhysX) provides neither, so the controller would silently fall back to
-    implementation A's torque-level clip *and* skip the start-up randomization the Isaac Lab
-    model draws on every backend. Failing the gate instead names the one-line fix.
+    a different friction model and skip its solver bindings. Failing the gate names the fix.
     """
     with pytest.raises(ValueError, match="requires the Newton backend"):
         validate_newton_native_actuator_cfgs({"servo": _make_cfg()}, host_adapter=True)
@@ -238,9 +230,10 @@ def test_the_backlash_cfg_is_rejected_wherever_the_newton_controller_does_not_ru
     with pytest.raises(ValueError, match="use_newton_actuators"):
         _validate_native_only_actuator_cfgs({"servo": _make_backlash_cfg()}, native_group_names=set())
 
-    # The same group *on* the native path passes, and a plain BAM group is unaffected either way.
+    # Both variants require the same solver-hosted execution path.
     _validate_native_only_actuator_cfgs({"servo": _make_backlash_cfg()}, native_group_names={"servo"})
-    _validate_native_only_actuator_cfgs({"servo": _make_cfg()}, native_group_names=set())
+    with pytest.raises(ValueError, match="use_newton_actuators"):
+        _validate_native_only_actuator_cfgs({"servo": _make_cfg()}, native_group_names=set())
 
 
 def test_a_backlash_group_authors_its_flag_and_stays_a_separate_actuator():
@@ -365,123 +358,47 @@ Kernel behaviour.
 
 
 @pytest.mark.parametrize("device", test_devices())
-def test_controller_reproduces_the_math_core(device):
-    """One step of the Warp controller must equal the torch math core term for term."""
-    from isaaclab.actuators.bam_model import (
-        apply_stiction_clip,
-        battery_sag,
-        compute_duty,
-        compute_friction_budget,
-        compute_motor_torque,
-        compute_stribeck_coeff,
-    )
-
-    harness = _Harness(_make_cfg(), num_envs=1, device=device)
-    params = BamMotorParams.from_json(BAM_XL330_M6_PARAMS_FILE)
-    rng = np.random.default_rng(0)
-    pos = rng.uniform(-0.4, 0.4, (1, len(JOINT_NAMES)))
-    vel = rng.uniform(-2.0, 2.0, (1, len(JOINT_NAMES)))
-    target = rng.uniform(-0.4, 0.4, (1, len(JOINT_NAMES)))
-
-    effort = harness.step(pos, vel, target)
-
-    t_pos, t_vel, t_target = (torch.tensor(a, dtype=torch.float32) for a in (pos, vel, target))
-    zeros = torch.zeros_like(t_pos)
-    effective_vin = battery_sag(torch.full((1, 1), VIN), zeros, torch.zeros(1, 1), None)
-    duty = compute_duty(t_target, t_pos, t_vel, torch.full((1, 1), KP_FW), effective_vin, params)
-    motor = compute_motor_torque(duty, t_vel, effective_vin, params)
-    # First step after construction: the velocity cache is seeded, so the estimated
-    # acceleration is zero and no torque was applied yet.
-    external = torch.zeros_like(t_pos)
-    budget = compute_friction_budget(zeros, external, compute_stribeck_coeff(t_vel, params), params, 1.0)
-    expected = apply_stiction_clip(motor, external, t_vel, budget, params.friction_viscous, DT, params.armature)
-
-    np.testing.assert_allclose(effort, expected.numpy(), atol=1e-6, rtol=0.0)
+def test_controller_matches_upstream_motor_and_friction_goldens(device):
+    """The USD-to-Warp path preserves upstream firmware, motor and m6 friction outputs."""
+    with np.load(Path(__file__).parent / "data" / "bam_xl330_m6_goldens.npz") as data:
+        goldens = {key: data[key] for key in data.files}
+    samples = len(goldens["q"])
+    harness = _Harness(_make_cfg(), num_envs=samples // 2, device=device)
+    # The budget's prior motor load is an independent golden input, not recomputed by the port.
+    state_in, state_out = harness.actuator.state(), harness.actuator.state()
+    state_in.drive_state.prev_motor_torque.assign(goldens["prev_tau"].astype(np.float32))
+    harness.controller.external_torque.assign(goldens["ext_tau"].astype(np.float32))
+    for array, key in ((harness.joint_pos, "q"), (harness.joint_vel, "dq"), (harness.target_pos, "q_target")):
+        array.assign(goldens[key].astype(np.float32).reshape(-1, 2))
+    with wp.ScopedDevice(device):
+        harness.actuator.step(harness.state, harness.control, state_in, state_out, dt=DT)
     np.testing.assert_allclose(
-        harness.controller.friction_budget.numpy(), budget.numpy().reshape(-1), atol=1e-6, rtol=0.0
+        harness.control.joint_f_2d.numpy().reshape(-1), goldens["motor_torque"], rtol=1e-5, atol=1e-6
     )
-    np.testing.assert_allclose(harness.controller.motor_torque.numpy(), motor.numpy().reshape(-1), atol=1e-6, rtol=0.0)
-
-
-@pytest.mark.parametrize("effort_limit", [None, 0.05])
-@pytest.mark.parametrize("device", test_devices())
-def test_cross_check_against_the_lab_executed_actuator(device, effort_limit):
-    """Implementations A and B must apply the same torque on the same trajectory.
-
-    Both are driven by the *identical* recorded state sequence -- a pendulum swinging under
-    A's own efforts -- with the command delay off and the friction scale at one, so every
-    stage of the pipeline (supply sag, firmware law, DC-motor equation, external-torque
-    estimate, friction budget and stiction clip) is compared at once. The solver-side friction
-    is deliberately not engaged here: with MuJoCo owning the budget, B emits the bare motor
-    torque and the comparison would be against a different quantity.
-
-    The parameterization matters beyond the clamp itself. A caches the *clipped* effort and
-    subtracts it in its external-torque estimate, while a Newton controller runs before the
-    clamping stage, so B has to read the applied effort back after the fact; a limit low enough
-    to bite is what pins that.
-    """
-    cfg = _make_cfg(actuator_effort_limit=effort_limit)
-    lab_actuator = BamActuator(
-        cfg=cfg,
-        joint_names=list(JOINT_NAMES),
-        joint_ids=slice(None),
-        num_envs=1,
-        device=device,
-        actuator_effort_limit=effort_limit,
-        actuator_velocity_limit=None,
+    np.testing.assert_allclose(
+        harness.controller.friction_budget.numpy(), goldens["frictionloss_budget"], rtol=1e-5, atol=1e-6
     )
-    harness = _Harness(cfg, num_envs=1, device=device)
-    assert not harness.controller.solver_applies_friction
-
-    # A one-joint-per-environment pendulum integrated from A's own efforts: the trajectory
-    # only has to be a realistic, non-trivial excitation shared by both implementations.
-    inertia, load = 2.0e-3, 9.81e-3
-    position = np.array([[0.3, -0.2]])
-    velocity = np.zeros((1, len(JOINT_NAMES)))
-    target = np.zeros((1, len(JOINT_NAMES)))
-
-    peak_motor_torque = 0.0
-    for step in range(CROSS_CHECK_STEPS):
-        native = harness.step(position, velocity, target)
-        peak_motor_torque = max(peak_motor_torque, float(np.abs(harness.controller.motor_torque.numpy()).max()))
-        lab = lab_actuator.compute(
-            ArticulationActions(joint_positions=torch.tensor(target, dtype=torch.float32, device=device)),
-            torch.tensor(position, dtype=torch.float32, device=device),
-            torch.tensor(velocity, dtype=torch.float32, device=device),
-        ).joint_efforts
-        lab_effort = lab.detach().cpu().numpy()
-        np.testing.assert_allclose(
-            native, lab_effort, atol=CROSS_CHECK_TOLERANCE, rtol=0.0, err_msg=f"torques diverge at step {step}"
-        )
-        acceleration = (lab_effort + load * np.cos(position)) / inertia
-        velocity = velocity + acceleration * DT
-        position = position + velocity * DT
-
-    # A non-trivial excitation, not a pair of dead actuators agreeing on zero.
-    assert np.abs(lab_effort).max() > 1e-3
-    if effort_limit is not None:
-        assert peak_motor_torque > effort_limit, "the effort limit never bit, so the clamp was not exercised"
-        assert np.abs(native).max() <= effort_limit + 1e-6, "the emitted torque escaped the effort limit"
 
 
 @pytest.mark.parametrize("device", test_devices())
 def test_solver_mode_emits_the_motor_torque_and_publishes_the_budget(device):
-    """With the solver owning the friction, B applies the motor torque and exports the budget."""
-    harness = _Harness(_make_cfg(), num_envs=1, device=device)
-    harness.controller.solver_applies_friction = True
+    """With the solver owning the friction, BAM applies the motor torque and exports the budget."""
+    harness = _Harness(_make_cfg(actuator_effort_limit=0.05), num_envs=1, device=device)
     params = BamMotorParams.from_json(BAM_XL330_M6_PARAMS_FILE)
 
     effort = harness.step(np.array([[0.3, -0.1]]), np.array([[0.5, -0.4]]), np.zeros((1, 2)))
 
-    np.testing.assert_allclose(effort.reshape(-1), harness.controller.motor_torque.numpy(), atol=0.0, rtol=0.0)
+    motor = harness.controller.motor_torque.numpy()
+    assert np.abs(motor).max() > 0.05, "the configured effort limit must bind"
+    np.testing.assert_allclose(effort.reshape(-1), np.clip(motor, -0.05, 0.05), atol=0.0, rtol=0.0)
     budget = harness.controller.friction_budget.numpy()
     assert (budget >= params.friction_base).all(), "the published budget must keep the Coulomb floor"
     np.testing.assert_allclose(harness.controller.viscous_damping.numpy(), params.friction_viscous, atol=1e-9, rtol=0.0)
 
 
 @pytest.mark.parametrize("device", test_devices())
-def test_friction_scale_changes_the_opposing_torque(device):
-    """Writing the ``friction_scale`` parameter must change the emitted torque.
+def test_friction_scale_changes_the_published_budget(device):
+    """Friction scaling changes the solver budget while preserving the motor torque.
 
     This is the parameter an environment's domain-randomization event drives; the write goes
     through the same controller array the group-parameter API addresses.
@@ -501,7 +418,7 @@ def test_friction_scale_changes_the_opposing_torque(device):
         rtol=1e-6,
         atol=0.0,
     )
-    assert np.abs(scaled_effort - baseline_effort).max() > 1e-4
+    np.testing.assert_array_equal(scaled_effort, baseline_effort)
 
 
 @pytest.mark.parametrize("device", test_devices())
@@ -534,8 +451,7 @@ def test_startup_sampling_draws_one_value_per_environment(device):
     """The config's start-up ranges must reach the controller once the actuator exists.
 
     A USD prim is shared by every clone, so the ranges cannot be authored per environment.
-    They are drawn afterwards, and -- like implementation A's ``_sample_per_env`` -- one value
-    covers all of an environment's joints.
+    They are drawn afterwards, with one value covering all of an environment's joints.
     """
     cfg = _make_cfg(vin_range=(6.0, 8.0), friction_scale_range=(0.5, 1.5))
     harness = _Harness(cfg, num_envs=8, device=device)
@@ -547,6 +463,10 @@ def test_startup_sampling_draws_one_value_per_environment(device):
         np.testing.assert_allclose(values[:, 0], values[:, 1], atol=0.0, rtol=0.0)
         assert ((values >= low) & (values <= high)).all()
         assert len(np.unique(values[:, 0])) > 1, "every environment drew the same value"
+    before_reset = {name: getattr(harness.controller, name).numpy().copy() for name in ("vin", "friction_scale")}
+    harness.reset(torch.arange(8, device=device))
+    for name, values in before_reset.items():
+        np.testing.assert_array_equal(getattr(harness.controller, name).numpy(), values)
     # An unset range leaves the authored nominal in place.
     np.testing.assert_allclose(harness.controller.sag_gain.numpy(), 0.0, atol=0.0, rtol=0.0)
 
@@ -555,22 +475,65 @@ def test_startup_sampling_draws_one_value_per_environment(device):
 def test_constant_delay_replays_an_older_command(device):
     """A fixed lag of ``k`` steps must reproduce an undelayed actuator fed the ``k``-step-old command."""
     lag = 3
-    delayed = _Harness(_make_cfg(min_delay=lag, max_delay=lag), num_envs=1, device=device)
-    undelayed = _Harness(_make_cfg(), num_envs=1, device=device)
+    delayed = _Harness(_make_cfg(min_delay=lag, max_delay=lag), num_envs=2, device=device)
+    undelayed = _Harness(_make_cfg(), num_envs=2, device=device)
 
-    commands = [np.full((1, 2), 0.1 * step) for step in range(8)]
-    pos, vel = np.zeros((1, 2)), np.zeros((1, 2))
+    commands = [np.full((2, 2), 0.01 * step) for step in range(8)]
+    pos, vel = np.zeros((2, 2)), np.zeros((2, 2))
     for step, command in enumerate(commands):
         got = delayed.step(pos, vel, command)
         # The ring clamps to the oldest command it has seen, exactly like the reference buffer.
         expected = undelayed.step(pos, vel, commands[max(step - lag, 0)])
         np.testing.assert_allclose(got, expected, atol=1e-6, rtol=0.0, err_msg=f"step {step}")
 
+    delayed.reset(torch.tensor([0], device=device))
+    fresh = np.full((2, 2), -0.02)
+    got = delayed.step(pos, vel, fresh)
+    expected_command = commands[len(commands) - lag].copy()
+    expected_command[0] = fresh[0]
+    expected = undelayed.step(pos, vel, expected_command)
+    np.testing.assert_allclose(got, expected, atol=1e-6, rtol=0.0)
+    assert not np.allclose(got[0], got[1]), "the untouched environment must keep its delayed command"
+
+
+@pytest.mark.parametrize("hold_probability, period", [(1.0, 0), (0.0, 4)])
+def test_delay_hold_and_update_period_reach_the_motor_output(hold_probability, period):
+    """Hold freezes the lag; periodic refreshes remain staggered per driven joint."""
+    harness = _Harness(
+        _make_cfg(min_delay=0, max_delay=3, delay_hold_prob=hold_probability, delay_update_period=period),
+        num_envs=16,
+        device="cpu",
+    )
+    params = BamMotorParams.from_json(BAM_XL330_M6_PARAMS_FILE)
+    # Small position commands remain in the linear firmware regime at rest, so motor
+    # torque identifies the delayed command without reading the private delay ring.
+    command_step = 0.001
+    torque_step = command_step * KP_FW * params.error_gain * VIN * params.kt / params.R
+    zeros = np.zeros((16, 2))
+    lags = []
+    for step in range(24):
+        efforts = harness.step(zeros, zeros, np.full_like(zeros, command_step * step))
+        lags.append(step - np.rint(efforts / torque_step).astype(int))
+    history = np.stack(lags)
+    assert history.min() >= 0 and history.max() <= 3
+    if hold_probability == 1.0:
+        np.testing.assert_array_equal(history, 0)
+    else:
+        phases = set()
+        # Ignore warm-up: the ring initially clips lag to the available command history.
+        for joint_history in history[4:].reshape(20, -1).T:
+            changed = np.flatnonzero(np.diff(joint_history)) + 5
+            residues = {int(index) % period for index in changed}
+            assert len(residues) <= 1
+            phases.update(residues)
+        assert len(phases) > 1, "lag refreshes must not synchronize every driven joint"
+
 
 @pytest.mark.parametrize("device", test_devices())
 def test_reset_restores_the_first_step_behaviour(device):
     """Resetting an environment must clear its caches without touching the others."""
     harness = _Harness(_make_cfg(), num_envs=2, device=device)
+    harness.controller.sag_gain.fill_(0.5)
     pos, vel, target = np.array([[0.2, 0.2], [0.2, 0.2]]), np.array([[1.0, 1.0], [1.0, 1.0]]), np.zeros((2, 2))
 
     first = harness.step(pos, vel, target)
@@ -619,64 +582,6 @@ def _make_bound_harness(device: str, mask: list[float], num_envs: int = 1) -> _H
     return harness
 
 
-def _reference_encoder_efforts(measured: np.ndarray, motor_vel: np.ndarray, target: np.ndarray) -> np.ndarray:
-    """Roll the shared BAM math core forward over a scripted sequence.
-
-    Built from :mod:`isaaclab.actuators.bam_model` rather than from either actuator, so the
-    expectation is an independent calculation and not the implementation restated. The only
-    backlash-specific input is *measured*, which the caller composes as ``servo + play * mask``:
-    upstream rewrites the firmware command's position feedback and nothing else
-    (``friction_dr_bam.py:101-104``), so the velocity that reaches the back-EMF, the Stribeck
-    coefficient and the stiction clip here is the motor-side one.
-
-    The fixture leaves the delay off, the friction scale at one and the supply sag at zero, so
-    the recursion carries only the three caches the controller keeps: the previous motor torque,
-    the previous applied torque and the previous velocity.
-
-    Args:
-        measured: Encoder-view positions the firmware closes its loop on [rad], shape
-            ``(steps, num_envs, num_joints)``.
-        motor_vel: Motor-side joint velocities [rad/s], same shape.
-        target: Commanded positions [rad], same shape.
-
-    Returns:
-        Applied efforts [N.m], same shape.
-    """
-    from isaaclab.actuators.bam_model import (  # noqa: PLC0415
-        apply_stiction_clip,
-        battery_sag,
-        compute_duty,
-        compute_friction_budget,
-        compute_motor_torque,
-        compute_stribeck_coeff,
-    )
-
-    params = BamMotorParams.from_json(BAM_XL330_M6_PARAMS_FILE)
-    steps, num_envs, num_joints = measured.shape
-    kp = torch.full((num_envs, 1), KP_FW)
-    vin = torch.full((num_envs, 1), VIN)
-    prev_motor = torch.zeros(num_envs, num_joints)
-    prev_applied = torch.zeros(num_envs, num_joints)
-    prev_vel = None
-
-    efforts = []
-    for step in range(steps):
-        q, dq, q_target = (torch.tensor(a[step], dtype=torch.float32) for a in (measured, motor_vel, target))
-        # A freshly built controller seeds its velocity cache, so the first step sees no
-        # acceleration and hence no estimated external torque.
-        if prev_vel is None:
-            prev_vel = dq
-        effective_vin = battery_sag(vin, prev_motor, torch.zeros(num_envs, 1), None)
-        duty = compute_duty(q_target, q, dq, kp, effective_vin, params)
-        motor = compute_motor_torque(duty, dq, effective_vin, params)
-        external = params.armature * (dq - prev_vel) / DT - prev_applied
-        budget = compute_friction_budget(prev_motor, external, compute_stribeck_coeff(dq, params), params, 1.0)
-        applied = apply_stiction_clip(motor, external, dq, budget, params.friction_viscous, DT, params.armature)
-        efforts.append(applied.numpy())
-        prev_motor, prev_applied, prev_vel = motor, applied, dq
-    return np.stack(efforts)
-
-
 @pytest.mark.parametrize("device", test_devices())
 def test_bound_encoder_closes_the_firmware_loop_through_the_play(device):
     """The firmware error must be measured against ``servo + play``, not against the servo.
@@ -685,8 +590,8 @@ def test_bound_encoder_closes_the_firmware_loop_through_the_play(device):
     the rotor winds through the dead zone the position the firmware reads -- and hence its
     proportional error -- does not move. That is the whole point of the backlash plant: without
     it the play is a compliance the policy never sees, with it the policy inherits the dead
-    zone. The expectation is the shared math core stepped over the same scripted sequence with
-    the feedback composed the same way.
+    zone. A plain controller with explicitly composed encoder positions is the reference;
+    upstream golden coverage separately checks its motor equation.
 
     The two joints carry different masks on purpose: one reads through its hinge, the other does
     not, and both are resolved inside the same kernel launch, so a mask applied per launch
@@ -715,12 +620,19 @@ def test_bound_encoder_closes_the_firmware_loop_through_the_play(device):
         ]
     )
 
-    expected = _reference_encoder_efforts(servo_pos + play_pos * np.array(mask), servo_vel, target)
+    reference = _Harness(_make_cfg(), num_envs=1, device=device)
+    expected = np.stack(
+        [
+            reference.step(servo_pos[step] + play_pos[step] * np.array(mask), servo_vel[step], target[step])
+            for step in range(steps)
+        ]
+    )
     np.testing.assert_allclose(got, expected, atol=1e-6, rtol=0.0)
 
     # One degree of play is a small angle; the comparison above only means something if reading
     # through it moves the torque by far more than the tolerance it was asserted at.
-    without_play = _reference_encoder_efforts(servo_pos, servo_vel, target)
+    plain = _Harness(_make_cfg(), num_envs=1, device=device)
+    without_play = np.stack([plain.step(servo_pos[step], servo_vel[step], target[step]) for step in range(steps)])
     assert np.abs(expected[..., 0] - without_play[..., 0]).max() > 1e-3
 
 
@@ -728,9 +640,8 @@ def test_bound_encoder_closes_the_firmware_loop_through_the_play(device):
 def test_the_play_hinges_velocity_never_reaches_the_motor(device):
     """Only the position feedback reads through the play; the velocity stays motor-side.
 
-    In this model the joint velocity drives the back-EMF, the Stribeck blend and the stopping
-    torque of the stiction clip -- rotor physics, not an encoder-derived firmware signal. The
-    reference implementation is explicit about leaving it alone
+    In this model the joint velocity drives the back-EMF and Stribeck blend: motor physics rather
+    than an encoder-derived firmware signal. The reference implementation leaves it alone
     (``friction_dr_bam.py:78-80``), and summing the hinge in there would damp the motor against
     a velocity its rotor never sees.
     """

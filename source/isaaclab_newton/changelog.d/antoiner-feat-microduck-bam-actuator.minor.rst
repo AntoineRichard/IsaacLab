@@ -17,3 +17,6 @@ Added
   that runs once the solver exists and before any CUDA graph capture. Assets initialize while
   the model is still being built, so anything that needs the concrete solver has to defer to
   the latter.
+* Added a recorded deterministic native BAM pendulum trajectory with source-commit and dependency
+  provenance. The regression fixture preserved the existing Newton / MJWarp behavior without a
+  second servo implementation or a live upstream dependency; it did not measure upstream fidelity.

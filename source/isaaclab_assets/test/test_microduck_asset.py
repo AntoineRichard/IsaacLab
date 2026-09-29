@@ -16,11 +16,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from isaaclab_newton.physics import NewtonCfg
+from isaaclab_newton.physics import NewtonCfg, NewtonManager
 
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
 import isaaclab.sim as sim_utils
+from isaaclab.actuators import BamMotorParams
+from isaaclab.actuators.newton import read_group_parameter
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.cloner import CloneCfg, clone_plan_from_env_0, replicate
 from isaaclab.sim import SimulationCfg, SimulationContext
@@ -161,7 +163,7 @@ def newton_articulations():
         pytest.skip(f"MicroDuck USD asset is missing: {MICRODUCK_USD_PATH}. Run 'git lfs pull'.")
 
     sim_utils.create_new_stage()
-    sim = SimulationContext(SimulationCfg(dt=0.005, device="cuda:0", use_newton_actuators=False, physics=NewtonCfg()))
+    sim = SimulationContext(SimulationCfg(dt=0.005, device="cuda:0", use_newton_actuators=True, physics=NewtonCfg()))
     bare = Articulation(
         ArticulationCfg(prim_path="/World/Robot", spawn=sim_utils.UsdFileCfg(usd_path=MICRODUCK_USD_PATH), actuators={})
     )
@@ -355,8 +357,15 @@ def test_microduck_cfg_actuates_every_joint(microduck_articulation):
     assert set(robot.actuators) == {"servos"}
 
     servos = robot.actuators["servos"]
-    assert len(servos.joint_names) == NUM_ACTUATED_JOINTS
-    assert set(servos.joint_names) == set(robot.joint_names)
+    model = NewtonManager.backend.model
+    driven_dofs = set(servos.indices.numpy().tolist())
+    driven_names = {
+        label.rsplit("/", 1)[-1]
+        for label, dof in zip(model.joint_label, model.joint_qd_start.numpy())
+        if label.startswith(robot.cfg.prim_path + "/") and int(dof) in driven_dofs
+    }
+    assert len(driven_names) == NUM_ACTUATED_JOINTS
+    assert driven_names == set(robot.joint_names)
 
 
 def test_microduck_cfg_default_joint_pos_is_the_home_pose(microduck_articulation):
@@ -370,51 +379,33 @@ def test_microduck_cfg_default_joint_pos_is_the_home_pose(microduck_articulation
 
 
 def test_microduck_cfg_restores_the_joint_dynamics_the_asset_drops(microduck_articulation, mj_joints):
-    """The passive dynamics lost in conversion come back where the plant, not the MJCF, wants them.
+    """The native model restores the fit's damping and seeds its solver friction.
 
-    ``test_joint_dynamics_not_carried_by_the_asset`` pins that the USD arrives with zero joint
-    damping and friction. Two of the three come back, and they come back in different places:
-
-    * **viscous** friction (MuJoCo's ``dof_damping``) is restored on the solver, on both execution
-      paths. On the Isaac Lab-executed path it is the only joint-level dissipation the solver has;
-      on the Newton-native path the controller republishes its own coefficient over it every
-      physics step, so it is a seed there.
-    * **dry** friction (``frictionloss``) is *not* restored on the solver: the BAM model applies it
-      itself, load-dependently, so :class:`~isaaclab.actuators.BamActuator` declares
-      :attr:`~isaaclab.actuators.ActuatorBase.applies_joint_friction` and the collection resolves
-      the group's solver friction to zero. That is upstream's accounting -- its binding zeroes the
-      MJCF's ``frictionloss`` on every joint it drives -- and asserting the zero here is what keeps
-      a re-added ``friction=`` in the configuration from silently resisting these joints twice.
-    * **armature** is left to the USD, which does carry the MJCF value.
-
-    The viscous coefficient is deliberately *not* the MJCF's ``dof_damping``: upstream's BAM binding
-    overwrites that with the servo fit's ``friction_viscous`` every step, so the fit is what the
-    deployed robot runs at, and the two differ by an order of magnitude. The comparison is against
-    the vendored fit the actuator loaded rather than against
-    :data:`~isaaclab_assets.robots.microduck.MICRODUCK_JOINT_DAMPING`, so the configured constant is
-    checked against an independent source.
+    The converted USD retains armature but loses damping and dry friction. Native
+    BAM seeds positive dry friction so MJWarp allocates a constraint row before its
+    first step; the controller then publishes the load-dependent budget each step.
+    The damping is the fitted coefficient, not the MJCF's ten-times-larger value.
     """
     robot = microduck_articulation
-    servos = robot.actuators["servos"]
+    params = BamMotorParams.from_json(robot.cfg.actuators["servos"].params_file)
     viscous = robot.data.joint_viscous_friction_coeff.torch[0].cpu().numpy()
     friction = robot.data.joint_friction_coeff.torch[0].cpu().numpy()
     armature = robot.data.joint_armature.torch[0].cpu().numpy()
 
     # the MJCF value is ten times the fit, so a revert to it cannot pass the comparison below
-    assert all(mj_joints[name]["damping"] > 5.0 * servos.params.friction_viscous for name in robot.joint_names)
+    assert all(mj_joints[name]["damping"] > 5.0 * params.friction_viscous for name in robot.joint_names)
 
     for index, name in enumerate(robot.joint_names):
         # rel=1e-3 because the configured constant is the fit rounded to three significant digits
-        assert viscous[index] == pytest.approx(servos.params.friction_viscous, rel=1e-3), name
-        assert friction[index] == 0.0, name
-        # ... and the dry friction the solver gives up is the model's own: the MJCF's frictionloss
-        # is the vendored fit's unloaded friction budget, which the BAM model applies per step
-        assert mj_joints[name]["frictionloss"] == pytest.approx(servos.params.friction_base, rel=1e-2), name
+        assert viscous[index] == pytest.approx(params.friction_viscous, rel=1e-3), name
+        assert friction[index] == pytest.approx(params.friction_base, rel=1e-6), name
+        # The initial constraint seed agrees with the source MJCF's unloaded friction.
+        assert mj_joints[name]["frictionloss"] == pytest.approx(params.friction_base, rel=1e-2), name
         # armature is left to the USD, which carries the MJCF value unchanged
         assert armature[index] == pytest.approx(mj_joints[name]["armature"], rel=1e-4), name
         # ... and the BAM fit identifies that same reflected rotor inertia, which the MJCF writes
         # rounded to two significant digits
-        assert servos.params.armature == pytest.approx(mj_joints[name]["armature"], rel=1e-2), name
+        assert params.armature == pytest.approx(mj_joints[name]["armature"], rel=1e-2), name
 
 
 def test_microduck_cfg_servo_model_is_upstreams_bam_deployment(microduck_articulation, mj_actuators):
@@ -429,9 +420,9 @@ def test_microduck_cfg_servo_model_is_upstreams_bam_deployment(microduck_articul
     ``forcerange`` -- so the solver clamp, which conversion carries unchanged, binds first.
     """
     robot = microduck_articulation
-    servos = robot.actuators["servos"]
-    cfg = servos.cfg
-    params = servos.params
+    cfg = robot.cfg.actuators["servos"]
+    params = BamMotorParams.from_json(cfg.params_file)
+    effort_limits = read_group_parameter(robot.actuators, "servos", "controller", "max_effort")
     solver_limit = robot.data.joint_effort_limits.torch[0].cpu().numpy()
 
     assert cfg.kp_fw == 200.0
@@ -449,6 +440,6 @@ def test_microduck_cfg_servo_model_is_upstreams_bam_deployment(microduck_articul
     for index, name in enumerate(robot.joint_names):
         authored = mj_actuators[name]["effort_limit"]
         assert small_signal_stiffness == pytest.approx(mj_actuators[name]["stiffness"], rel=0.01), name
-        assert float(servos.actuator_effort_limit[0, index]) == pytest.approx(stall_torque, rel=1e-6), name
-        assert float(servos.actuator_effort_limit[0, index]) > authored, name
+        assert float(effort_limits[0, index]) == pytest.approx(stall_torque, rel=1e-6), name
+        assert float(effort_limits[0, index]) > authored, name
         assert solver_limit[index] == pytest.approx(authored, rel=1e-5), name

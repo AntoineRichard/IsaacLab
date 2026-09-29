@@ -43,9 +43,9 @@ Changed
   The event is **not** removed as dead code even though it randomizes nothing: upstream separately
   omits the startup event that registers the BAM actuator's friction fields for per-world expansion,
   and this degenerate event is upstream's sole declarer of one of those fields, so deleting it there
-  breaks the actuator at the first multi-environment step. Isaac Lab's BAM actuator owns
-  per-environment friction storage unconditionally, so that interlock does not exist here -- which is
-  asserted, with the event removed, rather than assumed.
+  breaks the actuator at the first multi-environment step. The native BAM controller and MJWarp
+  bridge required per-world friction storage independently, so that interlock did not exist here.
+  A test checked this with the event removed.
 * Did not carry upstream's stale claims about ``STAND_POSE``. Its two comments say the pose is the
   simulator's HOME and ask that it be kept close to HOME for a clean hand-off to the roller policy;
   measured on the pinned model it is 55 and 56 degrees off HOME at the knees and stands the trunk
