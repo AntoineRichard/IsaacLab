@@ -30,7 +30,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import warp as wp
-from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, NewtonManager
+from isaaclab_newton.physics import MJWarpSolverCfg, NewtonBuilderCfg, NewtonCfg, NewtonManager
 from isaaclab_newton.physics.mjwarp_joint_limits import apply_mujoco_default_joint_limit_solref
 from isaaclab_newton.sim.schemas import MujocoJointCfg, apply_mujoco_joint
 from newton import Model, ModelBuilder, ModelFlags
@@ -40,7 +40,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton.solvers import SolverMuJoCo
-from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
+from newton.usd import SchemaResolverMjc, SchemaResolverNewton, SchemaResolverPhysx
 
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
@@ -180,17 +180,19 @@ def _usd_hinge_pair(*, author: bool = True) -> Usd.Stage:
 def _import_usd_hinge_pair(*, author: bool = True) -> tuple[Model, dict[str, int]]:
     """Import :func:`_usd_hinge_pair` the way Isaac Lab imports an asset, and map hinges to DOFs.
 
-    ``NewtonManager`` passes only the ``newton`` and ``physx`` schema resolvers to
-    ``ModelBuilder.add_usd``, so the import here uses that same set: an
-    ``mjc:*`` attribute that only reached the model through a MuJoCo resolver
-    would not reach a spawned Isaac Lab asset.
+    The MuJoCo manager passes Newton, PhysX and MuJoCo resolvers to
+    ``ModelBuilder.add_usd``. Match that order so authored passive damping
+    follows the same path as a spawned asset.
 
     Returns:
         The finalized model and a mapping from hinge name to its Newton DOF index.
     """
     builder = ModelBuilder(up_axis="Z")
     SolverMuJoCo.register_custom_attributes(builder)
-    builder.add_usd(_usd_hinge_pair(author=author), schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()])
+    builder.add_usd(
+        _usd_hinge_pair(author=author),
+        schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
+    )
     model = builder.finalize(device="cpu")
     dof_start = model.joint_qd_start.numpy()
     dofs = {
@@ -484,7 +486,7 @@ def test_manager_applies_default_limit_solref_per_cfg(use_mujoco_default):
     )
     with build_simulation_context(sim_cfg=sim_cfg) as sim:
         sim._app_control_on_stop_handle = None
-        builder = sim.physics_manager.create_builder()
+        builder = sim.get_or_create_backend(NewtonBuilderCfg(physics_cfg=sim.cfg.physics))
         link = builder.add_link(mass=0.05, inertia=wp.mat33(np.diag([2.0e-5] * 3).tolist()))
         joint = builder.add_joint_revolute(
             parent=-1,
@@ -495,7 +497,6 @@ def test_manager_applies_default_limit_solref_per_cfg(use_mujoco_default):
             armature=0.0018,
         )
         builder.add_articulation([joint])
-        NewtonManager.set_builder(builder)
         sim.reset()
 
         solver = NewtonManager._solver

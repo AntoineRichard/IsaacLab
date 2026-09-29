@@ -451,7 +451,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             )
             return
         cfg = self._first_bam_cfg()
-        num_newton_dofs = SimulationManager._model.joint_dof_count
+        num_newton_dofs = SimulationManager.backend.model.joint_dof_count
 
         for actuator in actuators:
             controller = actuator.controller

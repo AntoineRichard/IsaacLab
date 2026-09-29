@@ -37,6 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # so the base image needs no interpreter.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
+COPY docker/scripts/install_git_lfs.sh /tmp/install_git_lfs.sh
+RUN /bin/bash /tmp/install_git_lfs.sh
+
 # The git context is the repository at the pinned commit, including .git, so
 # capture_versions() still records real provenance. Replaces the bundle clone.
 # (Dockerfile.odin.dockerignore, not the root .dockerignore, governs what this
@@ -51,6 +54,10 @@ WORKDIR /workspace/isaaclab
 # be hardcoded here. Fails loudly if the git context resolved to the wrong commit.
 ARG ODIN_COMMIT_SHA
 RUN test "$(git rev-parse HEAD)" = "$ODIN_COMMIT_SHA"
+
+# Kaniko's Git context can contain LFS pointers. Download the exported robot USDs
+# before baking the checkout into the training image.
+RUN git lfs pull --include="source/isaaclab_assets/data/Robots/PollenRobotics/MicroDuck/*.usd" --exclude=""
 
 # uv sync resolves against this commit's committed uv.lock, so a commit that
 # changes a dependency is tested with the changed dependency.
@@ -70,27 +77,10 @@ ENV UV_HTTP_TIMEOUT=180
 # layer permanently -- templates/Dockerfile.j2 avoids that with
 # `RUN --mount=type=cache`, which also keeps the cache out of the image; that
 # mount is unavailable here, so `rm -rf` the cache in the same RUN instead.
-# `isaacsim` is deliberately absent, which is what lets `importers` live in this
-# same environment. The Isaac Sim runtime ships `isaacsim` as a regular package,
-# and a regular package discards the `isaacsim.asset` PEP 420 namespace portion
-# that `isaacsim-asset-isolated` contributes, leaving the standalone importers
-# installed but unreachable. That is not a resolver conflict, so uv.lock cannot
-# express it and the absence of a [tool.uv] conflicts entry says nothing.
-#
-# Dropping it is safe for this branch's tasks because they are Newton/MJWarp and
-# never touch Kit. Verified rather than assumed: in a venv with no `isaacsim`,
-# IsaacContrib-Velocity-Flat-MicroDuck resolves its config, builds, resets and
-# steps on CUDA, and the only Omniverse-namespace modules it imports come from
-# base dependencies -- `omni.client` from `omniverseclient` and `pxr.*` from
-# `usd-exchange`, neither of which is part of the `isaacsim` extra.
-#
-# It is also 18 GB of the 32 GB venv, and every OSMO node running a task pays
-# that in image pull, so carrying it would cost the parallel fan-out far more
-# than it costs a single run.
-RUN uv sync --frozen --extra importers --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video --extra tetrahedralization \
-    && rm -rf "$UV_CACHE_DIR" \
-    && uv run --frozen --extra importers \
-         python -c "from isaaclab.utils.version import standalone_importers_available as s; assert s(), 'standalone importers unreachable: something in this environment shadows the isaacsim namespace'; print('importers reachable OK')"
+# MicroDuck loads the distributed USD exports directly, so this Newton image needs
+# neither the full Isaac Sim runtime nor its MJCF importers.
+RUN uv sync --frozen --extra ovphysx --extra ovrtx --extra rsl-rl --extra skrl --extra rl-games --extra sb3 --extra rerun --extra video --extra tetrahedralization \
+    && rm -rf "$UV_CACHE_DIR"
 
 # The nvdataset CLI, used by the DSS upload path in dispatch.yaml.j2. It is
 # NOT installed from an index here: OSMO's build pods cannot resolve

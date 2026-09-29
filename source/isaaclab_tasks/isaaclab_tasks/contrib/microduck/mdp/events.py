@@ -100,7 +100,7 @@ def encoder_bias(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCf
 
 def randomize_encoder_bias(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     bias_range: tuple[float, float],
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> None:
@@ -120,6 +120,8 @@ def randomize_encoder_bias(
     bias = encoder_bias(env, asset_cfg)
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     joint_ids = asset_cfg.joint_ids
     num_joints = bias.shape[1] if isinstance(joint_ids, slice) else len(joint_ids)
     samples = torch.empty(len(env_ids), num_joints, device=env.device).uniform_(*bias_range)
@@ -131,7 +133,7 @@ def randomize_encoder_bias(
 
 def randomize_bam_friction(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     scale_range: tuple[float, float] = (0.9, 1.1),
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> None:
@@ -171,6 +173,8 @@ def randomize_bam_friction(
     asset: Articulation = env.scene[asset_cfg.name]
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     for name, actuator_cfg in asset.cfg.actuators.items():
         if not isinstance(actuator_cfg, BamActuatorCfg):
             continue
@@ -209,7 +213,7 @@ def _keyframe_joint_ids(env: ManagerBasedEnv, asset: Articulation, joint_names: 
 
 def reset_ground_state(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     face_down_prob: float,
     face_up_prob: float,
     sitting_prob: float,
@@ -341,6 +345,8 @@ def reset_ground_state(
     asset: Articulation = env.scene[asset_cfg.name]
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     num_resets = len(env_ids)
     if num_resets == 0:
         return
@@ -516,7 +522,7 @@ def roulade_roll_state(env: ManagerBasedEnv) -> RouladeRollState:
 
 def reset_roulade_state(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     standing_prob: float,
     midroll_prob: float,
     standing_z_range: tuple[float, float],
@@ -604,6 +610,8 @@ def reset_roulade_state(
     asset: Articulation = env.scene[asset_cfg.name]
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     num_resets = len(env_ids)
     if num_resets == 0:
         return
@@ -682,7 +690,7 @@ def reset_roulade_state(
 
 def randomize_joint_dry_friction(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     friction_range: tuple[float, float],
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> None:
@@ -713,6 +721,8 @@ def randomize_joint_dry_friction(
     asset: Articulation = env.scene[asset_cfg.name]
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     joint_ids = None if isinstance(asset_cfg.joint_ids, slice) else asset_cfg.joint_ids
     num_joints = asset.num_joints if joint_ids is None else len(joint_ids)
     samples = torch.empty(len(env_ids), num_joints, device=env.device).uniform_(*friction_range)
@@ -755,7 +765,7 @@ def ball_kick_direction(env: ManagerBasedEnv) -> torch.Tensor:
 
 def reset_ball_in_front_of_foot(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     offset: tuple[float, float],
     noise_xy: float = 0.0,
     ball_radius: float = 0.035,
@@ -790,6 +800,8 @@ def reset_ball_in_front_of_foot(
     """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     num_resets = len(env_ids)
     if num_resets == 0:
         return
@@ -849,7 +861,7 @@ def mouth_payload(env: ManagerBasedEnv) -> torch.Tensor:
 
 def sample_mouth_payload(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     min_kg: float,
     max_kg: float,
 ) -> None:
@@ -874,7 +886,7 @@ def sample_mouth_payload(
 
 def apply_mouth_payload_force(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     asset_cfg: SceneEntityCfg,
     mouth_offset_b: Sequence[float],
     command_name: str,
@@ -918,6 +930,8 @@ def apply_mouth_payload_force(
         )
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
 
     command = env.command_manager.get_command(command_name)
     phase = (torch.atan2(command[:, 1], command[:, 0]) / (2.0 * math.pi)) % 1.0

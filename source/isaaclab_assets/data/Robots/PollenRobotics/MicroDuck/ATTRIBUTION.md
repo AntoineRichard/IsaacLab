@@ -16,37 +16,32 @@ Robotics' `microduck_rl` project.
 The upstream MJCF itself is generated from Onshape CAD by
 [onshape-to-robot](https://github.com/Rhoban/onshape-to-robot).
 
-## Conversion
+## Loading the exports
 
-The assets are **not** committed: `.gitignore` excludes USD files from this repository
-("No USD files allowed in the repo"), and `isaaclab_assets/data` is documented as local, temporary
-asset hosting — released assets live on the Nucleus server. Generate them next to this document
-with:
+The four USDs are distributed with this branch through Git LFS. Run `git lfs pull` after cloning.
+The asset configurations load them directly; neither the source MJCF repository nor Isaac Sim's
+MJCF importer is required. Each USD is a self-contained binary file without external layers,
+meshes or textures. `LICENSE` contains the upstream Apache 2.0 terms.
 
-```bash
-uv run --extra importers python scripts/tools/convert_microduck.py
-uv run --extra importers python scripts/tools/convert_microduck.py --model allcollisions
-uv run --extra importers python scripts/tools/convert_microduck.py --model rollers
-uv run --extra importers python scripts/tools/convert_microduck.py --model walk_backlash
-```
+These files came from the 2026-09-09 `usd_export.zip` export. `manifest.json` records their exact
+SHA-256 checksums, sizes, source revisions and historical conversion commands. The walking,
+all-collisions and rollers exports came from `antoiner/feat/microduck-pickplace` at
+`5a3ca4539d809a6a1db9fd2847fdbbe049f88844`; the backlash export came from
+`antoiner/feat/microduck-backlash` at `e29de702cf3`. The archive's beak model is not used by this
+branch and is not included. The converter is retained in those historical revisions, rather
+than as a runtime or maintenance dependency of this branch.
 
-No manual checkout is needed: the script fetches the selected model's MJCF from the pinned commit
-above into a local cache. Pass a path to an MJCF to convert a different copy.
-
-`scripts/tools/convert_microduck.py` runs the Isaac Sim MJCF importer through
-`isaaclab.sim.converters.MjcfConverter`, selects the `"physx"` entry of the generated `"Physics"`
-variant set, flattens the layered result into this single binary USD, repairs the two contact
-properties the importer loses to scene-graph instancing, and clears the articulation root transform.
-The `"physx"` variant is the one Isaac Lab's Newton importer reads the MJCF joint armature from, and
-unlike the `"mujoco"` variant it keeps the actuator force range.
+The exports were produced by selecting the importer's `physx` physics variant, flattening its
+layers, repairing contact materials and collision masks, and clearing the root transform.
+The following notes describe the properties already present in these exported files.
 
 The base is left free: the model is a floating-base articulation.
 
 ## What the asset carries
 
-The conversion is verified by `source/isaaclab_assets/test/test_microduck_asset.py` (walk) and
-`test_microduck_variant_assets.py` (the other three), which compare each asset against its source
-MJCF. Carried over: the hinge joints and their names — 14 on the walk and all-collisions models, 18
+The exported assets are checked by `source/isaaclab_assets/test/test_microduck_asset.py` (walk) and
+`test_microduck_variant_assets.py` (the other three), which include optional comparisons against explicitly supplied source
+MJCFs. Carried over: the hinge joints and their names — 14 on the walk and all-collisions models, 18
 on the roller model, whose four extra `passive_*_wheel` hinges are undriven, and 28 on the backlash
 model, whose 14 extra `passive_*_backlash` hinges are undriven too — the per-joint position limits,
 the body masses and inertias, the joint armature and effort limits, the world-contact collider set,
@@ -115,9 +110,10 @@ Not carried over, and therefore owned by the task's actuator configuration:
   backlash model's undriven play hinges have no such group, so the conversion authors *their*
   dynamics on the joint prim itself (see above).
 
-## Regenerating
+## Validation
 
-Re-running a command above overwrites that model's USD in place. Re-run
-`source/isaaclab_assets/test/test_microduck_asset.py` and `test_microduck_variant_assets.py`
-afterwards; they pick up the same pinned MJCFs, or ones named by `MICRODUCK_MJCF_PATH` (walk) and
-`MICRODUCK_MJCF_DIR` (variants).
+Run `uv run --extra test python -m pytest source/isaaclab_assets/test/test_microduck_asset.py`
+and `test_microduck_variant_assets.py` separately. Asset structure and configuration checks use
+only the supplied USDs. For optional MJCF fidelity comparisons, provide a checkout of the pinned
+upstream revision via `MICRODUCK_MJCF_PATH` (the walking model XML) and `MICRODUCK_MJCF_DIR`
+(the directory containing the variant XMLs). Tests do not download or convert models.

@@ -655,7 +655,8 @@ def test_bam_friction_randomization_draws_one_scale_per_environment():
     assert scale.std() > 0.0
 
 
-def test_bam_friction_randomization_leaves_the_environments_it_was_not_given_alone():
+@pytest.mark.parametrize("use_slice", [False, True])
+def test_bam_friction_randomization_leaves_the_environments_it_was_not_given_alone(use_slice):
     """A reset resamples the environments that reset, which is what the event mode promises."""
     torch.manual_seed(0)
     env = _lab_path_env(num_envs=8)
@@ -663,7 +664,9 @@ def test_bam_friction_randomization_leaves_the_environments_it_was_not_given_alo
     actuator.friction_scale.fill_(1.0)
     env_ids = torch.tensor([1, 4], device=env.device)
 
-    mdp.randomize_bam_friction(cast("ManagerBasedEnv", env), env_ids, scale_range=(3.0, 4.0))
+    mdp.randomize_bam_friction(
+        cast("ManagerBasedEnv", env), slice(1, 5, 3) if use_slice else env_ids, scale_range=(3.0, 4.0)
+    )
 
     scale = actuator.friction_scale
     assert torch.all(scale[env_ids] >= 3.0)

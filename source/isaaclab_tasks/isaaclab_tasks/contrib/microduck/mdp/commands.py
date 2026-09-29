@@ -94,7 +94,9 @@ class UniformPoseDeltaCommand(CommandTerm):
     def _update_command(self):
         pass
 
-    def _resample_command(self, env_ids: Sequence[int]):
+    def _resample_command(self, env_ids: Sequence[int] | slice):
+        if isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
         num_envs = len(env_ids)
         if num_envs == 0:
             return
@@ -190,7 +192,9 @@ class MicroDuckVelocityCommand(UniformVelocityCommand):
     Implementation specific functions.
     """
 
-    def _resample_command(self, env_ids: Sequence[int]):
+    def _resample_command(self, env_ids: Sequence[int] | slice):
+        if isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
         # the bucket masks index into ``env_ids``, which the command manager may hand over as a
         # plain sequence
         env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
@@ -303,7 +307,7 @@ class RelativeHeadingVelocityCommand(MicroDuckVelocityCommand):
     Implementation specific functions.
     """
 
-    def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
+    def reset(self, env_ids: Sequence[int] | slice | None = None) -> dict[str, float]:
         # skips ``UniformVelocityCommand.reset``, whose only extra work is finalizing the tracking
         # metrics cleared in ``__init__``
         return CommandTerm.reset(self, env_ids)
@@ -311,7 +315,9 @@ class RelativeHeadingVelocityCommand(MicroDuckVelocityCommand):
     def _update_metrics(self):
         pass
 
-    def _resample_command(self, env_ids: Sequence[int]):
+    def _resample_command(self, env_ids: Sequence[int] | slice):
+        if isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
         super()._resample_command(env_ids)
         env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
         heading = torch.empty(len(env_ids), device=self.device)
@@ -415,7 +421,7 @@ class SitStandCommand(UniformVelocityCommand):
     Implementation specific functions.
     """
 
-    def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
+    def reset(self, env_ids: Sequence[int] | slice | None = None) -> dict[str, float]:
         # Skips ``UniformVelocityCommand.reset``, whose only extra work is finalizing the tracking
         # metrics cleared in ``__init__`` -- and which would raise on their absence -- exactly as
         # :class:`RelativeHeadingVelocityCommand` does for the same reason.
@@ -437,7 +443,9 @@ class SitStandCommand(UniformVelocityCommand):
     def _update_command(self):
         pass  # no heading controller and no standing-environment machinery on a posture flag
 
-    def _resample_command(self, env_ids: Sequence[int]):
+    def _resample_command(self, env_ids: Sequence[int] | slice):
+        if isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
         num_envs = len(env_ids)
         if num_envs == 0:
             return
@@ -570,7 +578,7 @@ class GroundPickPhaseCommand(UniformVelocityCommand):
     Implementation specific functions.
     """
 
-    def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
+    def reset(self, env_ids: Sequence[int] | slice | None = None) -> dict[str, float]:
         # Skips ``UniformVelocityCommand.reset``, which would finalize the tracking metrics cleared
         # in ``__init__`` and raise on their absence; see :meth:`SitStandCommand.reset` for the cost
         # of that skip.
@@ -590,7 +598,7 @@ class GroundPickPhaseCommand(UniformVelocityCommand):
     def _update_command(self):
         pass  # no heading controller and no standing-environment machinery on a phase clock
 
-    def _resample_command(self, env_ids: Sequence[int]):
+    def _resample_command(self, env_ids: Sequence[int] | slice):
         pass  # the phase is continuous, so there is nothing to resample
 
     def compute(self, dt: float):

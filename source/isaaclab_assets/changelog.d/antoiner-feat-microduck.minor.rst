@@ -1,34 +1,20 @@
 Added
 ^^^^^
 
-* Added MicroDuck walk asset conversion tooling and its fidelity tests under
-  ``data/Robots/PollenRobotics/MicroDuck`` and ``test/test_microduck_asset.py``. The USD itself is
-  generated on demand by ``scripts/tools/convert_microduck.py`` rather than committed, because USD
-  files are excluded from the repository; the script fetches the Apache-2.0 licensed
-  ``pollen-robotics/microduck_rl`` MJCF from a pinned commit, so no manual checkout is needed. See
-  the ``ATTRIBUTION.md`` next to the asset for provenance and the conversion command.
-* Added a conversion step that clears the articulation root transform the MJCF importer bakes the
-  model's home pose into, so an ``ArticulationCfg``'s initial position sets the spawn height instead
-  of composing with it and doubling it.
-* Added tests comparing the generated USD against the source MJCF: joint names, position limits,
-  armature, effort limits, body masses, root transform, world-contact colliders and foot friction.
-  The actuator gains, joint damping and joint friction are not carried by the conversion and must be
-  supplied by the task's actuator configuration; the tests pin that too.
+* Added self-contained MicroDuck USD exports under ``data/Robots/PollenRobotics/MicroDuck``
+  through Git LFS, with source attribution, Apache-2.0 license and checksum manifest. Run
+  ``git lfs pull`` after cloning; no MJCF download or conversion is required.
+* Added checks for self-contained USDs and optional comparisons against explicitly supplied
+  local MJCF references, covering joint properties, body masses and contact geometry.
 * Added :data:`~isaaclab_assets.MICRODUCK_CFG`, the MicroDuck articulation in the upstream stand
   pose, driven by :class:`~isaaclab.actuators.BamActuatorCfg` at upstream's deployment settings: the
   vendored Dynamixel XL330 ``m6`` fit, a firmware gain of 200, a per-robot battery voltage, sag and
   gearbox-friction draw, and a 3 to 6 physics-step command delay. It restores the joint damping and
   friction the conversion drops and bounds the model at the electrical stall torque upstream derives
-  from the top of its battery range. Spawning it without the generated USD raises an error naming
-  the command that regenerates it.
-* Added the two remaining upstream MicroDuck robot models to the conversion tooling, selected with
-  ``scripts/tools/convert_microduck.py --model {walk,allcollisions,rollers}`` (``walk`` stays the
-  default, so the existing command is unchanged). ``allcollisions`` adds the trunk, hip, shin and
-  head colliders upstream's stand-up and roulade tasks need; ``rollers`` replaces each foot with two
-  passively rolling wheels. The world-contact set a conversion keeps is re-derived from that model's
-  own MJCF ``contype``/``conaffinity`` rather than shared between models, so the three head shells on
-  ``jaw_soft`` stay collidable -- a task that rolls the robot over its head needs a head that touches
-  the ground.
+  from the top of its battery range. It loaded the exported walking USD directly through the standard USD spawner.
+* Added the all-collisions and rollers USD exports with their distinct contact geometry.
+  The all-collisions model retained collidable head shells; the rollers model retained four
+  passive wheel hinges alongside the fourteen driven servos.
 * Added :data:`~isaaclab_assets.MICRODUCK_ALLCOLLISIONS_CFG` and
   :data:`~isaaclab_assets.MICRODUCK_ROLLERS_CFG`, which are :data:`~isaaclab_assets.MICRODUCK_CFG`
   spawning those two assets. They reuse its servo group unchanged, so the roller model's four

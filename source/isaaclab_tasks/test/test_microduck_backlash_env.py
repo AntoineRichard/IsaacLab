@@ -16,7 +16,7 @@ than passing unnoticed.
 The parity tests need neither the asset nor the simulator. The integration tests spawn
 :data:`~isaaclab_assets.MICRODUCK_BACKLASH_CFG`, whose USD is generated rather than committed, so
 they skip when it is absent; generate it with
-``uv run --extra importers python scripts/tools/convert_microduck.py --model walk_backlash``.
+``git lfs pull``.
 
 Upstream's recipe is ``make_backlash_variant`` (``tasks/backlash.py`` at the pinned checkout),
 transcribed into ``artifacts/microduck/backlash_investigation.md`` section 1.4. The expected values
@@ -63,8 +63,7 @@ from env_test_utils import _run_environments  # isort: skip
 requires_microduck_backlash_usd = pytest.mark.skipif(
     not os.path.isfile(MICRODUCK_BACKLASH_USD_PATH),
     reason=(
-        f"MicroDuck backlash USD asset is missing: {MICRODUCK_BACKLASH_USD_PATH}. Generate it with"
-        " 'uv run --extra importers python scripts/tools/convert_microduck.py --model walk_backlash'."
+        f"MicroDuck backlash USD asset is missing: {MICRODUCK_BACKLASH_USD_PATH}. Download it with 'git lfs pull'."
     ),
 )
 """Skips the tests that spawn the robot. The parity tests do not need the asset."""

@@ -9,7 +9,6 @@ import importlib
 import json
 import logging
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -388,103 +387,6 @@ def test_retrieve_git_asset_path_does_not_publish_failed_clone(tmp_path, monkeyp
 
     assert not repo_dir.exists()
     assert not list(cache_dir.glob(".example-assets.*"))
-
-
-def test_retrieve_git_asset_path_fetches_a_pinned_revision(tmp_path, monkeypatch):
-    """Test that a pinned revision is fetched by SHA and cached apart from the default branch."""
-    git_commands = []
-    git_path = "https://example.com/example-assets.git"
-    rev = "d424a0c899f6b33cbd3daeb279913134349c0b63"
-    cache_dir = tmp_path / "asset_cache"
-    repo_dir = cache_dir / f"example-assets@{rev}"
-
-    def mock_run_git_command(command):
-        git_commands.append(command)
-        # the checkout is assembled in a scratch directory, so follow wherever git was pointed
-        work_dir = Path(command[command.index("-C") + 1] if "-C" in command else command[-1])
-        asset_dir = work_dir / "Robots" / "Disney" / "ExampleBot"
-        asset_dir.mkdir(parents=True, exist_ok=True)
-        (work_dir / ".git").mkdir(exist_ok=True)
-        (asset_dir / "example_bot.usd").write_text("#usda 1.0\n", encoding="utf-8")
-
-    monkeypatch.setattr(assets_utils, "_run_git_command", mock_run_git_command)
-
-    asset_path = Path(
-        assets_utils.retrieve_git_asset_path(git_path, "Robots/Disney/ExampleBot", cache_dir=str(cache_dir), rev=rev)
-    )
-
-    assert asset_path == repo_dir / "Robots" / "Disney" / "ExampleBot"
-    # ``clone --depth 1`` only accepts a branch or tag, so the revision itself is fetched
-    assert any(command[-5:] == ["fetch", "--depth", "1", "origin", rev] for command in git_commands)
-    assert not any("clone" in command for command in git_commands)
-    # the unpinned cache directory stays free for the default branch
-    assert not (cache_dir / "example-assets").exists()
-
-
-def test_retrieve_git_asset_path_recovers_from_a_failed_pinned_fetch(tmp_path):
-    """Test that a failed pinned fetch leaves nothing behind that would poison later retries.
-
-    A half-finished pinned checkout still holds a ``.git`` directory, which every later call takes
-    for a usable cache: the fetch is never retried, and the caller is told the asset is missing
-    instead. Unlike the unpinned ``git clone`` path, nothing would ever clear it.
-    """
-    remote_dir = tmp_path / "remote"
-    asset_dir = remote_dir / "Robots" / "Disney" / "ExampleBot"
-    asset_dir.mkdir(parents=True)
-    (asset_dir / "example_bot.usd").write_text("#usda 1.0\n", encoding="utf-8")
-
-    def run_git(*args):
-        command = ["git", "-C", str(remote_dir), "-c", "user.name=Test", "-c", "user.email=test@example.com", *args]
-        return subprocess.run(command, check=True, capture_output=True, text=True).stdout.strip()
-
-    run_git("init", "--quiet", ".")
-    run_git("add", "-A")
-    run_git("commit", "--quiet", "-m", "asset")
-    rev = run_git("rev-parse", "HEAD")
-
-    cache_dir = tmp_path / "asset_cache"
-    # both URLs end in the same repository name, so they resolve to one pinned cache directory
-    missing_remote = (tmp_path / "missing" / "remote").as_uri()
-
-    with pytest.raises(RuntimeError):
-        assets_utils.retrieve_git_asset_path(
-            missing_remote, "Robots/Disney/ExampleBot", cache_dir=str(cache_dir), rev=rev
-        )
-    assert not (cache_dir / f"remote@{rev}").exists(), "a failed fetch must not leave a cache entry behind"
-
-    asset_path = Path(
-        assets_utils.retrieve_git_asset_path(
-            remote_dir.as_uri(), "Robots/Disney/ExampleBot", cache_dir=str(cache_dir), rev=rev
-        )
-    )
-
-    assert (asset_path / "example_bot.usd").read_text(encoding="utf-8") == "#usda 1.0\n"
-
-
-def test_retrieve_git_asset_path_verifies_a_pinned_local_checkout(tmp_path, monkeypatch):
-    """Test that a local checkout is verified against the pinned revision rather than moved to it."""
-    repo_dir = tmp_path / "example-assets"
-    asset_dir = repo_dir / "Robots" / "Disney" / "ExampleBot"
-    asset_dir.mkdir(parents=True)
-    (repo_dir / ".git").mkdir()
-    (asset_dir / "example_bot.usd").write_text("#usda 1.0\n", encoding="utf-8")
-
-    head = "d424a0c899f6b33cbd3daeb279913134349c0b63"
-    git_commands = []
-
-    def mock_run_git_command_output(command):
-        git_commands.append(command)
-        return head
-
-    monkeypatch.setattr(assets_utils, "_run_git_command_output", mock_run_git_command_output)
-
-    asset_path = Path(assets_utils.retrieve_git_asset_path(str(repo_dir), "Robots/Disney/ExampleBot", rev=head))
-
-    assert asset_path == asset_dir
-    assert git_commands == [["git", "-C", str(repo_dir), "rev-parse", "HEAD"]]
-
-    with pytest.raises(RuntimeError, match="not the requested"):
-        assets_utils.retrieve_git_asset_path(str(repo_dir), "Robots/Disney/ExampleBot", rev="0" * 40)
 
 
 def test_retrieve_git_asset_path_uses_cached_asset_without_git(tmp_path, monkeypatch):

@@ -49,6 +49,7 @@ from isaaclab.actuators.bam_model import (
 )
 from isaaclab.actuators.newton import ControllerBam, read_group_parameter, write_group_parameter
 from isaaclab.assets import Articulation, ArticulationCfg
+from isaaclab.cloner import CloneCfg, clone_plan_from_env_0, replicate
 from isaaclab.sim import SimulationCfg, build_simulation_context
 from isaaclab.test.utils import test_devices
 
@@ -340,6 +341,8 @@ def _build_pendulum(sim, pendulum_usd: str) -> Articulation:
             actuators={"servo": BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)},
         )
     )
+    clone_plan_from_env_0(CloneCfg(clone_template="/World/Env_{}"), [robot.cfg], NUM_ENVS, 1.0)
+    replicate(sim.get_clone_plan())
     sim.reset()
     assert robot.is_initialized
     return robot
@@ -731,6 +734,8 @@ def _build_native_pendulum(sim, pendulum_usd: str, actuator_cfg: BamActuatorCfg 
             actuators={"servo": actuator_cfg or BamActuatorCfg(joint_names_expr=[".*"], vin=VIN, kp_fw=KP_FW)},
         )
     )
+    clone_plan_from_env_0(CloneCfg(clone_template="/World/Env_{}"), [robot.cfg], NUM_ENVS, 1.0)
+    replicate(sim.get_clone_plan())
     sim.reset()
     assert robot.is_initialized
     assert "servo" in robot.actuators._native_group_names, "the BAM group must run on the Newton path"
@@ -764,7 +769,7 @@ def test_native_pendulum_settles_inside_the_stiction_band(native_sim, device, pe
     # friction-loss constraint row where the frictionloss is positive, and it sizes its
     # constraint budget from the model as spawned, so the row has to exist before the first
     # solve; the per-step budget then overwrites the value.
-    assert (NewtonManager._model.joint_friction.numpy() > 0.0).all()
+    assert (NewtonManager.backend.model.joint_friction.numpy() > 0.0).all()
 
     _release(robot)
     rollout = _settle(robot, native_sim)
@@ -816,27 +821,17 @@ def test_native_friction_randomization_changes_the_hanging_error(native_sim, dev
 
 
 @pytest.mark.parametrize("device", test_devices())
-def test_native_bam_actuators_are_captured_in_the_cuda_graph(native_sim, device, pendulum_usd):
-    """The BAM controller and its friction publish must run inside the captured graph.
-
-    A component that forced eager stepping would cost the whole decimation loop its capture,
-    so the property is asserted rather than assumed, and the settling is then re-checked
-    through the replayed graph. Capture happens on
-    :meth:`~isaaclab_newton.physics.NewtonManager.set_decimation`, which an environment calls
-    for its policy decimation; a bare simulation context never does, so the test calls it.
-
-    The decimation is even on purpose. A captured loop with an odd number of actuator steps
-    drops the last update of the double-buffered actuator state on every replay -- a Newton
-    backend property that predates this actuator and that
-    ``NewtonManager._check_actuator_state_capture_balance`` reports.
-    """
+@pytest.mark.parametrize("decimation", [1, GRAPH_DECIMATION])
+def test_native_bam_actuators_are_captured_in_the_cuda_graph(native_sim, device, pendulum_usd, decimation):
+    """Captured BAM updates stay live with both single-step and even decimation."""
     robot = _build_native_pendulum(native_sim, pendulum_usd)
     load = _gravity_load(robot, native_sim)
     assert NewtonManager._adapter.is_all_graphable
     assert NewtonManager._is_all_graphable()
     assert NewtonManager._pre_actuator_callbacks, "the external-torque gather must be registered"
 
-    NewtonManager.set_decimation(GRAPH_DECIMATION)
+    NewtonManager.set_decimation(decimation)
+    native_sim.step()
     if device.startswith("cuda"):
         assert NewtonManager._graph is not None, "the decimation loop was not captured"
 
@@ -913,6 +908,8 @@ def _build_two_native_pendulums(sim, pendulum_usd: str, second_cfg: BamActuatorC
                 )
             )
         )
+    clone_plan_from_env_0(CloneCfg(clone_template="/World/Env_{}"), [robot.cfg for robot in robots], NUM_ENVS, 1.0)
+    replicate(sim.get_clone_plan())
     sim.reset()
     return tuple(robots)
 
@@ -982,6 +979,8 @@ def test_startup_ranges_are_sampled_per_environment(native_sim, device, pendulum
             },
         )
     )
+    clone_plan_from_env_0(CloneCfg(clone_template="/World/Env_{}"), [robot.cfg], NUM_ENVS, 1.0)
+    replicate(native_sim.get_clone_plan())
     native_sim.reset()
     assert robot.is_initialized
 
@@ -994,28 +993,6 @@ def test_startup_ranges_are_sampled_per_environment(native_sim, device, pendulum
         read_group_parameter(robot.actuators, "servo", "controller", "sag_gain"),
         torch.zeros(NUM_ENVS, robot.num_joints, device=robot.device),
     )
-
-
-@pytest.mark.parametrize("device", test_devices())
-def test_graph_capture_is_refused_at_a_decimation_of_one(native_sim, device, pendulum_usd):
-    """Capturing a decimation of one with stateful actuators must fail loudly.
-
-    The actuator state buffers are swapped host-side while the graph is recorded, so every
-    replay restarts from the same buffer and the state never advances: BAM would report the
-    friction budget of a freshly reset joint on every step. Silently wrong physics is worse
-    than a refusal, so the refusal is the contract.
-    """
-    if not device.startswith("cuda"):
-        pytest.skip("CUDA graph capture only happens on a CUDA device")
-    _build_native_pendulum(native_sim, pendulum_usd)
-    assert NewtonManager._adapter.is_stateful
-
-    with pytest.raises(RuntimeError, match="decimation of one"):
-        NewtonManager.set_decimation(1)
-
-    # An even decimation is the documented way out, and it captures.
-    NewtonManager.set_decimation(2)
-    assert NewtonManager._graph is not None
 
 
 @pytest.mark.parametrize("device", test_devices())
@@ -1070,6 +1047,8 @@ def test_startup_ranges_are_sampled_without_a_mujoco_solver(device, pendulum_usd
                 actuators={"servo": BamActuatorCfg(joint_names_expr=[".*"], kp_fw=KP_FW, vin_range=(6.0, 8.0))},
             )
         )
+        clone_plan_from_env_0(CloneCfg(clone_template="/World/Env_{}"), [robot.cfg], NUM_ENVS, 1.0)
+        replicate(sim_ctx.get_clone_plan())
         sim_ctx.reset()
         assert robot.is_initialized
 
@@ -1177,6 +1156,8 @@ def _build_backlash_pendulum(sim, usd_path: str, actuator_cfg) -> Articulation:
     cfg = _backlash_robot_cfg(actuator_cfg)
     cfg.spawn.usd_path = usd_path
     robot = Articulation(cfg)
+    clone_plan_from_env_0(CloneCfg(clone_template="/World/Env_{}"), [robot.cfg], NUM_ENVS, 1.0)
+    replicate(sim.get_clone_plan())
     sim.reset()
     assert robot.is_initialized
     return robot
@@ -1277,7 +1258,7 @@ def test_each_servo_is_bound_to_the_play_hinge_in_series_with_it(
     joint_names = robot.backend_joint_names
     assert set(joint_names) == {PLAYED_SERVO, PLAY_HINGE, RIGID_SERVO}
 
-    model = NewtonManager._model
+    model = NewtonManager.backend.model
     dofs_per_env = model.joint_dof_count // NUM_ENVS
     coords_per_env = model.joint_coord_count // NUM_ENVS
     # Whatever the root joint spends ahead of the articulation's own hinges, in each layout.
@@ -1379,8 +1360,8 @@ def test_a_bound_backlash_articulation_is_captured_in_the_cuda_graph(native_sim,
     A controller that forced eager stepping would cost the whole decimation loop its capture, so
     the property is asserted rather than assumed on a real articulation with real play hinges --
     the unit suite proves the kernel captures, this proves the wired-up plant does. Capture
-    happens on :meth:`~isaaclab_newton.physics.NewtonManager.set_decimation`, which an
-    environment calls for its policy decimation and a bare simulation context never does.
+    is requested by :meth:`~isaaclab_newton.physics.NewtonManager.set_decimation`
+    and performed on the following physics step.
 
     Replaying under a *changed* binding is the real evidence, exactly as the friction-budget
     capture test replays under a changed randomization: the arrays the controller was finalized
@@ -1396,6 +1377,7 @@ def test_a_bound_backlash_articulation_is_captured_in_the_cuda_graph(native_sim,
     assert bool(controller.backlash_mask.numpy().any()), "the fixture's played servo must be bound"
 
     NewtonManager.set_decimation(GRAPH_DECIMATION)
+    native_sim.step()
     if device.startswith("cuda"):
         assert NewtonManager._graph is not None, "the decimation loop was not captured"
 

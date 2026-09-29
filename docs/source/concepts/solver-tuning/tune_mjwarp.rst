@@ -166,4 +166,3 @@ Set it to ``False`` only to reproduce a run recorded before this default existed
 for a light servo robot). Underdamped limits rebound instead of absorbing, so light limit-bounded
 robots can diverge unless their joint damping is inflated well past the identified value. This is
 not a stability knob: prefer authoring explicit limit gains on the asset.
-

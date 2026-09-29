@@ -477,10 +477,6 @@ the model's own hanging error, which is degrees.
 Known constraints
 ^^^^^^^^^^^^^^^^^
 
-* **Use an even decimation on the Newton path.** The BAM controller is stateful, and CUDA graph
-  capture of a stateful Newton actuator is exact only for an even number of actuator steps per
-  captured loop. A decimation of one raises; any other odd decimation warns. Setting
-  ``use_cuda_graph=False`` also works.
 * **Telemetry means different things on the two paths.** See the table in
   :ref:`actuators-bam-paths`. ``data.joint_friction`` on the native path reports the value authoring
   seeded, not the live budget.
@@ -963,12 +959,11 @@ joints.
     :class:`~isaaclab.actuators.BamActuatorCfg` is the exception: its controller owns its own
     delay, honors both bounds and resamples the lag, per driven joint.
 
-.. warning::
+.. note::
 
-    Stateful native actuators -- a command delay, an integral term, or the BAM controller -- cannot
-    be CUDA-graph-captured at a decimation of one, because their double-buffered state would never
-    advance across replays. Isaac Lab raises in that configuration and warns at any other odd
-    decimation. Use an even decimation, or ``use_cuda_graph=False``.
+    Stateful native actuators, including the BAM controller, support CUDA graph capture at any
+    positive decimation. For an odd decimation, Newton copies the final actuator state into the
+    starting buffer so its history advances across graph replays.
 
 
 Backend submission

@@ -64,7 +64,7 @@ capture.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import warp as wp
@@ -497,6 +497,19 @@ class ControllerBam(Controller):
 
         reset_count: int = 0
         """Number of resets applied, which decorrelates successive phase draws."""
+
+        def assign(self, other: ControllerBam.State) -> None:
+            """Copy controller history and reset metadata while preserving array storage.
+
+            Args:
+                other: State to copy from, with matching array shapes and devices.
+            """
+            for field in fields(self):
+                value = getattr(other, field.name)
+                if isinstance(value, wp.array):
+                    getattr(self, field.name).assign(value)
+                else:
+                    setattr(self, field.name, value)
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             if mask is not None:

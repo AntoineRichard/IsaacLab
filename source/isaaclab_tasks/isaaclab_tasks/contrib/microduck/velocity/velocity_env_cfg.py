@@ -140,7 +140,7 @@ MICRODUCK_ALLCOLLISIONS_COLLIDER_XFORMS = [
 ]
 """Xforms holding the ten enabled colliders of the all-collisions model, by disambiguated name.
 
-The MJCF names only the two soles, so ``convert_microduck.py`` identifies the rest by the mesh the
+The MJCF names only the two soles, so the exported USD identifies the rest by the mesh the
 importer names their prim after and the importer appends a ``_1`` suffix wherever that name is
 already taken by the visual mesh. Four of these names cover two colliders each -- ``leg_1`` and
 ``hip_l_1`` appear once per leg, and the three head entries all hang off ``jaw_soft`` -- which is why
@@ -421,7 +421,7 @@ class MicroDuckSceneCfg(InteractiveSceneCfg):
     #
     # The MJCF-to-USD importer cannot represent ``contype`` / ``conaffinity`` masks, so those three
     # geometries arrive as ordinary *world* colliders that would stub on the ground;
-    # ``convert_microduck.py:restore_collision_masks`` disables them to restore the MJCF's world
+    # The exported USD disables them to preserve the MJCF's world
     # contact set. They have no collision role left, so this sensor cannot see them.
     #
     # LOST GUARD-RAIL: shin-versus-battery-holder and shin-versus-shin contacts are unpenalized

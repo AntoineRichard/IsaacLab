@@ -19,13 +19,11 @@ Two properties carry the physics and neither follows from the geometry:
 * the **friction actually bound to the collider**, which the MicroDuck conversion had to repair by
   hand on the robots and which a prop authored through a spawner gets from a different path.
 
-The MJCF is fetched from the pinned upstream commit into a local cache; the tests skip when it is
-unavailable. Point ``MICRODUCK_MJCF_DIR`` at a directory holding the upstream MJCFs to use a local
-copy instead.
+Set ``MICRODUCK_MJCF_DIR`` to a local reference checkout for the optional MJCF comparisons.
+They skip when no reference is supplied; no models are downloaded by these tests.
 """
 
 import copy
-import importlib.util
 import os
 
 import pytest
@@ -35,6 +33,7 @@ from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObject
+from isaaclab.cloner import CloneCfg, clone_plan_from_env_0, replicate
 from isaaclab.sim import SimulationCfg, SimulationContext
 
 from isaaclab_assets import MICRODUCK_BALL_CFG
@@ -46,13 +45,8 @@ from isaaclab_assets.robots.microduck import (
 
 pytestmark = [pytest.mark.integration, pytest.mark.kitless]
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-CONVERTER_SCRIPT_PATH = os.path.join(_REPO_ROOT, "scripts", "tools", "convert_microduck.py")
-"""The robot conversion script, imported only for the upstream pin it already carries."""
-
 MICRODUCK_MJCF_DIR = os.environ.get("MICRODUCK_MJCF_DIR", "")
-"""Override for the directory holding the source MJCFs. Empty means the converter's cache is used."""
+"""Override for the directory holding the source MJCFs. Empty disables the optional MJCF comparisons."""
 
 BALL_MJCF_FILENAME = "ball.xml"
 """Upstream's ball model, next to the three robot MJCFs."""
@@ -77,27 +71,10 @@ decides, and a backend default that drifted would change it silently.
 
 @pytest.fixture(scope="module")
 def ball_mjcf_path() -> str:
-    """Local path to the pinned upstream ``ball.xml``."""
-    spec = importlib.util.spec_from_file_location("convert_microduck", CONVERTER_SCRIPT_PATH)
-    converter = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(converter)
-
-    if MICRODUCK_MJCF_DIR:
-        path = os.path.join(MICRODUCK_MJCF_DIR, BALL_MJCF_FILENAME)
-    else:
-        from isaaclab.utils.assets import retrieve_git_asset_path
-
-        try:
-            path = retrieve_git_asset_path(
-                converter.MICRODUCK_REPO_URL,
-                f"{converter.MICRODUCK_MJCF_REPO_DIR}/{BALL_MJCF_FILENAME}",
-                rev=converter.MICRODUCK_REV,
-            )
-        except Exception as exc:  # noqa: BLE001 - any fetch failure is a skip, not a test failure
-            pytest.skip(f"The MicroDuck ball MJCF is not available and could not be fetched: {exc}")
-    if not os.path.isfile(path):
-        pytest.skip(f"MicroDuck ball MJCF not available: {path}")
-    return path
+    """Return the explicitly supplied upstream ball reference."""
+    if not MICRODUCK_MJCF_DIR:
+        pytest.skip("Set MICRODUCK_MJCF_DIR to a local reference checkout for MJCF fidelity checks.")
+    return os.path.join(MICRODUCK_MJCF_DIR, BALL_MJCF_FILENAME)
 
 
 @pytest.fixture(scope="module")
@@ -116,6 +93,8 @@ def newton_ball():
     cfg = copy.deepcopy(MICRODUCK_BALL_CFG)
     cfg.prim_path = "/World/Ball"
     ball = RigidObject(cfg)
+    clone_plan_from_env_0(CloneCfg(), [cfg], 1, 0.0)
+    replicate(sim.get_clone_plan())
     sim.reset()
 
     yield ball, sim.stage, NewtonManager.get_model()

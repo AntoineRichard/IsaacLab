@@ -10,9 +10,6 @@ Changed
   physics tick, instead of clipping the torque once per control step from Isaac Lab. The two are
   different plants, so **policies trained on these tasks before this change should be retrained**;
   ``env.sim.use_newton_actuators = False`` restores the previous, Isaac Lab-executed behaviour.
-  Their ``decimation`` of 4 is a precondition of the switch rather than only a control rate: the BAM
-  command delay is actuator state, and the Newton backend refuses to CUDA-graph-capture stateful
-  native actuators at a decimation of one and warns at an odd one.
 * Changed the MicroDuck physics presets to document that MuJoCo Warp is now the only backend that
   runs these tasks as configured. The BAM model is solver-hosted -- it publishes its friction budget
   into the solver's joint dry friction and reads the external load back out -- so a backend that

@@ -21,8 +21,8 @@ test that spawns the robot fallen on its skates, evaluates the task's own reward
 under physics, and asserts the ordering the task exists to teach. An acceptance test that never
 scores a reward would not be one.
 
-The simulator-backed tests skip when the generated roller USD is absent. Generate it with
-``uv run --extra importers python scripts/tools/convert_microduck.py --model rollers``.
+The simulator-backed tests skip when the generated roller USD is absent. Download it with
+``git lfs pull``.
 """
 
 import math
@@ -63,10 +63,7 @@ from env_test_utils import _run_environments  # isort: skip
 
 requires_microduck_rollers_usd = pytest.mark.skipif(
     not os.path.isfile(MICRODUCK_ROLLERS_USD_PATH),
-    reason=(
-        f"MicroDuck roller USD asset is missing: {MICRODUCK_ROLLERS_USD_PATH}. Generate it with"
-        " 'uv run --extra importers python scripts/tools/convert_microduck.py --model rollers'."
-    ),
+    reason=(f"MicroDuck roller USD asset is missing: {MICRODUCK_ROLLERS_USD_PATH}. Download it with 'git lfs pull'."),
 )
 """Skips the tests that spawn the robot. The parity tests do not need the asset."""
 

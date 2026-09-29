@@ -6,8 +6,8 @@
 """Smoke, recipe-parity and acceptance tests for the contributed MicroDuck roller-skating environment.
 
 The smoke tests spawn :data:`~isaaclab_assets.MICRODUCK_ROLLERS_CFG`, whose USD is generated rather
-than committed, so they skip when that asset is absent. Generate it with
-``uv run --extra importers python scripts/tools/convert_microduck.py --model rollers``.
+than committed, so they skip when that asset is absent. Download it with
+``git lfs pull``.
 
 The parity tests need neither the asset nor the simulator: they read the assembled configuration and
 compare it against the upstream recipe, transcribed here from
@@ -62,10 +62,7 @@ from env_test_utils import _run_environments  # isort: skip
 
 requires_microduck_rollers_usd = pytest.mark.skipif(
     not os.path.isfile(MICRODUCK_ROLLERS_USD_PATH),
-    reason=(
-        f"MicroDuck roller USD asset is missing: {MICRODUCK_ROLLERS_USD_PATH}. Generate it with"
-        " 'uv run --extra importers python scripts/tools/convert_microduck.py --model rollers'."
-    ),
+    reason=(f"MicroDuck roller USD asset is missing: {MICRODUCK_ROLLERS_USD_PATH}. Download it with 'git lfs pull'."),
 )
 """Skips the tests that spawn the robot. The parity tests do not need the asset."""
 

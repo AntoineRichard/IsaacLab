@@ -32,15 +32,3 @@ Changed
   every other Newton asset, so re-validate policies trained before this change; set
   :attr:`~isaaclab_newton.physics.MJWarpSolverCfg.use_mujoco_default_joint_limit_solref` to
   ``False`` to restore the previous conversion.
-
-Fixed
-^^^^^
-
-* CUDA graph capture with stateful Newton actuators now raises at a decimation of one and warns
-  at any other odd decimation. Actuator state is double buffered and the buffers are swapped
-  host-side, so a replayed graph always restarts from the buffer that was current at capture
-  time: with an odd number of actuator steps per graph the last state update is discarded on
-  every replay, and with a decimation of one delay buffers, integral terms and other actuator
-  state never advance at all -- silently wrong physics rather than a small staleness. Use an
-  even decimation or disable ``use_cuda_graph`` until the capture strategy alternates graphs the
-  way the PhysX host runtime already does.

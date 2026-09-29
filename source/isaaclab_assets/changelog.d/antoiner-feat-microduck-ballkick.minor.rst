@@ -6,7 +6,7 @@ Added
   `pollen-robotics/microduck_rl <https://github.com/pollen-robotics/microduck_rl>`_. It is the only
   non-robot asset in the MicroDuck family and the only one **authored rather than converted** --
   its upstream source is a 15-line MJCF holding a single analytic sphere, so it needs no generated
-  USD and is available in a tree that has never run ``scripts/tools/convert_microduck.py``.
+  USD file or asset conversion.
 
   Its inertia is authored explicitly as a **thin spherical shell**, ``(2/3) m r^2 = 1.225e-5``
   kg m², which is what the MJCF states. Nothing derives that from the geometry: a sphere prim
@@ -26,4 +26,4 @@ Added
   MJCF compiled by MuJoCo: mass, radius, the hollow-shell inertia on all three axes and against the
   solid-sphere tensor it must not be, the single enabled collider, and the sliding, torsional and
   rolling friction both as authored in USD and as resolved into the Newton shape material. It skips
-  when the pinned upstream MJCF cannot be fetched.
+  when no local MJCF reference is supplied.

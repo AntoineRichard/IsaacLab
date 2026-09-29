@@ -7,7 +7,7 @@
 
 The smoke tests spawn :data:`~isaaclab_assets.MICRODUCK_CFG`, whose USD is generated rather than
 committed, so they skip when that asset is absent -- the same condition the asset fidelity tests
-skip on. Generate it with ``uv run --extra importers python scripts/tools/convert_microduck.py``.
+skip on. Download it with ``git lfs pull``.
 
 The parity test needs neither the asset nor the simulator: it reads the assembled configuration and
 compares it against the upstream recipe, transcribed here from
@@ -39,14 +39,14 @@ from isaaclab_tasks.contrib.microduck.velocity.flat_env_cfg import MicroDuckVelo
 from isaaclab_tasks.contrib.microduck.velocity.velocity_env_cfg import MicroDuckVelocityRoughEnvCfg
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
-from isaaclab_assets.robots.microduck import MICRODUCK_REGENERATE_COMMAND, MICRODUCK_USD_PATH
+from isaaclab_assets.robots.microduck import MICRODUCK_USD_PATH
 
 # Local imports should be imported last
 from env_test_utils import _run_environments  # isort: skip
 
 requires_microduck_usd = pytest.mark.skipif(
     not os.path.isfile(MICRODUCK_USD_PATH),
-    reason=f"MicroDuck USD asset is missing: {MICRODUCK_USD_PATH}. Generate it with '{MICRODUCK_REGENERATE_COMMAND}'.",
+    reason=f"MicroDuck USD asset is missing: {MICRODUCK_USD_PATH}. Run 'git lfs pull'.",
 )
 """Skips the tests that spawn the robot. The parity test does not need the asset."""
 

@@ -38,10 +38,10 @@ from isaaclab.actuators.newton import (
     apply_bam_startup_sampling,
 )
 from isaaclab.sim.schemas.schemas_actuators import (
-    _author_actuator_prims,
     _is_newton_native_actuator_cfg,
     _validate_native_only_actuator_cfgs,
-    _validate_newton_native_actuator_cfgs,
+    author_actuator_prims,
+    validate_newton_native_actuator_cfgs,
 )
 from isaaclab.test.utils import DeviceScope, test_devices
 from isaaclab.utils.types import ArticulationActions
@@ -115,7 +115,7 @@ def _make_stage(cfg: BamActuatorCfg | dict[str, BamActuatorCfg], joint_names: li
         UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
         joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/Robot/{name}")
         joint.CreateBody1Rel().SetTargets([body.GetPath()])
-    _author_actuator_prims(stage, "/World/Robot", cfg if isinstance(cfg, dict) else {"servo": cfg})
+    author_actuator_prims(stage, "/World/Robot", cfg if isinstance(cfg, dict) else {"servo": cfg})
     return stage
 
 
@@ -188,7 +188,7 @@ def test_bam_cfg_is_accepted_by_newton_native_validation():
     """The BAM config must pass the gate that ``use_newton_actuators=True`` runs."""
     cfg = _make_cfg()
     assert _is_newton_native_actuator_cfg(cfg)
-    _validate_newton_native_actuator_cfgs({"servo": cfg})
+    validate_newton_native_actuator_cfgs({"servo": cfg})
 
 
 def test_bam_cfg_is_rejected_on_a_host_adapter_backend():
@@ -202,11 +202,11 @@ def test_bam_cfg_is_rejected_on_a_host_adapter_backend():
     model draws on every backend. Failing the gate instead names the one-line fix.
     """
     with pytest.raises(ValueError, match="requires the Newton backend"):
-        _validate_newton_native_actuator_cfgs({"servo": _make_cfg()}, host_adapter=True)
+        validate_newton_native_actuator_cfgs({"servo": _make_cfg()}, host_adapter=True)
 
     # The restriction is BAM's alone -- every other supported config still runs there, so the
     # flag cannot be passing by rejecting the whole native path.
-    _validate_newton_native_actuator_cfgs({"legs": IdealPDActuatorCfg(joint_names_expr=[".*"])}, host_adapter=True)
+    validate_newton_native_actuator_cfgs({"legs": IdealPDActuatorCfg(joint_names_expr=[".*"])}, host_adapter=True)
 
 
 def test_the_backlash_cfg_is_accepted_by_the_same_native_gate():
@@ -218,7 +218,7 @@ def test_the_backlash_cfg_is_accepted_by_the_same_native_gate():
     """
     cfg = _make_backlash_cfg()
     assert _is_newton_native_actuator_cfg(cfg)
-    _validate_newton_native_actuator_cfgs({"servo": cfg})
+    validate_newton_native_actuator_cfgs({"servo": cfg})
 
 
 def test_the_backlash_cfg_is_rejected_wherever_the_newton_controller_does_not_run():
@@ -233,7 +233,7 @@ def test_the_backlash_cfg_is_rejected_wherever_the_newton_controller_does_not_ru
     against.
     """
     with pytest.raises(ValueError, match="requires the Newton backend"):
-        _validate_newton_native_actuator_cfgs({"servo": _make_backlash_cfg()}, host_adapter=True)
+        validate_newton_native_actuator_cfgs({"servo": _make_backlash_cfg()}, host_adapter=True)
 
     with pytest.raises(ValueError, match="use_newton_actuators"):
         _validate_native_only_actuator_cfgs({"servo": _make_backlash_cfg()}, native_group_names=set())
@@ -354,7 +354,7 @@ def test_authoring_preserves_a_task_authored_joint_friction():
         joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/Robot/{name}")
         joint.CreateBody1Rel().SetTargets([body.GetPath()])
         joint.GetPrim().CreateAttribute("newton:friction", Sdf.ValueTypeNames.Float).Set(0.5)
-    _author_actuator_prims(stage, "/World/Robot", {"servo": cfg})
+    author_actuator_prims(stage, "/World/Robot", {"servo": cfg})
     for name in JOINT_NAMES:
         assert stage.GetPrimAtPath(f"/World/Robot/{name}").GetAttribute("newton:friction").Get() == pytest.approx(0.5)
 

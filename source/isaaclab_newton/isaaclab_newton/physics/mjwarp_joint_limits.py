@@ -53,10 +53,9 @@ entirely on the Isaac Lab side, needs no change to the ``newton`` package, and
 leaves ``joint_limit_ke``/``joint_limit_kd`` untouched, so only their MuJoCo
 interpretation changes.
 
-``SOLREF_MODE_MJCF_DEFAULT`` reaches the same live values but only while the
-gains equal Newton's ``2500 / 100`` MuJoCo-default sentinels, so selecting it
-would additionally require overwriting the model's force-space gains with values
-the asset never authored. The raw mode is preferred for that reason.
+``SOLREF_MODE_MJCF_DEFAULT`` is owned by Newton's MJCF importer and switches
+back to force-space interpretation when limit gains are edited. Raw mode keeps
+this configured USD default independent of subsequent mass randomization.
 
 Only DOFs that inherited Newton's generic defaults are retagged. A DOF that
 authors its own limit gains (USD limit stiffness/damping through the PhysX or
@@ -66,8 +65,7 @@ explicit authoring always wins.
 
 The generic defaults are a sentinel, so a joint that deliberately authors
 exactly ``1e4`` / ``1e1`` is indistinguishable from one that authored nothing
-and is retagged. Newton accepts the same ambiguity for its own ``2500 / 100``
-MuJoCo-default sentinels. It is acceptable here because the mask fails toward
+and is retagged. This mask deliberately resolves that ambiguity toward
 MuJoCo's default rather than toward an arbitrary value, and because a joint that
 really wants that force-space pair can express it as the equivalent authored
 ``solreflimit`` instead.
@@ -80,7 +78,6 @@ import logging
 import numpy as np
 from newton import Model, ModelBuilder
 from newton._src.solvers.mujoco.constants import (
-    DEFAULT_LIMIT_GAIN_RTOL,
     DEFAULT_LIMIT_SOLREF,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_RAW,
@@ -126,10 +123,9 @@ def apply_mujoco_default_joint_limit_solref(model: Model) -> int:
     solref_np = solref.numpy()
     unauthored = (
         (mode_np == SOLREF_MODE_FORCE_SPACE)
-        # Same sentinel-detection tolerance Newton uses for its own MuJoCo
-        # default gains, so the two cannot drift apart.
-        & np.isclose(model.joint_limit_ke.numpy(), _NEWTON_DEFAULT_LIMIT_KE, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-        & np.isclose(model.joint_limit_kd.numpy(), _NEWTON_DEFAULT_LIMIT_KD, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
+        # The generic builder defaults are exactly representable in the model arrays.
+        & (model.joint_limit_ke.numpy() == _NEWTON_DEFAULT_LIMIT_KE)
+        & (model.joint_limit_kd.numpy() == _NEWTON_DEFAULT_LIMIT_KD)
         # A raw pair authored while the mode field was absent (legacy assets)
         # is inferred from a non-zero ``solreflimit`` by Newton's kernel.
         & ~np.any(solref_np != 0.0, axis=-1)

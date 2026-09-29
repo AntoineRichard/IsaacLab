@@ -6,8 +6,8 @@
 """Smoke and recipe-parity tests for the contributed MicroDuck ball-kick environment.
 
 The smoke tests spawn :data:`~isaaclab_assets.MICRODUCK_ALLCOLLISIONS_CFG`, whose USD is generated
-rather than committed, so they skip when that asset is absent. Generate it with
-``uv run --extra importers python scripts/tools/convert_microduck.py --model allcollisions``. The
+rather than committed, so they skip when that asset is absent. Download it with
+``git lfs pull``. The
 ball is authored rather than converted and needs nothing generated; its own fidelity suite is
 ``source/isaaclab_assets/test/test_microduck_ball_asset.py``.
 
@@ -58,8 +58,8 @@ from env_test_utils import _run_environments  # isort: skip
 requires_microduck_allcollisions_usd = pytest.mark.skipif(
     not os.path.isfile(MICRODUCK_ALLCOLLISIONS_USD_PATH),
     reason=(
-        f"MicroDuck all-collisions USD asset is missing: {MICRODUCK_ALLCOLLISIONS_USD_PATH}. Generate it with"
-        " 'uv run --extra importers python scripts/tools/convert_microduck.py --model allcollisions'."
+        f"MicroDuck all-collisions USD asset is missing: {MICRODUCK_ALLCOLLISIONS_USD_PATH}. Download it with"
+        " 'git lfs pull'."
     ),
 )
 """Skips the tests that spawn the robot. The parity tests do not need the asset."""

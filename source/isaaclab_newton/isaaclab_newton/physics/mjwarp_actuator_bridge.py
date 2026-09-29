@@ -292,7 +292,7 @@ class MjWarpActuatorBridge:
         """Return the Newton model's friction ``solref`` / ``solimp`` custom attributes."""
         from isaaclab_newton.physics.newton_manager import NewtonManager  # noqa: PLC0415
 
-        model = NewtonManager._model  # noqa: SLF001
+        model = NewtonManager.backend.model  # noqa: SLF001
         mujoco_attrs = getattr(model, "mujoco", None) if model is not None else None
         if mujoco_attrs is None:
             return None, None

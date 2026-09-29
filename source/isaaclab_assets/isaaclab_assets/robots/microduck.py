@@ -25,9 +25,9 @@ that its gearbox play is a joint of its own. **28 joints**, of which the 14
 ``passive_<servo>_backlash`` hinges are undriven, and the only one of the four that needs the
 Newton-native actuator path.
 
-The assets they spawn are converted from the upstream MJCFs and are generated rather than committed;
-see ``ATTRIBUTION.md`` next to :data:`MICRODUCK_USD_PATH` for their provenance and
-``scripts/tools/convert_microduck.py`` for the conversion.
+The assets are self-contained USD exports distributed through Git LFS. Run ``git lfs pull``
+after cloning to download them; no MJCF converter or importer is required. See ``ATTRIBUTION.md``
+and ``manifest.json`` next to :data:`MICRODUCK_USD_PATH` for provenance and checksums.
 
 One non-robot prop lives here too, next to the robots it is kicked by:
 :data:`MICRODUCK_BALL_CFG`, the 70 mm hollow ball of upstream's ball-kick task. It is authored
@@ -50,7 +50,7 @@ from isaaclab.sim.utils import clone
 from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
 
 _MICRODUCK_DATA_DIR = os.path.join(ISAACLAB_ASSETS_DATA_DIR, "Robots", "PollenRobotics", "MicroDuck")
-"""Directory the converted MicroDuck assets are written to."""
+"""Directory containing the distributed MicroDuck USD assets."""
 
 MICRODUCK_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_walk.usd")
 """Path of the converted MicroDuck walking asset."""
@@ -63,62 +63,6 @@ MICRODUCK_ROLLERS_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_roller
 
 MICRODUCK_BACKLASH_USD_PATH = os.path.join(_MICRODUCK_DATA_DIR, "microduck_walk_backlash.usd")
 """Path of the converted MicroDuck walking asset with the servos' gear play modelled."""
-
-
-def _regenerate_command(usd_path: str) -> str:
-    """Return the conversion command that produces a given MicroDuck asset.
-
-    The converter names its output after the upstream model it converts, so the model selector the
-    command needs is recoverable from the path rather than tracked next to it.
-
-    Args:
-        usd_path: Path of the converted asset.
-
-    Returns:
-        The command to run from the repository root.
-    """
-    command = "uv run --extra importers python scripts/tools/convert_microduck.py"
-    model = os.path.splitext(os.path.basename(usd_path))[0].removeprefix("microduck_")
-    return command if model == "walk" else f"{command} --model {model}"
-
-
-MICRODUCK_REGENERATE_COMMAND = _regenerate_command(MICRODUCK_USD_PATH)
-"""Command that regenerates :data:`MICRODUCK_USD_PATH` from the pinned upstream MJCF."""
-
-
-def _spawn_microduck(
-    prim_path: str,
-    cfg: sim_utils.UsdFileCfg,
-    translation: tuple[float, float, float] | None = None,
-    orientation: tuple[float, float, float, float] | None = None,
-    **kwargs,
-) -> Usd.Prim:
-    """Spawn the MicroDuck asset, reporting its absence with the command that regenerates it.
-
-    USD files are excluded from the repository, so this asset is produced on demand. Checking here
-    rather than at import time keeps the configuration inspectable in a tree without the asset,
-    which the fidelity tests rely on.
-
-    Args:
-        prim_path: Prim path or pattern to spawn the asset at.
-        cfg: Spawner configuration.
-        translation: Translation w.r.t. the parent prim. Defaults to the one in the USD file.
-        orientation: Orientation as (w, x, y, z) w.r.t. the parent prim. Defaults to the one in
-            the USD file.
-        **kwargs: Forwarded to :meth:`~isaaclab.sim.spawn_from_usd`.
-
-    Returns:
-        The spawned prim.
-
-    Raises:
-        FileNotFoundError: If the converted asset has not been generated.
-    """
-    if not os.path.isfile(cfg.usd_path):
-        raise FileNotFoundError(
-            f"The MicroDuck asset is missing: {cfg.usd_path}. It is generated rather than committed;"
-            f" create it with '{_regenerate_command(cfg.usd_path)}'."
-        )
-    return sim_utils.spawn_from_usd(prim_path, cfg, translation, orientation, **kwargs)
 
 
 ##
@@ -169,7 +113,7 @@ The 0.96 is kept deliberately. It is the value the MJCF authors, and reproducing
 the asset-fidelity tests assert of the conversion (``test_joint_effort_limits_match_mjcf``);
 overriding it from an actuator configuration would make the spawned articulation stop matching its
 source while the conversion tests still passed, which is the failure mode those tests exist to
-prevent. Closing the gap belongs in the converter or in an explicit, tested override of
+prevent. Closing the gap belongs in a new asset export or in an explicit, tested override of
 ``joint_effort_limit``, not as a silent side effect of the servo model.
 """
 
@@ -212,7 +156,6 @@ and the attitude error by 87%, and makes MicroDuck fall on exactly upstream's st
 
 MICRODUCK_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        func=_spawn_microduck,
         usd_path=MICRODUCK_USD_PATH,
         activate_contact_sensors=True,
         articulation_props=sim_utils.NewtonArticulationRootPropertiesCfg(self_collision_enabled=True),
@@ -438,8 +381,7 @@ with the limit-constraint parameters that make the teeth as stiff as upstream's.
 #
 # Upstream's ball-kick task adds one free body to the scene, described by a 15-line MJCF
 # (``robot/microduck/ball.xml``) holding a single analytic sphere. There is nothing for the mesh
-# importer to carry, so it is authored here rather than converted -- which also means it needs no
-# generated asset and is available in a tree that has never run the converter.
+# importer to carry, so it is authored here as a procedural sphere.
 ##
 
 MICRODUCK_BALL_RADIUS = 0.035

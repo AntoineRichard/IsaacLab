@@ -17,6 +17,12 @@
 **/*.usdc
 **/*.usdz
 
+# Distributed MicroDuck USD exports (tracked with Git LFS).
+!source/isaaclab_assets/data/Robots/PollenRobotics/MicroDuck/microduck_walk.usd
+!source/isaaclab_assets/data/Robots/PollenRobotics/MicroDuck/microduck_allcollisions.usd
+!source/isaaclab_assets/data/Robots/PollenRobotics/MicroDuck/microduck_rollers.usd
+!source/isaaclab_assets/data/Robots/PollenRobotics/MicroDuck/microduck_walk_backlash.usd
+
 # Python
 .DS_Store
 **/*.egg-info/

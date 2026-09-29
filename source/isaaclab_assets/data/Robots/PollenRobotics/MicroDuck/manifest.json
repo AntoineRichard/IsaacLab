@@ -1,0 +1,129 @@
+{
+  "generated": "2026-09-09",
+  "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
+  "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
+  "upstream_license": "Apache-2.0",
+  "total_size_bytes": 29011351,
+  "assets": [
+    {
+      "file": "microduck_walk.usd",
+      "model": "walk",
+      "mjcf": "robot_walk.xml",
+      "source_branch": "antoiner/feat/microduck-pickplace",
+      "source_commit": "5a3ca4539d809a6a1db9fd2847fdbbe049f88844",
+      "joints": 14,
+      "dof": 14,
+      "consumers": [
+        "contrib/microduck/velocity (MICRODUCK_CFG)"
+      ],
+      "certified_by": [
+        "source/isaaclab_assets/test/test_microduck_asset.py (19 passed)"
+      ],
+      "sha256": "c2be8426a4933e0fe4a2580f9857858b8355a74fc75964cc48e4ec7fb08038d1",
+      "size_bytes": 7472990,
+      "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
+      "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
+      "source_mjcf_repo_path": "src/mjlab_microduck/robot/microduck/robot_walk.xml",
+      "converter_command": "OMNI_KIT_ACCEPT_EULA=YES uv run --extra importers python scripts/tools/convert_microduck.py --model walk",
+      "self_contained": true,
+      "external_references": [],
+      "default_prim": "microduck",
+      "up_axis": "Z",
+      "meters_per_unit": 1.0,
+      "kilograms_per_unit": 1.0,
+      "license": "Apache-2.0"
+    },
+    {
+      "file": "microduck_allcollisions.usd",
+      "model": "allcollisions",
+      "mjcf": "robot_allcollisions.xml",
+      "source_branch": "antoiner/feat/microduck-pickplace",
+      "source_commit": "5a3ca4539d809a6a1db9fd2847fdbbe049f88844",
+      "joints": 14,
+      "dof": 14,
+      "consumers": [
+        "contrib/microduck/ballkick",
+        "contrib/microduck/groundpick",
+        "contrib/microduck/pickplace",
+        "contrib/microduck/roulade",
+        "contrib/microduck/sitstand",
+        "contrib/microduck/standup",
+        "contrib/microduck/velstand"
+      ],
+      "certified_by": [
+        "source/isaaclab_assets/test/test_microduck_variant_assets.py (32 passed)"
+      ],
+      "sha256": "84c40e4f700f25f59d053a77e8f37bc918b86d6d0009bbd26f7a2855f13f508b",
+      "size_bytes": 7474336,
+      "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
+      "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
+      "source_mjcf_repo_path": "src/mjlab_microduck/robot/microduck/robot_allcollisions.xml",
+      "converter_command": "OMNI_KIT_ACCEPT_EULA=YES uv run --extra importers python scripts/tools/convert_microduck.py --model allcollisions",
+      "self_contained": true,
+      "external_references": [],
+      "default_prim": "microduck",
+      "up_axis": "Z",
+      "meters_per_unit": 1.0,
+      "kilograms_per_unit": 1.0,
+      "license": "Apache-2.0"
+    },
+    {
+      "file": "microduck_rollers.usd",
+      "model": "rollers",
+      "mjcf": "robot_allcollisions_rollers.xml",
+      "source_branch": "antoiner/feat/microduck-pickplace",
+      "source_commit": "5a3ca4539d809a6a1db9fd2847fdbbe049f88844",
+      "joints": 18,
+      "dof": 18,
+      "consumers": [
+        "contrib/microduck/velocity (rollers_env_cfg)"
+      ],
+      "certified_by": [
+        "source/isaaclab_assets/test/test_microduck_variant_assets.py (32 passed)"
+      ],
+      "sha256": "f8160988e56d48efcbea4476335afeeb64c41ff4dfd049a50cf3ec2a4e50315b",
+      "size_bytes": 6588191,
+      "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
+      "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
+      "source_mjcf_repo_path": "src/mjlab_microduck/robot/microduck/robot_allcollisions_rollers.xml",
+      "converter_command": "OMNI_KIT_ACCEPT_EULA=YES uv run --extra importers python scripts/tools/convert_microduck.py --model rollers",
+      "self_contained": true,
+      "external_references": [],
+      "default_prim": "microduck",
+      "up_axis": "Z",
+      "meters_per_unit": 1.0,
+      "kilograms_per_unit": 1.0,
+      "license": "Apache-2.0"
+    },
+    {
+      "file": "microduck_walk_backlash.usd",
+      "model": "walk_backlash",
+      "mjcf": "robot_walk_backlash.xml",
+      "source_branch": "antoiner/feat/microduck-backlash",
+      "source_commit": "e29de702cf3",
+      "joints": 28,
+      "dof": 28,
+      "consumers": [
+        "contrib/microduck/velocity (backlash_env_cfg)",
+        "contrib/microduck/mdp/observations.py"
+      ],
+      "certified_by": [
+        "source/isaaclab_assets/test/test_microduck_variant_assets.py (56 passed, backlash tree)"
+      ],
+      "notes": "Produced by the backlash branch's converter revision, which diverges from the env branch's (+337/-211 lines). Only this branch can produce walk_backlash.",
+      "sha256": "decae963d1a250e41ec6abe5afddb8fe150fa5e3a08911dd21ad7a5f43e08797",
+      "size_bytes": 7475834,
+      "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
+      "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
+      "source_mjcf_repo_path": "src/mjlab_microduck/robot/microduck/robot_walk_backlash.xml",
+      "converter_command": "OMNI_KIT_ACCEPT_EULA=YES uv run --extra importers python scripts/tools/convert_microduck.py --model walk_backlash",
+      "self_contained": true,
+      "external_references": [],
+      "default_prim": "microduck",
+      "up_axis": "Z",
+      "meters_per_unit": 1.0,
+      "kilograms_per_unit": 1.0,
+      "license": "Apache-2.0"
+    }
+  ]
+}
