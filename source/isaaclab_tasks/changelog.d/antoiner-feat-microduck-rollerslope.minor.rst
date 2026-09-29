@@ -33,6 +33,7 @@ Added
 Fixed
 ^^^^^
 
+* Fixed the rolling-entry reset event to accept environment slices supplied by the event manager.
 * Fixed a training abort on ``IsaacContrib-RollerSlope-Flat-MicroDuck`` at scale: RSL-RL rejected a
   reward buffer containing NaN, at a different iteration on every run. A rare MuJoCo Warp divergence
   leaves one environment's whole joint state and every body orientation non-finite for a single step

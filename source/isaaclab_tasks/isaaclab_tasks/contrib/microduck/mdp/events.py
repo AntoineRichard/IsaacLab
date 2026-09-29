@@ -735,7 +735,7 @@ def randomize_joint_dry_friction(
 
 def reset_rolling_entry(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     asset_cfg: SceneEntityCfg,
     speed_range: tuple[float, float] = (0.25, 0.45),
     wheel_radius: float = 0.0175,
@@ -773,6 +773,8 @@ def reset_rolling_entry(
     asset: Articulation = env.scene[asset_cfg.name]
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     num_resets = len(env_ids)
     if num_resets == 0:
         return
