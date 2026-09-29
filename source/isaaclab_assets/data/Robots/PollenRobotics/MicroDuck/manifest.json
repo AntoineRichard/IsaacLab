@@ -3,7 +3,7 @@
   "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
   "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
   "upstream_license": "Apache-2.0",
-  "total_size_bytes": 29011351,
+  "total_size_bytes": 29021400,
   "assets": [
     {
       "file": "microduck_walk.usd",
@@ -19,8 +19,8 @@
       "certified_by": [
         "source/isaaclab_assets/test/test_microduck_asset.py (19 passed)"
       ],
-      "sha256": "c2be8426a4933e0fe4a2580f9857858b8355a74fc75964cc48e4ec7fb08038d1",
-      "size_bytes": 7472990,
+      "sha256": "22ec26f564bfe1a4b302a76146c1881fbdf0d1e21a067ede1b648e35eaf36d6d",
+      "size_bytes": 7475399,
       "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
       "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
       "source_mjcf_repo_path": "src/mjlab_microduck/robot/microduck/robot_walk.xml",
@@ -31,7 +31,9 @@
       "up_axis": "Z",
       "meters_per_unit": 1.0,
       "kilograms_per_unit": 1.0,
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "export_sha256": "c2be8426a4933e0fe4a2580f9857858b8355a74fc75964cc48e4ec7fb08038d1",
+      "export_size_bytes": 7472990
     },
     {
       "file": "microduck_allcollisions.usd",
@@ -53,8 +55,8 @@
       "certified_by": [
         "source/isaaclab_assets/test/test_microduck_variant_assets.py (32 passed)"
       ],
-      "sha256": "84c40e4f700f25f59d053a77e8f37bc918b86d6d0009bbd26f7a2855f13f508b",
-      "size_bytes": 7474336,
+      "sha256": "88be511c16d2883c5d1075562ebbb48fe3c1736c26843ec791d6a98e23cbae7f",
+      "size_bytes": 7476786,
       "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
       "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
       "source_mjcf_repo_path": "src/mjlab_microduck/robot/microduck/robot_allcollisions.xml",
@@ -65,7 +67,9 @@
       "up_axis": "Z",
       "meters_per_unit": 1.0,
       "kilograms_per_unit": 1.0,
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "export_sha256": "84c40e4f700f25f59d053a77e8f37bc918b86d6d0009bbd26f7a2855f13f508b",
+      "export_size_bytes": 7474336
     },
     {
       "file": "microduck_rollers.usd",
@@ -81,8 +85,8 @@
       "certified_by": [
         "source/isaaclab_assets/test/test_microduck_variant_assets.py (32 passed)"
       ],
-      "sha256": "f8160988e56d48efcbea4476335afeeb64c41ff4dfd049a50cf3ec2a4e50315b",
-      "size_bytes": 6588191,
+      "sha256": "11954e06133352b5378eedf124e43f90d9ed50b231f6d3dd609e6bd910c9c133",
+      "size_bytes": 6590731,
       "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
       "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
       "source_mjcf_repo_path": "src/mjlab_microduck/robot/microduck/robot_allcollisions_rollers.xml",
@@ -93,7 +97,9 @@
       "up_axis": "Z",
       "meters_per_unit": 1.0,
       "kilograms_per_unit": 1.0,
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "export_sha256": "f8160988e56d48efcbea4476335afeeb64c41ff4dfd049a50cf3ec2a4e50315b",
+      "export_size_bytes": 6588191
     },
     {
       "file": "microduck_walk_backlash.usd",
@@ -111,8 +117,8 @@
         "source/isaaclab_assets/test/test_microduck_variant_assets.py (56 passed, backlash tree)"
       ],
       "notes": "Produced by the backlash branch's converter revision, which diverges from the env branch's (+337/-211 lines). Only this branch can produce walk_backlash.",
-      "sha256": "decae963d1a250e41ec6abe5afddb8fe150fa5e3a08911dd21ad7a5f43e08797",
-      "size_bytes": 7475834,
+      "sha256": "b1a7233f8c68d8b33980da85946a88219c2f36ea19fd3ea413336a43fdf679b5",
+      "size_bytes": 7478484,
       "upstream_repo": "https://github.com/pollen-robotics/microduck_rl",
       "upstream_pin": "d424a0c899f6b33cbd3daeb279913134349c0b63",
       "source_mjcf_repo_path": "src/mjlab_microduck/robot/microduck/robot_walk_backlash.xml",
@@ -123,7 +129,15 @@
       "up_axis": "Z",
       "meters_per_unit": 1.0,
       "kilograms_per_unit": 1.0,
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "export_sha256": "decae963d1a250e41ec6abe5afddb8fe150fa5e3a08911dd21ad7a5f43e08797",
+      "export_size_bytes": 7475834
+    }
+  ],
+  "postprocessing": [
+    {
+      "date": "2026-09-29",
+      "operation": "Applied MjcJointAPI to revolute joints missing it, enabling Newton MuJoCo defaults without authoring numeric parameters. Existing joint properties, mass and inertia were preserved."
     }
   ]
 }

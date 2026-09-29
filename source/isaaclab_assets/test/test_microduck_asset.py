@@ -196,7 +196,7 @@ def microduck_articulation(newton_articulations):
     "model,joint_count", [("walk", 14), ("allcollisions", 14), ("rollers", 18), ("walk_backlash", 28)]
 )
 def test_exported_assets_are_self_contained(model, joint_count):
-    """A fresh checkout supplies complete USDs without conversion or external mesh downloads."""
+    """Exports are self-contained and declare MuJoCo joint semantics for unauthored defaults."""
     path = Path(MICRODUCK_USD_PATH).with_name(f"microduck_{model}.usd")
     assert path.is_file(), f"Missing MicroDuck USD: {path}. Run 'git lfs pull'."
     stage = Usd.Stage.Open(str(path))
@@ -207,7 +207,10 @@ def test_exported_assets_are_self_contained(model, joint_count):
     assert len(layers) == 1
     assert not assets
     assert not unresolved
-    assert len([prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.RevoluteJoint)]) == joint_count
+    joints = [prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.RevoluteJoint)]
+    assert len(joints) == joint_count
+    for joint in joints:
+        assert "MjcJointAPI" in joint.GetMetadata("apiSchemas").GetAppliedItems(), joint.GetPath()
 
 
 def test_actuated_joint_names_match_mjcf(usd_articulation, mj_joints):

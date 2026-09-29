@@ -853,14 +853,12 @@ def test_backlash_play_hinges_reach_the_built_model_with_the_mjcfs_limit_paramet
     """The authored parameters arrive in the built model, on the play DOFs and on nothing else.
 
     Authoring them is only half the mechanism: ``mjc:solreflimit`` also has to reach the model as a
-    raw pair, which is what keeps the joint out of the unauthored-gain retag that would otherwise
-    give it MuJoCo's default ``(0.02, 1.0)`` -- twice the play under load. The plain walking asset is
+    raw pair, overriding MuJoCo's default ``(0.02, 1.0)``. The plain walking asset is
     spawned in the same model and is asserted untouched, so a passthrough that wrote every DOF rather
     than the authored ones cannot pass.
 
-    What is read here is the Newton model's own arrays, which is where a spawned asset's authoring
-    lands; their forwarding into the live MuJoCo Warp model is pinned separately, through a real
-    solver, by ``isaaclab_newton``'s ``test_mjwarp_joint_limit_solref.py``.
+    Authored parameters are checked in Newton's arrays; implicit defaults are checked in the live
+    solver because Newton retains their provenance instead of storing an explicit solref pair.
     """
     from newton._src.solvers.mujoco.constants import SOLREF_MODE_RAW
 
@@ -878,6 +876,11 @@ def test_backlash_play_hinges_reach_the_built_model_with_the_mjcfs_limit_paramet
     solref = model.mujoco.solreflimit.numpy()
     solimp = model.mujoco.solimplimit.numpy()
     solref_mode = model.mujoco.solreflimit_mode.numpy()
+    solver = NewtonManager._solver  # noqa: SLF001
+    solver_solref = solver.mjw_model.jnt_solref.numpy()
+    dof_to_solver_joint = {
+        int(dof): index for index, dof in np.ndenumerate(solver.mjc_jnt_to_newton_dof.numpy()) if dof >= 0
+    }
 
     for name, dof in play_dofs.items():
         assert damping[dof] == pytest.approx(mjcf[name]["damping"]), name
@@ -886,12 +889,12 @@ def test_backlash_play_hinges_reach_the_built_model_with_the_mjcfs_limit_paramet
         assert solref_mode[dof] == SOLREF_MODE_RAW, name
 
     # The servos of both models keep the plant they had before the play hinges were added: MuJoCo's
-    # own limit defaults, which they reach through the unauthored-gain retag rather than by
-    # authoring anything. Their MJCF damping is not the asset's to carry -- it is the actuator
+    # own limit defaults, supplied by MjcJointAPI without authoring numeric values.
+    # Their MJCF damping is not the asset's to carry -- it is the actuator
     # model's viscous term, republished on the DOFs an actuator group drives.
     for name, dof in list(servo_dofs.items()) + list(reference_dofs.items()):
         assert damping[dof] == 0.0, name
-        assert solref[dof] == pytest.approx(mjcf[name]["solreflimit"]), name
+        assert solver_solref[dof_to_solver_joint[dof]] == pytest.approx(mjcf[name]["solreflimit"]), name
         assert solimp[dof] == pytest.approx(mjcf[name]["solimplimit"]), name
 
 

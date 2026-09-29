@@ -23,13 +23,19 @@ The asset configurations load them directly; neither the source MJCF repository 
 MJCF importer is required. Each USD is a self-contained binary file without external layers,
 meshes or textures. `LICENSE` contains the upstream Apache 2.0 terms.
 
-These files came from the 2026-09-09 `usd_export.zip` export. `manifest.json` records their exact
-SHA-256 checksums, sizes, source revisions and historical conversion commands. The walking,
+These files originated from the 2026-09-09 `usd_export.zip` export. `manifest.json` records their
+current SHA-256 checksums and sizes, the original export checksums and sizes, source revisions,
+and historical conversion commands. The walking,
 all-collisions and rollers exports came from `antoiner/feat/microduck-pickplace` at
 `5a3ca4539d809a6a1db9fd2847fdbbe049f88844`; the backlash export came from
 `antoiner/feat/microduck-backlash` at `e29de702cf3`. The archive's beak model is not used by this
 branch and is not included. The converter is retained in those historical revisions, rather
 than as a runtime or maintenance dependency of this branch.
+
+The distributed USDs additionally apply `MjcJointAPI` to every revolute joint. This lets Newton's
+MuJoCo importer supply the implicit joint-limit `solreflimit = (0.02, 1.0)` when no value was authored,
+without Isaac Lab's global joint-limit override. The backlash hinges retain their explicitly authored
+`(0.01, 1.0)` limits. This metadata update changed no numeric joint properties, masses, or inertias.
 
 The exports were produced by selecting the importer's `physx` physics variant, flattening its
 layers, repairing contact materials and collision masks, and clearing the root transform.

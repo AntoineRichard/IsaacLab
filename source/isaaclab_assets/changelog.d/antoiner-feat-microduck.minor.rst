@@ -4,6 +4,9 @@ Added
 * Added self-contained MicroDuck USD exports under ``data/Robots/PollenRobotics/MicroDuck``
   through Git LFS, with source attribution, Apache-2.0 license and checksum manifest. Run
   ``git lfs pull`` after cloning; no MJCF download or conversion is required.
+* Applied ``MjcJointAPI`` to the exported revolute joints so Newton resolved unauthored joint-limit
+  parameters to MuJoCo defaults without the global override. Preserved authored backlash limits
+  and all numeric physical properties.
 * Added checks for self-contained USDs and optional comparisons against explicitly supplied
   local MJCF references, covering joint properties, body masses and contact geometry.
 * Added :data:`~isaaclab_assets.MICRODUCK_CFG`, the MicroDuck articulation in the upstream stand
