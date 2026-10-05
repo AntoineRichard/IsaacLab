@@ -61,3 +61,24 @@ Add ``presets=backlash`` to either task to train the robot with ±1° of gearbox
 
 Encoders and head-pose rewards then measure servo plus play angle, only servo joints incur the soft-limit penalty,
 and the policy interface is unchanged, so existing walking policies load.
+
+Stop response of a deployed policy
+----------------------------------
+
+``scripts/tools/microduck_stop_response.py`` measures how an exported actor brakes when its velocity command
+drops to zero. It builds either walking task as ``isaaclab play`` does, runs the ONNX actor through
+``onnxruntime`` on the task's own policy observation, and drives the command by hand: a zero-twist settle,
+``(+-0.3, 0, 0)`` until the root has moved 25 mm along its initial heading (or for a fixed number of steps),
+then a zero twist for three seconds. It writes every policy step to a JSON file and prints, per episode, the
+displacement while commanded, the displacement after the zero command along and lateral to the initial
+heading, the yaw change and the time until the robot is still:
+
+.. code-block:: bash
+
+   uv pip install onnxruntime
+   uv run python scripts/tools/microduck_stop_response.py \
+     --task IsaacContrib-Velocity-Flat-MicroDuck --onnx /path/to/velocity_flat.onnx --out stop_response.json
+
+``--no-randomization`` zeroes the task's randomization ranges, ``--bam-nominal`` replaces the sampled BAM
+deployment by a fixed supply without command delay or current limit, ``--usd`` points at a local copy of the
+robot USD, and ``--plane`` runs the rough task on the flat collision plane.
