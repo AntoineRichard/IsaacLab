@@ -15,6 +15,7 @@ import torch
 from isaaclab.envs.mdp.commands import UniformVelocityCommand
 from isaaclab.envs.mdp.commands.commands_cfg import UniformVelocityCommandCfg
 from isaaclab.managers import CommandTerm, CommandTermCfg
+from isaaclab.utils import index_fill_
 from isaaclab.utils.configclass import configclass
 
 if TYPE_CHECKING:
@@ -112,3 +113,52 @@ class MicroDuckVelocityCommandCfg(UniformVelocityCommandCfg):
     """Minimum forward speed of forward-only commands [m/s]."""
     turn_in_place_min_fraction: float = 0.4
     """Minimum turn-in-place yaw rate, as a fraction of the largest ``ang_vel_z`` bound [-]."""
+
+
+class MicroDuckRoughVelocityCommand(MicroDuckVelocityCommand):
+    """Accumulate episode movement and tracking before commands change for terrain progression."""
+
+    def __init__(self, cfg: MicroDuckVelocityCommandCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.terrain_progress = {
+            name: torch.zeros(self.num_envs, device=self.device)
+            for name in ("commanded_distance", "walked_distance", "error_distance", "walking_time", "yaw_error", "time")
+        }
+        self._last_progress_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+    def record_terrain_progress(self, env_ids: Sequence[int] | slice = slice(None)) -> None:
+        """Record each physics-control sample once, including the final sample before reset.
+
+        Distances and integrated XY error are in [m], times in [s], and integrated yaw-rate error in [rad].
+        Only translation commands of at least 0.05 [m/s] contribute to walking statistics.
+        """
+        steps = self._env.episode_length_buf[env_ids]
+        dt = (steps > self._last_progress_step[env_ids]) * self._env.step_dt
+        command = self.command[env_ids]
+        velocity = self.robot.data.root_lin_vel_b.torch[env_ids, :2]
+        speed = torch.linalg.vector_norm(command[:, :2], dim=-1)
+        walking_dt = dt * (speed >= 0.05)
+        values = {
+            "commanded_distance": speed * walking_dt,
+            "walked_distance": torch.linalg.vector_norm(velocity, dim=-1) * walking_dt,
+            "error_distance": torch.linalg.vector_norm(command[:, :2] - velocity, dim=-1) * walking_dt,
+            "walking_time": walking_dt,
+            "yaw_error": (command[:, 2] - self.robot.data.root_ang_vel_b.torch[env_ids, 2]).abs() * dt,
+            "time": dt,
+        }
+        for name, value in values.items():
+            self.terrain_progress[name][env_ids] += value
+        self._last_progress_step[env_ids] = steps
+
+    def _update_metrics(self):
+        super()._update_metrics()
+        self.record_terrain_progress()
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, float]:
+        """Reset the selected episodes' progress after the curriculum has consumed it."""
+        extras = super().reset(env_ids)
+        ids = slice(None) if env_ids is None else env_ids
+        for value in self.terrain_progress.values():
+            index_fill_(value, ids, 0.0)
+        index_fill_(self._last_progress_step, ids, 0)
+        return extras

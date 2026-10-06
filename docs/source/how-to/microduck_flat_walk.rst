@@ -46,8 +46,19 @@ Rough terrain
 ``IsaacContrib-Velocity-Rough-MicroDuck`` uses
 `microduck_rl's gentle terrain mix <https://github.com/pollen-robotics/microduck_rl/blob/8d0db74916a4f833d1d9b95d6a1d7f4d13b9d5ec/src/mjlab_microduck/tasks/microduck_velocity_env_cfg.py>`_:
 flat ground, stairs up to 1.5 cm, random grids up to 1 cm, and gentle slopes in ten difficulty levels, advanced by
-distance walked. The actor stays blind to terrain; two downward rays per foot give the critic and the foot-clearance
+successful walking episodes. The actor stays blind to terrain; two downward rays per foot give the critic and the foot-clearance
 rewards the ground height.
+
+Terrain promotion requires a full episode without a fall, at least 1 m of commanded and actual walking,
+and at least 5 s of translation commands (also at least 25% of the episode). Integrated XY tracking error
+must be at most 50% of commanded path length, and mean yaw-rate error at most 0.5 rad/s. Command changes
+and reversals are accounted for throughout the episode. Falls demote; eligible episodes also demote when
+XY error exceeds 80% or yaw-rate error exceeds 0.8 rad/s. Other episodes retain their level.
+
+These experimental thresholds are parameters of ``curriculum.terrain_levels``. Logs under
+``Curriculum/terrain_levels/`` report mean level, promotion/demotion fractions, walking eligibility,
+and actual walking distance. This replaces the previous 4 m net-displacement gate; existing checkpoints
+can still load, but resumed training follows the new progression rule.
 
 Backlash
 --------

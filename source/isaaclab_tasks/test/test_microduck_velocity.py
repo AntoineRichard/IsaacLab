@@ -194,3 +194,83 @@ def test_microduck_backlash_preset_reads_output_side_encoders(device):
     finally:
         env.close()
         SimulationContext.clear_instance()
+
+
+def test_microduck_terrain_progress_with_changing_commands():
+    """Following reversing commands can promote; falls, poor tracking and standing cannot."""
+    from isaaclab.terrains import TerrainImporter
+
+    from isaaclab_tasks.contrib.microduck.mdp.commands import MicroDuckRoughVelocityCommand
+    from isaaclab_tasks.contrib.microduck.rough_env_cfg import MicroDuckVelocityRoughEnvCfg
+
+    class Terrain:
+        update_env_origins = TerrainImporter.update_env_origins
+
+        def __init__(self):
+            self.cfg = SimpleNamespace(terrain_generator=SimpleNamespace(size=(8.0, 8.0)))
+            self.terrain_origins = torch.zeros(10, 1, 3)
+            self.terrain_levels = torch.ones(6, dtype=torch.long)
+            self.terrain_types = torch.zeros(6, dtype=torch.long)
+            self.max_terrain_level = 10
+            self.env_origins = torch.zeros(6, 3)
+
+    class Scene(dict):
+        terrain = Terrain()
+        env_origins = torch.zeros(6, 3)
+
+    data = SimpleNamespace(
+        root_lin_vel_b=SimpleNamespace(torch=torch.zeros(6, 3)),
+        root_ang_vel_b=SimpleNamespace(torch=torch.zeros(6, 3)),
+        root_pos_w=SimpleNamespace(torch=torch.zeros(6, 3)),
+    )
+    env = SimpleNamespace(
+        scene=Scene(robot=SimpleNamespace(data=data)),
+        device="cpu",
+        num_envs=6,
+        step_dt=0.02,
+        episode_length_buf=torch.zeros(6, dtype=torch.long),
+        max_episode_length_s=20.0,
+        extras={"log": {}},
+        sim=SimpleNamespace(vis_marker_registry=SimpleNamespace(clear_debug_vis_callback=lambda _: None)),
+        termination_manager=SimpleNamespace(
+            terminated=torch.tensor([False, True, False, False, False, False]),
+            time_outs=torch.ones(6, dtype=torch.bool),
+        ),
+    )
+    cfg = MicroDuckVelocityRoughEnvCfg()
+    cfg.commands.base_velocity.debug_vis = False
+    command = MicroDuckRoughVelocityCommand(cfg.commands.base_velocity, env)
+    env.command_manager = SimpleNamespace(get_term=lambda _: command, get_command=lambda _: command.command)
+    gate = cfg.curriculum.terrain_levels
+    # Initial reset must leave the initial distribution alone.
+    gate.func(env, torch.arange(6), **gate.params)
+    torch.testing.assert_close(env.scene.terrain.terrain_levels, torch.ones(6, dtype=torch.long))
+    command.time_left.fill_(100.0)
+    for step in range(1, 1001):
+        env.episode_length_buf.fill_(step)
+        # 0: perfect out-and-back. 1: same tracking but fell. 2: commanded motion, no movement.
+        # 3: standing. 4: perfect translation, wrong yaw. 5: partial tracking (hold level).
+        command.command[:, 0] = 0.15 if step <= 500 else -0.15
+        command.command[3] = 0.0
+        data.root_lin_vel_b.torch[:, 0] = command.command[:, 0]
+        data.root_lin_vel_b.torch[2] = 0.0
+        data.root_lin_vel_b.torch[5, 0] *= 0.4
+        data.root_ang_vel_b.torch[4, 2] = 1.0
+        if step < 1000:
+            command.compute(env.step_dt)
+    # Curriculum runs before command.compute on the terminal step.
+    gate.func(env, torch.arange(6), **gate.params)
+    torch.testing.assert_close(env.scene.terrain.terrain_levels, torch.tensor([2, 0, 0, 1, 0, 1]))
+    torch.testing.assert_close(
+        command.terrain_progress["commanded_distance"][0], torch.tensor(3.0), atol=1e-4, rtol=0.0
+    )
+    command.record_terrain_progress()
+    torch.testing.assert_close(
+        command.terrain_progress["commanded_distance"][0], torch.tensor(3.0), atol=1e-4, rtol=0.0
+    )
+    # Partial resets must clear the ended episodes and preserve ongoing episodes.
+    command.reset(torch.tensor([0, 1]))
+    torch.testing.assert_close(command.terrain_progress["commanded_distance"][:2], torch.zeros(2))
+    torch.testing.assert_close(
+        command.terrain_progress["commanded_distance"][2], torch.tensor(3.0), atol=1e-4, rtol=0.0
+    )
