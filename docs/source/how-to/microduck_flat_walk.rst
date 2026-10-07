@@ -60,6 +60,31 @@ These experimental thresholds are parameters of ``curriculum.terrain_levels``. L
 and actual walking distance. This replaces the previous 4 m net-displacement gate; existing checkpoints
 can still load, but resumed training follows the new progression rule.
 
+AGILE combined
+--------------
+
+Select ``presets=agile_combined`` on either the flat or rough task to use the combined tracking recipe:
+
+.. code-block:: bash
+
+   uv run --extra rsl-rl isaaclab train --rl_library rsl_rl \
+     --task IsaacContrib-Velocity-Rough-MicroDuck --num_envs 4096 \
+     --max_iterations 50000 --run_name agile_combined presets=agile_combined
+
+This preset tracks horizontal velocity in the heading frame and yaw rate around world Z, with
+tolerances of 0.15 m/s and 0.35 rad/s and reward weights of 4.0 each. The leg-pose reward applies
+only to standing commands. The action-rate penalty starts at -0.1 and reaches -0.2, -0.4, -0.6,
+-0.8, and -1.0 after 3,000, 4,000, 5,000, 6,000, and 7,000 PPO iterations, respectively, assuming
+the default 24 rollout steps per iteration.
+
+The rough task retains the tracking-and-survival terrain curriculum described above. The preset
+adds no body-height reward or policy input. Combine it with gearbox play using
+``presets=agile_combined,backlash``; use the same presets when playing the resulting checkpoint.
+
+Newton model-update batching is enabled by the backend. The MJWarp Cholesky launch size is tunable
+with ``env.sim.physics.solver_cfg.cholesky_solve_block_dim=64``, the setting used for the L40S
+experiments; the best value can vary with GPU and environment count.
+
 Backlash
 --------
 

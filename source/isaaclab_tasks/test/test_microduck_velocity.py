@@ -8,6 +8,7 @@
 Stepping every registered contributed task is covered by ``test/contrib/test_contrib_environments_kitless.py``.
 """
 
+import math
 from types import SimpleNamespace
 
 import gymnasium as gym
@@ -274,3 +275,76 @@ def test_microduck_terrain_progress_with_changing_commands():
     torch.testing.assert_close(
         command.terrain_progress["commanded_distance"][2], torch.tensor(3.0), atol=1e-4, rtol=0.0
     )
+
+
+@pytest.mark.parametrize("task", [TASK, ROUGH_TASK])
+@pytest.mark.parametrize("backlash", [False, True])
+def test_microduck_agile_combined_preset(task, backlash):
+    """The combined recipe composes with backlash and changes only the intended reward terms."""
+    base = parse_env_cfg(task, device="cpu", overrides=["presets=backlash"] if backlash else [])
+    selector = "presets=agile_combined,backlash" if backlash else "presets=agile_combined"
+    cfg = parse_env_cfg(task, device="cpu", overrides=[selector])
+    assert cfg.rewards.track_lin_vel.func.__name__ == "track_linear_velocity_heading"
+    assert cfg.rewards.track_ang_vel.func.__name__ == "track_angular_velocity_world"
+    assert cfg.rewards.track_lin_vel.params["std"] == 0.15
+    assert cfg.rewards.track_ang_vel.params["std"] == 0.35
+    assert cfg.rewards.track_lin_vel.weight == cfg.rewards.track_ang_vel.weight == 4.0
+    assert cfg.rewards.pose.func.__name__ == "pose_standing_only"
+    assert cfg.curriculum.action_rate_weight.params["modify_params"]["stages"] == [
+        (72000, -0.2),
+        (96000, -0.4),
+        (120000, -0.6),
+        (144000, -0.8),
+        (168000, -1.0),
+    ]
+    original, actual = base.to_dict(), cfg.to_dict()
+    for name in ("track_lin_vel", "track_ang_vel", "pose"):
+        actual["rewards"][name] = original["rewards"][name]
+    actual["curriculum"]["action_rate_weight"] = original["curriculum"]["action_rate_weight"]
+    assert actual == original
+
+
+def test_microduck_agile_tracking_and_standing_pose():
+    """Tracking ignores vertical/tilt motion; pose shaping switches off for translation and pure yaw."""
+    from isaaclab.managers import RewardTermCfg
+    from isaaclab.utils.math import quat_from_euler_xyz
+
+    from isaaclab_tasks.contrib.microduck.mdp import rewards
+
+    command = torch.tensor([[0.15, 0.0, 0.35]]).repeat(3, 1)
+    data = SimpleNamespace(
+        root_link_quat_w=SimpleNamespace(
+            torch=quat_from_euler_xyz(torch.full((3,), 0.3), torch.full((3,), 0.2), torch.full((3,), math.pi / 2))
+        ),
+        root_link_lin_vel_w=SimpleNamespace(torch=torch.tensor([[0.0, 0.15, 7.0], [0.0, 0.0, 7.0], [0.0, 0.15, 7.0]])),
+        root_link_ang_vel_w=SimpleNamespace(
+            torch=torch.tensor([[5.0, -7.0, 0.35], [5.0, -7.0, 0.35], [5.0, -7.0, 0.0]])
+        ),
+        joint_pos=SimpleNamespace(torch=torch.full((3, 1), 0.5)),
+        default_joint_pos=SimpleNamespace(torch=torch.zeros(3, 1)),
+    )
+    env = SimpleNamespace(
+        scene={"robot": SimpleNamespace(data=data, joint_names=["joint"])},
+        command_manager=SimpleNamespace(get_command=lambda _: command),
+        device="cpu",
+    )
+    torch.testing.assert_close(
+        rewards.track_linear_velocity_heading(env, 0.15, "base_velocity"), torch.tensor([1.0, math.exp(-1), 1.0])
+    )
+    torch.testing.assert_close(
+        rewards.track_angular_velocity_world(env, 0.35, "base_velocity"), torch.tensor([1.0, 1.0, math.exp(-1)])
+    )
+    command.copy_(torch.tensor([[0.0, 0.0, 0.0], [0.15, 0.0, 0.0], [0.0, 0.0, 0.8]]))
+    cfg = RewardTermCfg(
+        func=rewards.pose_standing_only,
+        weight=1.0,
+        params={
+            "command_name": "base_velocity",
+            "std_standing": {"joint": 0.5},
+            "std_walking": {"joint": 1.0},
+            "walking_threshold": 0.01,
+            "asset_cfg": SceneEntityCfg("robot", joint_ids=[0]),
+        },
+    )
+    term = rewards.pose_standing_only(cfg, env)
+    torch.testing.assert_close(term(env, **cfg.params), torch.tensor([math.exp(-1), 0.0, 0.0]))

@@ -55,6 +55,27 @@ def track_angular_velocity(
     return torch.exp(-(z_error + xy_error) / std**2)
 
 
+def track_linear_velocity_heading(
+    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Track horizontal velocity in the heading frame with tolerance ``std`` [m/s]."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    actual = math_utils.quat_apply_inverse(
+        math_utils.yaw_quat(asset.data.root_link_quat_w.torch), asset.data.root_link_lin_vel_w.torch
+    )
+    return torch.exp(-torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1) / std**2)
+
+
+def track_angular_velocity_world(
+    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Track world-frame yaw rate with tolerance ``std`` [rad/s]."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    return torch.exp(-torch.square(command[:, 2] - asset.data.root_link_ang_vel_w.torch[:, 2]) / std**2)
+
+
 def upright(env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Reward keeping one body's frame aligned with gravity, using a Gaussian kernel."""
     projected_gravity_b = body_projected_gravity_b(env, asset_cfg)
@@ -93,6 +114,23 @@ class pose_mode_switch(ManagerTermBase):
         default_joint_pos = asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
         error_squared = torch.square(joint_pos - default_joint_pos)
         return torch.exp(-torch.mean(error_squared / std**2, dim=1))
+
+
+class pose_standing_only(pose_mode_switch):
+    """Reward the standing pose only while neither translation nor turning is commanded."""
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        std_standing: dict[str, float],
+        std_walking: dict[str, float],
+        walking_threshold: float,
+        asset_cfg: SceneEntityCfg,
+    ) -> torch.Tensor:
+        """Apply the existing posture reward to standing commands only."""
+        reward = super().__call__(env, command_name, std_standing, std_walking, walking_threshold, asset_cfg)
+        return reward * (_command_magnitude(env, command_name) < walking_threshold)
 
 
 def head_pose_tracking(

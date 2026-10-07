@@ -335,15 +335,25 @@ class EventsCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
-    track_lin_vel = RewTerm(
-        func=mdp.track_linear_velocity, weight=2.0, params={"command_name": "base_velocity", "std": math.sqrt(0.1)}
+    track_lin_vel = preset(
+        default=RewTerm(
+            func=mdp.track_linear_velocity, weight=2.0, params={"command_name": "base_velocity", "std": math.sqrt(0.1)}
+        ),
+        agile_combined=RewTerm(
+            func=mdp.track_linear_velocity_heading, weight=4.0, params={"command_name": "base_velocity", "std": 0.15}
+        ),
     )
-    track_ang_vel = RewTerm(
-        func=mdp.track_angular_velocity, weight=2.0, params={"command_name": "base_velocity", "std": math.sqrt(0.5)}
+    track_ang_vel = preset(
+        default=RewTerm(
+            func=mdp.track_angular_velocity, weight=2.0, params={"command_name": "base_velocity", "std": math.sqrt(0.5)}
+        ),
+        agile_combined=RewTerm(
+            func=mdp.track_angular_velocity_world, weight=4.0, params={"command_name": "base_velocity", "std": 0.35}
+        ),
     )
     upright = RewTerm(func=mdp.upright, weight=2.0, params={"std": math.sqrt(0.05), "asset_cfg": _TRUNK_BODY_CFG})
     pose = RewTerm(
-        func=mdp.pose_mode_switch,
+        func=preset(default=mdp.pose_mode_switch, agile_combined=mdp.pose_standing_only),
         weight=1.0,
         params={
             "command_name": "base_velocity",
@@ -453,8 +463,13 @@ def _com_range(half_width: float) -> dict[str, tuple[float, float]]:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    action_rate_weight = _schedule(
-        "rewards.action_rate_l2.weight", (500, -0.2), (750, -0.4), (1000, -0.6), (1250, -0.8), (1500, -1.0)
+    action_rate_weight = preset(
+        default=_schedule(
+            "rewards.action_rate_l2.weight", (500, -0.2), (750, -0.4), (1000, -0.6), (1250, -0.8), (1500, -1.0)
+        ),
+        agile_combined=_schedule(
+            "rewards.action_rate_l2.weight", (3000, -0.2), (4000, -0.4), (5000, -0.6), (6000, -0.8), (7000, -1.0)
+        ),
     )
     head_pose_bias_weight = _schedule("rewards.head_pose_bias.weight", (600, -1.0), (1000, -2.0), (1500, -3.0))
     standing_envs = _schedule(
