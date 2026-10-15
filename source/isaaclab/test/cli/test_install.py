@@ -199,11 +199,24 @@ def test_removed_installer_options_fail(option: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("installation", "configured", "delegated"),
-    [("source", False, True), ("source", True, False), ("container", False, True), ("stale", False, False)],
+    ("command", "installation", "configured", "delegated"),
+    [
+        ("demo", "source", False, True),
+        ("demo", "source", True, False),
+        ("demo", "container", False, True),
+        ("demo", "stale", False, False),
+        # Registry commands only manage packages, so they never start under Isaac Sim's runtime.
+        ("registry", "source", False, False),
+        ("registry", "container", False, False),
+    ],
 )
 def test_runtime_dispatch_loads_local_kit_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installation: str, configured: bool, delegated: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    installation: str,
+    configured: bool,
+    delegated: bool,
 ) -> None:
     import isaaclab.cli as cli
 
@@ -215,16 +228,16 @@ def test_runtime_dispatch_loads_local_kit_once(
     elif installation == "container":
         monkeypatch.setattr(sys, "executable", str(local_sim / "kit/python/bin/python3"))
     monkeypatch.setattr(cli, "DEFAULT_ISAAC_SIM_PATH", local_sim)
-    monkeypatch.setattr(sys, "argv", ["isaaclab", "demo", "--help"])
+    monkeypatch.setattr(sys, "argv", ["isaaclab", command, "--help"])
     if configured:
         monkeypatch.setenv("ISAAC_PATH", str(local_sim))
     else:
         monkeypatch.delenv("ISAAC_PATH", raising=False)
-    with mock.patch.object(cli, "run_python_command") as launch, mock.patch.object(cli, "demo") as demo:
+    with mock.patch.object(cli, "run_python_command") as launch, mock.patch.object(cli, command) as handler:
         cli.cli()
     if not delegated:
         launch.assert_not_called()
-        demo.assert_called_once_with(["--help"])
+        handler.assert_called_once_with(["--help"])
     else:
-        launch.assert_called_once_with("-m", ["isaaclab", "demo", "--help"], check=True)
-        demo.assert_not_called()
+        launch.assert_called_once_with("-m", ["isaaclab", command, "--help"], check=True)
+        handler.assert_not_called()

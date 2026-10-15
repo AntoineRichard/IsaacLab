@@ -93,14 +93,20 @@ installed Isaac Lab package:
 The command uses the dependencies from the active Isaac Lab environment. It
 does not invoke ``pip`` or install another set of template dependencies, so it
 also works in the pip-less virtual environments created by ``uv``.
-When invoked from an installed wheel, the generated ``pyproject.toml`` pins
-Isaac Lab and its optional extras to that exact version so ``uv sync`` cannot
-silently resolve an older release. When invoked from a source checkout, it
-instead records editable paths to that checkout and its workspace packages.
-This lets development and release branches work before their version is
-published while preserving the code that generated the project.
-The source paths are relative to the generated project; regenerate the project
-or update ``[tool.uv.sources]`` if either directory moves.
+The generated ``pyproject.toml`` requires a compatible Isaac Lab release for
+the package and each of its optional extras, such as
+``isaaclab[rsl-rl]~=3.0.0``, so ``uv sync`` cannot silently resolve an older or
+incompatible release and the project can be published as is. When invoked from
+an installed wheel, the release is the installed Isaac Lab version. When
+invoked from a source checkout, the release is the checkout's ``VERSION``, and
+the project also develops against that checkout: an ``isaaclab-dev`` dependency
+group with editable paths to the checkout and its workspace packages, one
+dependency group per checkout extra (``uv run --group isaacsim`` replaces
+``uv run --extra isaacsim``), and peer overrides that resolve every ``isaaclab*``
+requirement to those paths. This lets development and release branches work
+before their version is published while preserving the code that generated the
+project. The source paths are relative to the generated project; regenerate the
+project or update ``[tool.uv.sources]`` if either directory moves.
 
 The short form is equivalent:
 
@@ -429,6 +435,43 @@ In Cursor, install the ``detachhead.basedpyright`` extension instead of Pylance,
 select the same interpreter, and reload the window. Both language servers read
 the generated ``pyrightconfig.json``.
 
+Share it on the Isaac Lab registry
+----------------------------------
+
+.. note::
+
+   The registry is a prototype. Its commands and the generated fields below
+   may change.
+
+Generated projects are ready to register on the Isaac Lab registry, which lets
+other users find a project with ``isaaclab registry search`` and install it
+with ``isaaclab registry install``:
+
+* ``[project].dependencies`` requires the Isaac Lab release with an upper
+  bound, such as ``isaaclab[rsl-rl]~=3.0.0``. A project generated from a source
+  checkout uses the checkout's ``VERSION`` and still develops against the
+  checkout through an ``isaaclab-dev`` dependency group. Peer overrides in
+  ``[tool.uv]`` resolve every ``isaaclab*`` requirement, including those of
+  installed registry packages, to the checkout. uv then no longer checks their
+  Isaac Lab version ranges, which ``isaaclab registry install`` checks instead,
+  and does not install the Isaac Lab extras they request.
+* ``[tool.isaaclab.registry]`` holds the author-owned category, tags,
+  maintainers, and media, and ``[project.urls]`` holds the repository URL.
+  Fill them in before publishing.
+* The ``isaaclab-registry`` dependency group records registry packages
+  installed into the project. It is a default group, so ``uv sync`` keeps them,
+  and ``uv run isaaclab list_envs`` lists their tasks with the project's own.
+
+To publish, commit and push the project, tag the release as ``v<version>``, and
+run:
+
+.. code-block:: bash
+
+   uv run isaaclab registry publish --as <github-handle>
+
+The command checks the project and writes a registration request for the
+registry bot. The generated ``README.md`` describes the steps and options.
+
 Create an internal task
 -----------------------
 
@@ -471,7 +514,8 @@ Troubleshooting
    Run ``uv sync`` and invoke the command from the generated project root. Then
    confirm the task appears in ``uv run isaaclab list_envs``. Pass ``--all`` to
    include tasks from every installed task package instead of limiting the list
-   to the current project's ``isaaclab.tasks`` entry point.
+   to the current project's ``isaaclab.tasks`` entry point and its registry
+   packages.
 
 **Non-interactive arguments are rejected**
    Include ``--non_interactive`` after ``--new``. Cartpole is the default initial
