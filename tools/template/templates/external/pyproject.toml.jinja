@@ -19,24 +19,67 @@ authors = [
 {% endfor %}
 ]
 requires-python = ">=3.12,<3.13"
+# The published requirement: compatible with Isaac Lab {{ isaaclab_release }} and its patch releases.
 dependencies = [
-    "{{ isaaclab_dependency }}{% if rl_libraries %}[{% for rl_library in rl_libraries %}{% if not loop.first %},{% endif %}{{ rl_library.name | replace('_', '-') }}{% endfor %}]{% endif %}{% if isaaclab_release %}~={{ isaaclab_release }}{% endif %}",
+    "{{ isaaclab_requirement }}",
 ]
+
+[project.urls]
+# Set to the project's public git repository before sharing it on the Isaac Lab registry.
+Repository = ""
 
 [project.entry-points."isaaclab.tasks"]
 {{ name }} = "{{ name }}.tasks"
 
 [project.optional-dependencies]
-{% for extra in isaaclab_optional_extras %}
-{{ extra }} = ["{{ isaaclab_dependency }}[{{ extra }}]{% if isaaclab_release %}~={{ isaaclab_release }}{% endif %}"]
+{% if isaaclab_extra_groups %}
+# Published extras for users of the released package. While developing against the checkout, select an extra with
+# the dependency group of the same name instead (`uv run --group <extra>`). `dev` is this project's own tool group:
+# for Isaac Lab's `dev` extra, add `isaaclab-dev[dev]` to the `isaaclab-dev` group.
+{% endif %}
+{% for extra, requirement in isaaclab_optional_requirements.items() %}
+{{ extra }} = ["{{ requirement }}"]
 {% endfor %}
 
 [dependency-groups]
 dev = ["codespell>=2.4", "pre-commit>=4.2", "pytest>=8.3", "ruff>=0.11"]
+{% if isaaclab_dev_requirement %}
+# Develops against the Isaac Lab checkout this project was generated from (see [tool.uv.sources]).
+# Dependency groups are not published, so built wheels only require the release above.
+isaaclab-dev = ["{{ isaaclab_dev_requirement }}"]
+{% endif %}
+# Packages installed with `isaaclab registry install` (managed through `uv add/remove --group isaaclab-registry`).
+isaaclab-registry = []
+{% if isaaclab_extra_groups %}
+# The checkout's optional extras, installed from the checkout: `uv run --group isaacsim ...`. Add an extra to the
+# `isaaclab-dev` group instead to keep it installed by a plain `uv sync`.
+{% for group, requirement in isaaclab_extra_groups.items() %}
+{{ group }} = ["{{ requirement }}"]
+{% endfor %}
+{% endif %}
+
+# Author-owned metadata read by `isaaclab registry publish`.
+[tool.isaaclab.registry]
+# One of: locomotion, manipulation, navigation, humanoid, dexterous, multi-agent, other.
+category = "other"
+# Up to 15 lowercase tags, such as ["anymal", "rsl-rl"].
+tags = []
+# GitHub handles allowed to publish new versions. The first registrant becomes a maintainer.
+maintainers = []
+# Optional previews, such as { image = "https://.../demo.gif", video = "https://.../demo.mp4" }.
+media = {}
 
 [tool.uv]
 index-strategy = "unsafe-best-match"
 prerelease = "allow"
+# A plain `uv sync` installs these groups, so it keeps registry packages{% if isaaclab_dev_requirement %} and the checkout{% endif %}.
+default-groups = [{% for group in isaaclab_default_groups %}{% if not loop.first %}, {% endif %}"{{ group }}"{% endfor %}]
+{% if not isaaclab_sources %}
+# Registry packages generated from an Isaac Lab checkout keep `isaaclab` path sources that point outside their own
+# repository, and uv applies a git dependency's sources. Ignore them so `isaaclab` always comes from the package
+# index. Remove this line if you add an `isaaclab` entry to [tool.uv.sources].
+no-sources-package = ["isaaclab"]
+{% endif %}
 {% if isaaclab_environments %}
 environments = [
 {% for environment in isaaclab_environments %}
@@ -44,11 +87,27 @@ environments = [
 {% endfor %}
 ]
 {% endif %}
-{% if isaaclab_overrides %}
+{% if isaaclab_overrides or isaaclab_peer_overrides %}
 override-dependencies = [
 {% for dependency in isaaclab_overrides %}
     "{{ dependency }}",
 {% endfor %}
+{% if isaaclab_peer_overrides %}
+    # Peer overrides (source checkout only): each bare name replaces every requirement on that package, version
+    # and extras included, so [tool.uv.sources] resolves it to the checkout. Without them, `uv add` of a registry
+    # package that requires `isaaclab~={{ isaaclab_release }}` fails to resolve: uv ignores the version of this
+    # project's own path-sourced requirements but not of transitive ones, the checkout's packages report their
+    # own versions (`isaaclab` is not {{ isaaclab_release }}), and a git package generated from another checkout
+    # brings `isaaclab` path sources that point outside its repository. What they give up:
+    # - uv no longer checks `isaaclab*` version ranges; `isaaclab registry install` checks compatibility first.
+    # - Extras requested as `isaaclab[...]` (for example `skrl` by a registry package) are not installed, because
+    #   the checkout's extras live on `isaaclab-dev`; add them to the `isaaclab-dev` group, which is not
+    #   overridden so that it keeps its extras.
+    # Remove these overrides together with the path sources, or `isaaclab` would resolve from the index unbounded.
+{% for dependency in isaaclab_peer_overrides %}
+    "{{ dependency }}",
+{% endfor %}
+{% endif %}
 ]
 {% endif %}
 {% if isaaclab_sources %}

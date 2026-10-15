@@ -9,17 +9,22 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.metadata
+import re
 from pathlib import Path
 from typing import Any
 
 import tomllib
+
+from ..registry import DEPENDENCY_GROUP, normalize_name
 
 
 def command_list_envs(args: list[str] | None = None) -> None:
     """List registered environments and their optional presets.
 
     When invoked from a project that declares an ``isaaclab.tasks`` entry point,
-    the command shows that project's tasks by default. Pass ``--keyword`` to use
+    the command shows that project's tasks by default, including the registry
+    packages in its ``isaaclab-registry`` dependency group. Pass ``--keyword`` to use
     an explicit task-id filter or ``--all`` to show every registered task.
 
     Args:
@@ -89,17 +94,28 @@ def command_list_envs(args: list[str] | None = None) -> None:
 
 
 def _find_project_task_modules(start: Path) -> tuple[str, ...]:
-    """Return task modules declared by the nearest parent ``pyproject.toml``."""
+    """Return task modules declared by the nearest parent ``pyproject.toml`` and by its registry packages.
+
+    Packages that ``isaaclab registry install`` added to the project's ``isaaclab-registry`` dependency group
+    belong to the project, so their installed task modules count as well.
+    """
     for directory in (start, *start.parents):
         pyproject_path = directory / "pyproject.toml"
         if not pyproject_path.is_file():
             continue
         with pyproject_path.open("rb") as file:
-            project = tomllib.load(file).get("project", {})
-        entry_points = project.get("entry-points", {}).get("isaaclab.tasks", {})
-        if isinstance(entry_points, dict):
-            return tuple(value for value in entry_points.values() if isinstance(value, str))
-        return ()
+            data = tomllib.load(file)
+        entry_points = data.get("project", {}).get("entry-points", {}).get("isaaclab.tasks", {})
+        if not isinstance(entry_points, dict) or not entry_points:
+            return ()
+        modules = [value for value in entry_points.values() if isinstance(value, str)]
+        for requirement in data.get("dependency-groups", {}).get(DEPENDENCY_GROUP, []):
+            match = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement) if isinstance(requirement, str) else None
+            with contextlib.suppress(importlib.metadata.PackageNotFoundError):
+                if match:
+                    distribution = importlib.metadata.distribution(normalize_name(match.group(0)))
+                    modules += [ep.value for ep in distribution.entry_points if ep.group == "isaaclab.tasks"]
+        return tuple(modules)
     return ()
 
 
