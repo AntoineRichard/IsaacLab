@@ -23,7 +23,7 @@ from typing import Any
 
 from . import RegistryError, normalize_name, warn
 
-DEFAULT_INDEX_URL = "https://isaac-sim.github.io/isaaclab-registry/index.json"
+DEFAULT_INDEX_URL = "https://isaac-sim.github.io/IsaacLab-Registry/index.json"
 """Placeholder location of the published index."""
 
 INDEX_URL_ENV = "ISAACLAB_REGISTRY_URL"
