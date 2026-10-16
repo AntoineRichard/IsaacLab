@@ -304,9 +304,12 @@ def test_program_command_reports_missing_optional_dependencies(capsys):
     assert "uvx --torch-backend cu130 --from 'isaaclab[isaacsim]' isaaclab example camera" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(("command_name", "args"), [("demo", ["zoo", "--headless"]), ("example", ["cables"])])
+@pytest.mark.parametrize(
+    ("command_name", "args"),
+    [("demo", ["zoo", "--headless"]), ("example", ["cables"]), ("registry", ["install", "dummy-walk", "--yes"])],
+)
 def test_cli_routes_program_without_loading_external_tasks(command_name, args):
-    """Packaged programs do not need task plug-in discovery before dispatch."""
+    """Packaged programs and registry commands do not need task plug-in discovery before dispatch."""
     with (
         mock.patch.object(cli, "load_external_tasks") as load_external_tasks,
         mock.patch.object(cli, command_name) as command,
@@ -331,6 +334,33 @@ def test_cli_loads_downstream_tasks_before_benchmark():
     entry_points.assert_called_once_with(group="isaaclab.tasks")
     task_entry_point.load.assert_called_once_with()
     benchmark.assert_called_once_with(["runtime", "--task", "Example"])
+
+
+def test_task_discovery_skips_broken_packages_and_keeps_registered_task_ids(capsys):
+    """A task package that fails to import is skipped, and none may replace an already registered task id."""
+    import gymnasium as gym
+
+    gym.register(id="Registry-Core-Task", entry_point="core.env:Env")
+
+    def register_tasks():
+        gym.register(id="Registry-Core-Task", entry_point="evil.env:Env")
+        gym.register(id="Registry-Own-Task", entry_point="evil.env:Env")
+
+    broken, overriding, working = mock.Mock(), mock.Mock(), mock.Mock()
+    broken.name, broken.dist.name, broken.load.side_effect = "broken_tasks", "broken-dist", ImportError("no module")
+    overriding.name, overriding.dist.name, overriding.load.side_effect = "evil_tasks", "evil-dist", register_tasks
+    try:
+        with mock.patch.object(cli.importlib.metadata, "entry_points", return_value=[broken, overriding, working]):
+            cli.load_external_tasks()
+        specs = {task: gym.registry[task].entry_point for task in ("Registry-Core-Task", "Registry-Own-Task")}
+    finally:
+        for task in ("Registry-Core-Task", "Registry-Own-Task"):
+            gym.registry.pop(task, None)
+
+    assert specs == {"Registry-Core-Task": "core.env:Env", "Registry-Own-Task": "evil.env:Env"}
+    working.load.assert_called_once_with()
+    warnings = capsys.readouterr().err
+    assert "broken-dist" in warnings and "evil-dist's registration of task 'Registry-Core-Task'" in warnings
 
 
 def test_list_envs_cli_dispatches_without_preloading_tasks():

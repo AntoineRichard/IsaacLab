@@ -30,30 +30,57 @@ environment uses the Newton backend and does not install Isaac Sim:
 ```bash
 uv sync
 ```
-{% if isaaclab_sources %}
+{% if isaaclab_extra_groups %}
+{% set extra_kind = "group" %}
+{% set extra_option = "--group" %}
 
-This project's `pyproject.toml` uses editable relative paths to an Isaac Lab source checkout. Update
-`[tool.uv.sources]` if either directory moves.
-{% endif %}
+The project mirrors every optional extra declared by the Isaac Lab checkout used to create it, including physics,
+rendering, visualizer, RL, teleoperation, and test features, as a dependency group of the same name that installs the
+extra from the checkout. Inspect `pyproject.toml` for the complete list and pass each required group to `uv run`
+(the `--extra` options select the published extras, which do not install anything from the checkout):
+{% else %}
+{% set extra_kind = "extra" %}
+{% set extra_option = "--extra" %}
 
 The project forwards every optional extra declared by the Isaac Lab package used to create it, including physics,
 rendering, visualizer, RL, teleoperation, and development features. Inspect `pyproject.toml` for the complete list and
 pass each required extra to `uv run`:
+{% endif %}
 
 ```bash
 # Standalone OV PhysX
-uv run --extra ovphysx isaaclab random_agent --task <TASK_NAME> physics=ovphysx
+uv run {{ extra_option }} ovphysx isaaclab random_agent --task <TASK_NAME> physics=ovphysx
 
 # Isaac Sim with PhysX and RTX rendering
-uv run --extra isaacsim isaaclab random_agent --task <TASK_NAME> physics=isaacsim_physx
+uv run {{ extra_option }} isaacsim isaaclab random_agent --task <TASK_NAME> physics=isaacsim_physx
 
 # Isaac Sim with the Rerun visualizer
-uv run --extra isaacsim --extra rerun isaaclab random_agent --task <TASK_NAME> --viz rerun
+uv run {{ extra_option }} isaacsim {{ extra_option }} rerun isaaclab random_agent --task <TASK_NAME> --viz rerun
 ```
 
-The `all` extra forwards Isaac Lab's `all` selection. The `ov` extra installs both the `ovphysx` and `ovrtx` runtimes;
-you can also select either independently. Commit `pyproject.toml` and `uv.lock` so collaborators use the same
-environment.
+The `all` {{ extra_kind }} forwards Isaac Lab's `all` selection. The `ov` {{ extra_kind }} installs both the `ovphysx`
+and `ovrtx` runtimes; you can also select either independently. Commit `pyproject.toml` and `uv.lock` so collaborators
+use the same environment.
+{% if isaaclab_sources %}
+
+### Develop against the Isaac Lab checkout
+
+This project was generated from an Isaac Lab source checkout. Its published dependency is `{{ isaaclab_requirement }}`,
+so built wheels work with released Isaac Lab packages, while the local environment uses the checkout:
+
+- The `isaaclab-dev` dependency group installs the checkout through editable relative paths in `[tool.uv.sources]`.
+  Update those paths if either directory moves.
+- The peer overrides at the end of `[tool.uv] override-dependencies` resolve every `isaaclab*` requirement to the
+  checkout, including the requirements of registry packages. uv therefore no longer checks their Isaac Lab version
+  ranges; `isaaclab registry install` checks compatibility with Isaac Lab {{ isaaclab_release }} before it adds a
+  package. Remove the overrides together with the path sources, or uv may pick any `isaaclab` release from the index.
+- Isaac Lab extras requested through an `isaaclab[...]` requirement, by this project or by a registry package (for
+  example `isaaclab[skrl]`), are not installed from the checkout. Use the dependency group of the same name, or add
+  the extra to the `isaaclab-dev` group so that a plain `uv sync` keeps it installed, for example
+  `isaaclab-dev = ["isaaclab-dev[rsl-rl,skrl]"]`.
+- The checkout's packages report their own versions rather than {{ isaaclab_release }}, so `uv pip check` reports that
+  this project requires `{{ isaaclab_requirement }}`. This is expected.
+{% endif %}
 
 ## Run the tasks
 
@@ -143,11 +170,11 @@ In VS Code, use Pylance and select the interpreter that ran the setup command. I
 [basedpyright extension](https://marketplace.visualstudio.com/items?itemName=detachhead.basedpyright) instead of
 Pylance, select the same interpreter, and reload the window. Both language servers read `pyrightconfig.json`.
 
-When using the `isaacsim` extra, include it while generating the editor configuration so the command can discover the
-Isaac Sim installation:
+When using the `isaacsim` {{ extra_kind }}, include it while generating the editor configuration so the command can
+discover the Isaac Sim installation:
 
 ```bash
-uv run --extra isaacsim isaaclab --editor
+uv run {{ extra_option }} isaacsim isaaclab --editor
 ```
 
 For an Isaac Sim binaries installation that is not available in the project environment, provide its path explicitly:
@@ -160,12 +187,48 @@ uv run isaaclab --editor --isaac_path <isaac-sim-path>
 uv run isaaclab --editor --isaac_path <isaac-sim-path>
 ```
 
+## Share it on the Isaac Lab registry
+
+The Isaac Lab registry lists community task packages so that other users can find them with `isaaclab registry search`
+and install them with `isaaclab registry install <name>`. The registry stores metadata and a pinned commit (or wheel
+hash) only; your repository stays the source of truth.
+
+1. Fill in `[tool.isaaclab.registry]` (category, tags, maintainers, and optional media) and `[project.urls] Repository`
+   in `pyproject.toml`. Keep the published `isaaclab` requirement and its upper bound (`~={{ isaaclab_release }}`).
+2. Commit your changes, tag the release with its version, and push both:
+
+   ```bash
+   git tag v0.1.0
+   git push origin HEAD v0.1.0
+   ```
+
+3. Draft the registration request:
+
+   ```bash
+   uv run isaaclab registry publish --as <github-handle>
+   ```
+
+   `publish` reads `pyproject.toml` and the git state (the `origin` URL, falling back to `[project.urls] Repository`,
+   the `v<version>` tag, and a clean tree). It
+   runs pre-flight checks (an `isaaclab.tasks` entry point, a bounded `isaaclab` requirement, no `isaaclab-dev`
+   requirement, a `LICENSE`, and a tag that points at `HEAD`) and writes the registration request. Use `--ref <tag>`
+   for another tag, `--output <file>` to choose where the request is written, or `--pypi --index <url>` to register a
+   wheel published on a package index instead of a git commit.
+
+The registry bot validates the request, builds the wheel, and scans the registered tasks. A new package name is merged
+after a waiting period; later versions from a listed maintainer are merged after a few minutes.
+
+Packages installed into this project with `uv run isaaclab registry install <name>` are recorded in the
+`isaaclab-registry` dependency group, which `uv sync` keeps installed. Remove one with
+`uv run isaaclab registry uninstall <name>`. Inside this project, `uv run isaaclab list_envs` shows this project's tasks
+and those of its registry packages; pass `--all` to include Isaac Lab's own tasks.
+
 {% if include_ui_extension %}
 ## Isaac Sim UI extension
 
 Add the project root to the Isaac Sim Extension Manager search paths, refresh, and enable the extension under
-`Third Party`. Launch Isaac Sim through the project's `isaacsim` extra so the UI dependencies are available. Kit loads
-`src/{{ name }}/ui_extension_example.py` through `config/extension.toml`.
+`Third Party`. Launch Isaac Sim through the project's `isaacsim` {{ extra_kind }} so the UI dependencies are
+available. Kit loads `src/{{ name }}/ui_extension_example.py` through `config/extension.toml`.
 
 {% endif %}
 ## Troubleshooting
