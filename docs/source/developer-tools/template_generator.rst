@@ -97,15 +97,16 @@ When invoked from an installed wheel, the generated ``pyproject.toml`` requires
 Isaac Lab and its optional extras at a compatible release of that version (for
 example ``isaaclab~=3.0.0``), so ``uv sync`` cannot silently resolve an older
 release but still accepts its patch releases. When invoked from a source checkout, it
-requires the checkout's ``VERSION`` release the same way, so the project can be
-published as is, and develops against that checkout: an ``isaaclab-dev`` dependency
-group with editable paths to the checkout and its workspace packages, one
-dependency group per checkout extra (``uv run --group isaacsim`` replaces
-``uv run --extra isaacsim``), and peer overrides that resolve every ``isaaclab*``
-requirement to those paths. This lets development and release branches work
-before their version is published while preserving the code that generated the
-project. The source paths are relative to the generated project; regenerate the
-project or update ``[tool.uv.sources]`` if either directory moves.
+requires the checkout's ``VERSION`` release the same way, and its ``isaaclab-dev``
+dependency group installs that checkout and its workspace packages from the editable
+paths in ``[tool.uv.sources]``. Every Isaac Lab extra except ``dev`` then has a
+dependency group of the same name: use ``uv run --group isaacsim`` where this page
+shows ``uv run --extra isaacsim``. For Isaac Lab's ``dev`` extra, add
+``isaaclab-dev[dev]`` to the ``isaaclab-dev`` group.
+This lets development and release branches work before their version is
+published while preserving the code that generated the project.
+The source paths are relative to the generated project; regenerate the project
+or update ``[tool.uv.sources]`` if either directory moves.
 
 The short form is equivalent:
 
@@ -277,7 +278,8 @@ visualizer, RL, teleoperation, and other feature extras aligned with that Isaac
 Lab version. It includes ``rerun``, ``viser``, and ``all`` when the active Isaac
 Lab package provides them.
 
-Pass each extra required by a command. For example:
+Pass each extra required by a command, with ``--group`` instead of ``--extra`` in
+a project generated from a source checkout. For example:
 
 .. code-block:: bash
 
@@ -437,39 +439,13 @@ the generated ``pyrightconfig.json``.
 Share it on the Isaac Lab registry
 ----------------------------------
 
-.. note::
-
-   The registry is a prototype. Its commands and the generated fields below
-   may change.
-
-Generated projects are ready to register on the Isaac Lab registry, which lets
-other users find a project with ``isaaclab registry search`` and install it
-with ``isaaclab registry install``:
-
-* ``[project].dependencies`` requires the Isaac Lab release with an upper
-  bound, such as ``isaaclab[rsl-rl]~=3.0.0``. A project generated from a source
-  checkout uses the checkout's ``VERSION`` and still develops against the
-  checkout through an ``isaaclab-dev`` dependency group. Peer overrides in
-  ``[tool.uv]`` resolve every ``isaaclab*`` requirement, including those of
-  installed registry packages, to the checkout. uv then no longer checks their
-  Isaac Lab version ranges, which ``isaaclab registry install`` checks instead,
-  and does not install the Isaac Lab extras they request.
-* ``[tool.isaaclab.registry]`` holds the author-owned category, tags,
-  maintainers, and media, and ``[project.urls]`` holds the repository URL.
-  Fill them in before publishing.
-* The ``isaaclab-registry`` dependency group records registry packages
-  installed into the project. It is a default group, so ``uv sync`` keeps them,
-  and ``uv run isaaclab list_envs`` lists their tasks with the project's own.
-
-To publish, commit and push the project, tag the release as ``v<version>``, and
-run:
-
-.. code-block:: bash
-
-   uv run isaaclab registry publish --as <github-handle>
-
-The command checks the project and writes a registration request for the
-registry bot. The generated ``README.md`` describes the steps and options.
+Generated projects can be published as they are on the experimental
+:ref:`Isaac Lab registry <isaaclab-registry>`: fill in ``[tool.isaaclab.registry]``
+in ``pyproject.toml``, push a ``v<version>`` tag, and run
+``uv run isaaclab registry publish`` (see :ref:`isaaclab-registry-publish`).
+Registry packages installed into the project are recorded in its
+``isaaclab-registry`` dependency group, which ``uv sync`` keeps (see
+:ref:`isaaclab-registry-modes`).
 
 Create an internal task
 -----------------------
@@ -512,9 +488,8 @@ Troubleshooting
 **The CLI cannot find the generated task**
    Run ``uv sync`` and invoke the command from the generated project root. Then
    confirm the task appears in ``uv run isaaclab list_envs``. Pass ``--all`` to
-   include tasks from every installed task package instead of limiting the list
-   to the current project's ``isaaclab.tasks`` entry point and its registry
-   packages.
+   include Isaac Lab's own tasks instead of limiting the list to the tasks of the
+   current project and of the other installed task packages.
 
 **Non-interactive arguments are rejected**
    Include ``--non_interactive`` after ``--new``. Cartpole is the default initial
@@ -524,7 +499,8 @@ Troubleshooting
 
 **An optional backend module is missing**
    Add its extra before the command, such as ``uv run --extra ovphysx
-   isaaclab ...`` or ``uv run --extra isaacsim --extra rerun isaaclab ...``.
+   isaaclab ...`` or ``uv run --extra isaacsim --extra rerun isaaclab ...``,
+   using ``--group`` in a project generated from a source checkout.
    Every extra offered by the active Isaac Lab package is copied into the
    generated project's optional dependencies.
 
