@@ -46,7 +46,7 @@ uv run pytest tests/test_registration.py
 uv run isaaclab random_agent --task <TASK_NAME> --num_envs 16
 ```
 
-Use the task ID listed by the project, rather than guessing its spelling or suffix. Default dependencies provide Newton without Isaac Sim. For a PhysX target, use `uv run --extra isaacsim isaaclab random_agent --task <TASK_NAME> physics=isaacsim_physx --num_envs 16`; keep the extra on subsequent commands that need it. See the generator guide for other backend extras.
+Use the task ID listed by the project, rather than guessing its spelling or suffix. Default dependencies provide Newton without Isaac Sim. For a PhysX target, use `uv run --extra isaacsim isaaclab random_agent --task <TASK_NAME> physics=isaacsim_physx --num_envs 16` (`--group isaacsim` in a project generated from a source checkout); keep the extra on subsequent commands that need it. See the generator guide for other backend extras.
 
 For internal tasks, run commands from the Isaac Lab root and list tasks with `uv run python scripts/environments/list_envs.py --show_presets`.
 

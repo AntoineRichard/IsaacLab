@@ -3,13 +3,11 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import ast
 import glob
 import importlib.metadata
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 from datetime import date
@@ -250,70 +248,31 @@ def _external(specification: dict) -> None:
 
 
 def _prepare_external_dependencies(specification: dict, project_dir: str) -> dict:
-    """Resolve generated dependencies against a wheel or the active source checkout.
-
-    Both modes declare the publishable requirement ``isaaclab[<rl extras>]~=<release>``, so a project can be
-    built and registered as is. A project generated from a source checkout additionally develops against that
-    checkout through the ``isaaclab-dev`` dependency group, one dependency group per checkout extra, the checkout's
-    path sources, and peer overrides.
-
-    Args:
-        specification: The specification of the project.
-        project_dir: The directory of the generated project, used to make source paths relative.
-
-    Returns:
-        A copy of the specification with the ``isaaclab_*`` template variables set.
-    """
+    """Resolve generated dependencies against a wheel or the active source checkout."""
     specification = specification.copy()
     source_path = specification.get("isaaclab_source_path")
-    rl_extras = [rl_library["name"].replace("_", "-") for rl_library in specification["rl_libraries"]]
-    published_rl_extras = rl_extras
-    if source_path:
-        source_root = os.path.realpath(source_path)
-        with open(os.path.join(source_root, "pyproject.toml"), "rb") as file:
-            source_config = tomllib.load(file)
-        # The checkout's isaaclab package reports its extension version (such as 37.2.0), not the release.
-        with open(os.path.join(source_root, "VERSION")) as file:
-            release = file.read().strip()
-        checkout_extras = list(source_config["project"].get("optional-dependencies", {}))
-        # Publish only the extras that the release wheel built from this checkout provides.
-        unpublished = _wheel_excluded_extras(source_root)
-        optional_extras = [extra for extra in checkout_extras if extra not in unpublished]
-        published_rl_extras = [extra for extra in rl_extras if extra not in unpublished]
-        for extra in sorted(set(rl_extras) - set(published_rl_extras)):
-            print(
-                f"  |  WARNING: the Isaac Lab {release} wheel has no '{extra}' extra, so the published requirement"
-                " leaves it out; users of the released package install it themselves. Developing against the"
-                " checkout still installs it (isaaclab-dev group)."
-            )
-    else:
+    if not source_path:
         # Accept patch releases of the installed version, without its local label such as "+build7".
         installed_version = specification.get("isaaclab_version")
-        release = installed_version.split("+", 1)[0] if installed_version else None
+        specification["isaaclab_release"] = installed_version.split("+", 1)[0] if installed_version else None
+        specification["isaaclab_dependency"] = "isaaclab"
+        specification["isaaclab_environments"] = []
+        specification["isaaclab_indexes"] = []
+        specification["isaaclab_overrides"] = []
+        specification["isaaclab_sources"] = []
         optional_extras = specification.get("isaaclab_optional_extras")
         if optional_extras is None:
             optional_extras = importlib.metadata.distribution("isaaclab").metadata.get_all("Provides-Extra") or []
-
-    specification["isaaclab_release"] = release
-    specification["isaaclab_requirement"] = _isaaclab_requirement("isaaclab", published_rl_extras, release)
-    specification["isaaclab_optional_requirements"] = {
-        extra: _isaaclab_requirement("isaaclab", [extra], release) for extra in sorted(set(optional_extras))
-    }
-    specification["isaaclab_default_groups"] = ["dev", "isaaclab-registry"]
-    specification["isaaclab_dev_requirement"] = None
-    specification["isaaclab_extra_groups"] = {}
-    specification["isaaclab_environments"] = []
-    specification["isaaclab_indexes"] = []
-    specification["isaaclab_overrides"] = []
-    specification["isaaclab_peer_overrides"] = []
-    specification["isaaclab_sources"] = []
-    if not source_path:
+        specification["isaaclab_optional_extras"] = sorted(set(optional_extras))
         return specification
 
+    source_root = os.path.realpath(source_path)
+    with open(os.path.join(source_root, "pyproject.toml"), "rb") as file:
+        source_config = tomllib.load(file)
+
     uv_config = source_config["tool"]["uv"]
-    dev_project_name = source_config["project"]["name"]
     sources = []
-    for package_name, source in uv_config["sources"].items():
+    for package_name, source in source_config["tool"]["uv"]["sources"].items():
         if isinstance(source, dict) and "path" in source:
             source = source.copy()
             package_path = os.path.join(source_root, source["path"])
@@ -321,86 +280,25 @@ def _prepare_external_dependencies(specification: dict, project_dir: str) -> dic
         sources.append({"name": package_name, "value": _format_toml_value(source)})
     sources.append(
         {
-            "name": dev_project_name,
-            "value": _format_toml_value({"path": _project_source_path(source_root, project_dir), "editable": True}),
+            "name": source_config["project"]["name"],
+            "value": _format_toml_value(
+                {
+                    "path": _project_source_path(source_root, project_dir),
+                    "editable": True,
+                }
+            ),
         }
     )
-    specification["isaaclab_dev_requirement"] = _isaaclab_requirement(dev_project_name, rl_extras)
-    specification["isaaclab_default_groups"] = ["dev", "isaaclab-dev", "isaaclab-registry"]
-    # The published extras request ``isaaclab[<extra>]``, which the peer overrides resolve to the checkout's
-    # ``isaaclab`` without extras (the checkout's extras live on its dependency-only root project). Mirror each
-    # checkout extra as a dependency group so ``uv run --group <extra>`` installs it, except names that the project's
-    # own groups already use, such as the checkout's ``dev`` extra (Isaac Lab's documentation and test tools).
-    own_groups = {_normalize_name(group) for group in specification["isaaclab_default_groups"]}
-    specification["isaaclab_extra_groups"] = {
-        extra: _isaaclab_requirement(dev_project_name, [extra])
-        for extra in sorted(set(checkout_extras))
-        if _normalize_name(extra) not in own_groups
-    }
+    specification["isaaclab_dependency"] = source_config["project"]["name"]
+    # The checkout's isaaclab package reports its extension version (such as 37.2.0), not the release.
+    with open(os.path.join(source_root, "VERSION")) as file:
+        specification["isaaclab_release"] = file.read().strip()
+    specification["isaaclab_optional_extras"] = sorted(source_config["project"].get("optional-dependencies", {}).keys())
     specification["isaaclab_environments"] = uv_config.get("environments", [])
     specification["isaaclab_indexes"] = uv_config.get("index", [])
     specification["isaaclab_overrides"] = uv_config.get("override-dependencies", [])
-    # Peer overrides: the checkout's own ``isaaclab*`` path packages. The dependency-only root project is not one
-    # of them: a bare-name override also replaces the requester's extras, and the ``isaaclab-dev`` groups need their
-    # extras. The pyproject template explains why the overrides are needed and what they give up.
-    specification["isaaclab_peer_overrides"] = sorted(
-        name
-        for name, source in uv_config["sources"].items()
-        if name.startswith("isaaclab") and isinstance(source, dict) and "path" in source
-    )
     specification["isaaclab_sources"] = sorted(sources, key=lambda source: source["name"])
     return specification
-
-
-def _wheel_excluded_extras(source_root: str) -> set[str]:
-    """Return the checkout extras that the published ``isaaclab`` wheel leaves out.
-
-    ``tools/wheel_builder/gen_pyproject.py`` derives the release wheel's metadata from the checkout's root
-    ``pyproject.toml`` and drops its ``_WHEEL_EXCLUDED_EXTRAS`` (for example ``rl-games``, installed from git). The
-    script runs on import, so the set is read from its source.
-
-    Args:
-        source_root: The Isaac Lab checkout root.
-
-    Returns:
-        The excluded extra names, or an empty set when the script is missing.
-    """
-    path = os.path.join(source_root, "tools", "wheel_builder", "gen_pyproject.py")
-    try:
-        with open(path) as file:
-            tree = ast.parse(file.read())
-    except (OSError, SyntaxError):
-        return set()
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "_WHEEL_EXCLUDED_EXTRAS" for target in node.targets
-        ):
-            try:
-                return {str(extra) for extra in ast.literal_eval(node.value)}
-            except ValueError:
-                return set()
-    return set()
-
-
-def _isaaclab_requirement(name: str, extras: list[str], release: str | None = None) -> str:
-    """Format an Isaac Lab requirement, compatible with the given release series when one is given.
-
-    Args:
-        name: The distribution name.
-        extras: The extras to request, in order.
-        release: The release version. ``~=X.Y.Z`` allows patch releases of ``X.Y`` and gives the upper bound the
-            registry requires.
-
-    Returns:
-        A PEP 508 requirement string, for example ``"isaaclab[rsl-rl]~=3.0.0"``.
-    """
-    requirement = name + (f"[{','.join(extras)}]" if extras else "")
-    return requirement + (f"~={release}" if release else "")
-
-
-def _normalize_name(name: str) -> str:
-    """Normalize a distribution, extra, or dependency-group name as defined by PEP 503 and PEP 685."""
-    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _project_source_path(source_path: str, project_dir: str) -> str:
