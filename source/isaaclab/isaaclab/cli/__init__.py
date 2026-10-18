@@ -144,7 +144,7 @@ def example(args: list[str] | None = None) -> None:
 
 
 def registry(args: list[str] | None = None) -> None:
-    """Browse, install, and publish packages from the Isaac Lab community registry.
+    """Browse, install, and publish packages from the Isaac Lab registry.
 
     Args:
         args: Command-line arguments. Uses ``sys.argv`` when omitted.

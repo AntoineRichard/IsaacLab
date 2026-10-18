@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Client for the Isaac Lab community package registry (prototype).
+"""Client for the Isaac Lab registry of community task packages (prototype).
 
 The registry is a curated index of template-generated Isaac Lab projects that lives in a separate,
 bot-run repository. Clients only download its compiled ``index.json``. This package reads that index,
@@ -11,8 +11,7 @@ gates releases on the running Isaac Lab release, and installs them with uv, eith
 uv project (``uv add --group isaaclab-registry``) or into the running environment (``uv pip install``).
 
 Every module here imports only the standard library at module level, so ``import isaaclab.cli`` keeps
-working before Isaac Lab's runtime dependencies are installed. ``packaging`` and ``prettytable`` are
-imported inside the functions that need them.
+working before Isaac Lab's runtime dependencies are installed.
 """
 
 import re
@@ -37,19 +36,12 @@ class RegistryError(RuntimeError):
 
 
 def warn(message: str) -> None:
-    """Print a warning on stderr, so that stdout stays machine-readable for ``--json`` output."""
+    """Print a warning on stderr, apart from the tables on stdout."""
     print_warning(message, stream=sys.stderr)
 
 
 def normalize_name(name: str) -> str:
-    """Return the PEP 503 normalized form of a distribution name.
-
-    Args:
-        name: Distribution name as written by its author.
-
-    Returns:
-        The lower-case name with runs of ``-``, ``_`` and ``.`` collapsed to ``-``.
-    """
+    """Return the PEP 503 normalized form of a distribution name."""
     return re.sub(r"[-_.]+", "-", name).lower()
 
 

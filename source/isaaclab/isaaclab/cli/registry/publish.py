@@ -11,46 +11,26 @@ import getpass
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
-import urllib.parse
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import tomllib
 
 from ..utils import print_info
-from . import TASKS_ENTRY_POINT_GROUP, RegistryError, normalize_name, warn
-from .environment import uv_binary
-from .installer import PYPI_SIMPLE_URLS, format_command
+from . import TASKS_ENTRY_POINT_GROUP, RegistryError, normalize_name
+from .install import uv_binary
 
 REQUEST_SCHEMA = 1
-LICENSE_FILE_PREFIXES = ("LICENSE", "LICENCE", "COPYING")
+"""Version of the request format that the registry bot reads."""
+
+DEFAULT_PACKAGE_INDEX = "https://pypi.org/simple"
+"""PEP 503 index of ``--pypi`` requests."""
+
 OPTIONAL_PACKAGE_FIELDS = ("status", "status_description", "tracking")
 """``[tool.isaaclab.registry]`` keys forwarded to the request only when the author sets them."""
-
-
-@dataclass(frozen=True)
-class PreflightCheck:
-    """Result of one author-side check. The bot repeats these checks authoritatively."""
-
-    name: str
-    ok: bool
-    message: str
-
-
-@dataclass
-class Draft:
-    """A registration request and the pre-flight checks it passed or failed."""
-
-    request: dict[str, Any]
-    checks: list[PreflightCheck] = field(default_factory=list)
-
-    @property
-    def ok(self) -> bool:
-        """Return whether every pre-flight check passed."""
-        return all(check.ok for check in self.checks)
 
 
 def draft_request(
@@ -61,23 +41,27 @@ def draft_request(
     requested_by: str | None = None,
     pypi: bool = False,
     package_index: str | None = None,
-) -> Draft:
-    """Read a project and its git state, run the pre-flight checks, and build the registration request.
+) -> dict[str, Any]:
+    """Build the registration request of a project.
+
+    Three problems that the registry bot would reject stop the request here: no ``isaaclab.tasks`` entry point,
+    an Isaac Lab requirement without an upper bound (or on an ``isaaclab-*`` package, such as the checkout-only
+    ``isaaclab-dev``), and a git tag that is missing or not pushed. The bot runs these and every other check again,
+    authoritatively.
 
     Args:
         path: Project directory containing ``pyproject.toml``.
         ref: Git tag to register. Defaults to ``v<version>``.
-        repository: Repository URL. Defaults to the ``origin`` remote, then ``[project.urls].Repository``,
-            then the local repository itself as a ``file://`` URL (prototype convenience).
+        repository: Repository URL. Defaults to the ``origin`` remote.
         requested_by: GitHub handle of the requester. Defaults to the first maintainer, then the OS user.
         pypi: Register the wheel published on a package index instead of a git commit.
         package_index: PEP 503 index URL for ``pypi``. Defaults to PyPI.
 
     Returns:
-        The request (schema of the registry's ``request.schema.json``) and the check results.
+        The request, in the format of the registry's ``request.schema.json``.
 
     Raises:
-        RegistryError: If the project cannot be read or lacks a static name and version.
+        RegistryError: If the project cannot be registered as it is.
     """
     path = path.expanduser().resolve()
     pyproject = path / "pyproject.toml"
@@ -85,34 +69,22 @@ def draft_request(
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise RegistryError(f"Cannot read {pyproject}: {error}") from error
-    project = data.get("project")
-    if not isinstance(project, dict) or not project.get("name"):
-        raise RegistryError(f"{pyproject} has no [project] name.")
-    if not project.get("version"):
-        raise RegistryError(f"{pyproject} must declare a static [project].version to be registered.")
+    project = data.get("project", {})
+    if not project.get("name") or not project.get("version"):
+        raise RegistryError(f"{pyproject} must declare a static [project] name and version to be registered.")
     name, version = normalize_name(project["name"]), str(project["version"])
-    metadata = data.get("tool", {}).get("isaaclab", {}).get("registry", {})
-
-    entry_points = project.get("entry-points", {}).get(TASKS_ENTRY_POINT_GROUP, {})
-    checks = [
-        PreflightCheck(
-            "entry-point",
-            bool(entry_points),
-            ", ".join(f"{key} = {value}" for key, value in entry_points.items())
-            or f'no [project.entry-points."{TASKS_ENTRY_POINT_GROUP}"] table',
-        ),
-        *_requirement_checks(project),
-        _license_check(path, project),
-    ]
+    if not project.get("entry-points", {}).get(TASKS_ENTRY_POINT_GROUP):
+        raise RegistryError(f'{pyproject} has no [project.entry-points."{TASKS_ENTRY_POINT_GROUP}"] table.')
+    _check_isaaclab_requirement(project, pyproject)
     if pypi:
-        index = (package_index or PYPI_SIMPLE_URLS[0]).rstrip("/")
-        source: dict[str, Any] = {"type": "pypi", "index": index, "project": name, "version": version}
+        index = (package_index or DEFAULT_PACKAGE_INDEX).rstrip("/")
+        source = {"type": "pypi", "index": index, "project": name, "version": version}
     else:
-        source, git_checks = _git_source(path, version, ref, repository, project.get("urls", {}).get("Repository"))
-        checks += git_checks
+        source = _git_source(path, ref or f"v{version}", repository)
 
-    # Author-owned fields; an empty value tells the bot to keep what the registry already has.
+    metadata = data.get("tool", {}).get("isaaclab", {}).get("registry", {})
     maintainers = [str(handle) for handle in metadata.get("maintainers", [])]
+    # Author-owned fields; an empty value tells the bot to keep what the registry already has.
     package = {
         "category": str(metadata.get("category", "")),
         "tags": [str(tag) for tag in metadata.get("tags", [])],
@@ -120,16 +92,15 @@ def draft_request(
         "homepage": str(metadata.get("homepage") or project.get("urls", {}).get("Homepage", "")),
         "media": {str(key): str(value) for key, value in metadata.get("media", {}).items()},
         "description": str(metadata.get("description", "")),
+        **{key: str(metadata[key]) for key in OPTIONAL_PACKAGE_FIELDS if key in metadata},
     }
-    package.update({key: str(metadata[key]) for key in OPTIONAL_PACKAGE_FIELDS if key in metadata})
-    request = {
+    return {
         "schema": REQUEST_SCHEMA,
         "name": name,
         "requested_by": requested_by or (maintainers[0] if maintainers else getpass.getuser()),
         "source": source,
         "package": package,
     }
-    return Draft(request=request, checks=checks)
 
 
 def render_request(request: dict[str, Any]) -> str:
@@ -143,7 +114,7 @@ def render_request(request: dict[str, Any]) -> str:
         TOML text that ``tomllib`` parses back to ``request``.
     """
     lines = ["# Isaac Lab registry registration request, written by 'isaaclab registry publish'."]
-    tables = {key: value for key, value in request.items() if isinstance(value, dict) and key in ("source", "package")}
+    tables = {key: value for key, value in request.items() if key in ("source", "package")}
     lines += [f"{_toml_key(key)} = {_toml_value(value)}" for key, value in request.items() if key not in tables]
     for table, values in tables.items():
         lines += ["", f"[{table}]"]
@@ -173,182 +144,85 @@ def submit_request(registry: Path, request_file: Path, bot_args: list[str] | Non
         raise RegistryError(f"{script} does not exist; --registry must point at a registry repository checkout.")
     argv = [uv_binary(), "run", str(script), "register", "--registry", str(registry), "--request", str(request_file)]
     argv += bot_args or []
-    print_info(f"Running: {format_command(argv)}")
+    print_info(f"Running: {shlex.join(['uv', *argv[1:]])}")
     sys.stdout.flush()
     # The bot is a self-contained script; do not let the caller's activated environment leak into it.
     environment = {key: value for key, value in os.environ.items() if key != "VIRTUAL_ENV"}
     return subprocess.run(argv, cwd=registry, env=environment, check=False).returncode
 
 
-def _requirement_checks(project: dict[str, Any]) -> list[PreflightCheck]:
-    """Check the Isaac Lab requirement: plain ``isaaclab`` with an upper bound, and no ``isaaclab-dev``."""
+def _check_isaaclab_requirement(project: dict[str, Any], pyproject: Path) -> None:
+    """Require a plain ``isaaclab`` dependency with an upper bound, so the package claims no future release.
+
+    Raises:
+        RegistryError: If the requirement is missing or has no upper bound, or an ``isaaclab-*`` package is required.
+    """
     from packaging.requirements import InvalidRequirement, Requirement
 
-    def parse(values: list[str]) -> list[Requirement]:
-        parsed = []
-        for value in values:
-            try:
-                parsed.append(Requirement(value))
-            except InvalidRequirement:
-                continue
-        return parsed
-
-    dependencies = parse(project.get("dependencies", []))
-    optional = parse([value for values in project.get("optional-dependencies", {}).values() for value in values])
-    isaaclab = [req for req in dependencies if normalize_name(req.name) == "isaaclab"]
-    unbounded = [req for req in isaaclab if not _has_upper_bound(req.specifier)]
-    if not isaaclab:
-        isaaclab_check = PreflightCheck("isaaclab-requirement", False, "[project].dependencies has no 'isaaclab'")
-    elif unbounded:
-        isaaclab_check = PreflightCheck(
-            "isaaclab-requirement", False, f"'{unbounded[0]}' needs an upper bound, for example 'isaaclab~=3.0.0'"
+    dependencies = project.get("dependencies", [])
+    optional = [value for values in project.get("optional-dependencies", {}).values() for value in values]
+    try:
+        requirements = [Requirement(value) for value in [*dependencies, *optional]]
+    except InvalidRequirement as error:
+        raise RegistryError(f"{pyproject} has an invalid requirement: {error}") from error
+    # Isaac Lab is published as one 'isaaclab' distribution; 'isaaclab-dev' only exists in a checkout.
+    if name := next((req.name for req in requirements if normalize_name(req.name).startswith("isaaclab-")), None):
+        raise RegistryError(f"{pyproject} requires '{name}': depend on the 'isaaclab' release instead.")
+    isaaclab = [req for req in requirements[: len(dependencies)] if normalize_name(req.name) == "isaaclab"]
+    upper = ("<", "<=", "~=", "==", "===")
+    if not isaaclab or not all(any(spec.operator in upper for spec in req.specifier) for req in isaaclab):
+        found = ", ".join(f"'{req}'" for req in isaaclab) or "none"
+        raise RegistryError(
+            f"{pyproject}: the 'isaaclab' dependency needs an upper bound, for example 'isaaclab~=3.0.0' (found:"
+            f" {found})."
         )
-    else:
-        isaaclab_check = PreflightCheck("isaaclab-requirement", True, ", ".join(str(req) for req in isaaclab))
-    development = [str(req) for req in dependencies + optional if normalize_name(req.name) == "isaaclab-dev"]
-    return [
-        isaaclab_check,
-        PreflightCheck(
-            "no-isaaclab-dev",
-            not development,
-            f"published requirements must not use the checkout-only 'isaaclab-dev': {', '.join(development)}"
-            if development
-            else "no isaaclab-dev requirement",
-        ),
-    ]
 
 
-def _has_upper_bound(specifier: Any) -> bool:
-    """Return whether a ``packaging`` specifier set bounds versions from above."""
-    return any(spec.operator in ("<", "<=", "~=", "==", "===") for spec in specifier)
+def _git_source(path: Path, ref: str, repository: str | None) -> dict[str, str]:
+    """Return the git ``[source]`` table of the request, pinned to the commit of a pushed tag.
 
-
-def _license_check(path: Path, project: dict[str, Any]) -> PreflightCheck:
-    """Check for a license expression or a LICENSE file in the project or its repository root."""
-    license_field = project.get("license")
-    if isinstance(license_field, str) and license_field:
-        return PreflightCheck("license", True, f"License-Expression {license_field}")
-    directories = [path]
-    toplevel = _git(path, "rev-parse", "--show-toplevel")
-    if toplevel:
-        directories.append(Path(toplevel))
-    for directory in directories:
-        for candidate in sorted(directory.iterdir()):
-            if candidate.is_file() and candidate.name.upper().startswith(LICENSE_FILE_PREFIXES):
-                return PreflightCheck("license", True, str(candidate.relative_to(directories[-1])))
-    if isinstance(license_field, dict) and license_field.get("text"):
-        return PreflightCheck("license", True, f"license text {license_field['text'][:40]!r}")
-    return PreflightCheck("license", False, "no LICENSE file and no [project].license expression")
-
-
-def _git_source(
-    path: Path, version: str, ref: str | None, repository: str | None, declared: str | None = None
-) -> tuple[dict[str, Any], list[PreflightCheck]]:
-    """Return the git ``[source]`` table of the request and the git pre-flight checks.
-
-    The repository is ``repository`` (``--repository``), else the ``origin`` remote, else ``declared`` (the
-    project's ``[project.urls].Repository``), else the local repository as a ``file://`` URL.
+    Raises:
+        RegistryError: If ``path`` is not in a git repository, the repository URL is unknown, or the tag is
+            missing locally or on the remote.
     """
-    ref = ref or f"v{version}"
     toplevel = _git(path, "rev-parse", "--show-toplevel")
     if toplevel is None:
-        source = {
-            "type": "git",
-            "repository": repository or declared or "",
-            "subdirectory": "",
-            "ref": ref,
-            "commit": "",
-        }
-        return source, [PreflightCheck("git", False, f"{path} is not inside a git repository")]
-    root = Path(toplevel).resolve()
-    checks = []
-    origin = _git(path, "remote", "get-url", "origin")
-    if not repository and origin and declared and _normalize_repository(origin) != _normalize_repository(declared):
-        warn(f"Registering the 'origin' remote {origin}; [project.urls].Repository says {declared}.")
-    repository = repository or origin or declared or None
+        raise RegistryError(f"{path} is not inside a git repository.")
+    repository = repository or _git(path, "remote", "get-url", "origin")
     if not repository:
-        repository = root.as_uri()
-        warn(f"No 'origin' remote: registering the local repository {repository} (prototype only).")
-    repository = _normalize_repository(repository)
-    scheme = urllib.parse.urlparse(repository).scheme
-    checks.append(
-        PreflightCheck(
-            "repository",
-            scheme in ("https", "file"),
-            repository if scheme in ("https", "file") else f"{repository}: the registry needs an https:// URL",
-        )
-    )
+        raise RegistryError("The repository has no 'origin' remote; pass its public URL with --repository.")
+    repository = _normalize_repository(repository, Path(toplevel))
     commit = _git(path, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
-    head = _git(path, "rev-parse", "HEAD")
-    checks.append(
-        PreflightCheck(
-            "tag",
-            commit is not None,
-            f"{ref} -> {commit}" if commit else f"no tag {ref}; create it with 'git tag {ref}' (or pass --ref)",
-        )
-    )
-    if commit is not None:
-        checks.append(
-            PreflightCheck(
-                "tag-at-head",
-                commit == head,
-                "the tag points at HEAD"
-                if commit == head
-                else f"{ref} is {commit[:12]} but HEAD is {(head or '?')[:12]}",
-            )
-        )
-        remote = _remote_commit(repository, ref)
-        checks.append(
-            PreflightCheck(
-                "tag-published",
-                remote == commit,
-                f"{repository} has {ref}"
-                if remote == commit
-                else f"{repository} does not have {ref} at {commit[:12]}; push it with 'git push origin {ref}'",
-            )
-        )
-    dirty = _git(path, "status", "--porcelain", "--untracked-files=no")
-    checks.append(
-        PreflightCheck("clean-tree", not dirty, "no uncommitted changes" if not dirty else "uncommitted changes")
-    )
-    subdirectory = path.relative_to(root).as_posix()
-    source = {
+    if commit is None:
+        raise RegistryError(f"There is no tag {ref}: create it with 'git tag {ref}' and push it, or pass --ref.")
+    # The bot builds the commit from a clone of the repository, so the tag must be published there.
+    listing = _git(path, "ls-remote", repository, f"refs/tags/{ref}", f"refs/tags/{ref}^{{}}")
+    if listing is None:
+        raise RegistryError(f"Cannot reach {repository} with 'git ls-remote'; check the URL and your access to it.")
+    remote = {name: sha for sha, _, name in (line.partition("\t") for line in listing.splitlines())}
+    if remote.get(f"refs/tags/{ref}^{{}}", remote.get(f"refs/tags/{ref}")) != commit:
+        raise RegistryError(f"{repository} does not have {ref} at {commit[:12]}: push it with 'git push origin {ref}'.")
+    subdirectory = path.relative_to(Path(toplevel).resolve()).as_posix()
+    return {
         "type": "git",
         "repository": repository,
         "subdirectory": "" if subdirectory == "." else subdirectory,
         "ref": ref,
-        "commit": commit or "",
+        "commit": commit,
     }
-    return source, checks
 
 
-def _normalize_repository(repository: str) -> str:
-    """Turn a local path into a ``file://`` URL and an scp-style remote into an https URL."""
+def _normalize_repository(repository: str, toplevel: Path) -> str:
+    """Return a remote as a URL: an scp-style remote as https, and a local path as ``file://``.
+
+    Like git, a relative path is read from the top of the working tree, ``toplevel``.
+    """
     if "://" in repository:
         return repository
     scp = re.fullmatch(r"[\w.-]+@([\w.-]+):(.+)", repository)
     if scp:
         return f"https://{scp.group(1)}/{scp.group(2)}"
-    return Path(repository).expanduser().resolve().as_uri()
-
-
-def _remote_commit(repository: str, ref: str) -> str | None:
-    """Return the commit a tag resolves to on the remote, peeling annotated tags."""
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", repository, f"refs/tags/{ref}", f"refs/tags/{ref}^{{}}"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    refs = {}
-    for line in result.stdout.splitlines():
-        sha, _, name = line.partition("\t")
-        refs[name] = sha
-    return refs.get(f"refs/tags/{ref}^{{}}") or refs.get(f"refs/tags/{ref}")
+    return (toplevel / Path(repository).expanduser()).resolve().as_uri()
 
 
 def _git(path: Path, *args: str) -> str | None:
@@ -366,9 +240,7 @@ def _toml_key(key: str) -> str:
 
 
 def _toml_value(value: Any) -> str:
-    """Serialize a string, boolean, integer, list, or flat table as an inline TOML value."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
+    """Serialize a string, integer, list, or flat table as an inline TOML value."""
     if isinstance(value, int):
         return str(value)
     if isinstance(value, str):
@@ -377,7 +249,6 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     if isinstance(value, dict):
-        if not value:
-            return "{}"
-        return "{ " + ", ".join(f"{_toml_key(key)} = {_toml_value(item)}" for key, item in value.items()) + " }"
+        items = ", ".join(f"{_toml_key(key)} = {_toml_value(item)}" for key, item in value.items())
+        return f"{{ {items} }}" if items else "{}"
     raise TypeError(f"Cannot serialize {type(value).__name__} as TOML")

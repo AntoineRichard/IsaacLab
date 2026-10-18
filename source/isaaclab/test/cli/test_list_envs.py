@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 from unittest import mock
 
 import gymnasium as gym
@@ -18,7 +17,7 @@ from isaaclab.cli.commands.list_envs import command_list_envs
 def test_command_lists_non_isaac_prefixed_task_from_current_project(tmp_path, monkeypatch, capsys):
     """Downstream tasks must not need an ``Isaac`` prefix to appear in project-scoped output.
 
-    Registry packages installed into the project (its ``isaaclab-registry`` group) count as part of it.
+    Installed task packages, such as registry packages, count as part of the project.
     """
     tasks = {"Example-Balance-Robot": "example.tasks", "Registry-Walk-Robot": "registry_walk.tasks"}
     for task_id, module in tasks.items():
@@ -32,19 +31,10 @@ def test_command_lists_non_isaac_prefixed_task_from_current_project(tmp_path, mo
     working_dir.mkdir(parents=True)
     (project_dir / "pyproject.toml").write_text(
         '[project]\nname = "example"\n[project.entry-points."isaaclab.tasks"]\nexample = "example.tasks"\n'
-        '[dependency-groups]\nisaaclab-registry = ["registry-walk"]\n'
     )
-    registry_walk = mock.Mock()
-    registry_walk.entry_points = [
-        importlib.metadata.EntryPoint(name="registry_walk", value="registry_walk.tasks", group="isaaclab.tasks")
-    ]
     monkeypatch.chdir(working_dir)
-    monkeypatch.setattr("isaaclab.cli.importlib.metadata.entry_points", lambda **kwargs: [])
-    distribution = importlib.metadata.distribution
-    monkeypatch.setattr(
-        "isaaclab.cli.commands.list_envs.importlib.metadata.distribution",
-        lambda name: registry_walk if name == "registry-walk" else distribution(name),
-    )
+    registry_walk = mock.Mock(value="registry_walk.tasks")  # an installed package's entry point; load() is a no-op
+    monkeypatch.setattr("isaaclab.cli.importlib.metadata.entry_points", lambda **kwargs: [registry_walk])
 
     try:
         command_list_envs([])

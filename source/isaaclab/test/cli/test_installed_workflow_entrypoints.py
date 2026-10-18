@@ -25,9 +25,10 @@ pytestmark = pytest.mark.unit
 
 
 def test_cli_import_does_not_require_runtime_dependencies():
-    """The installation CLI must load before core runtime dependencies are installed."""
+    """The installation and registry CLI must load before core runtime dependencies are installed."""
+    blocked = 'sys.modules.update(dict.fromkeys(["lazy_loader", "packaging", "prettytable", "jinja2"]))'
     result = subprocess.run(
-        [sys.executable, "-c", 'import sys; sys.modules["lazy_loader"] = None; import isaaclab.cli'],
+        [sys.executable, "-c", f"import sys; {blocked}; import isaaclab.cli, isaaclab.cli.commands.registry"],
         capture_output=True,
         text=True,
         check=False,
