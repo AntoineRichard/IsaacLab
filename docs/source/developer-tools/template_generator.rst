@@ -93,10 +93,16 @@ installed Isaac Lab package:
 The command uses the dependencies from the active Isaac Lab environment. It
 does not invoke ``pip`` or install another set of template dependencies, so it
 also works in the pip-less virtual environments created by ``uv``.
-When invoked from an installed wheel, the generated ``pyproject.toml`` pins
-Isaac Lab and its optional extras to that exact version so ``uv sync`` cannot
-silently resolve an older release. When invoked from a source checkout, it
-instead records editable paths to that checkout and its workspace packages.
+When invoked from an installed wheel, the generated ``pyproject.toml`` requires
+Isaac Lab and its optional extras at a compatible release of that version (for
+example ``isaaclab~=3.0.0``), so ``uv sync`` cannot silently resolve an older
+release but still accepts its patch releases. When invoked from a source checkout, it
+requires the checkout's ``VERSION`` release the same way, and its ``isaaclab-dev``
+dependency group installs that checkout and its workspace packages from the editable
+paths in ``[tool.uv.sources]``. Every Isaac Lab extra except ``dev`` then has a
+dependency group of the same name: use ``uv run --group isaacsim`` where this page
+shows ``uv run --extra isaacsim``. For Isaac Lab's ``dev`` extra, add
+``isaaclab-dev[dev]`` to the ``isaaclab-dev`` group.
 This lets development and release branches work before their version is
 published while preserving the code that generated the project.
 The source paths are relative to the generated project; regenerate the project
@@ -272,7 +278,8 @@ visualizer, RL, teleoperation, and other feature extras aligned with that Isaac
 Lab version. It includes ``rerun``, ``viser``, and ``all`` when the active Isaac
 Lab package provides them.
 
-Pass each extra required by a command. For example:
+Pass each extra required by a command, with ``--group`` instead of ``--extra`` in
+a project generated from a source checkout. For example:
 
 .. code-block:: bash
 
@@ -429,6 +436,17 @@ In Cursor, install the ``detachhead.basedpyright`` extension instead of Pylance,
 select the same interpreter, and reload the window. Both language servers read
 the generated ``pyrightconfig.json``.
 
+Share it on the Isaac Lab registry
+----------------------------------
+
+Generated projects can be published as they are on the experimental
+:ref:`Isaac Lab registry <isaaclab-registry>`: fill in ``[tool.isaaclab.registry]``
+in ``pyproject.toml``, push a ``v<version>`` tag, and run
+``uv run isaaclab registry publish`` (see :ref:`isaaclab-registry-publish`).
+Registry packages installed into the project are recorded in its
+``isaaclab-registry`` dependency group, which ``uv sync`` keeps (see
+:ref:`isaaclab-registry-modes`).
+
 Create an internal task
 -----------------------
 
@@ -470,8 +488,8 @@ Troubleshooting
 **The CLI cannot find the generated task**
    Run ``uv sync`` and invoke the command from the generated project root. Then
    confirm the task appears in ``uv run isaaclab list_envs``. Pass ``--all`` to
-   include tasks from every installed task package instead of limiting the list
-   to the current project's ``isaaclab.tasks`` entry point.
+   include Isaac Lab's own tasks instead of limiting the list to the tasks of the
+   current project and of the other installed task packages.
 
 **Non-interactive arguments are rejected**
    Include ``--non_interactive`` after ``--new``. Cartpole is the default initial
@@ -481,7 +499,8 @@ Troubleshooting
 
 **An optional backend module is missing**
    Add its extra before the command, such as ``uv run --extra ovphysx
-   isaaclab ...`` or ``uv run --extra isaacsim --extra rerun isaaclab ...``.
+   isaaclab ...`` or ``uv run --extra isaacsim --extra rerun isaaclab ...``,
+   using ``--group`` in a project generated from a source checkout.
    Every extra offered by the active Isaac Lab package is copied into the
    generated project's optional dependencies.
 

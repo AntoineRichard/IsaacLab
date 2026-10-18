@@ -19,8 +19,9 @@ authors = [
 {% endfor %}
 ]
 requires-python = ">=3.12,<3.13"
+{% set rl_extras %}{% if rl_libraries %}[{{ rl_libraries | map(attribute="name") | join(",") | replace("_", "-") }}]{% endif %}{% endset %}
 dependencies = [
-    "{{ isaaclab_dependency }}{% if rl_libraries %}[{% for rl_library in rl_libraries %}{% if not loop.first %},{% endif %}{{ rl_library.name | replace('_', '-') }}{% endfor %}]{% endif %}{% if not isaaclab_sources and isaaclab_version %}=={{ isaaclab_version }}{% endif %}",
+    "isaaclab{{ rl_extras }}{% if isaaclab_release %}~={{ isaaclab_release }}{% endif %}",
 ]
 
 [project.entry-points."isaaclab.tasks"]
@@ -28,15 +29,37 @@ dependencies = [
 
 [project.optional-dependencies]
 {% for extra in isaaclab_optional_extras %}
-{{ extra }} = ["{{ isaaclab_dependency }}[{{ extra }}]{% if not isaaclab_sources and isaaclab_version %}=={{ isaaclab_version }}{% endif %}"]
+{{ extra }} = ["isaaclab[{{ extra }}]{% if isaaclab_release %}~={{ isaaclab_release }}{% endif %}"]
 {% endfor %}
 
 [dependency-groups]
 dev = ["codespell>=2.4", "pre-commit>=4.2", "pytest>=8.3", "ruff>=0.11"]
+{% if isaaclab_sources %}
+# Develop against the Isaac Lab checkout in [tool.uv.sources]; groups are not published. The published extras resolve
+# to the checkout's `isaaclab` without extras, so select a checkout extra through its group: `uv run --group <extra>`.
+isaaclab-dev = ["{{ isaaclab_dependency }}{{ rl_extras }}"]
+{% for extra in isaaclab_optional_extras if extra != "dev" %}
+{{ extra }} = ["{{ isaaclab_dependency }}[{{ extra }}]"]
+{% endfor %}
+{% endif %}
+# Packages added by `isaaclab registry install`.
+isaaclab-registry = []
+
+# Read by `isaaclab registry publish`.
+[tool.isaaclab.registry]
+category = "other"
+tags = []
+maintainers = []
+media = {}
 
 [tool.uv]
 index-strategy = "unsafe-best-match"
 prerelease = "allow"
+default-groups = ["dev", {% if isaaclab_sources %}"isaaclab-dev", {% endif %}"isaaclab-registry"]
+{% if not isaaclab_sources %}
+# Ignore the `isaaclab` path sources of registry packages generated from an Isaac Lab checkout.
+no-sources-package = ["isaaclab"]
+{% endif %}
 {% if isaaclab_environments %}
 environments = [
 {% for environment in isaaclab_environments %}
@@ -44,11 +67,14 @@ environments = [
 {% endfor %}
 ]
 {% endif %}
-{% if isaaclab_overrides %}
+{% if isaaclab_sources %}
 override-dependencies = [
 {% for dependency in isaaclab_overrides %}
     "{{ dependency }}",
 {% endfor %}
+    # Resolve every `isaaclab` requirement, registry packages' included, to the checkout, whatever its version;
+    # `isaaclab registry install` checks compatibility with Isaac Lab {{ isaaclab_release }} instead of uv.
+    "isaaclab",
 ]
 {% endif %}
 {% if isaaclab_sources %}

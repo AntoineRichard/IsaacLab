@@ -5,6 +5,7 @@
 
 import argparse
 import importlib.metadata
+import logging
 import os
 import sys
 from pathlib import Path
@@ -24,9 +25,11 @@ from .utils import (
     DEFAULT_ISAAC_SIM_PATH,
     ISAACLAB_ROOT,
     is_isaac_sim_source_build,
-    runs_isaac_sim_python,
     run_python_command,
+    runs_isaac_sim_python,
 )
+
+logger = logging.getLogger(__name__)
 
 _TASK_ENTRY_POINT_GROUP = "isaaclab.tasks"
 
@@ -42,9 +45,16 @@ def load_external_tasks() -> None:
 
     Load the ``isaaclab.tasks`` entry points before looking up registered task IDs.
     Entry points should reference modules so repeated discovery uses Python's import cache.
+    A package that fails to import is reported with a warning, so one broken package cannot stop
+    every workflow.
     """
     for entry_point in importlib.metadata.entry_points(group=_TASK_ENTRY_POINT_GROUP):
-        entry_point.load()
+        try:
+            entry_point.load()
+        except Exception:
+            logger.warning(
+                f"The '{entry_point.name}' task entry point of {entry_point.dist.name} failed to load.", exc_info=True
+            )
 
 
 def train(args: list[str] | None = None) -> None:
@@ -133,6 +143,17 @@ def example(args: list[str] | None = None) -> None:
     run_program_cli("example", EXAMPLES, args)
 
 
+def registry(args: list[str] | None = None) -> None:
+    """Browse, install, and publish packages from the Isaac Lab registry.
+
+    Args:
+        args: Command-line arguments. Uses ``sys.argv`` when omitted.
+    """
+    from .commands.registry import command_registry
+
+    _exit_on_error(command_registry(args))
+
+
 def teleop(args: list[str] | None = None) -> None:
     """Run a live teleoperation, demonstration recording, or demonstration replay workflow.
 
@@ -184,6 +205,10 @@ def cli() -> None:
         "zero_agent": zero_agent,
         "random_agent": random_agent,
     }
+    # Registry commands only manage packages: no task discovery and no Isaac Sim runtime.
+    if len(sys.argv) > 1 and sys.argv[1] == "registry":
+        registry(sys.argv[2:])
+        return
     # uv selects the environment; local Kit builds still need their native runtime paths.
     # Delegate before importing tasks or simulator libraries, and avoid wrapping the child twice.
     runtime_commands = {*subcommands, "list_envs", "demo", "example", "teleop"}
@@ -232,6 +257,7 @@ def cli() -> None:
             "  example         List or run packaged standalone examples\n"
             "  leapp           Export or deploy a policy with LEAPP\n"
             "  list_envs       List registered environments and presets\n"
+            "  registry        Browse, install, and publish community task packages\n"
             "  train           Train an RL policy\n"
             "  train_multigpu  Train an RL policy across multiple GPUs\n"
             "  play            Play a trained RL policy\n"
@@ -313,7 +339,9 @@ def cli() -> None:
         or args.test is not None
         or args.isaacsim_source is not None
     ) and not (ISAACLAB_ROOT / "pyproject.toml").is_file():
-        parser.error("This command requires an Isaac Lab source checkout. Run it with uv run isaaclab from that checkout.")
+        parser.error(
+            "This command requires an Isaac Lab source checkout. Run it with uv run isaaclab from that checkout."
+        )
 
     if args.format is not None:
         command_format(args.format)

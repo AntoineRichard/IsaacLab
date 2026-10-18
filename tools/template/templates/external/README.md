@@ -30,10 +30,14 @@ environment uses the Newton backend and does not install Isaac Sim:
 ```bash
 uv sync
 ```
+{% set extra_option = "--group" if isaaclab_sources else "--extra" %}
 {% if isaaclab_sources %}
 
-This project's `pyproject.toml` uses editable relative paths to an Isaac Lab source checkout. Update
-`[tool.uv.sources]` if either directory moves.
+This project was generated from an Isaac Lab source checkout. Like any other project, it publishes a requirement on
+Isaac Lab {{ isaaclab_release }}, while its `isaaclab-dev` dependency group installs the checkout through the editable
+relative paths in `[tool.uv.sources]`; update them if either directory moves. Select an Isaac Lab extra through the
+dependency group of the same name (for its `dev` extra, add `{{ isaaclab_dependency }}[dev]` to the `isaaclab-dev`
+group): `--extra` selects the published extras, which install nothing from the checkout.
 {% endif %}
 
 The project forwards every optional extra declared by the Isaac Lab package used to create it, including physics,
@@ -42,18 +46,18 @@ pass each required extra to `uv run`:
 
 ```bash
 # Standalone OV PhysX
-uv run --extra ovphysx isaaclab random_agent --task <TASK_NAME> physics=ovphysx
+uv run {{ extra_option }} ovphysx isaaclab random_agent --task <TASK_NAME> physics=ovphysx
 
 # Isaac Sim with PhysX and RTX rendering
-uv run --extra isaacsim isaaclab random_agent --task <TASK_NAME> physics=isaacsim_physx
+uv run {{ extra_option }} isaacsim isaaclab random_agent --task <TASK_NAME> physics=isaacsim_physx
 
 # Isaac Sim with the Rerun visualizer
-uv run --extra isaacsim --extra rerun isaaclab random_agent --task <TASK_NAME> --viz rerun
+uv run {{ extra_option }} isaacsim {{ extra_option }} rerun isaaclab random_agent --task <TASK_NAME> --viz rerun
 ```
 
-The `all` extra forwards Isaac Lab's `all` selection. The `ov` extra installs both the `ovphysx` and `ovrtx` runtimes;
-you can also select either independently. Commit `pyproject.toml` and `uv.lock` so collaborators use the same
-environment.
+The `all` {{ extra_option[2:] }} forwards Isaac Lab's `all` selection. The `ov` {{ extra_option[2:] }} installs both the
+`ovphysx` and `ovrtx` runtimes; you can also select either independently. Commit `pyproject.toml` and `uv.lock` so
+collaborators use the same environment.
 
 ## Run the tasks
 
@@ -143,11 +147,11 @@ In VS Code, use Pylance and select the interpreter that ran the setup command. I
 [basedpyright extension](https://marketplace.visualstudio.com/items?itemName=detachhead.basedpyright) instead of
 Pylance, select the same interpreter, and reload the window. Both language servers read `pyrightconfig.json`.
 
-When using the `isaacsim` extra, include it while generating the editor configuration so the command can discover the
+When using the `isaacsim` {{ extra_option[2:] }}, include it while generating the editor configuration so the command can discover the
 Isaac Sim installation:
 
 ```bash
-uv run --extra isaacsim isaaclab --editor
+uv run {{ extra_option }} isaacsim isaaclab --editor
 ```
 
 For an Isaac Sim binaries installation that is not available in the project environment, provide its path explicitly:
@@ -160,11 +164,22 @@ uv run isaaclab --editor --isaac_path <isaac-sim-path>
 uv run isaaclab --editor --isaac_path <isaac-sim-path>
 ```
 
+## Share it on the Isaac Lab registry
+
+The [Isaac Lab registry](https://isaac-sim.github.io/IsaacLab/develop/source/experimental-features/registry.html) lists
+community task packages that anyone can install with `uv run isaaclab registry install <name>`; packages installed into
+this project are added to its `isaaclab-registry` dependency group. To publish this project, fill in
+`[tool.isaaclab.registry]` in `pyproject.toml`, commit, push a `v<version>` tag, and run:
+
+```bash
+uv run isaaclab registry publish --as <github-handle>
+```
+
 {% if include_ui_extension %}
 ## Isaac Sim UI extension
 
 Add the project root to the Isaac Sim Extension Manager search paths, refresh, and enable the extension under
-`Third Party`. Launch Isaac Sim through the project's `isaacsim` extra so the UI dependencies are available. Kit loads
+`Third Party`. Launch Isaac Sim through the project's `isaacsim` {{ extra_option[2:] }} so the UI dependencies are available. Kit loads
 `src/{{ name }}/ui_extension_example.py` through `config/extension.toml`.
 
 {% endif %}

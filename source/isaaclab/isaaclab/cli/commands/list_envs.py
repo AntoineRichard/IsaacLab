@@ -20,7 +20,8 @@ def command_list_envs(args: list[str] | None = None) -> None:
     """List registered environments and their optional presets.
 
     When invoked from a project that declares an ``isaaclab.tasks`` entry point,
-    the command shows that project's tasks by default. Pass ``--keyword`` to use
+    the command shows the tasks of that project and of the other installed task
+    packages, such as registry packages, by default. Pass ``--keyword`` to use
     an explicit task-id filter or ``--all`` to show every registered task.
 
     Args:
@@ -42,12 +43,13 @@ def command_list_envs(args: list[str] | None = None) -> None:
 
     import isaaclab_tasks  # noqa: F401
 
+    from .. import load_external_tasks
+
     # PLACEHOLDER: Extension template (do not remove this comment)
     with contextlib.suppress(ImportError):
         import isaaclab_tasks_experimental  # noqa: F401
 
-    for entry_point in importlib.metadata.entry_points(group="isaaclab.tasks"):
-        entry_point.load()
+    load_external_tasks()
 
     project_modules = () if parsed_args.all or parsed_args.keyword else _find_project_task_modules(Path.cwd())
     task_specs = [
@@ -89,7 +91,7 @@ def command_list_envs(args: list[str] | None = None) -> None:
 
 
 def _find_project_task_modules(start: Path) -> tuple[str, ...]:
-    """Return task modules declared by the nearest parent ``pyproject.toml``."""
+    """Return task modules declared by the nearest parent ``pyproject.toml`` and by installed task packages."""
     for directory in (start, *start.parents):
         pyproject_path = directory / "pyproject.toml"
         if not pyproject_path.is_file():
@@ -97,8 +99,10 @@ def _find_project_task_modules(start: Path) -> tuple[str, ...]:
         with pyproject_path.open("rb") as file:
             project = tomllib.load(file).get("project", {})
         entry_points = project.get("entry-points", {}).get("isaaclab.tasks", {})
-        if isinstance(entry_points, dict):
-            return tuple(value for value in entry_points.values() if isinstance(value, str))
+        if isinstance(entry_points, dict) and entry_points:
+            # Installed task packages, such as registry packages, belong to the project; Isaac Lab declares none.
+            installed = [entry_point.value for entry_point in importlib.metadata.entry_points(group="isaaclab.tasks")]
+            return (*(value for value in entry_points.values() if isinstance(value, str)), *installed)
         return ()
     return ()
 

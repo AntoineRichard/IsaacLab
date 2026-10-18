@@ -25,9 +25,10 @@ pytestmark = pytest.mark.unit
 
 
 def test_cli_import_does_not_require_runtime_dependencies():
-    """The installation CLI must load before core runtime dependencies are installed."""
+    """The installation and registry CLI must load before core runtime dependencies are installed."""
+    blocked = 'sys.modules.update(dict.fromkeys(["lazy_loader", "packaging", "prettytable", "jinja2"]))'
     result = subprocess.run(
-        [sys.executable, "-c", 'import sys; sys.modules["lazy_loader"] = None; import isaaclab.cli'],
+        [sys.executable, "-c", f"import sys; {blocked}; import isaaclab.cli, isaaclab.cli.commands.registry"],
         capture_output=True,
         text=True,
         check=False,
@@ -304,9 +305,12 @@ def test_program_command_reports_missing_optional_dependencies(capsys):
     assert "uvx --torch-backend cu130 --from 'isaaclab[isaacsim]' isaaclab example camera" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(("command_name", "args"), [("demo", ["zoo", "--headless"]), ("example", ["cables"])])
+@pytest.mark.parametrize(
+    ("command_name", "args"),
+    [("demo", ["zoo", "--headless"]), ("example", ["cables"]), ("registry", ["install", "dummy-walk", "--yes"])],
+)
 def test_cli_routes_program_without_loading_external_tasks(command_name, args):
-    """Packaged programs do not need task plug-in discovery before dispatch."""
+    """Packaged programs and registry commands do not need task plug-in discovery before dispatch."""
     with (
         mock.patch.object(cli, "load_external_tasks") as load_external_tasks,
         mock.patch.object(cli, command_name) as command,
@@ -331,6 +335,17 @@ def test_cli_loads_downstream_tasks_before_benchmark():
     entry_points.assert_called_once_with(group="isaaclab.tasks")
     task_entry_point.load.assert_called_once_with()
     benchmark.assert_called_once_with(["runtime", "--task", "Example"])
+
+
+def test_task_discovery_skips_broken_packages(caplog):
+    """A task package that fails to import is reported and does not stop discovery of the others."""
+    broken, working = mock.Mock(), mock.Mock()
+    broken.name, broken.dist.name, broken.load.side_effect = "broken_tasks", "broken-dist", ImportError("no module")
+    with mock.patch.object(cli.importlib.metadata, "entry_points", return_value=[broken, working]):
+        cli.load_external_tasks()
+
+    working.load.assert_called_once_with()
+    assert "broken-dist" in caplog.text and "no module" in caplog.text
 
 
 def test_list_envs_cli_dispatches_without_preloading_tasks():
