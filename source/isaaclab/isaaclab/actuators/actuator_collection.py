@@ -226,7 +226,7 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
         self._control.submit_commands(self)
 
     def _newton_group_columns(self, name: str) -> torch.Tensor:
-        """Backend view columns of one group's joints, in group joint order."""
+        """Per-world Newton actuator DOF columns of one group's joints, in group joint order."""
         joint_ids = self._group_joint_indices[name]
         if isinstance(joint_ids, slice):
             columns = torch.arange(self.num_joints, device=self.device)
@@ -235,7 +235,7 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
         user_to_backend = self._newton_selection.joint_user_to_backend_indices
         if user_to_backend is not None:
             columns = torch.tensor(user_to_backend, dtype=torch.long, device=self.device)[columns]
-        return columns
+        return columns + self._newton_selection.dof_offset
 
     # Construction and property resolution.
 
@@ -381,14 +381,14 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
         returned object can be shared between groups. A single covering actuator
         is returned directly; a group spanning several returns them as a tuple.
         """
-        view = self._newton_selection.view
-        columns = self._newton_group_columns(name)
-        matched = []
-        for actuator in self._newton_selection.actuators:
-            mapping = wp.to_torch(view._get_actuator_dof_mapping(actuator))
-            env_columns = mapping.reshape(self.num_instances, -1)[0]
-            if bool((env_columns[columns] >= 0).any()):
-                matched.append(actuator)
+        selection = self._newton_selection
+        columns = set(self._newton_group_columns(name).tolist())
+        matched = [
+            actuator
+            for actuator in selection.actuators
+            # The per-world remainder of a flat actuator index is its DOF column.
+            if not columns.isdisjoint((actuator.indices.numpy() % selection.dof_stride).tolist())
+        ]
         if not matched:
             raise RuntimeError(f"No Newton actuator drives any joint of group '{name}'.")
         return matched[0] if len(matched) == 1 else tuple(matched)

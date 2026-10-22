@@ -281,7 +281,7 @@ class FakeActuatorControl(ActuatorControl):
 
 
 class _FakeNewtonActuator:
-    """Newton-actuator stand-in; a plain class so the view's mapping cache can hash it."""
+    """Newton-actuator stand-in exposing the components and flat DOF ``indices``."""
 
     def __init__(self, drive, indices):
         self.drive = drive
@@ -313,12 +313,9 @@ class NativeFakeActuatorControl(FakeActuatorControl):
         return True
 
     def finalize_native_actuators(self, collection):
-        from isaaclab.actuators.newton.adapter import LightArticulationView, NewtonActuatorSelection
+        from isaaclab.actuators.newton.adapter import NewtonActuatorSelection
 
-        return NewtonActuatorSelection(
-            view=LightArticulationView(self.num_instances, self.num_joints, self.device),
-            actuators=[self.newton_actuator],
-        )
+        return NewtonActuatorSelection(actuators=[self.newton_actuator], dof_stride=self.num_joints)
 
 
 class NativeGainFakeActuatorControl(NativeFakeActuatorControl):
@@ -669,7 +666,7 @@ def test_articulation_control_projects_warp_joint_property_selectors():
 
 def test_native_explicit_groups_zero_solver_drives_and_build_no_lab_model(monkeypatch):
     """Zero the solver drives of a native explicit group and expose the Newton actuator."""
-    from isaaclab.actuators.newton.adapter import LightArticulationView, NewtonActuatorSelection
+    from isaaclab.actuators.newton.adapter import NewtonActuatorSelection
 
     articulation = FakeArticulation()
     articulation.data.joint_stiffness.torch.fill_(17.0)
@@ -688,10 +685,7 @@ def test_native_explicit_groups_zero_solver_drives_and_build_no_lab_model(monkey
     monkeypatch.setattr(
         control,
         "finalize_native_actuators",
-        lambda collection: NewtonActuatorSelection(
-            view=LightArticulationView(articulation.num_instances, articulation.num_joints, articulation.device),
-            actuators=[newton_actuator],
-        ),
+        lambda collection: NewtonActuatorSelection(actuators=[newton_actuator], dof_stride=articulation.num_joints),
     )
 
     collection = ActuatorCollection(

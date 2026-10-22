@@ -26,12 +26,8 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 import numpy as np
 import torch
 import warp as wp
-from newton import Model
-from newton._src.utils.selection import FrequencyLayout
 from newton.actuators import Actuator, ClampingBase, Delay, parse_actuator_prim
-from newton.selection import ArticulationView
 
-from ...utils import index_fill_
 from .kernels import (
     build_implicit_dof_mask,
     build_per_dof_env_mask_kernel,
@@ -320,7 +316,93 @@ class NewtonActuatorAdapter:
 
 
 # ---------------------------------------------------------------------------
-# Component-addressed parameter access via Newton's selection API.
+# Stand-in for the proposed ``Actuator.get_parameter`` / ``Actuator.set_parameter``.
+# Both index through ``actuator.indices``, the array the actuator already uses to
+# read its targets every step, so no Model or view is needed. Delete this block
+# once Newton ships the methods and call them on the actuator instead.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel(enable_backward=False)
+def _get_actuator_parameter_kernel(
+    param: wp.array(dtype=Any),
+    indices: wp.array(dtype=wp.uint32),
+    out: wp.array(dtype=Any),
+):
+    """Scatter one actuator parameter into a flat DOF-layout array."""
+    i = wp.tid()
+    out[indices[i]] = param[i]
+
+
+@wp.kernel(enable_backward=False)
+def _set_actuator_parameter_kernel(
+    values: wp.array(dtype=Any),
+    indices: wp.array(dtype=wp.uint32),
+    mask: wp.array(dtype=wp.bool),
+    use_mask: bool,
+    param: wp.array(dtype=Any),
+):
+    """Gather one actuator parameter from a flat DOF-layout array, gated by a per-DOF mask."""
+    i = wp.tid()
+    dof = int(indices[i])
+    if use_mask:
+        if not mask[dof]:
+            return
+    param[i] = values[dof]
+
+
+def _actuator_get_parameter(actuator: Actuator, component: Any, name: str, out: wp.array) -> wp.array:
+    """Stand-in for the proposed ``Actuator.get_parameter``.
+
+    Writes ``out[actuator.indices[i]] = component.<name>[i]``. Entries of
+    ``out`` that the actuator does not drive are left untouched.
+
+    Args:
+        actuator: Actuator whose ``indices`` place the parameter in ``out``.
+        component: The actuator's component that owns the parameter.
+        name: Parameter name on ``component``.
+        out: Flat array in the actuator's DOF layout, in the parameter's dtype.
+
+    Returns:
+        ``out``.
+    """
+    wp.launch(
+        _get_actuator_parameter_kernel,
+        dim=actuator.indices.shape[0],
+        inputs=[getattr(component, name), actuator.indices],
+        outputs=[out],
+        device=out.device,
+    )
+    return out
+
+
+def _actuator_set_parameter(
+    actuator: Actuator, component: Any, name: str, values: wp.array, mask: wp.array | None = None
+) -> None:
+    """Stand-in for the proposed ``Actuator.set_parameter``.
+
+    Writes ``component.<name>[i] = values[actuator.indices[i]]`` where
+    ``mask[actuator.indices[i]]`` is set, or everywhere when ``mask`` is ``None``.
+
+    Args:
+        actuator: Actuator whose ``indices`` locate its entries in ``values``.
+        component: The actuator's component that owns the parameter.
+        name: Parameter name on ``component``.
+        values: Flat array in the actuator's DOF layout, in the parameter's dtype.
+        mask: Optional per-DOF mask in the same layout as ``values``.
+    """
+    param = getattr(component, name)
+    wp.launch(
+        _set_actuator_parameter_kernel,
+        dim=actuator.indices.shape[0],
+        inputs=[values, actuator.indices, mask, mask is not None],
+        outputs=[param],
+        device=param.device,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Component-addressed, group-scoped parameter access.
 # ---------------------------------------------------------------------------
 
 
@@ -348,13 +430,11 @@ def read_group_parameter(collection: ActuatorCollection, name: str, component: s
             component name is unknown, or no actuator exposes the parameter.
     """
     owners = _group_parameter_owners(collection, name, component, attr)
-    view = collection._newton_selection.view
-    values: torch.Tensor | None = None
+    # Each owner fills the DOFs it drives; DOFs no owner drives read as zeros.
+    values = _dof_layout_zeros(collection, getattr(owners[0][1], attr).dtype)
     for actuator, owner in owners:
-        # Non-driven DOFs read as zeros, and groups are disjoint, so overlaying is a sum.
-        projected = wp.to_torch(view.get_actuator_parameter(actuator, owner, attr))
-        values = projected if values is None else values + projected
-    return values[:, collection._newton_group_columns(name)]
+        _actuator_get_parameter(actuator, owner, attr, values)
+    return wp.to_torch(values).view(collection.num_instances, -1)[:, collection._newton_group_columns(name)]
 
 
 def write_group_parameter(
@@ -369,7 +449,7 @@ def write_group_parameter(
     """Write one Newton actuator parameter for a native group.
 
     Group-scoped, user-ordered writes that reach the drive-owned storage
-    through Newton's selection API. For raw component access, use the group's
+    through the actuator's own DOF indices. For raw component access, use the group's
     Newton actuator object (the collection mapping entry) directly.
 
     Args:
@@ -388,27 +468,20 @@ def write_group_parameter(
         ValueError: Same conditions as :func:`read_group_parameter`.
     """
     owners = _group_parameter_owners(collection, name, component, attr)
-    view = collection._newton_selection.view
-    device = collection.device
     columns = collection._newton_group_columns(name)
     if joint_ids is not None:
-        columns = columns[joint_ids.to(device, dtype=torch.long)]
-    mask = None
-    env_rows: torch.Tensor | slice | None = None
-    if env_ids is not None and env_ids != slice(None):
-        env_rows = env_ids if isinstance(env_ids, slice) else env_ids[:, None]
-        mask_torch = torch.zeros(collection.num_instances, dtype=torch.bool, device=device)
-        index_fill_(mask_torch, env_ids, True)
-        mask = wp.from_torch(mask_torch, dtype=wp.bool)
-    values = values.to(device)
+        columns = columns[joint_ids.to(collection.device, dtype=torch.long)]
+    rows = slice(None) if env_ids is None else env_ids
+    if isinstance(rows, torch.Tensor):
+        rows = rows[:, None]
+    # The per-DOF mask selects exactly the written cells, so no read-back of current values is needed.
+    staged = _dof_layout_zeros(collection, getattr(owners[0][1], attr).dtype)
+    mask = _dof_layout_zeros(collection, wp.bool)
+    staged_torch = wp.to_torch(staged).view(collection.num_instances, -1)
+    staged_torch[rows, columns] = values.to(collection.device, dtype=staged_torch.dtype)
+    wp.to_torch(mask).view(collection.num_instances, -1)[rows, columns] = True
     for actuator, owner in owners:
-        current = view.get_actuator_parameter(actuator, owner, attr)
-        current_torch = wp.to_torch(current)
-        if env_rows is None:
-            current_torch[:, columns] = values.to(dtype=current_torch.dtype)
-        else:
-            current_torch[env_rows, columns] = values.to(dtype=current_torch.dtype)
-        view.set_actuator_parameter(actuator=actuator, component=owner, name=attr, values=current, mask=mask)
+        _actuator_set_parameter(actuator, owner, attr, staged, mask)
 
 
 def _group_parameter_owners(
@@ -441,14 +514,18 @@ def _group_parameter_owners(
     return owners
 
 
+def _dof_layout_zeros(collection: ActuatorCollection, dtype: type) -> wp.array:
+    """Zeroed flat array in the Newton actuators' DOF layout, ``num_instances * dof_stride`` long."""
+    size = collection.num_instances * collection._newton_selection.dof_stride
+    return wp.zeros(size, dtype=dtype, device=collection.device)
+
+
 def resolve_actuator_component(actuator: Actuator, component: str, attr: str) -> Any | None:
     """Return the component instance that exposes ``attr`` on the addressed component kind.
 
     ``component`` selects the actuator's ``"drive"``, ``"delay"``, or
-    ``"clamping"`` entry; the returned object is what Newton's
-    :meth:`~newton.selection.ArticulationView.get_actuator_parameter` and
-    :meth:`~newton.selection.ArticulationView.set_actuator_parameter` take as
-    their ``component`` argument. Returns ``None`` when the component is absent
+    ``"clamping"`` entry; the returned object is what the actuator's
+    parameter get/set take as their ``component`` argument. Returns ``None`` when the component is absent
     on this actuator or does not expose ``attr``. Raises ``ValueError`` on
     unknown component names or ambiguous clamping matches.
     """
@@ -469,41 +546,6 @@ def resolve_actuator_component(actuator: Actuator, component: str, attr: str) ->
     return owner
 
 
-class LightArticulationView:
-    """Newton's actuator-parameter selection over bare actuators, without a Model.
-
-    The PhysX-family backends build Newton actuators from USD without a Newton
-    :class:`~newton.Model`, so they cannot construct a real
-    :class:`~newton.selection.ArticulationView`. This stand-in provides the placement
-    attributes and DOF mapping cache for the PhysX flat layout (one articulation per world,
-    identity joint order, per-world DOF stride equal to the joint count) and
-    borrows the real implementations unchanged.
-    """
-
-    def __init__(self, num_envs: int, num_joints: int, device: str):
-        self.world_count = num_envs
-        self.count_per_world = 1
-        self.device = device
-        self.full_mask = wp.ones(num_envs, dtype=wp.bool, device=device)
-        self._actuator_dof_mapping_cache = {}
-        self.frequency_layouts = {
-            Model.AttributeFrequency.JOINT_DOF: FrequencyLayout(
-                offset=0,
-                stride_between_worlds=num_joints,
-                stride_within_worlds=num_joints,
-                value_count=num_joints,
-                indices=list(range(num_joints)),
-                device=device,
-            )
-        }
-
-    get_actuator_parameter = ArticulationView.get_actuator_parameter
-    set_actuator_parameter = ArticulationView.set_actuator_parameter
-    _get_actuator_dof_mapping = ArticulationView._get_actuator_dof_mapping
-    _create_actuator_dof_mapping = ArticulationView._create_actuator_dof_mapping
-    _resolve_world_mask = ArticulationView._resolve_world_mask
-
-
 @dataclass(frozen=True)
 class NewtonActuatorSelection:
     """Execution-setup handoff for Newton actuator parameter access.
@@ -513,16 +555,22 @@ class NewtonActuatorSelection:
     consumed by the group-scoped parameter access functions
     (:func:`read_group_parameter` / :func:`write_group_parameter`) and by the
     collection when it maps native groups to their Newton actuator objects.
+
+    The actuators' flat ``indices`` address DOF ``world * dof_stride + dof_offset + column``,
+    where ``column`` is the articulation's backend-order DOF.
     """
 
-    view: Any
-    """Newton :class:`~newton.selection.ArticulationView` or :class:`LightArticulationView` over the articulation."""
-
     actuators: list[Actuator]
-    """Newton actuators visible to the view."""
+    """Newton actuators that may drive this articulation's DOFs."""
+
+    dof_stride: int
+    """Per-world stride of the actuators' flat DOF indices [DOFs]."""
+
+    dof_offset: int = 0
+    """Offset of this articulation's first DOF within one world's stride [DOFs]."""
 
     joint_user_to_backend_indices: tuple[int, ...] | None = None
-    """Optional public-to-backend joint permutation for the view's DOF columns."""
+    """Optional public-to-backend joint permutation for the articulation's DOF columns."""
 
 
 # ---------------------------------------------------------------------------

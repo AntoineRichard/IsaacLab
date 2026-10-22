@@ -16,7 +16,7 @@ from ...utils import index_fill_
 # ---------------------------------------------------------------------------
 # Adapter / per-actuator helper kernels: per-DOF zeroing, env-mask building,
 # and per-DOF env-mask projection (used by :meth:`NewtonActuatorAdapter.reset`).
-# Parameter reads and writes go through Newton's selection API instead.
+# Parameter reads and writes index through each actuator's ``indices`` (see adapter).
 # ---------------------------------------------------------------------------
 
 

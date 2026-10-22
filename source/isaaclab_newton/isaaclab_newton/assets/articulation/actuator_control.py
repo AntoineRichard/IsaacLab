@@ -162,9 +162,11 @@ class NewtonActuatorControl(ArticulationActuatorControl):
         if adapter is None:
             return None
         joint_ordering = articulation.data.joint_ordering
+        # Model actuators index model-global DOFs; the adapter's computed-effort view uses the same layout.
         return NewtonActuatorSelection(
-            view=articulation._root_view,
             actuators=adapter.actuators,
+            dof_stride=adapter.num_joints,
+            dof_offset=self._joint_dof_offset(),
             joint_user_to_backend_indices=(
                 joint_ordering.user_to_backend_indices if joint_ordering is not None else None
             ),

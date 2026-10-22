@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from isaaclab.actuators import ActuatorCollection
 from isaaclab.actuators.actuator_base_cfg import _is_implicit_actuator_cfg
 from isaaclab.actuators.actuator_control import ArticulationActuatorControl
-from isaaclab.actuators.newton.adapter import LightArticulationView, NewtonActuatorSelection
+from isaaclab.actuators.newton.adapter import NewtonActuatorSelection
 from isaaclab.actuators.newton.physx_runtime import PhysxActuatorRuntime
 from isaaclab.assets.articulation import ordering_kernels
 from isaaclab.sim.schemas.schemas_actuators import validate_newton_native_actuator_cfgs
@@ -92,11 +92,8 @@ class PhysxActuatorControl(ArticulationActuatorControl):
         adapter = self._actuator_runtime.adapter
         if adapter is None:
             return None
-        articulation = self._articulation
-        return NewtonActuatorSelection(
-            view=LightArticulationView(articulation.num_instances, articulation.num_joints, articulation.device),
-            actuators=adapter.actuators,
-        )
+        # USD-built actuators index this articulation alone, in public joint order.
+        return NewtonActuatorSelection(actuators=adapter.actuators, dof_stride=adapter.num_joints)
 
     def compute_native_actuators(self, collection: ActuatorCollection, dt: float) -> bool:
         if not self._native_actuator_path_active or self._actuator_runtime is None:

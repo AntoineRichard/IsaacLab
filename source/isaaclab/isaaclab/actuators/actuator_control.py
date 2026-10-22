@@ -280,7 +280,7 @@ class ActuatorControl(ABC):
 
         Returns:
             The Newton actuator selection produced by the backend's execution
-            setup (view, actuators, and joint ordering), or ``None`` when no
+            setup (actuators, DOF layout, and joint ordering), or ``None`` when no
             Newton actuators are active. The collection's parameter door
             consumes this; controls perform no parameter access themselves.
         """
