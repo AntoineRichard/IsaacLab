@@ -351,6 +351,21 @@ def _set_actuator_parameter_kernel(
     param[i] = values[dof]
 
 
+def _per_dof_parameter(actuator: Actuator, component: Any, name: str) -> wp.array:
+    """Return ``component.<name>`` if it holds one entry per actuator DOF.
+
+    Shared parameters (e.g. lookup tables) have no per-DOF placement, so indexing them by
+    ``actuator.indices`` would read or write out of bounds.
+
+    Raises:
+        ValueError: If the parameter is not a 1D array with one entry per actuator DOF.
+    """
+    param = getattr(component, name)
+    if not isinstance(param, wp.array) or param.ndim != 1 or param.shape[0] != actuator.indices.shape[0]:
+        raise ValueError(f"Parameter '{name}' of {type(component).__name__} is not stored per actuator DOF.")
+    return param
+
+
 def _actuator_get_parameter(actuator: Actuator, component: Any, name: str, out: wp.array) -> wp.array:
     """Stand-in for the proposed ``Actuator.get_parameter``.
 
@@ -369,7 +384,7 @@ def _actuator_get_parameter(actuator: Actuator, component: Any, name: str, out: 
     wp.launch(
         _get_actuator_parameter_kernel,
         dim=actuator.indices.shape[0],
-        inputs=[getattr(component, name), actuator.indices],
+        inputs=[_per_dof_parameter(actuator, component, name), actuator.indices],
         outputs=[out],
         device=out.device,
     )
@@ -391,7 +406,7 @@ def _actuator_set_parameter(
         values: Flat array in the actuator's DOF layout, in the parameter's dtype.
         mask: Optional per-DOF mask in the same layout as ``values``.
     """
-    param = getattr(component, name)
+    param = _per_dof_parameter(actuator, component, name)
     wp.launch(
         _set_actuator_parameter_kernel,
         dim=actuator.indices.shape[0],
@@ -431,7 +446,7 @@ def read_group_parameter(collection: ActuatorCollection, name: str, component: s
     """
     owners = _group_parameter_owners(collection, name, component, attr)
     # Each owner fills the DOFs it drives; DOFs no owner drives read as zeros.
-    values = _dof_layout_zeros(collection, getattr(owners[0][1], attr).dtype)
+    values = _dof_layout_zeros(collection, _per_dof_parameter(*owners[0], attr).dtype)
     for actuator, owner in owners:
         _actuator_get_parameter(actuator, owner, attr, values)
     return wp.to_torch(values).view(collection.num_instances, -1)[:, collection._newton_group_columns(name)]
@@ -475,7 +490,7 @@ def write_group_parameter(
     if isinstance(rows, torch.Tensor):
         rows = rows[:, None]
     # The per-DOF mask selects exactly the written cells, so no read-back of current values is needed.
-    staged = _dof_layout_zeros(collection, getattr(owners[0][1], attr).dtype)
+    staged = _dof_layout_zeros(collection, _per_dof_parameter(*owners[0], attr).dtype)
     mask = _dof_layout_zeros(collection, wp.bool)
     staged_torch = wp.to_torch(staged).view(collection.num_instances, -1)
     staged_torch[rows, columns] = values.to(collection.device, dtype=staged_torch.dtype)
