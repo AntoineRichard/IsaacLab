@@ -29,8 +29,6 @@ Explicit Backend Runtime
   :members:
   :show-inheritance:
 
-.. autofunction:: get_ovphysx_backend
-
 .. automodule:: isaaclab_ov.physics.ovphysx_backend
 
 .. currentmodule:: isaaclab_ov.physics.ovphysx_backend

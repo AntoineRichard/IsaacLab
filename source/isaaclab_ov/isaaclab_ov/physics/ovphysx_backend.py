@@ -39,14 +39,12 @@ from .ovphysx_manager_cfg import DEFAULT_COOKED_COLLIDER_CACHE_DIR, OvPhysxBacke
 
 if TYPE_CHECKING:
     from isaaclab.scene_data.deformable_discovery import DeformableStageEntry
-    from isaaclab.sim.simulation_context import SimulationContext
 
     from .ovphysx_manager import OvPhysxManager
 
 __all__ = [
     "OvPhysxBackend",
     "OvPhysxSceneDataBackend",
-    "get_ovphysx_backend",
     "step",
     "forward",
     "update_kinematics",
@@ -55,27 +53,6 @@ __all__ = [
 
 
 _physx_schemas_registered = False
-
-
-def get_ovphysx_backend(sim: SimulationContext) -> OvPhysxBackend:
-    """Return an initialized simulation's explicit OVPhysX resource.
-
-    Args:
-        sim: Simulation that owns the resource; no active-context lookup is performed.
-
-    Raises:
-        TypeError: If the simulation uses another physics backend.
-        RuntimeError: If the simulation has not loaded physics or has already closed it.
-    """
-    from .ovphysx_manager import OvPhysxManager  # noqa: PLC0415
-
-    manager = sim.backend_manager
-    if not isinstance(manager, OvPhysxManager):
-        raise TypeError("The simulation does not use an OvPhysxManager.")
-    backend = manager.backend
-    if backend is None or backend.physx is None or backend.stage is None:
-        raise RuntimeError("OVPhysX is not initialized; reset the simulation before requesting its backend.")
-    return backend
 
 
 def step(backend: OvPhysxBackend, dt: float) -> None:

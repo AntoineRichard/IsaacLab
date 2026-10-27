@@ -35,10 +35,9 @@ simulation, then pass it explicitly to the operations in
 
 .. code-block:: python
 
-    from isaaclab_ov.physics import get_ovphysx_backend
     from isaaclab_ov.physics.ovphysx_backend import set_gravity, step
 
-    backend = get_ovphysx_backend(sim)
+    backend = sim.backend_manager.backend
     set_gravity(backend, (0.0, 0.0, -3.0))
     step(backend, sim.cfg.dt)
 
