@@ -5,9 +5,11 @@
 
 __all__ = [
     "OvPhysxManager",
+    "OvPhysxBackend",
     "OvPhysxCfg",
     "OvPhysxBackendCfg",
 ]
 
+from .ovphysx_backend import OvPhysxBackend
 from .ovphysx_manager import OvPhysxManager
 from .ovphysx_manager_cfg import OvPhysxBackendCfg, OvPhysxCfg
