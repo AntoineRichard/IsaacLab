@@ -17,7 +17,7 @@ from isaaclab.sim import BackendCfg
 from isaaclab.utils import configclass
 
 if TYPE_CHECKING:
-    from .ovphysx_manager import OvPhysxBackend
+    from .ovphysx_backend import OvPhysxBackend
 
 # POSIX temp roots are shared between users; Windows already gives each user a private one.
 _CACHE_DIR_NAME = f"ovphysx_derived_data_cache_{os.getuid()}" if hasattr(os, "getuid") else "ovphysx_derived_data_cache"
@@ -30,7 +30,7 @@ DEFAULT_COOKED_COLLIDER_CACHE_DIR: str = os.path.join(tempfile.gettempdir(), _CA
 class OvPhysxBackendCfg(BackendCfg):
     """Native runtime construction settings, separate from physics scene policy."""
 
-    class_type: type[OvPhysxBackend] | str = "{DIR}.ovphysx_manager:OvPhysxBackend"
+    class_type: type[OvPhysxBackend] | str = "{DIR}.ovphysx_backend:OvPhysxBackend"
 
     device: str = MISSING
     """Normalized device: ``cpu`` or ``cuda:<index>``."""

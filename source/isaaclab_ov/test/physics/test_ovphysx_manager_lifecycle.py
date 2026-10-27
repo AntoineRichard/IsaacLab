@@ -43,7 +43,7 @@ class _FakePhysX:
 def manager(monkeypatch):
     """Create a manager instance bound to a fake simulation and restore process-wide state after each test."""
     import isaaclab_ov.physics.ovphysx_manager as module
-    from isaaclab_ov.physics import OvPhysxBackendCfg, OvPhysxCfg
+    from isaaclab_ov.physics import OvPhysxBackendCfg, OvPhysxCfg, ovphysx_backend
 
     from isaaclab.sim import SimulationContext
 
@@ -55,13 +55,13 @@ def manager(monkeypatch):
     sim.get_backends = SimulationContext.get_backends.__get__(sim)
     sim.close_backend = SimulationContext.close_backend.__get__(sim)
     with monkeypatch.context() as construction:
-        construction.setattr(module, "ovphysx", _fake_ovphysx_module(lambda: None))
+        construction.setattr(ovphysx_backend, "ovphysx", _fake_ovphysx_module(lambda: None))
         backend = sim.get_or_create_backend(cfg)
     manager._sim = sim
     manager.backend = backend
     monkeypatch.setattr(SimulationContext, "_instance", sim)
     monkeypatch.setattr(module.atexit, "register", lambda callback: None)
-    monkeypatch.setattr(module.OvPhysxManager, "_physx_schemas_registered", False)
+    monkeypatch.setattr(ovphysx_backend, "_physx_schemas_registered", False)
     return manager
 
 
@@ -71,6 +71,14 @@ def manager_module(manager):
     import isaaclab_ov.physics.ovphysx_manager as module
 
     return module
+
+
+@pytest.fixture
+def backend_module(manager):
+    """Import the owner of native resources after binding the fake simulation."""
+    from isaaclab_ov.physics import ovphysx_backend
+
+    return ovphysx_backend
 
 
 def _fake_ovphysx_module(bootstrap):
@@ -113,17 +121,17 @@ def test_initialize_defers_native_resource_until_warmup(monkeypatch, manager_mod
     ],
 )
 def test_schema_registration_skips_providers_already_supplied_by_host(
-    monkeypatch, manager_module, registered_names, expected_paths
+    monkeypatch, manager_module, backend_module, registered_names, expected_paths
 ):
     schema_paths = [
         Path("/schemas/PhysxSchema/resources"),
         Path("/schemas/OmniUsdPhysicsDeformableSchema/resources"),
     ]
-    monkeypatch.setattr(manager_module.ovphysx_compat, "physx_schema_paths", lambda _: schema_paths)
+    monkeypatch.setattr(backend_module.ovphysx_compat, "physx_schema_paths", lambda _: schema_paths)
     host_registrations, ovstage_registrations = [], []
-    monkeypatch.setattr(manager_module.ovstage.population, "register_usd_schemas", ovstage_registrations.append)
+    monkeypatch.setattr(backend_module.ovstage.population, "register_usd_schemas", ovstage_registrations.append)
     monkeypatch.setattr(
-        manager_module.importlib.util, "find_spec", lambda name: SimpleNamespace(origin="/schemas/newton/__init__.py")
+        backend_module.importlib.util, "find_spec", lambda name: SimpleNamespace(origin="/schemas/newton/__init__.py")
     )
 
     class FakeRegistry:
@@ -133,7 +141,7 @@ def test_schema_registration_skips_providers_already_supplied_by_host(
         def RegisterPlugins(self, paths):
             host_registrations.append(list(paths))
 
-    monkeypatch.setattr(manager_module.Plug, "Registry", FakeRegistry)
+    monkeypatch.setattr(backend_module.Plug, "Registry", FakeRegistry)
     manager_module.OvPhysxManager._ensure_physx_schemas_registered()
     manager_module.OvPhysxManager._ensure_physx_schemas_registered()
 
@@ -141,7 +149,7 @@ def test_schema_registration_skips_providers_already_supplied_by_host(
     assert host_registrations == ([expected_paths] if expected_paths else [])
 
 
-def test_registry_shares_native_cfg_without_replacing_pxr(monkeypatch, manager_module):
+def test_registry_shares_native_cfg_without_replacing_pxr(monkeypatch, backend_module):
     from isaaclab_ov.physics import OvPhysxBackendCfg
 
     from isaaclab.sim import SimulationContext
@@ -158,7 +166,7 @@ def test_registry_shares_native_cfg_without_replacing_pxr(monkeypatch, manager_m
         assert sys.modules["pxr"] is host_pxr
         assert sys.modules["pxr.Usd"] is host_usd
 
-    monkeypatch.setattr(manager_module, "ovphysx", _fake_ovphysx_module(bootstrap))
+    monkeypatch.setattr(backend_module, "ovphysx", _fake_ovphysx_module(bootstrap))
 
     sim = SimpleNamespace(_backend_registry=[])
     sim.get_or_create_backend = SimulationContext.get_or_create_backend.__get__(sim)
@@ -170,6 +178,31 @@ def test_registry_shares_native_cfg_without_replacing_pxr(monkeypatch, manager_m
     assert sys.modules["pxr.Usd"] is host_usd
     assert bootstrap_calls == [None]
     assert shared is first
+
+
+def test_backend_access_uses_explicit_simulation_and_requires_live_physics(manager, monkeypatch):
+    """An explicit simulation selects its own live resource, independently of the active context."""
+    from isaaclab_ov.physics import OvPhysxCfg, OvPhysxManager, get_ovphysx_backend
+
+    from isaaclab.sim import SimulationContext
+
+    owner = manager._sim
+    with pytest.raises(RuntimeError, match="reset"):
+        get_ovphysx_backend(owner)
+
+    other = SimpleNamespace(backend_manager=OvPhysxManager(OvPhysxCfg()))
+    monkeypatch.setattr(SimulationContext, "_instance", other)
+    manager.backend.stage = object()
+    assert get_ovphysx_backend(owner) is manager.backend
+
+    with pytest.raises(RuntimeError, match="reset"):
+        get_ovphysx_backend(other)
+    with pytest.raises(TypeError, match="OvPhysxManager"):
+        get_ovphysx_backend(SimpleNamespace(backend_manager=object()))
+
+    manager.backend.physx = None
+    with pytest.raises(RuntimeError, match="reset"):
+        get_ovphysx_backend(owner)
 
 
 @pytest.mark.parametrize("stop_fails", [False, True])
@@ -226,9 +259,10 @@ def test_atexit_cleanup_logs_and_swallows_active_close_failure(monkeypatch, mana
 
 
 @pytest.mark.parametrize(("modern", "fails"), [(False, False), (True, False), (True, True)])
-def test_stage_reuse_drains_bindings_before_reset(monkeypatch, manager_module, manager, modern, fails):
+def test_stage_reuse_drains_bindings_before_reset(monkeypatch, backend_module, manager, modern, fails):
     events = []
-    monkeypatch.setattr(manager_module.ovphysx_compat, "OVPHYSX_USES_TASKS", modern)
+    monkeypatch.setattr(backend_module.ovphysx_compat, "OVPHYSX_USES_TASKS", modern)
+    monkeypatch.setattr(backend_module, "_physx_schemas_registered", True)
 
     class FakePhysX:
         def attach_ovstage(self, stage, *, read_ordinal):
@@ -257,7 +291,7 @@ def test_stage_reuse_drains_bindings_before_reset(monkeypatch, manager_module, m
     physx = TaskPhysX() if modern else FakePhysX()
     manager.backend.physx = physx
     monkeypatch.setattr(
-        manager_module.OvPhysxView, "_close_all_for", lambda value: events.append(("close_views", value))
+        backend_module.OvPhysxView, "_close_all_for", lambda value: events.append(("close_views", value))
     )
     manager.backend.stage = object()
     manager.backend.rigid_body_view = SimpleNamespace(destroy=lambda: events.append("destroy_view"))
@@ -349,7 +383,7 @@ def test_set_gravity_writes_and_releases_ovstage_control_resources(
         "_sim",
         SimpleNamespace(cfg=SimpleNamespace(physics_prim_path="/World/physicsScene", gravity=(0.0, 0.0, -9.81))),
     )
-    monkeypatch.setattr(manager, "_gravity", (0.0, 0.0, -9.81))
+    manager.backend.gravity = (0.0, 0.0, -9.81)
 
     if failure is None:
         manager.set_gravity((0.0, 0.0, -3.72))
@@ -578,55 +612,55 @@ def test_scenes_author_device_dynamics_and_broadphase(monkeypatch, manager, devi
         assert prim.GetAttribute("physxScene:broadphaseType").Get() == broadphase
 
 
-def test_construct_physx_forwards_cooked_collider_cache_dir(monkeypatch, manager_module, tmp_path):
+def test_construct_physx_forwards_cooked_collider_cache_dir(monkeypatch, backend_module, tmp_path):
     """Configured, default, and unset cache directories reach ``PhysXConfig`` unchanged."""
     from isaaclab_ov.physics.ovphysx_manager_cfg import DEFAULT_COOKED_COLLIDER_CACHE_DIR, OvPhysxBackendCfg, OvPhysxCfg
 
-    monkeypatch.setattr(manager_module, "ovphysx", _fake_ovphysx_module(lambda: None))
+    monkeypatch.setattr(backend_module, "ovphysx", _fake_ovphysx_module(lambda: None))
 
     assert OvPhysxCfg().cooked_collider_cache_dir == DEFAULT_COOKED_COLLIDER_CACHE_DIR
     for cache_dir in (DEFAULT_COOKED_COLLIDER_CACHE_DIR, str(tmp_path / "configured_cache"), None):
-        backend = manager_module.OvPhysxBackend(OvPhysxBackendCfg(device="cpu", cooked_collider_cache_dir=cache_dir))
+        backend = backend_module.OvPhysxBackend(OvPhysxBackendCfg(device="cpu", cooked_collider_cache_dir=cache_dir))
         assert backend.physx.config.cooked_collider_cache_dir == cache_dir
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership and mode semantics")
-def test_default_cache_dir_is_created_owner_only(manager_module, tmp_path, monkeypatch):
+def test_default_cache_dir_is_created_owner_only(backend_module, tmp_path, monkeypatch):
     """The default directory is created ``0o700`` so another user cannot pre-own or read it."""
     import stat
 
     target = tmp_path / "ovphysx_derived_data_cache_1000"
-    monkeypatch.setattr(manager_module, "DEFAULT_COOKED_COLLIDER_CACHE_DIR", str(target))
+    monkeypatch.setattr(backend_module, "DEFAULT_COOKED_COLLIDER_CACHE_DIR", str(target))
 
-    assert manager_module._prepare_default_cache_dir(str(target)) == str(target)
+    assert backend_module._prepare_default_cache_dir(str(target)) == str(target)
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership and mode semantics")
-def test_default_cache_dir_rejects_a_planted_symlink(manager_module, tmp_path, monkeypatch):
+def test_default_cache_dir_rejects_a_planted_symlink(backend_module, tmp_path, monkeypatch):
     """A symlink planted at the predictable path is refused instead of written through."""
     victim = tmp_path / "victim"
     victim.mkdir()
     target = tmp_path / "ovphysx_derived_data_cache_1000"
     target.symlink_to(victim)
-    monkeypatch.setattr(manager_module, "DEFAULT_COOKED_COLLIDER_CACHE_DIR", str(target))
+    monkeypatch.setattr(backend_module, "DEFAULT_COOKED_COLLIDER_CACHE_DIR", str(target))
 
     with pytest.raises(RuntimeError, match="symlink"):
-        manager_module._prepare_default_cache_dir(str(target))
+        backend_module._prepare_default_cache_dir(str(target))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership and mode semantics")
-def test_default_cache_dir_rejects_a_directory_owned_by_another_user(manager_module, tmp_path, monkeypatch):
+def test_default_cache_dir_rejects_a_directory_owned_by_another_user(backend_module, tmp_path, monkeypatch):
     """A pre-existing directory this user does not own is refused."""
     import os as _os
 
     target = tmp_path / "ovphysx_derived_data_cache_1000"
     target.mkdir(mode=0o700)
-    monkeypatch.setattr(manager_module, "DEFAULT_COOKED_COLLIDER_CACHE_DIR", str(target))
+    monkeypatch.setattr(backend_module, "DEFAULT_COOKED_COLLIDER_CACHE_DIR", str(target))
     monkeypatch.setattr(_os, "getuid", lambda: _os.stat(target).st_uid + 1)
 
     with pytest.raises(RuntimeError, match="owned"):
-        manager_module._prepare_default_cache_dir(str(target))
+        backend_module._prepare_default_cache_dir(str(target))
 
 
 @pytest.mark.skipif(not (_CPU_DEVICES and _CUDA_DEVICES), reason="The device sequence requires a CPU and a CUDA device")
@@ -684,7 +718,7 @@ def test_warmup_collects_clone_receipt_before_model_init(monkeypatch, manager_mo
         enable_scene_query_support=False,
     )
     sim.get_clone_plan = lambda: None
-    sim.get_or_create_backend = lambda cfg, *, scene: backend
+    sim.get_or_create_backend = lambda cfg, *, scene, scene_data: backend
     monkeypatch.setattr(manager, "_device", "cuda:0")
     monkeypatch.setattr(manager, "_clone_recipes", clones)
     monkeypatch.setattr(manager_module, "_serialize_stage", lambda *args, **kwargs: ("#usda 1.0", clones))

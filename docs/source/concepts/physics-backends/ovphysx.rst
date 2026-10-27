@@ -25,6 +25,67 @@ OvPhysX is selected through :class:`~isaaclab_ov.physics.OvPhysxCfg`:
 
     sim_cfg = SimulationCfg(physics=OvPhysxCfg())
 
+Explicit backend operations
+---------------------------
+
+The OvPhysX manager owns an :class:`~isaaclab_ov.physics.OvPhysxBackend` for its
+simulation context. Obtain that backend after initializing and resetting the
+simulation, then pass it explicitly to the operations in
+:mod:`isaaclab_ov.physics.ovphysx_backend`:
+
+.. code-block:: python
+
+    from isaaclab_ov.physics import get_ovphysx_backend
+    from isaaclab_ov.physics.ovphysx_backend import set_gravity, step
+
+    backend = get_ovphysx_backend(sim)
+    set_gravity(backend, (0.0, 0.0, -3.0))
+    step(backend, sim.cfg.dt)
+
+``step(backend, dt)`` advances the selected native runtime and waits for the
+step to complete. It does not advance the manager's simulation clock.
+``forward(backend)`` refreshes state without advancing time;
+``update_kinematics(backend)`` applies a pending kinematic refresh. Backend state,
+including ``kinematics_dirty``, ``gravity`` and ``scene_data``, belongs to the
+backend instance. The existing ``sim.backend_manager`` methods remain available.
+
+For direct use without a :class:`~isaaclab.sim.SimulationContext`, construct
+``OvPhysxBackend(OvPhysxBackendCfg(device="cpu"))``, call ``backend.load(stage_usda)``
+with an exported USD string, and release its resources with ``backend.close()``
+in a ``finally`` block. The USD string must contain configured ``PhysicsScene``
+prims, including dynamics and broadphase attributes matching the selected CPU or
+CUDA device. The manager authors these scene settings automatically. Use the
+same explicit operations with a directly constructed backend.
+``set_gravity`` accepts ``physics_prim_path`` as a keyword argument, defaulting
+to ``"/World/physicsScene"``, to select the physics scene in the attached stage.
+
+Native runtime scope
+~~~~~~~~~~~~~~~~~~~~
+
+Python backend state is owned by each instance. The pinned native OvPhysX
+0.6.4.72118723 runtime supports only one attached OVStage per process. Multiple
+native ``PhysX`` handles may coexist, but a second handle's ``attach_ovstage``
+raises an error while the first handle owns a live attachment. That rejected
+attachment leaves the first stage and its bindings intact. Detach the owning
+native handle or close its backend before loading another stage.
+
+This limit applies to both CPU and CUDA simulation. Several ``PhysicsScene``
+prims can share the attached stage, but a native step advances them together;
+they do not provide independent stepping. Creating instance-owned Python state
+does not add simultaneous native scene support.
+
+Sequential stage replacement and destroy/create cycles are supported. CPU and
+CUDA dynamics can be selected through each stage's scene attributes when replacing
+stages. ``PhysX.set_cpu_mode(True)`` instead sets an irreversible process policy;
+Isaac Lab's CPU backend uses scene attributes so later CUDA scenes remain possible.
+Native Carbonite configuration is shared by all handles, the cooked-collider cache
+location is selected on first runtime startup, and changing the deterministic CUDA
+ordinal after the first GPU scene requires a new process.
+
+Use separate worker processes started with ``spawn`` for isolated simulations.
+Do not fork a process after constructing a native ``PhysX`` instance: the runtime,
+CUDA and Carbonite state are not fork-safe. Serialize native calls within a process.
+
 Why use OvPhysX?
 ----------------
 
