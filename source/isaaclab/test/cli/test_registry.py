@@ -59,7 +59,9 @@ def _write_distribution(site: Path, name: str, version: str, *, tasks: bool = Tr
         (dist_info / "direct_url.json").write_text(json.dumps(origin))
 
 
-def _write_wheel(directory, name: str, requires: tuple[str, ...] = (), version: str = "0.1.0") -> Path:
+def _write_wheel(
+    directory, name: str, requires: tuple[str, ...] = (), version: str = "0.1.0", *, tasks: bool = True
+) -> Path:
     """Write the wheel of a task package without any build tool."""
     module = name.replace("-", "_")
     info = f"{module}-{version}.dist-info"
@@ -73,8 +75,9 @@ def _write_wheel(directory, name: str, requires: tuple[str, ...] = (), version: 
         f"{module}/__init__.py": b"",
         f"{info}/METADATA": "\n".join([*metadata, ""]).encode(),
         f"{info}/WHEEL": b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-        f"{info}/entry_points.txt": f"[isaaclab.tasks]\n{module} = {module}\n".encode(),
     }
+    if tasks:
+        files[f"{info}/entry_points.txt"] = f"[isaaclab.tasks]\n{module} = {module}\n".encode()
     digests = {
         path: base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=") for path, data in files.items()
     }
@@ -374,7 +377,8 @@ def test_environment_install_keeps_isaac_lab_and_checks_the_wheel(tmp_path, monk
         index.write_text(json.dumps({"schema": 1, "packages": [package]}))
         return command_registry(["--index", str(index), *args])
 
-    wheel = _write_wheel(tmp_path, "rt-tasks", ("isaaclab~=3.0.0",))
+    helper = _write_wheel(tmp_path, "rt-helper", tasks=False)
+    wheel = _write_wheel(tmp_path, "rt-tasks", ("isaaclab~=3.0.0", f"rt-helper @ {helper.as_uri()}"))
     pypi = {"type": "pypi", "index": "https://pypi.org/simple", "project": "rt-tasks"}
     sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
     registered = {"filename": wheel.name, "url": wheel.as_uri(), "sha256": sha256}
@@ -382,7 +386,10 @@ def test_environment_install_keeps_isaac_lab_and_checks_the_wheel(tmp_path, monk
     assert "Hash mismatch" in capfd.readouterr().err
     monkeypatch.setenv("UV_OFFLINE", "1")  # uv rejects --refresh-package offline
     assert registry(pypi, _release("0.1.0", wheel=registered), "install", "rt-tasks", "-y") == 0
+    assert "rt-helper" in install.installed_distributions(target.site_paths)
     monkeypatch.delenv("UV_OFFLINE")
+    assert registry(pypi, _release("0.1.0", wheel={**registered, "sha256": "0" * 64}), "install", "rt-tasks", "-y") == 1
+    assert "Hash mismatch" in capfd.readouterr().err
     assert command_registry(["uninstall", "rt-tasks", "--yes"]) == 0
 
     git = {"type": "git", "repository": repository.as_uri(), "subdirectory": ""}
@@ -392,7 +399,45 @@ def test_environment_install_keeps_isaac_lab_and_checks_the_wheel(tmp_path, monk
     assert registry(git, release, "install", "rt-tasks", "--yes") == 0
     rows = installed_packages(target, load_index(str(index)))
     assert [(row.name, row.status) for row in rows] == [("rt-tasks", "registry")]
-    assert {path.name for path in site.glob("*.dist-info")} == {"isaaclab-4.0.0.dist-info", "rt_tasks-0.1.0.dist-info"}
+    assert {path.name for path in site.glob("*.dist-info")} == {
+        "isaaclab-4.0.0.dist-info",
+        "rt_tasks-0.1.0.dist-info",
+        "rt_helper-0.1.0.dist-info",
+    }
+
+
+@needs_uv
+@pytest.mark.parametrize("origin", ["index", "wheel"])
+def test_environment_install_preserves_unrequested_dependencies(tmp_path, monkeypatch, origin):
+    """Transitive source requirements cannot replace an installed dependency, including an index install."""
+    monkeypatch.setenv("UV_NO_INDEX", "1")
+    uv = install.uv_binary()
+    original, replacement = tmp_path / "original", tmp_path / "replacement"
+    original.mkdir()
+    replacement.mkdir()
+    original_wheel = _write_wheel(original, "protected-library", tasks=False)
+    replacement_wheel = _write_wheel(replacement, "protected-library", tasks=False)
+    dependency = _write_wheel(
+        tmp_path, "new-dependency", (f"protected-library @ {replacement_wheel.as_uri()}",), tasks=False
+    )
+    task = _write_wheel(tmp_path, "rt-tasks", (f"new-dependency @ {dependency.as_uri()}",))
+    prefix = tmp_path / "venv"
+    subprocess.run([uv, "venv", "-q", str(prefix), "--python", sys.executable], check=True)
+    python = str(prefix / "bin" / "python")
+    requirement = ["--find-links", str(original), "protected-library"] if origin == "index" else [str(original_wheel)]
+    subprocess.run([uv, "pip", "install", "-q", "--python", python, *requirement], check=True)
+    site = subprocess.check_output(
+        [python, "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True
+    ).strip()
+    target = Target("env", python, prefix, site_paths=(site,))
+    before = install.direct_url(install.installed_distributions(target.site_paths)["protected-library"])
+
+    with pytest.raises(RegistryError, match="protected-library"):
+        install.install_into_environment([InstallPlan("rt-tasks", f"rt-tasks @ {task.as_uri()}")], target)
+
+    distributions = install.installed_distributions(target.site_paths)
+    assert set(distributions) == {"protected-library"}
+    assert install.direct_url(distributions["protected-library"]) == before
 
 
 @needs_uv
@@ -403,6 +448,7 @@ def test_project_install_locks_only_the_registered_wheel(tmp_path, monkeypatch):
     links = tmp_path / "links"
     links.mkdir()
     _write_wheel(links, "isaaclab", version="3.0.0")
+    _write_wheel(links, "rt-shared")
     monkeypatch.setenv("UV_NO_INDEX", "1")
     monkeypatch.setenv("UV_FIND_LINKS", str(links))
     monkeypatch.setenv("UV_PYTHON", sys.executable)
@@ -411,7 +457,7 @@ def test_project_install_locks_only_the_registered_wheel(tmp_path, monkeypatch):
     root.mkdir()
     (root / "pyproject.toml").write_text(
         '[project]\nname = "my-lab"\nversion = "0.1.0"\nrequires-python = ">=3.10"\n'
-        'dependencies = ["isaaclab~=3.0.0"]\n[dependency-groups]\nisaaclab-registry = []\n'
+        'dependencies = ["isaaclab~=3.0.0", "rt-shared"]\n[dependency-groups]\nisaaclab-registry = []\n'
     )
     subprocess.run([uv, "sync", "-q", "--project", str(root)], check=True)
     python = str(root / ".venv" / "bin" / "python")
@@ -437,3 +483,6 @@ def test_project_install_locks_only_the_registered_wheel(tmp_path, monkeypatch):
     assert installed("rt_tasks") and installed("rt_extra")
     install.uninstall_from_project(["rt-tasks"], target)
     assert {path: path.read_bytes() for path in original} == original and not installed("rt_tasks")
+    install.install_into_project([plan("rt-shared")], target)
+    install.uninstall_from_project(["rt-shared"], target)
+    assert installed("rt_shared"), "A dependency still required by the project must remain installed."

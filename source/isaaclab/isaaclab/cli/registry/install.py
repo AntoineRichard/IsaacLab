@@ -232,9 +232,10 @@ def install_into_environment(plans: list[InstallPlan], target: Target, *, dry_ru
     """Install packages into the target environment with ``uv pip install``.
 
     Installed Isaac Lab packages are pinned through overrides, which win over any range a registry package
-    declares, and every other installed distribution through constraints, so the install only adds
-    distributions and replaces the requested ones. Hash-pinned plans go through a requirements file with their
-    sha256, which uv verifies for every kind of URL.
+    declares, and every other installed distribution through constraints. Resolution runs against a temporary
+    copy of the installed metadata first, refusing replacements of unrequested packages even at the same version.
+    The selected packages and resolved additions are then installed with ``--no-deps`` so the real environment's
+    other packages cannot change. Hash-pinned wheels are reinstalled to verify their registered sha256.
 
     Args:
         plans: Packages to install.
@@ -245,8 +246,8 @@ def install_into_environment(plans: list[InstallPlan], target: Target, *, dry_ru
         RegistryError: If uv fails, for example on a hash mismatch.
     """
     names = {plan.name for plan in plans}
-    distributions = sorted(installed_distributions(target.site_paths).items())
-    pins = {name: f"{name}=={distribution.version}" for name, distribution in distributions}
+    distributions = installed_distributions(target.site_paths)
+    pins = {name: f"{name}=={distribution.version}" for name, distribution in sorted(distributions.items())}
     overrides = [pin for name, pin in pins.items() if is_isaaclab_distribution(name)]
     constraints = [pin for name, pin in pins.items() if name not in names and not is_isaaclab_distribution(name)]
     hashed = [f"{plan.requirement} --hash=sha256:{plan.sha256}" for plan in plans if plan.sha256]
@@ -263,8 +264,56 @@ def install_into_environment(plans: list[InstallPlan], target: Target, *, dry_ru
             if lines:
                 (Path(temporary) / filename).write_text("\n".join(lines) + "\n", encoding="utf-8")
                 argv += [option, str(Path(temporary) / filename)]
-        argv += [*_refresh_options(plans), *(plan.requirement for plan in plans if not plan.sha256)]
+        # Refreshing metadata alone lets uv keep an installed wheel without checking its hash.
+        argv += [option for plan in plans if plan.sha256 for option in ("--reinstall-package", plan.name)]
+        argv += [plan.requirement for plan in plans if not plan.sha256]
+        additions = _resolve_environment_install(argv, target, distributions, names, Path(temporary))
+        argv += ["--no-deps"]
+        if additions.stat().st_size:
+            argv += ["-r", str(additions)]
         _run_uv([*argv, "--dry-run"] if dry_run else argv, cwd=target.uv_cwd or Path(temporary))
+
+
+def _resolve_environment_install(
+    argv: list[str],
+    target: Target,
+    distributions: dict[str, importlib.metadata.Distribution],
+    names: set[str],
+    temporary: Path,
+) -> Path:
+    """Resolve with uv in scratch metadata, reject protected replacements, and freeze only new dependencies."""
+    stage = temporary / "site"
+    stage.mkdir()
+    protected = {}
+    for name, distribution in distributions.items():
+        metadata = stage / f"{name.replace('-', '_')}-{distribution.version}.dist-info"
+        metadata.mkdir()
+        (metadata / "METADATA").write_text(
+            distribution.read_text("METADATA") or str(distribution.metadata), encoding="utf-8"
+        )
+        for filename in ("WHEEL", "direct_url.json", "entry_points.txt"):
+            if (content := distribution.read_text(filename)) is not None:
+                (metadata / filename).write_text(content, encoding="utf-8")
+        marker = metadata / "_registry_protected"
+        marker.touch()
+        if name not in names:
+            protected[name] = marker
+        # Never copy installed RECORD paths: they can lead outside this scratch directory. A uv replacement
+        # removes this marker through the scratch RECORD, even when the package's version and source match.
+        (metadata / "RECORD").write_text(
+            "".join(f"{metadata.name}/{path.name},,\n" for path in metadata.iterdir()), encoding="utf-8"
+        )
+    cwd = target.uv_cwd or temporary
+    _run_uv([*argv, "--target", str(stage)], cwd=cwd)
+    replaced = sorted(name for name, marker in protected.items() if not marker.exists())
+    if replaced:
+        raise RegistryError(f"The install would replace protected packages: {', '.join(replaced)}.")
+    excluded = sorted(distributions.keys() | names)
+    freeze = [argv[0], "pip", "freeze", "--python", target.python, "--path", str(stage)]
+    freeze += [option for name in excluded for option in ("--exclude", name)]
+    additions = temporary / "additions.txt"
+    additions.write_text(_run_uv(freeze, cwd=cwd, capture_stdout=True), encoding="utf-8")
+    return additions
 
 
 def install_into_project(plans: list[InstallPlan], target: Target, *, dry_run: bool = False) -> None:
@@ -333,20 +382,28 @@ def uninstall_from_environment(names: list[str], target: Target, *, dry_run: boo
 def uninstall_from_project(names: list[str], target: Target, *, dry_run: bool = False) -> None:
     """Remove packages from the project's ``isaaclab-registry`` group, then from its environment.
 
-    ``uv remove --no-sync`` edits ``pyproject.toml`` and ``uv.lock`` only, and ``uv pip uninstall`` removes just
-    these packages: a syncing ``uv remove`` would also remove everything else the lock does not list (packages
-    installed with ``uv pip install`` or with other groups and extras).
+    ``uv remove --no-sync`` edits ``pyproject.toml`` and ``uv.lock`` only. Packages still present in the new lock
+    remain installed because another dependency, group, or extra needs them. ``uv pip uninstall`` removes only
+    the others, keeping packages installed outside the project's lock.
 
     Raises:
         RegistryError: If uv fails.
     """
     uv, root = uv_binary(), target.project_root
     remove = [uv, "remove", "--no-sync", "--project", str(root), "--group", DEPENDENCY_GROUP, *names]
-    for argv in (remove, [uv, "pip", "uninstall", "--python", target.python, *names]):
-        if dry_run:
-            print_info(f"Would run: {_command_line(argv)}")
-        else:
-            _run_uv(argv, cwd=root)
+    if dry_run:
+        print_info(f"Would run: {_command_line(remove)}")
+        print_info(f"Would uninstall {', '.join(names)} unless the remaining project lock still requires them.")
+        return
+    _run_uv(remove, cwd=root)
+    locked = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8")).get("package", [])
+    remaining = {normalize_name(package["name"]) for package in locked}
+    removed = [name for name in names if name not in remaining]
+    retained = [name for name in names if name in remaining]
+    if retained:
+        print_info(f"Kept {', '.join(retained)} installed: the project still requires them.")
+    if removed:
+        _run_uv([uv, "pip", "uninstall", "--python", target.python, *removed], cwd=root)
 
 
 def _plain_url(url: str, schemes: tuple[str, ...]) -> bool:
@@ -397,17 +454,18 @@ def _command_line(argv: list[str]) -> str:
     return shlex.join(["uv", *argv[1:]])
 
 
-def _run_uv(argv: list[str], cwd: Path | None = None) -> None:
-    """Run uv with its output on the terminal.
+def _run_uv(argv: list[str], cwd: Path | None = None, *, capture_stdout: bool = False) -> str:
+    """Run uv with stderr on the terminal and optionally capture stdout for machine-readable output.
 
     Raises:
         RegistryError: If uv fails.
     """
     print_info(f"Running: {_command_line(argv)}")
     sys.stdout.flush()
-    returncode = subprocess.run(argv, cwd=cwd, check=False).returncode
-    if returncode != 0:
-        raise RegistryError(f"'uv {' '.join(argv[1:3])}' failed with exit code {returncode}.")
+    result = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE if capture_stdout else None, text=True, check=False)
+    if result.returncode != 0:
+        raise RegistryError(f"'uv {' '.join(argv[1:3])}' failed with exit code {result.returncode}.")
+    return result.stdout or ""
 
 
 # Installed packages.

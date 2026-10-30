@@ -280,7 +280,12 @@ def _command_uninstall(args: argparse.Namespace) -> int:
     uninstall = uninstall_from_project if target.mode == "project" else uninstall_from_environment
     uninstall(names, target, dry_run=args.dry_run)
     if not args.dry_run:
-        print_info(f"Uninstalled {', '.join(names)}. Dependencies that only they needed stay installed.")
+        if target.mode == "project":
+            print_info(
+                f"Removed {', '.join(names)} from '{DEPENDENCY_GROUP}'. Other project requirements stay installed."
+            )
+        else:
+            print_info(f"Uninstalled {', '.join(names)}. Dependencies that only they needed stay installed.")
     return 0
 
 
