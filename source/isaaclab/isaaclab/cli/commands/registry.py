@@ -15,7 +15,15 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from ..registry import DEPENDENCY_GROUP, SECURITY_WARNING, RegistryError, is_isaaclab_distribution, normalize_name, warn
+from ..registry import (
+    COMMUNITY_DISCLAIMER,
+    DEPENDENCY_GROUP,
+    SECURITY_WARNING,
+    RegistryError,
+    is_isaaclab_distribution,
+    normalize_name,
+    warn,
+)
 from ..registry.index import (
     Package,
     RegistryIndex,
@@ -53,6 +61,9 @@ Anywhere else (an Isaac Lab checkout, a wheel virtual environment), they are ins
 environment with 'uv pip install'.
 
 {SECURITY_WARNING}
+
+Packages not published by NVIDIA are community packages. Installing one requires accepting a disclaimer: type
+'yes' when asked, or pass --accept-community-risk. --yes alone does not accept it.
 
 Documentation: https://isaac-sim.github.io/IsaacLab/develop/source/experimental-features/registry.html
 """
@@ -114,6 +125,11 @@ def _build_parser() -> argparse.ArgumentParser:
     install = add("install", _command_install, "Install registry packages.")
     install.add_argument("packages", nargs="+", metavar="PACKAGE", help="NAME, or NAME==VERSION for one release.")
     install.add_argument("--force", action="store_true", help="Install a release that is not compatible.")
+    install.add_argument(
+        "--accept-community-risk",
+        action="store_true",
+        help="Accept the disclaimer for community packages (not published by NVIDIA) without being asked.",
+    )
     uninstall = add("uninstall", _command_uninstall, "Uninstall registry packages.")
     uninstall.add_argument("packages", nargs="+", metavar="NAME", help="Packages to uninstall.")
     for subparser in (install, uninstall):
@@ -183,6 +199,7 @@ def _command_info(args: argparse.Namespace) -> int:
         ("category", package.category),
         ("tags", ", ".join(package.tags)),
         ("maintainers", ", ".join(package.maintainers)),
+        ("publisher", _publisher(package)),
         ("homepage", package.homepage),
         ("media", ", ".join(f"{kind}: {url}" for kind, url in package.media.items())),
         ("source", _source(package)),
@@ -244,9 +261,12 @@ def _command_install(args: argparse.Namespace) -> int:
     for package, release, plan in selected:
         _print_install_summary(package, release, plan, target.isaaclab_version)
     names = ", ".join(plan.name for *_, plan in selected)
+    community = [package.name for package, *_ in selected if not package.is_nvidia]
     print(f"Target: {target.describe()}")
     warn(SECURITY_WARNING)
-    if not args.dry_run and not _confirm(f"Install {names}?", args.yes):
+    if community:
+        warn(f"Not published by NVIDIA: {', '.join(community)}. {COMMUNITY_DISCLAIMER}")
+    if not args.dry_run and not _consent(f"Install {names}?", bool(community), args):
         print_info("Nothing was installed.")
         return 1
     install = install_into_project if target.mode == "project" else install_into_environment
@@ -386,6 +406,26 @@ def _confirm(question: str, assume_yes: bool) -> bool:
         return False
 
 
+def _consent(question: str, community: bool, args: argparse.Namespace) -> bool:
+    """Ask before an install. A community package needs the disclaimer accepted: ``--accept-community-risk``, or
+    ``yes`` typed in full. ``--yes`` alone skips only the ordinary confirmation.
+
+    Raises:
+        RegistryError: If acceptance or confirmation is needed but stdin is not interactive.
+    """
+    if not community or args.accept_community_risk:
+        return _confirm(question, args.yes)
+    if not sys.stdin.isatty():
+        raise RegistryError(
+            "Installing a community package needs the disclaimer accepted; re-run with --accept-community-risk."
+        )
+    try:
+        return input("Type 'yes' to accept the disclaimer and install: ").strip().lower() == "yes"
+    except EOFError:
+        print()
+        return False
+
+
 def _texts(package: Package) -> list[str]:
     """Return the fields that ``search`` matches against."""
     texts = [package.name, package.description, package.category, *package.tags]
@@ -399,7 +439,18 @@ def _print_packages(index: RegistryIndex, packages: list[Package], isaaclab_vers
     from prettytable import PrettyTable
 
     installed = {name: dist.version for name, dist in installed_distributions().items() if provides_tasks(dist)}
-    table = PrettyTable(["Name", "Version", "Category", "Tasks", "Status", "Compatibility", "Installed", "Description"])
+    columns = [
+        "Name",
+        "Version",
+        "Publisher",
+        "Category",
+        "Tasks",
+        "Status",
+        "Compatibility",
+        "Installed",
+        "Description",
+    ]
+    table = PrettyTable(columns)
     table.title = title
     table.align = "l"
     table.max_width["Description"] = 48
@@ -417,6 +468,7 @@ def _print_packages(index: RegistryIndex, packages: list[Package], isaaclab_vers
             [
                 package.name,
                 release.version if release else "-",
+                "NVIDIA" if package.is_nvidia else "community",
                 package.category,
                 len(shown.tasks) if shown else 0,
                 package.status,
@@ -435,6 +487,11 @@ def _verdict(index: RegistryIndex, package: Package, release: Release, isaaclab_
     if release.yanked_reason is not None:
         return f"yanked: {release.yanked_reason}"
     return compatibility_problem(release, isaaclab_version) or "ok"
+
+
+def _publisher(package: Package) -> str:
+    """Return who publishes a package, as ``info`` and the install summary show it."""
+    return "NVIDIA" if package.is_nvidia else "community (third party, not reviewed or tested by NVIDIA)"
 
 
 def _source(package: Package) -> str:
@@ -457,6 +514,7 @@ def _release_source(release: Release) -> str:
 def _print_install_summary(package: Package, release: Release, plan: InstallPlan, isaaclab_version: str | None) -> None:
     """Print what is about to be installed."""
     print(f"{package.name} {release.version}: {package.summary}")
+    print(f"  publisher    {_publisher(package)}")
     print(f"  source       {_source(package)} @ {_release_source(release)}")
     if plan.sha256:
         print(f"  sha256       {plan.sha256} (uv refuses any other file)")

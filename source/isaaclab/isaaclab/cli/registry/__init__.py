@@ -30,6 +30,16 @@ SECURITY_WARNING = (
 )
 """Warning printed before every install."""
 
+COMMUNITY_DISCLAIMER = (
+    "Community packages are published by third parties, not by NVIDIA. NVIDIA has not reviewed, tested, or verified"
+    ' them and provides them "AS IS", without warranty of any kind. You install and use them at your own risk;'
+    " NVIDIA and the Isaac Lab developers are not liable for any damage, loss, or other harm that results."
+)
+"""Disclaimer that the user must accept before installing a package not published by NVIDIA.
+
+Draft wording for the prototype; the final text needs NVIDIA legal review.
+"""
+
 
 class RegistryError(RuntimeError):
     """A registry operation failed with a message meant for the user."""

@@ -24,6 +24,8 @@ packages, checks that they support your Isaac Lab release, installs them with uv
 
    Registry packages run third-party code at install time and every time Isaac Lab loads tasks. The registry pins and
    checks packages, but it does not review their code. Read the source of a package before you install it.
+   Community packages are not published, reviewed, or tested by NVIDIA, and you install them at your own risk (see
+   :ref:`isaaclab-registry-publishers`).
 
 
 How the registry works
@@ -44,6 +46,21 @@ The `registry README <registry-repo_>`_ describes the checks, the waiting period
 
 .. _registry-repo: https://github.com/isaac-sim/IsaacLab-Registry
 
+.. _isaaclab-registry-publishers:
+
+NVIDIA and community packages
+-----------------------------
+
+Every package has a publisher, which ``list``, ``info``, and ``install`` show:
+
+* **NVIDIA**: the package's source lives in an NVIDIA GitHub organization. The bot never merges such a registration on
+  its own: a registry admin approves it.
+* **community**: every other package. NVIDIA has not reviewed, tested, or verified it.
+
+Before installing a community package, ``install`` prints a disclaimer and asks you to accept it by typing ``yes``.
+In a script, pass ``--accept-community-risk`` to accept it; ``--yes`` alone skips only the ordinary confirmation, so
+an install of a community package without either stops with an error.
+
 
 Find packages
 -------------
@@ -59,14 +76,14 @@ Find packages
 
 .. code-block:: text
 
-   +---------------------------------------------------------------------------------------------------------------------------------+
-   |                                         isaaclab-community: packages for Isaac Lab 3.0.0                                        |
-   +-------------+---------+--------------+-------+------------+---------------+-----------+-----------------------------------------+
-   | Name        | Version | Category     | Tasks | Status     | Compatibility | Installed | Description                             |
-   +-------------+---------+--------------+-------+------------+---------------+-----------+-----------------------------------------+
-   | dummy-reach | 0.1.0   | manipulation | 1     | maintained | ok            |           | Isaac Lab environments for dummy_reach. |
-   | dummy-walk  | 0.2.0   | locomotion   | 1     | maintained | ok            |           | Isaac Lab environments for dummy_walk.  |
-   +-------------+---------+--------------+-------+------------+---------------+-----------+-----------------------------------------+
+   +---------------------------------------------------------------------------------------------------------------------------------------------+
+   |                                               isaaclab-community: packages for Isaac Lab 3.0.0                                              |
+   +-------------+---------+-----------+--------------+-------+------------+---------------+-----------+-----------------------------------------+
+   | Name        | Version | Publisher | Category     | Tasks | Status     | Compatibility | Installed | Description                             |
+   +-------------+---------+-----------+--------------+-------+------------+---------------+-----------+-----------------------------------------+
+   | dummy-reach | 0.1.0   | community | manipulation | 1     | maintained | ok            |           | Isaac Lab environments for dummy_reach. |
+   | dummy-walk  | 0.2.0   | community | locomotion   | 1     | maintained | ok            |           | Isaac Lab environments for dummy_walk.  |
+   +-------------+---------+-----------+--------------+-------+------------+---------------+-----------+-----------------------------------------+
    [INFO] 1 incompatible or end-of-life package(s) hidden; use --all to show them.
 
 ``info`` lists every release with its source, Isaac Lab range, tasks, and RL libraries, and marks the one that
@@ -81,22 +98,30 @@ Install and use a package
    uv run isaaclab registry install dummy-walk
 
 The command picks the newest compatible release, prints what it is about to install and where, and asks for
-confirmation:
+confirmation. For a community package, it shows the disclaimer and asks you to type ``yes``:
 
 .. code-block:: text
 
    dummy-walk 0.2.0: Isaac Lab environments for dummy_walk.
-     source       git https://github.com/alice/dummy-walk @ e4663a1756e0 (v0.2.0)
+     publisher    community (third party, not reviewed or tested by NVIDIA)
+     source       git https://github.com/alice/dummy-walk @ 0d7ce3a28cc8 (v0.2.0)
      license      BSD-3-Clause
      isaaclab     ~=3.0.0 (installed release: 3.0.0)
      tasks        DummyWalk-Walk-Cartpole
-     requirement  dummy-walk @ git+https://github.com/alice/dummy-walk@e4663a1756e07bac3c54130e2d3c84af6d700dba
+     requirement  dummy-walk @ git+https://github.com/alice/dummy-walk@0d7ce3a28cc8a8e1909fec2df9b2976bdc6bf3eb
    Target: project /home/dave/my_robot_lab (dependency group 'isaaclab-registry', uv add)
    [WARNING] Registry packages run third-party code at install time and every time Isaac Lab loads tasks. Review the source.
-   Install dummy-walk? [y/N]
+   [WARNING] Not published by NVIDIA: dummy-walk. Community packages are published by third parties, not by NVIDIA.
+   NVIDIA has not reviewed, tested, or verified them and provides them "AS IS", without warranty of any kind. You install
+   and use them at your own risk; NVIDIA and the Isaac Lab developers are not liable for any damage, loss, or other harm
+   that results.
+   Type 'yes' to accept the disclaimer and install:
 
-Pass ``NAME==VERSION`` to install a specific release, ``--yes`` to skip the confirmation, or ``--dry-run`` to see what
-uv would do without changing anything. The installed tasks then work like any other task:
+An NVIDIA package asks ``Install NAME? [y/N]`` instead.
+
+Pass ``NAME==VERSION`` to install a specific release, ``--yes`` to skip the confirmation (with
+``--accept-community-risk`` for a community package), or ``--dry-run`` to see what uv would do without changing
+anything. The installed tasks then work like any other task:
 
 .. code-block:: bash
 
@@ -115,7 +140,7 @@ remove a package. The dependencies that only it needed stay installed.
    +--------------+---------+----------+--------------+--------------------------------+
    | Name         | Version | Status   | Commit       | Note                           |
    +--------------+---------+----------+--------------+--------------------------------+
-   | dummy-walk   | 0.2.0   | registry | e4663a1756e0 |                                |
+   | dummy-walk   | 0.2.0   | registry | 0d7ce3a28cc8 |                                |
    | my-robot-lab | 0.1.0   | local    | -            | file:///home/dave/my_robot_lab |
    +--------------+---------+----------+--------------+--------------------------------+
 

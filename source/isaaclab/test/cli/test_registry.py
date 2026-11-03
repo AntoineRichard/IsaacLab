@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import inspect
+import io
 import json
 import re
 import shutil
@@ -290,6 +291,48 @@ def test_isaac_lab_local_installs_and_libraries_are_never_managed(tmp_path, monk
             assert reason in capsys.readouterr().err
 
 
+class _Terminal(io.StringIO):
+    """A stdin that reports itself as interactive."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_community_packages_need_the_disclaimer_accepted(tmp_path, monkeypatch, capsys):
+    """A package not published by NVIDIA installs only once the disclaimer is accepted, with
+    ``--accept-community-risk`` or a typed ``yes``; ``--yes`` alone or a bare ``y`` is not acceptance."""
+    target = Target("env", sys.executable, tmp_path, isaaclab_version="3.0.0", site_paths=(str(tmp_path / "site"),))
+    installs = []
+    monkeypatch.setattr(registry_command, "detect_target", lambda: target)
+    monkeypatch.setattr(
+        registry_command, "install_into_environment", lambda plans, *_, **__: installs.append([p.name for p in plans])
+    )
+    index = tmp_path / "index.json"
+    nvidia = {
+        "name": "nv-tasks",
+        "source": _GIT_SOURCE,
+        "publisher": "nvidia",
+        "releases": [_release("1.0", _commit("1"))],
+    }
+    community = {"name": "walker", "source": _GIT_SOURCE, "releases": [_release("1.0", _commit("2"))]}
+    index.write_text(json.dumps({"schema": 1, "packages": [nvidia, community]}))
+
+    def install(*args: str) -> int:
+        return command_registry(["--index", str(index), "install", *args])
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    assert install("walker", "--yes") == 1
+    assert "--accept-community-risk" in capsys.readouterr().err
+    monkeypatch.setattr(sys, "stdin", _Terminal())
+    for answer, status in (("y", 1), ("yes", 0)):
+        monkeypatch.setattr("builtins.input", lambda _prompt, answer=answer: answer)
+        assert install("walker", "--yes") == status
+    assert install("nv-tasks", "walker", "--yes", "--accept-community-risk") == 0
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    assert install("nv-tasks", "--yes") == 0
+    assert installs == [["walker"], ["nv-tasks", "walker"], ["nv-tasks"]]
+
+
 @pytest.mark.skipif(not shutil.which("git"), reason="needs git")
 def test_publish_checks_the_project_and_writes_the_request(tmp_path):
     """Publishing refuses what the registry bot would reject, then writes a request the bot can parse."""
@@ -373,7 +416,8 @@ def test_environment_install_keeps_isaac_lab_and_checks_the_wheel(tmp_path, monk
     index = tmp_path / "index.json"
 
     def registry(source: dict, release: dict, *args: str) -> int:
-        package = {"name": "rt-tasks", "source": source, "releases": [{**release, "isaaclab": ">=4,<5"}]}
+        releases = [{**release, "isaaclab": ">=4,<5"}]
+        package = {"name": "rt-tasks", "source": source, "publisher": "nvidia", "releases": releases}
         index.write_text(json.dumps({"schema": 1, "packages": [package]}))
         return command_registry(["--index", str(index), *args])
 

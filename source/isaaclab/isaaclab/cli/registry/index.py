@@ -72,6 +72,13 @@ class Package:
     media: dict[str, str] = field(default_factory=dict)
     status: str = "maintained"
     status_description: str = ""
+    publisher: str = "community"
+    """``nvidia`` for a package an index admin approved as NVIDIA's, else ``community``."""
+
+    @property
+    def is_nvidia(self) -> bool:
+        """Return True if NVIDIA publishes the package; any other or missing value means community."""
+        return self.publisher == "nvidia"
 
     @property
     def source_type(self) -> str:
