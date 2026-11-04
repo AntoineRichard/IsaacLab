@@ -209,8 +209,8 @@ def plan_for_release(package: Package, release: Release) -> InstallPlan:
     if package.source_type == "git":
         repository, subdirectory = package.source.get("repository", ""), package.source.get("subdirectory") or ""
         # A query or an '@' in the path would move the pinned commit out of the requirement.
-        parsed = urllib.parse.urlparse(repository)
-        if not _plain_url(repository, ("https", "http", "file", "ssh")) or "?" in repository or "@" in parsed.path:
+        plain = _plain_url(repository, ("https", "http", "file", "ssh"))
+        if not plain or "?" in repository or "@" in urllib.parse.urlparse(repository).path:
             raise RegistryError(f"Refusing malformed repository URL {repository!r} for {name}.")
         if not _COMMIT.match(release.commit or ""):
             raise RegistryError(f"{name} {release.version} has no valid 40-hex commit in the index.")
@@ -240,7 +240,7 @@ def install_into_environment(plans: list[InstallPlan], target: Target, *, dry_ru
     Args:
         plans: Packages to install.
         target: Environment to install into.
-        dry_run: Show what uv would do without changing anything.
+        dry_run: Print the uv command without resolving, building, or installing anything.
 
     Raises:
         RegistryError: If uv fails, for example on a hash mismatch.
@@ -267,11 +267,15 @@ def install_into_environment(plans: list[InstallPlan], target: Target, *, dry_ru
         # Refreshing metadata alone lets uv keep an installed wheel without checking its hash.
         argv += [option for plan in plans if plan.sha256 for option in ("--reinstall-package", plan.name)]
         argv += [plan.requirement for plan in plans if not plan.sha256]
+        if dry_run:
+            # Resolving builds the packages, which runs their code: a dry run stops before it.
+            print_info(f"Would resolve in a scratch directory, then run: {_command_line(argv)} --no-deps")
+            return
         additions = _resolve_environment_install(argv, target, distributions, names, Path(temporary))
         argv += ["--no-deps"]
         if additions.stat().st_size:
             argv += ["-r", str(additions)]
-        _run_uv([*argv, "--dry-run"] if dry_run else argv, cwd=target.uv_cwd or Path(temporary))
+        _run_uv(argv, cwd=target.uv_cwd or Path(temporary))
 
 
 def _resolve_environment_install(
@@ -321,9 +325,9 @@ def install_into_project(plans: list[InstallPlan], target: Target, *, dry_run: b
 
     ``uv add --no-sync`` only edits ``pyproject.toml`` and ``uv.lock``, and leaves both as they were when it
     fails. The new lock is checked before ``uv sync --frozen --inexact`` installs anything (keeping packages that
-    are not in the lock): it must leave every Isaac Lab package as it was locked, and pin each hash-pinned plan to
-    the registered sha256, since uv locks whatever file a wheel URL serves. If a check or the sync fails, both
-    files get their previous content back.
+    are not in the lock): it must leave every Isaac Lab package as it was locked and as it is installed, and pin
+    each hash-pinned plan to the registered sha256, since uv locks whatever file a wheel URL serves. If ``uv add``,
+    a check, or the sync fails, both files get their previous content back.
 
     Raises:
         RegistryError: If uv fails, the install would change Isaac Lab, or a locked wheel is not the registered one.
@@ -338,8 +342,8 @@ def install_into_project(plans: list[InstallPlan], target: Target, *, dry_run: b
         return
     files = (root / "pyproject.toml", root / "uv.lock")
     backup = {path: path.read_bytes() for path in files if path.is_file()}
-    _run_uv(add, cwd=root)
     try:
+        _run_uv(add, cwd=root)
         before = _locked_isaaclab(backup.get(files[1], b"").decode())
         after = _locked_isaaclab(files[1].read_text(encoding="utf-8"))
         changes = [
@@ -347,10 +351,18 @@ def install_into_project(plans: list[InstallPlan], target: Target, *, dry_run: b
             for name, entry in after.items()
             if before.get(name) != entry
         ]
+        # The sync also moves an installed Isaac Lab that already differs from the lock.
+        site_paths = [*target.prefix.glob("lib/python*/site-packages"), target.prefix / "Lib" / "site-packages"]
+        installed = installed_distributions(tuple(str(path) for path in site_paths if path.is_dir()))
+        changes += [
+            f"installed {name} {installed[name].version} -> {entry[0]}"
+            for name, entry in after.items()
+            if before.get(name) == entry and name in installed and entry[0] not in (None, installed[name].version)
+        ]
         if changes:
             raise RegistryError(
                 f"The install would change Isaac Lab ({', '.join(changes)}), which the registry never does."
-                " Upgrade Isaac Lab yourself first if you need this release."
+                " Update Isaac Lab in the project yourself first, then install again."
             )
         for plan in plans:
             if plan.sha256:
@@ -407,8 +419,13 @@ def uninstall_from_project(names: list[str], target: Target, *, dry_run: bool = 
 
 
 def _plain_url(url: str, schemes: tuple[str, ...]) -> bool:
-    """Return whether a URL has one of ``schemes`` and no whitespace or fragment that would change the requirement."""
-    return urllib.parse.urlparse(url).scheme in schemes and not any(c.isspace() or c == "#" for c in url)
+    """Return whether a URL parses, has one of ``schemes``, and has no whitespace or fragment that would change the
+    requirement."""
+    try:
+        scheme = urllib.parse.urlparse(url).scheme
+    except ValueError:  # for example an unterminated IPv6 host
+        return False
+    return scheme in schemes and not any(c.isspace() or c == "#" for c in url)
 
 
 def _refresh_options(plans: list[InstallPlan]) -> list[str]:

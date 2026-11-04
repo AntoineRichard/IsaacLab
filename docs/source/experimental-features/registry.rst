@@ -39,8 +39,9 @@ its authors' Git repositories or on a package index.
 * The bot opens a pull request, runs its checks, and merges it after a waiting period. Any comment blocks the merge.
 * Each release is pinned to a Git commit (the tag is only a label) or to the sha256 of a wheel, so an install gets
   exactly the code the registry checked.
-* The bot compiles the registry into a single ``index.json`` file, which also holds a blocklist. ``isaaclab registry``
-  downloads that file on every command and refuses blocklisted packages.
+* The bot compiles the registry into a single ``index.json`` file, which also holds a blocklist. Every
+  ``isaaclab registry`` command that reads the index downloads that file again, and ``install`` refuses blocklisted
+  packages.
 
 The `registry README <registry-repo_>`_ describes the checks, the waiting periods, and the rest of the bot's policy.
 
@@ -180,8 +181,12 @@ running environment. The ``Target:`` line names the choice before anything chang
      - ``uv pip install`` adds the package to that environment.
      - Does not apply.
 
-A project whose name starts with ``isaaclab`` counts as part of Isaac Lab and gets the environment target; rename it
-to get project installs (the registry refuses such names anyway).
+A project named ``isaaclab`` or ``isaaclab-<something>`` counts as part of Isaac Lab and gets the environment target;
+rename it to get project installs (the registry refuses such names anyway).
+
+When ``UV_PROJECT_ENVIRONMENT`` is an absolute path, every project shares that one environment. If it is also the
+environment that runs the Isaac Lab checkout, as in the Isaac Lab Docker images, ``install`` uses the environment
+target even inside your own project, so that it never syncs your project's lock into the checkout's environment.
 
 The registry never replaces or removes the installed Isaac Lab, an editable or local install such as your own project,
 or an installed package that registers no tasks. In an environment, ``install`` pins every installed Isaac Lab package

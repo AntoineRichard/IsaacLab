@@ -209,6 +209,9 @@ def parse_index(data: Any, location: str = "the registry index") -> RegistryInde
             _build(BlockEntry, {**entry, "reason": entry.get("reason") or "blocked by the registry"})
             for entry in data.get("blocklist", [])
         )
+        for entry in blocklist:
+            if not _scalars_ok((entry.name, entry.reason), (entry.commit, entry.version)):
+                raise ValueError(f"a blocklist entry is malformed: {entry}")
     except (AttributeError, KeyError, TypeError, ValueError) as error:
         raise RegistryError(f"{location} is malformed ({type(error).__name__}: {error}).") from error
     return RegistryIndex(
@@ -333,6 +336,19 @@ def _check_types(package: Package) -> None:
         )
     if package.source_type not in ("git", "pypi"):
         raise ValueError(f"{package.name} has no source type 'git' or 'pypi'")
+    texts = [package.name, package.description, package.category, package.homepage, package.status]
+    texts += [package.status_description, package.publisher]
+    releases = package.releases
+    texts += [v for r in releases for v in (r.version, r.isaaclab, r.summary, r.license, r.requires_python)]
+    texts += [r.registered_at for r in releases]
+    optional = [v for r in releases for v in (r.commit, r.git_tag)]
+    if not _scalars_ok(texts, optional) or not all(isinstance(r.yanked, (bool, str)) for r in releases):
+        raise ValueError(f"a text field of {package.name} is not a string")
+
+
+def _scalars_ok(strings: Any, optional: Any) -> bool:
+    """Return whether every value of ``strings`` is a string and every value of ``optional`` a string or None."""
+    return all(isinstance(v, str) for v in strings) and all(v is None or isinstance(v, str) for v in optional)
 
 
 def _same_version(left: str, right: str) -> bool:

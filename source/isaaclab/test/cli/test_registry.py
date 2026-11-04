@@ -99,6 +99,8 @@ from pathlib import Path
 {inspect.getsource(_write_wheel)}
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    if marker := __import__("os").environ.get("RT_BUILD_MARKER"):
+        Path(marker).touch()
     return _write_wheel(wheel_directory, "rt-tasks", ("isaaclab~=3.0.0",)).name
 """
 
@@ -220,6 +222,7 @@ def test_target_detection(tmp_path, monkeypatch, name, venv, cwd, checkout, shar
         ({**_GIT_SOURCE, "subdirectory": "../escape"}, _release("0.1.0", _commit("a")), "subdirectory"),
         ({**_GIT_SOURCE, "repository": "https://x.org/a b"}, _release("0.1.0", _commit("a")), "repository"),
         ({**_GIT_SOURCE, "repository": "https://x.org/a@b"}, _release("0.1.0", _commit("a")), "repository"),
+        ({**_GIT_SOURCE, "repository": "https://[bad"}, _release("0.1.0", _commit("a")), "repository"),
     ],
     ids=[
         "git-subdirectory",
@@ -230,6 +233,7 @@ def test_target_detection(tmp_path, monkeypatch, name, venv, cwd, checkout, shar
         "escape",
         "bad-url",
         "at",
+        "unparsable-url",
     ],
 )
 def test_requirement_is_built_from_validated_index_fields(source, release, expected):
@@ -242,6 +246,21 @@ def test_requirement_is_built_from_validated_index_fields(source, release, expec
         return
     plan = install.plan_for_release(package, package.releases[0])
     assert (plan.requirement, plan.sha256) == expected
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"packages": [{"name": "walker", "source": _GIT_SOURCE, "description": 123}]},
+        {"packages": [{"name": "walker", "source": _GIT_SOURCE, "releases": [_release("1", requires_python=123)]}]},
+        {"blocklist": [{"name": 123}]},
+    ],
+    ids=["description", "requires-python", "blocklist-name"],
+)
+def test_a_malformed_index_is_refused_with_a_message(document):
+    """Every field the commands read is type-checked when the index is parsed, so none of them can crash later."""
+    with pytest.raises(RegistryError, match="malformed"):
+        parse_index({"schema": 1, **document})
 
 
 def test_installed_status(tmp_path, registry_index):
@@ -438,8 +457,9 @@ def test_environment_install_keeps_isaac_lab_and_checks_the_wheel(tmp_path, monk
 
     git = {"type": "git", "repository": repository.as_uri(), "subdirectory": ""}
     release = _release("0.1.0", _git(repository, "rev-parse", "HEAD"))
+    monkeypatch.setenv("RT_BUILD_MARKER", str(tmp_path / "built"))
     assert registry(git, release, "install", "rt-tasks", "--dry-run") == 0
-    assert not list(site.glob("rt_tasks-*.dist-info"))
+    assert not list(site.glob("rt_tasks-*.dist-info")) and not (tmp_path / "built").exists()  # no package code ran
     assert registry(git, release, "install", "rt-tasks", "--yes") == 0
     rows = installed_packages(target, load_index(str(index)))
     assert [(row.name, row.status) for row in rows] == [("rt-tasks", "registry")]
@@ -530,3 +550,11 @@ def test_project_install_locks_only_the_registered_wheel(tmp_path, monkeypatch):
     install.install_into_project([plan("rt-shared")], target)
     install.uninstall_from_project(["rt-shared"], target)
     assert installed("rt_shared"), "A dependency still required by the project must remain installed."
+
+    # An installed Isaac Lab that differs from the lock is not moved back to the locked version either.
+    subprocess.run([uv, "pip", "install", "-q", "--python", python, "isaaclab==3.0.1"], check=True)
+    current = {path: path.read_bytes() for path in original}
+    with pytest.raises(RegistryError, match=r"installed isaaclab 3\.0\.1 -> 3\.0\.0"):
+        install.install_into_project([plan("rt-tasks")], target)
+    assert {path: path.read_bytes() for path in original} == current
+    assert any(root.glob(".venv/lib/*/site-packages/isaaclab-3.0.1.dist-info"))
