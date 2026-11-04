@@ -243,13 +243,15 @@ def test_generated_project_matches_canonical_uv_layout(tmp_path):
         extra: [f"isaaclab[{extra}]~=3.0.0"]
         for extra in ("all", "isaacsim", "ov", "ovphysx", "ovrtx", "rerun", "viser")
     }
-    assert project_config["dependency-groups"]["dev"] == [
-        "codespell>=2.4",
-        "pre-commit>=4.2",
-        "pytest>=8.3",
-        "ruff>=0.11",
-    ]
-    assert project_config["tool"]["uv"]["build-backend"]["module-name"] == "test_project"
+    assert project_config["dependency-groups"] == {
+        "dev": ["codespell>=2.4", "pre-commit>=4.2", "pytest>=8.3", "ruff>=0.11"],
+        "isaaclab-registry": [],
+    }
+    uv_config = project_config["tool"]["uv"]
+    assert uv_config["default-groups"] == ["dev", "isaaclab-registry"]
+    assert uv_config["no-sources-package"] == ["isaaclab"]
+    assert "override-dependencies" not in uv_config
+    assert uv_config["build-backend"]["module-name"] == "test_project"
     assert project_config["tool"]["pytest"]["ini_options"]["testpaths"] == ["tests"]
     assert project_config["tool"]["pytest"]["ini_options"]["markers"] == [
         "unit: test exercises isolated logic and does not launch the simulator",
@@ -295,22 +297,35 @@ def test_generated_project_uses_active_source_checkout(tmp_path):
     with (project_dir / "pyproject.toml").open("rb") as file:
         project_config = tomllib.load(file)
 
-    assert project_config["project"]["dependencies"] == ["isaaclab-dev[rsl-rl]"]
     expected_root = Path(_MODULE.ROOT_DIR)
+    release = (expected_root / "VERSION").read_text().strip()
     with (expected_root / "pyproject.toml").open("rb") as file:
         source_config = tomllib.load(file)
+    checkout_extras = source_config["project"]["optional-dependencies"]
+    # The published metadata requires the release; the checkout is installed through unpublished groups.
+    assert project_config["project"]["dependencies"] == [f"isaaclab[rsl-rl]~={release}"]
     assert project_config["project"]["optional-dependencies"] == {
-        extra: [f"isaaclab-dev[{extra}]"] for extra in source_config["project"]["optional-dependencies"]
+        extra: [f"isaaclab[{extra}]~={release}"] for extra in checkout_extras
     }
-    sources = project_config["tool"]["uv"]["sources"]
+    assert project_config["dependency-groups"] == {
+        "dev": ["codespell>=2.4", "pre-commit>=4.2", "pytest>=8.3", "ruff>=0.11"],
+        "isaaclab-dev": ["isaaclab-dev[rsl-rl]"],
+        "isaaclab-registry": [],
+        **{extra: [f"isaaclab-dev[{extra}]"] for extra in checkout_extras if extra != "dev"},
+    }
+    uv_config = project_config["tool"]["uv"]
+    assert uv_config["default-groups"] == ["dev", "isaaclab-dev", "isaaclab-registry"]
+    assert "no-sources-package" not in uv_config
+    sources = uv_config["sources"]
     assert (project_dir / sources["isaaclab-dev"]["path"]).resolve() == expected_root.resolve()
     assert (project_dir / sources["isaaclab"]["path"]).resolve() == (expected_root / "source" / "isaaclab").resolve()
     assert sources["isaaclab-dev"]["editable"] is True
     assert sources["isaaclab"]["editable"] is True
-    assert project_config["tool"]["uv"]["override-dependencies"] == source_config["tool"]["uv"]["override-dependencies"]
-    assert project_config["tool"]["uv"]["environments"] == source_config["tool"]["uv"]["environments"]
+    assert uv_config["override-dependencies"] == [*source_config["tool"]["uv"]["override-dependencies"], "isaaclab"]
+    assert uv_config["environments"] == source_config["tool"]["uv"]["environments"]
     assert sources["torch"] == source_config["tool"]["uv"]["sources"]["torch"]
-    assert "uses editable relative paths" in (project_dir / "README.md").read_text()
+    # `--extra` would select the published extras, which install nothing from the checkout.
+    assert "uv run --group isaacsim isaaclab random_agent" in (project_dir / "README.md").read_text()
 
     # Path consumers must be able to build the dependency-only root, not just resolve its TOML.
     result = subprocess.run(
@@ -332,6 +347,54 @@ def test_generated_project_uses_active_source_checkout(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert list((tmp_path / "installed").glob("isaaclab_dev-*.dist-info"))
+
+
+def test_source_project_resolves_registry_packages_against_checkout(tmp_path):
+    """A checkout-generated project must accept a registry package that requires the release, and give it back.
+
+    The checkout's ``isaaclab`` reports its package version rather than the release, and a package generated from
+    another checkout carries an ``isaaclab`` path source that does not exist here; the generated ``isaaclab``
+    override resolves both to this checkout.
+    """
+    build = '[build-system]\nrequires = ["uv_build>=0.11,<0.13"]\nbuild-backend = "uv_build"\n'
+    files = {
+        "IsaacLab/VERSION": "3.0.0\n",
+        "IsaacLab/pyproject.toml": '[project]\nname = "isaaclab-dev"\nversion = "0.1.0"\ndependencies = ["isaaclab"]\n'
+        '[tool.uv.sources]\nisaaclab = { path = "source/isaaclab", editable = true }\n',
+        "IsaacLab/source/isaaclab/pyproject.toml": f'{build}[project]\nname = "isaaclab"\nversion = "37.0.0"\n',
+        "IsaacLab/source/isaaclab/src/isaaclab/__init__.py": "",
+        "package/pyproject.toml": f'{build}[project]\nname = "registry-package"\nversion = "0.1.0"\n'
+        'dependencies = ["isaaclab~=3.0.0"]\n'
+        '[tool.uv.sources]\nisaaclab = { path = "../../IsaacLab/source/isaaclab" }\n',
+        "package/src/registry_package/__init__.py": "",
+    }
+    for path, text in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text)
+    package = tmp_path / "package"
+    identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"]
+    for command in (["init", "-q"], ["add", "-A"], [*identity, "commit", "-q", "-m", "Initial commit"]):
+        subprocess.run(["git", *command], cwd=package, capture_output=True, check=True)
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=package, capture_output=True, text=True).stdout.strip()
+    specification = _external_specification(tmp_path, initial_content="blank")
+    specification["isaaclab_source_path"] = str(tmp_path / "IsaacLab")
+    with mock.patch.object(_GENERATOR, "_setup_git_repo"):
+        _GENERATOR.generate(specification)
+    project_dir = tmp_path / "test_project"
+    original_pyproject = (project_dir / "pyproject.toml").read_bytes()
+
+    def uv(*args: str) -> None:
+        command = ["uv", *args, "--no-sync", "--group", "isaaclab-registry"]
+        result = subprocess.run(command, cwd=project_dir, capture_output=True, text=True, timeout=300, check=False)
+        assert result.returncode == 0, result.stderr
+
+    uv("add", f"registry-package @ git+{package.as_uri()}@{commit}")
+    with (project_dir / "uv.lock").open("rb") as file:
+        packages = {entry["name"]: entry for entry in tomllib.load(file)["package"]}
+    assert packages["isaaclab"]["source"] == {"editable": "../IsaacLab/source/isaaclab"}
+    assert packages["registry-package"]["source"]["git"].endswith(commit)
+    uv("remove", "registry-package")
+    assert (project_dir / "pyproject.toml").read_bytes() == original_pyproject
 
 
 def test_generation_warns_when_initial_commit_fails(tmp_path, monkeypatch, caplog):

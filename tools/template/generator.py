@@ -290,7 +290,9 @@ def _prepare_external_dependencies(specification: dict, project_dir: str) -> dic
         }
     )
     specification["isaaclab_dependency"] = source_config["project"]["name"]
-    specification["isaaclab_release"] = None
+    # The checkout's isaaclab package reports its extension version (such as 37.2.0), not the release.
+    with open(os.path.join(source_root, "VERSION")) as file:
+        specification["isaaclab_release"] = file.read().strip()
     specification["isaaclab_optional_extras"] = sorted(source_config["project"].get("optional-dependencies", {}).keys())
     specification["isaaclab_environments"] = uv_config.get("environments", [])
     specification["isaaclab_indexes"] = uv_config.get("index", [])

@@ -93,8 +93,12 @@ environments. It does not install separate template dependencies.
 
 When run from an installed wheel, it requires a compatible release of that Isaac Lab
 version (for example ``isaaclab~=3.0.0``), which accepts its patch releases. From a source
-checkout, it records editable paths to the checkout and its workspace packages, so
-unpublished branches work too. These paths are relative; regenerate the project or update
+checkout, it requires the checkout's ``VERSION`` release the same way, and an
+``isaaclab-dev`` dependency group installs the checkout and its workspace packages from
+editable paths, so unpublished branches work too. Every Isaac Lab extra except ``dev`` then
+has a dependency group of the same name: use ``uv run --group isaacsim`` where this page shows
+``uv run --extra isaacsim``. For the ``dev`` extra, add ``isaaclab-dev[dev]`` to the
+``isaaclab-dev`` group. These paths are relative; regenerate the project or update
 ``[tool.uv.sources]`` if either directory moves.
 
 The short form is equivalent:
@@ -267,7 +271,8 @@ visualizer, RL, teleoperation, and other feature extras aligned with that Isaac
 Lab version. It includes ``rerun``, ``viser``, and ``all`` when the active Isaac
 Lab package provides them.
 
-Pass each extra required by a command. For example:
+Pass each extra required by a command, with ``--group`` instead of ``--extra`` in
+a project generated from a source checkout. For example:
 
 .. code-block:: bash
 
@@ -424,6 +429,17 @@ In Cursor, install the ``detachhead.basedpyright`` extension instead of Pylance,
 select the same interpreter, and reload the window. Both language servers read
 the generated ``pyrightconfig.json``.
 
+Share it on the Isaac Lab registry
+----------------------------------
+
+Generated projects can be published as they are on the experimental
+:ref:`Isaac Lab registry <isaaclab-registry>`: fill in ``[tool.isaaclab.registry]``
+in ``pyproject.toml``, push a ``v<version>`` tag, and run
+``uv run isaaclab registry publish`` (see :ref:`isaaclab-registry-publish`).
+Registry packages installed into the project are recorded in its
+``isaaclab-registry`` dependency group, which ``uv sync`` keeps (see
+:ref:`isaaclab-registry-modes`).
+
 Create an internal task
 -----------------------
 
@@ -465,8 +481,8 @@ Troubleshooting
 **The CLI cannot find the generated task**
    Run ``uv sync`` and invoke the command from the generated project root. Then
    confirm the task appears in ``uv run isaaclab list_envs``. Pass ``--all`` to
-   include tasks from every installed task package instead of limiting the list
-   to the current project's ``isaaclab.tasks`` entry point.
+   include Isaac Lab's own tasks instead of limiting the list to the tasks of the
+   current project and of the other installed task packages.
 
 **Non-interactive arguments are rejected**
    Include ``--non_interactive`` after ``--new``. Cartpole is the default initial
@@ -476,7 +492,8 @@ Troubleshooting
 
 **An optional backend module is missing**
    Add its extra before the command, such as ``uv run --extra ovphysx
-   isaaclab ...`` or ``uv run --extra isaacsim --extra rerun isaaclab ...``.
+   isaaclab ...`` or ``uv run --extra isaacsim --extra rerun isaaclab ...``,
+   using ``--group`` in a project generated from a source checkout.
    Every extra offered by the active Isaac Lab package is copied into the
    generated project's optional dependencies.
 
