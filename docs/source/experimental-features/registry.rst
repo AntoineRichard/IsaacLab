@@ -62,6 +62,22 @@ Before installing a community package, ``install`` prints a disclaimer and asks 
 In a script, pass ``--accept-community-risk`` to accept it; ``--yes`` alone skips only the ordinary confirmation, so
 an install of a community package without either stops with an error.
 
+.. note::
+
+   The publisher is how this prototype stands in for the planned design, which follows Claude Code's plugin
+   marketplaces: packages will live in several indexes of the same format, and trust will come from the index a package
+   is in rather than from a field on the package.
+
+   * The **official** index, ``isaaclab-official``, will hold NVIDIA's packages and those of partners. Registry admins
+     will approve every new package, and the command will read this index by default.
+   * The **community** index, ``isaaclab-community``, will hold packages registered through the bot. You will add it
+     yourself.
+   * Anyone will be able to host a **third-party** index. You will add it yourself, after confirming that NVIDIA has
+     not reviewed it.
+
+   Installing a package from any index other than the official one will need the disclaimer accepted. The names
+   ``isaaclab-official`` and ``isaaclab-community`` are reserved for ``isaac-sim`` repositories.
+
 
 Find packages
 -------------
@@ -326,6 +342,9 @@ URL or file, or a registry clone, whose ``dist/index.json`` (written by the bot'
 
    export ISAACLAB_REGISTRY_URL=https://example.com/registry/index.json
    uv run isaaclab registry --index path/to/index.json list
+
+The command reads one index at a time. Reading several at once, and adding or removing them with an ``isaaclab registry
+index`` command, is planned (see :ref:`isaaclab-registry-publishers`).
 
 .. _isaaclab-registry-troubleshooting:
 
