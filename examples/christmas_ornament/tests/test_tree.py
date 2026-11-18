@@ -175,3 +175,23 @@ def test_wind_time_advances_so_gusts_vary():
         forces.append(state.body_f.numpy()[body, :3].copy())
     assert float(wind.time.numpy()[0]) == pytest.approx(1.5)
     assert not np.allclose(forces[0], forces[2])
+
+
+def test_needle_meshes_bake_each_hosts_needles_into_one_mesh():
+    """For USD/RTX: one cone mesh per host segment (~2.4k prims) instead of ~258k instances."""
+    from examples.christmas_ornament.tree import NEEDLE_HALF_LENGTH, make_needles, needle_meshes
+
+    builder = _builder()
+    tree = build_tree(builder, ORIGIN, FACING)
+    batches = make_needles(tree, np.random.default_rng(3))
+    meshes = needle_meshes(tree, np.random.default_rng(3), cone_segments=6)
+    hosts = {int(b) for batch in batches for b in batch.body}
+    assert set(meshes) == hosts
+    total = sum(len(batch.body) for batch in batches)
+    assert sum(len(m.triangles) for m in meshes.values()) == total * 2 * 6  # side + base fan
+    for body, mesh in list(meshes.items())[:50]:
+        reach = tree.segment_vis_radius[body] + 2.0 * max(NEEDLE_HALF_LENGTH) + 1e-6
+        radial = np.hypot(mesh.vertices[:, 0], mesh.vertices[:, 1])
+        assert np.max(radial) <= reach
+        assert np.max(np.abs(mesh.vertices[:, 2])) <= 0.5 * tree.segment_length[body] + reach
+        assert mesh.color.shape == (3,)

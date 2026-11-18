@@ -27,8 +27,16 @@ Newton revision in a temporary uv overlay, as the atelier does:
    ornament run --mode probe --viewer null --check
    ornament run --mode hang --viewer null --check --metrics /tmp/ornament.json
 
-   # Render MP4s headless (cameras: wide, close, hand).
+   # Render MP4s headless (cameras: wide, close, hand) with the OpenGL viewer ...
    PYGLET_HEADLESS=1 ornament render --cam close --out /tmp/ornament_close.mp4
+
+   # ... or path-traced with ViewerRTX. Newton at this revision needs ovrtx >= 0.5.1; the Isaac Lab
+   # environment ships 0.4.1, which segfaults during scene population, so add it to the overlay.
+   PYGLET_HEADLESS=1 uv run --no-sync \
+       --with "newton @ git+https://github.com/newton-physics/newton.git@405ec9b54c3743b126cafe3ea59416a921ac36c8" \
+       --with "warp-lang==1.17.0" --with "ovrtx>=0.5.1.385782" --with "ovstage>=0.2.1.385922" \
+       python -m examples.christmas_ornament.render --renderer rtx --environment studio --cam close \
+       --out /tmp/ornament_close_rtx.mp4
 
    uv run python -m pytest examples/christmas_ornament/tests -q
 
@@ -43,7 +51,9 @@ beam theory, ``E (pi r^4 / 4) / span``, with two moduli: the trunk at 5 GPa so i
 branches at 0.2 GPa. Branch rod stretch stiffness is 1e5 N/m rather than the trunk's 1e7 N/m:
 at 1e7 against bend stiffness of a few N m/rad, 20 VBD iterations left branch bending about ten
 times under-converged, and the tree drooped from solver softness rather than material. Needles
-are render-only cones (about 258k) placed each frame from the segment poses.
+are render-only cones (about 258k) placed each frame from the segment poses. ``ViewerRTX`` builds a
+USD prim per instance, which takes many minutes for that many needles, so ``--renderer rtx`` bakes
+each segment's needles into one visual-only mesh shape (no collision, no mass) on that segment.
 
 The tree leaves a slot toward the robot: long lower branches are phased around it and twigs that
 would reach into the robot's standing sector or the approach corridor are pruned. One outer
@@ -121,7 +131,9 @@ an RTX 5090, at the default 20 substeps and 20 VBD iterations at 60 FPS:
 * ``--mode hang --check`` passed 3 of 3 runs with the full tree (dip 9.9 to 10.2 mm, peak hook
   error 0.8 mm, trunk-top motion 0.2 mm, ring creep 0.5 mm, no non-target contacts), about
   5 minutes each with CUDA graph capture and per-frame measurement;
-* the test suite passed (25 tests, about 3 minutes including the probe).
+* the test suite passed (26 tests, about 3 minutes including the probe);
+* ``ViewerRTX`` renders (ovrtx 0.6.0, ovstage 0.3.0, 1280 x 960) took about 3 to 4 minutes per
+  camera for the whole sequence, including about a minute of scene setup.
 
 GPU contact ordering makes runs non-deterministic, so judge changes over several probe runs rather
 than one. These runs shared the GPU with other jobs; they qualify correctness, not real-time speed.

@@ -530,6 +530,59 @@ def make_needles(tree: Tree, rng: np.random.Generator, spacing: float = 0.004, p
     ]
 
 
+@dataclass
+class NeedleMesh:
+    vertices: np.ndarray  # (V, 3) in the host segment's body frame
+    triangles: np.ndarray  # (T, 3) int32
+    color: np.ndarray  # (3,) mean needle color
+
+
+def _quat_matrices(q: np.ndarray) -> np.ndarray:
+    """Rotation matrices (N, 3, 3) from quaternions (N, 4) in (x, y, z, w) order."""
+    x, y, z, w = q.T
+    return np.stack(
+        [
+            np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], -1),
+            np.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], -1),
+            np.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], -1),
+        ],
+        axis=1,
+    )
+
+
+def needle_meshes(tree: Tree, rng: np.random.Generator, cone_segments: int = 8) -> dict[int, NeedleMesh]:
+    """Bake each host segment's needles into one cone mesh in that segment's body frame.
+
+    USD-based renderers (``ViewerRTX``) create a prim per instance, which takes many minutes for
+    ~258k needles; one visual-only mesh shape per segment (~2.4k) moves with its body instead.
+    """
+    angles = np.linspace(0.0, 2.0 * math.pi, cone_segments, endpoint=False)
+    ring = np.stack([NEEDLE_RADIUS * np.cos(angles), NEEDLE_RADIUS * np.sin(angles)], -1)
+    base = np.arange(cone_segments)
+    apex, centre = cone_segments, cone_segments + 1
+    sides = np.stack([base, (base + 1) % cone_segments, np.full_like(base, apex)], -1)
+    bottom = np.stack([(base + 1) % cone_segments, base, np.full_like(base, centre)], -1)
+    template_tris = np.concatenate([sides, bottom]).astype(np.int32)
+    per_body: dict[int, list] = {}
+    for batch in make_needles(tree, rng):
+        h = batch.half_length
+        template = np.concatenate(
+            [np.column_stack([ring, np.full(cone_segments, -h)]), [[0.0, 0.0, h], [0.0, 0.0, -h]]]
+        )
+        rot = _quat_matrices(batch.local[:, 3:].astype(np.float64))
+        verts = np.einsum("nij,vj->nvi", rot, template) + batch.local[:, None, :3]
+        for body in np.unique(batch.body):
+            sel = batch.body == body
+            per_body.setdefault(int(body), []).append((verts[sel], batch.color[sel]))
+    meshes = {}
+    for body, parts in per_body.items():
+        verts = np.concatenate([v for v, _ in parts])  # (needles, cone verts, 3)
+        tris = (template_tris[None] + (np.arange(len(verts)) * (cone_segments + 2))[:, None, None]).reshape(-1, 3)
+        colors = np.concatenate([c for _, c in parts])
+        meshes[body] = NeedleMesh(verts.reshape(-1, 3).astype(np.float32), tris.astype(np.int32), colors.mean(axis=0))
+    return meshes
+
+
 @wp.kernel
 def place_needles(
     needle_body: wp.array[wp.int32],

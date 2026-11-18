@@ -3,11 +3,12 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Render the ornament demo headless to MP4 (OpenGL through EGL, frames piped to ffmpeg).
+"""Render the ornament demo headless to MP4, with OpenGL or OVRTX path tracing (``ViewerRTX``).
 
-Run with ``PYGLET_HEADLESS=1`` on a machine without a display::
+Frames are piped to ffmpeg. Run with ``PYGLET_HEADLESS=1`` on a machine without a display::
 
     PYGLET_HEADLESS=1 python -m examples.christmas_ornament.render --cam close --out /tmp/close.mp4
+    PYGLET_HEADLESS=1 python -m examples.christmas_ornament.render --renderer rtx --cam close --out /tmp/rtx.mp4
 """
 
 from __future__ import annotations
@@ -57,12 +58,20 @@ def main() -> None:
     p.add_argument("--frames", type=int, default=0, help="0 renders the whole sequence.")
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=960)
+    p.add_argument("--renderer", choices=("gl", "rtx"), default="gl", help="OpenGL, or OVRTX path tracing.")
+    p.add_argument("--environment", choices=("default", "studio", "none"), default="default", help="RTX lighting.")
     cli = p.parse_args()
 
     args = run_parser().parse_args(["--mode", cli.mode, "--viewer", "null"])
     args.branch_modulus = BRANCH_YOUNG_MODULUS
-    scene = OrnamentScene(args)
-    viewer = newton.viewer.ViewerGL(width=cli.width, height=cli.height, headless=True)
+    scene = OrnamentScene(args, needles_as_shapes=cli.renderer == "rtx")
+    if cli.renderer == "rtx":
+        # Synchronous rendering: each captured frame shows the state logged for it.
+        viewer = newton.viewer.ViewerRTX(
+            width=cli.width, height=cli.height, headless=True, async_rendering=False, environment=cli.environment
+        )
+    else:
+        viewer = newton.viewer.ViewerGL(width=cli.width, height=cli.height, headless=True)
     viewer.set_model(scene.model)
     position, target = CAMERAS[cli.cam]
     yaw, pitch = _yaw_pitch(position, target)

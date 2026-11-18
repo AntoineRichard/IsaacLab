@@ -55,6 +55,7 @@ from examples.christmas_ornament.tree import (
     build_tree,
     configure_builder,
     make_needles,
+    needle_meshes,
     place_needles,
 )
 
@@ -106,7 +107,9 @@ def creep_window_start() -> float:
 class OrnamentScene:
     """Scene assembly, scripted rollout and measurements for both modes."""
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, needles_as_shapes: bool = False):
+        """``needles_as_shapes`` bakes the needles into one visual-only mesh shape per segment, for
+        USD-based renderers (``ViewerRTX``); otherwise the viewer draws them as instances."""
         self.args = args
         self.device = wp.get_device(args.device)
         self.sim_dt = 1.0 / FPS / args.substeps
@@ -167,6 +170,13 @@ class OrnamentScene:
             self.target = make_branch(builder, wp.vec3(*(hang_world - branch_offset)))
         else:
             self.target = make_tree(builder, (*(HANG_XY - tree_offset[:2]), 0.0))
+            if needles_as_shapes:
+                visual = newton.ModelBuilder.ShapeConfig(
+                    density=0.0, has_shape_collision=False, has_particle_collision=False
+                )
+                for body, mesh in needle_meshes(self.tree, np.random.default_rng(11)).items():
+                    shape_mesh = newton.Mesh(mesh.vertices, mesh.triangles.flatten(), compute_inertia=False)
+                    builder.add_shape_mesh(body, mesh=shape_mesh, cfg=visual, color=tuple(float(c) for c in mesh.color))
             self._filter_hand_from_tree(builder)
 
         # The ornament hangs from the finger at home: ring inner top on the hook point, ring
@@ -213,16 +223,20 @@ class OrnamentScene:
         if self.tree is not None:
             if args.wind > 0.0:
                 self.wind = Wind(self.tree.wind_bodies, self.tree.wind_area, args.wind, self.device)
-            self.needles = [
-                (
-                    batch.half_length,
-                    wp.array(batch.body, dtype=wp.int32, device=self.device),
-                    wp.array(batch.local, dtype=wp.transform, device=self.device),
-                    wp.array(batch.color, dtype=wp.vec3, device=self.device),
-                    wp.empty(len(batch.body), dtype=wp.transform, device=self.device),
-                )
-                for batch in make_needles(self.tree, np.random.default_rng(11))
-            ]
+            self.needles = (
+                []
+                if needles_as_shapes
+                else [
+                    (
+                        batch.half_length,
+                        wp.array(batch.body, dtype=wp.int32, device=self.device),
+                        wp.array(batch.local, dtype=wp.transform, device=self.device),
+                        wp.array(batch.color, dtype=wp.vec3, device=self.device),
+                        wp.empty(len(batch.body), dtype=wp.transform, device=self.device),
+                    )
+                    for batch in make_needles(self.tree, np.random.default_rng(11))
+                ]
+            )
             self.trunk_top0 = self.state.body_q.numpy()[self.tree.trunk_top_body, :3].copy()
         else:
             self.needles = []
