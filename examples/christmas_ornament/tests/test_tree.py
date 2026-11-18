@@ -195,3 +195,24 @@ def test_needle_meshes_bake_each_hosts_needles_into_one_mesh():
         assert np.max(radial) <= reach
         assert np.max(np.abs(mesh.vertices[:, 2])) <= 0.5 * tree.segment_length[body] + reach
         assert mesh.color.shape == (3,)
+
+
+def test_tree_baubles_and_star_are_shiny():
+    builder = _builder()
+    tree = build_tree(builder, ORIGIN, FACING)
+    visible, collide = int(newton.ShapeFlags.VISIBLE), int(newton.ShapeFlags.COLLIDE_SHAPES)
+    for body in [*tree.hangers, tree.trunk_top_body]:
+        meshes = [
+            builder.shape_source[s]
+            for s in range(builder.shape_count)
+            if builder.shape_body[s] == body
+            and builder.shape_type[s] == newton.GeoType.MESH
+            and builder.shape_flags[s] & visible
+        ]
+        assert meshes and meshes[0].roughness <= 0.2 and meshes[0].metallic >= 0.5
+        spheres = [
+            s
+            for s in range(builder.shape_count)
+            if builder.shape_body[s] == body and builder.shape_type[s] == newton.GeoType.SPHERE
+        ]
+        assert all(not builder.shape_flags[s] & visible and builder.shape_flags[s] & collide for s in spheres)

@@ -77,3 +77,35 @@ def test_ring_does_not_tunnel_thin_twig():
     assert math.hypot(center[0], center[2] - twig_z) < ornament.ring_inner_radius
     # Hanging: the ring's inner top edge rests on the twig.
     assert center[2] == pytest.approx(twig_z + twig_radius - ornament.ring_inner_radius, abs=0.003)
+
+
+def _visual_meshes(builder, body):
+    collide = int(newton.ShapeFlags.COLLIDE_SHAPES)
+    visible = int(newton.ShapeFlags.VISIBLE)
+    return [
+        builder.shape_source[s]
+        for s in range(builder.shape_count)
+        if builder.shape_body[s] == body
+        and builder.shape_type[s] == newton.GeoType.MESH
+        and builder.shape_flags[s] & visible
+        and not builder.shape_flags[s] & collide
+    ]
+
+
+def test_ornament_glass_is_shiny():
+    """Renderers take roughness/metallic from meshes only, so the glass is drawn as a glossy mesh;
+    the collision sphere stays but is hidden."""
+    from examples.christmas_ornament.assets import BAUBLE_METALLIC, BAUBLE_ROUGHNESS
+
+    builder = newton.ModelBuilder()
+    ornament = add_ornament(builder, wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), (0.85, 0.1, 0.1))
+    shiny = [m for m in _visual_meshes(builder, ornament.body) if m.roughness is not None and m.roughness <= 0.2]
+    assert shiny and all(m.metallic >= 0.5 for m in shiny)
+    assert BAUBLE_ROUGHNESS <= 0.2 and BAUBLE_METALLIC >= 0.5
+    spheres = [
+        s
+        for s in range(builder.shape_count)
+        if builder.shape_body[s] == ornament.body and builder.shape_type[s] == newton.GeoType.SPHERE
+    ]
+    assert spheres and all(not builder.shape_flags[s] & int(newton.ShapeFlags.VISIBLE) for s in spheres)
+    assert all(builder.shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES) for s in spheres)

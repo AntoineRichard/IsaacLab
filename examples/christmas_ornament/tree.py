@@ -24,6 +24,8 @@ import newton
 import numpy as np
 import warp as wp
 
+from examples.christmas_ornament.assets import add_bauble_visual
+
 TRUNK_YOUNG_MODULUS = 5.0e9  # [Pa] green softwood; the trunk must stand
 # [Pa] Branch and twig wood, softer than green softwood (~5-10 GPa) so an ornament visibly dips
 # a branch (~5 mm), yet stiff enough that the loaded tip stays level: much softer and the last
@@ -397,13 +399,10 @@ def build_tree(
     top = trunk[-1]
     star_cfg = builder.default_shape_cfg.copy()
     star_cfg.density = 300.0
-    builder.add_shape_sphere(
-        top,
-        xform=wp.transform(wp.vec3(0.0, 0.0, 0.5 * rods.length[top] + 0.035), wp.quat_identity()),
-        radius=0.035,
-        cfg=star_cfg,
-        color=(1.0, 0.85, 0.1),
-    )
+    star_cfg.is_visible = False
+    star_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * rods.length[top] + 0.035), wp.quat_identity())
+    builder.add_shape_sphere(top, xform=star_xform, radius=0.035, cfg=star_cfg)
+    add_bauble_visual(builder, top, star_xform, 0.035, (1.0, 0.8, 0.25), roughness=0.18, metallic=1.0)
     builder.add_articulation(list(rods.joints), label="christmas_tree")
 
     dynamic = [b for b in all_bodies + hangers if b != trunk[0]]
@@ -429,6 +428,7 @@ def _hang_ornaments(
     target_hang = np.array(wp.transform_point(builder.body_q[target.hang_body], wp.vec3(*target.hang_local)))
     orn_cfg = builder.default_shape_cfg.copy()
     orn_cfg.density = 300.0
+    orn_cfg.is_visible = False
     candidates = []
     for _, tip in branch_tips:
         end = np.array(wp.transform_point(builder.body_q[tip], wp.vec3(0.0, 0.0, 0.5 * rods.length[tip])))
@@ -443,13 +443,9 @@ def _hang_ornaments(
         hanger = rods.segment(end, end - np.array([0.0, 0.0, 0.05]), 0.0015, (0.8, 0.8, 0.8), BRANCH_YOUNG_MODULUS)
         rods.connect(tip, hanger, bend=HANGER_BEND)
         rods.filter(tip, hanger)
-        builder.add_shape_sphere(
-            hanger,
-            xform=wp.transform(wp.vec3(0.0, 0.0, 0.055), wp.quat_identity()),
-            radius=0.03,
-            cfg=orn_cfg,
-            color=ORNAMENT_COLORS[n % len(ORNAMENT_COLORS)],
-        )
+        ball_xform = wp.transform(wp.vec3(0.0, 0.0, 0.055), wp.quat_identity())
+        builder.add_shape_sphere(hanger, xform=ball_xform, radius=0.03, cfg=orn_cfg)
+        add_bauble_visual(builder, hanger, ball_xform, 0.03, ORNAMENT_COLORS[n % len(ORNAMENT_COLORS)])
         hangers.append(hanger)
     return hangers
 

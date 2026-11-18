@@ -26,6 +26,10 @@ CAP_DENSITY = 2700.0  # [kg/m^3] aluminium
 RIGID_CONTACT_STIFFNESS = 1.0e4  # [N/m] the atelier's qualified light-object contact
 RIGID_CONTACT_DAMPING = 30.0  # [N s/m]
 RING_FRICTION = 0.8
+# Glass baubles are mirrored: renderers take roughness/metallic from mesh shapes only, so each
+# ball is drawn as a visual mesh while its sphere keeps colliding, hidden.
+BAUBLE_ROUGHNESS = 0.12
+BAUBLE_METALLIC = 0.85
 RIGID_GAP = 0.002  # [m] speculative contact gap, matching tree.configure_builder
 
 
@@ -64,6 +68,23 @@ def _contact_cfg(density: float, mu: float = 0.5) -> newton.ModelBuilder.ShapeCo
     return newton.ModelBuilder.ShapeConfig(density=density, ke=RIGID_CONTACT_STIFFNESS, kd=RIGID_CONTACT_DAMPING, mu=mu)
 
 
+def add_bauble_visual(
+    builder: newton.ModelBuilder,
+    body: int,
+    xform: wp.transform,
+    radius: float,
+    color: tuple[float, float, float],
+    roughness: float = BAUBLE_ROUGHNESS,
+    metallic: float = BAUBLE_METALLIC,
+) -> int:
+    """A glossy visual-only sphere mesh (no collision, no mass) for a bauble on ``body``."""
+    mesh = newton.Mesh.create_sphere(radius, num_latitudes=24, num_longitudes=32, compute_inertia=False)
+    mesh.roughness = roughness
+    mesh.metallic = metallic
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False, has_particle_collision=False)
+    return builder.add_shape_mesh(body, xform=xform, mesh=mesh, cfg=cfg, color=color)
+
+
 def add_ornament(builder: newton.ModelBuilder, xform: wp.transform, color: tuple[float, float, float]) -> Ornament:
     """A free rigid ornament: ring at the body origin, cap and glass sphere hanging below it."""
     vertices, triangles = ring_mesh()
@@ -89,14 +110,11 @@ def add_ornament(builder: newton.ModelBuilder, xform: wp.transform, color: tuple
         color=(0.85, 0.75, 0.35),
         label="ornament_cap",
     )
-    builder.add_shape_sphere(
-        body,
-        xform=wp.transform(wp.vec3(0.0, 0.0, cap_z - CAP_HALF_HEIGHT - SPHERE_RADIUS), wp.quat_identity()),
-        radius=SPHERE_RADIUS,
-        cfg=_contact_cfg(sphere_density),
-        color=color,
-        label="ornament_glass",
-    )
+    glass_xform = wp.transform(wp.vec3(0.0, 0.0, cap_z - CAP_HALF_HEIGHT - SPHERE_RADIUS), wp.quat_identity())
+    glass_cfg = _contact_cfg(sphere_density)
+    glass_cfg.is_visible = False
+    builder.add_shape_sphere(body, xform=glass_xform, radius=SPHERE_RADIUS, cfg=glass_cfg, label="ornament_glass")
+    add_bauble_visual(builder, body, glass_xform, SPHERE_RADIUS, color)
     return Ornament(
         body=body,
         ring_shape=ring_shape,
