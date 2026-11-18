@@ -156,3 +156,22 @@ def test_tree_stands_and_dips_under_load():
     # downhill twig creeps off the end.
     assert hang_free[2] - hang_loaded[2] >= 0.003
     assert tangent_loaded[2] >= 0.0
+
+
+def test_wind_time_advances_so_gusts_vary():
+    """The gust clock must tick each substep; frozen at t = 0 the wind is a constant push."""
+    from examples.christmas_ornament.tree import Wind
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=0.1)
+    builder.add_shape_capsule(body, radius=0.01, half_height=0.05)
+    model = builder.finalize(device="cpu")
+    state = model.state()
+    wind = Wind([body], [0.01], strength=5.0, device="cpu")
+    forces = []
+    for _ in range(3):
+        state.clear_forces()
+        wind.apply(state, dt=0.5)
+        forces.append(state.body_f.numpy()[body, :3].copy())
+    assert float(wind.time.numpy()[0]) == pytest.approx(1.5)
+    assert not np.allclose(forces[0], forces[2])

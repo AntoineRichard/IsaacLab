@@ -188,6 +188,24 @@ def ring_encircles(
     return bool(np.linalg.norm(hit - ring_center) < inner_radius)
 
 
+def ring_along_twig(ring_center: np.ndarray, seg_a: np.ndarray, seg_b: np.ndarray) -> float:
+    """Position of the ring's centre along the twig axis, measured from ``seg_a`` [m]."""
+    axis = (seg_b - seg_a) / np.linalg.norm(seg_b - seg_a)
+    return float(np.dot(ring_center - seg_a, axis))
+
+
+def creep(times: np.ndarray, along: np.ndarray, span: float = 0.5) -> float:
+    """Shift of the ring's mean position along the twig between the first and last ``span`` [s].
+
+    The hanging ornament rocks with a ~0.5 s period, moving its ring centre along the twig by a
+    few millimetres; averaging over a swing keeps that out, so only real drift counts.
+    """
+    times, along = np.asarray(times), np.asarray(along)
+    first = along[times <= times[0] + span]
+    last = along[times >= times[-1] - span]
+    return float(abs(last.mean() - first.mean()))
+
+
 def min_distance_points_to_capsule(points: np.ndarray, a: np.ndarray, b: np.ndarray, radius: float) -> float:
     """Smallest distance from ``points`` to the surface of the capsule ``a``-``b`` (negative inside)."""
     ab = b - a

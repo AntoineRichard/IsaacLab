@@ -40,15 +40,17 @@ from examples.christmas_ornament.assets import (
 from examples.christmas_ornament.motion import (
     PHASES,
     choreography,
+    creep,
     densify,
     finger_rotation,
     min_distance_points_to_capsule,
+    ring_along_twig,
     ring_encircles,
     sample_linear,
 )
 from examples.christmas_ornament.tree import (
     NEEDLE_RADIUS,
-    apply_wind,
+    Wind,
     build_branch,
     build_tree,
     configure_builder,
@@ -58,6 +60,8 @@ from examples.christmas_ornament.tree import (
 
 FPS = 60
 DIP_GATE = 0.003  # [m] visible but modest: a stiffer tip keeps the ring from creeping off
+CREEP_GATE = 0.002  # [m] the ring may not walk along the twig during admire
+TIP_MARGIN_GATE = 0.01  # [m] twig left between the ring and the end of its segment
 PELVIS = wp.transform(wp.vec3(0.0, 0.0, 0.793), wp.quat_identity())
 # Where the target branch's hang point sits horizontally, relative to the robot (world frame,
 # robot at origin facing +x). The tree stands on the ground, so the height is the tree's own; the
@@ -84,6 +88,19 @@ def _branch_root(whorl_xform_builder) -> np.ndarray:
     configure_builder(builder)
     target = whorl_xform_builder(builder)
     return _point(np.array(builder.body_q), target.hang_body, target.hang_local)
+
+
+def clearance_window_start() -> float:
+    """Finger-ring clearance is gated from the end of withdraw on: a finger that drags the ring
+    is still next to it when the retreat starts."""
+    names = [name for name, _ in PHASES]
+    return float(sum(d for _, d in PHASES[: names.index("withdraw") + 1]))
+
+
+def creep_window_start() -> float:
+    """Ring creep is gated over the last 2 s of admire: settling after the drop is fine, drift
+    still going at the end is the ring walking off the twig."""
+    return float(sum(d for _, d in PHASES)) - 2.0
 
 
 class OrnamentScene:
@@ -192,11 +209,10 @@ class OrnamentScene:
         self.planned = False
         self.hook_positions = None
 
-        self.wind = args.wind
+        self.wind = None
         if self.tree is not None:
-            self.wind_bodies = wp.array(self.tree.wind_bodies, dtype=wp.int32, device=self.device)
-            self.wind_area = wp.array(self.tree.wind_area, dtype=wp.float32, device=self.device)
-            self.wind_time = wp.zeros(1, dtype=wp.float32, device=self.device)
+            if args.wind > 0.0:
+                self.wind = Wind(self.tree.wind_bodies, self.tree.wind_area, args.wind, self.device)
             self.needles = [
                 (
                     batch.half_length,
@@ -218,6 +234,11 @@ class OrnamentScene:
         self.hung_frames = 0
         self.admire_frames = 0
         self.min_release_clearance = np.inf
+        self.clearance_from = clearance_window_start()
+        self.creep_from = creep_window_start()
+        self.creep_samples: list[tuple[float, float]] = []
+        self.tip_margin = None
+        self.nontarget_contact_frames = 0
         self.max_trunk_disp = 0.0
         self.phase_samples = []
         self.last_phase = ""
@@ -290,21 +311,8 @@ class OrnamentScene:
     def _advance_physics(self) -> None:
         for _ in range(self.args.substeps):
             self.state.clear_forces()
-            if self.tree is not None and self.wind > 0.0:
-                wp.launch(
-                    apply_wind,
-                    dim=len(self.tree.wind_bodies),
-                    inputs=[
-                        self.wind_bodies,
-                        self.wind_area,
-                        self.wind_time,
-                        self.wind,
-                        self.state.body_q,
-                        self.state.body_qd,
-                        self.state.body_f,
-                    ],
-                    device=self.device,
-                )
+            if self.wind is not None:
+                self.wind.apply(self.state, self.sim_dt)
             self.pipeline.collide(self.state, self.contacts)
             self.solver.step(self.state, self.next_state, self.control, self.contacts, self.sim_dt)
             self.state, self.next_state = self.next_state, self.state
@@ -322,7 +330,7 @@ class OrnamentScene:
         self.sim_time += 1.0 / FPS
         self.frame += 1
         if self.frame == 1 and self.device.is_cuda and not self.args.disable_cuda_graph and self.args.substeps % 2 == 0:
-            with wp.ScopedCapture() as capture:
+            with wp.ScopedCapture(device=self.device) as capture:
                 self._advance_physics()
             self.graph = capture.graph  # recorded only; replays from the next frame
         self._measure(target)
@@ -352,7 +360,13 @@ class OrnamentScene:
         if phase == "admire":
             self.admire_frames += 1
             self.hung_frames += int(hung)
-        if self.sim_time >= self.total_time - 2.0:
+            along = ring_along_twig(ring_center, twig_a, twig_b)
+            if self.sim_time >= self.creep_from:
+                self.creep_samples.append((self.sim_time, along))
+            self.tip_margin = 2.0 * half - along
+        if self.tree is not None:
+            self.nontarget_contact_frames += int(self._ornament_touches_other_tree())
+        if self.sim_time >= self.clearance_from:
             self.min_release_clearance = min(
                 self.min_release_clearance, self._ring_finger_clearance(body_q, ring_center, ring_axis)
             )
@@ -372,6 +386,18 @@ class OrnamentScene:
                 }
             )
             self.last_phase = phase
+
+    def _ornament_touches_other_tree(self) -> bool:
+        """Whether the ornament touches tree parts other than the target branch this frame."""
+        if not hasattr(self, "_other_tree"):
+            self._shape_body = self.model.shape_body.numpy()
+            target = set(self.target.segment_bodies) | set(self.target.hang_neighbours)
+            self._other_tree = np.array(sorted((set(self.tree.bodies) | set(self.tree.hangers)) - target))
+        n = int(self.contacts.rigid_contact_count.numpy()[0])
+        a = self._shape_body[self.contacts.rigid_contact_shape0.numpy()[:n]]
+        b = self._shape_body[self.contacts.rigid_contact_shape1.numpy()[:n]]
+        orn = self.ornament.body
+        return bool(np.any(((a == orn) & np.isin(b, self._other_tree)) | ((b == orn) & np.isin(a, self._other_tree))))
 
     def _ring_finger_clearance(self, body_q, ring_center, ring_axis) -> float:
         """Distance between the ring tube and the index finger, both as swept primitives."""
@@ -435,6 +461,9 @@ class OrnamentScene:
             "released_clearance_m": None if not np.isfinite(self.min_release_clearance) else self.min_release_clearance,
             "ornament_speed_end": float(np.linalg.norm(body_qd[self.ornament.body, :3])) if self.finite else None,
             "trunk_top_disp_m": self.max_trunk_disp if self.tree is not None else None,
+            "admire_creep_m": creep(*np.array(self.creep_samples).T) if len(self.creep_samples) > 1 else None,
+            "tip_margin_m": self.tip_margin,
+            "nontarget_contacts": self.nontarget_contact_frames if self.tree is not None else None,
             "phase_samples": self.phase_samples,
         }
 
@@ -454,6 +483,10 @@ class OrnamentScene:
             failures.append(f"branch dip {metrics['dip_m']} m < {DIP_GATE}")
         if metrics["ornament_speed_end"] is None or metrics["ornament_speed_end"] > 0.05:
             failures.append(f"ornament still moving at {metrics['ornament_speed_end']} m/s")
+        if metrics["admire_creep_m"] is None or metrics["admire_creep_m"] > CREEP_GATE:
+            failures.append(f"ring creep along the twig during admire {metrics['admire_creep_m']} m > {CREEP_GATE}")
+        if metrics["tip_margin_m"] is None or metrics["tip_margin_m"] < TIP_MARGIN_GATE:
+            failures.append(f"ring {metrics['tip_margin_m']} m from the tip of its segment < {TIP_MARGIN_GATE}")
         if metrics["trunk_top_disp_m"] is not None and metrics["trunk_top_disp_m"] >= 0.05:
             failures.append(f"trunk top moved {metrics['trunk_top_disp_m']:.3f} m >= 0.05")
         return failures

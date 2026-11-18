@@ -543,6 +543,32 @@ def place_needles(
 
 
 @wp.kernel
+def _advance_time(time: wp.array[wp.float32], dt: float):
+    time[0] = time[0] + dt
+
+
+class Wind:
+    """Gusting drag on tree segments, with its own on-device clock (graph-capture safe)."""
+
+    def __init__(self, bodies, areas, strength: float, device):
+        self.device = wp.get_device(device)
+        self.bodies = wp.array(bodies, dtype=wp.int32, device=self.device)
+        self.areas = wp.array(areas, dtype=wp.float32, device=self.device)
+        self.time = wp.zeros(1, dtype=wp.float32, device=self.device)
+        self.strength = strength
+
+    def apply(self, state, dt: float) -> None:
+        """Add this substep's wind to ``state.body_f`` and advance the gust clock by ``dt``."""
+        wp.launch(
+            apply_wind,
+            dim=self.bodies.shape[0],
+            inputs=[self.bodies, self.areas, self.time, self.strength, state.body_q, state.body_qd, state.body_f],
+            device=self.device,
+        )
+        wp.launch(_advance_time, dim=1, inputs=[self.time, dt], device=self.device)
+
+
+@wp.kernel
 def apply_wind(
     body_ids: wp.array[wp.int32],
     seg_area: wp.array[wp.float32],

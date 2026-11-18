@@ -40,6 +40,15 @@ def _yaw_pitch(position, target) -> tuple[float, float]:
     return yaw, pitch
 
 
+def _ffmpeg(out: Path, width: int, height: int) -> subprocess.Popen:
+    return subprocess.Popen(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24"]
+        + ["-s", f"{width}x{height}", "-r", str(FPS), "-i", "-"]
+        + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "16", "-preset", "slow", str(out)],
+        stdin=subprocess.PIPE,
+    )
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cam", choices=tuple(CAMERAS), default="wide")
@@ -60,12 +69,7 @@ def main() -> None:
     viewer.set_camera(pos=wp.vec3(*position), pitch=pitch, yaw=yaw)
 
     frames = cli.frames or int(round(scene.total_time * FPS))
-    ffmpeg = subprocess.Popen(
-        ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24"]
-        + ["-s", f"{cli.width}x{cli.height}", "-r", str(FPS), "-i", "-"]
-        + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", str(cli.out)],
-        stdin=subprocess.PIPE,
-    )
+    ffmpeg = _ffmpeg(cli.out, cli.width, cli.height)
     buffer = None
     while scene.frame < frames:
         scene.step()

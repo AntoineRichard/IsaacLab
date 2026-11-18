@@ -172,3 +172,22 @@ def test_densify_follows_cartesian_path_on_minimum_jerk_timing():
         assert t[row] == pytest.approx(times[i - 1] + u * (times[i] - times[i - 1]))
         assert np.allclose(p[row], start + s * (end - start))
         assert names[row] == "withdraw"
+
+
+def test_ring_along_twig_measures_position_on_segment():
+    from examples.christmas_ornament.motion import ring_along_twig
+
+    a, b = np.array([0.0, 0.0, 0.0]), np.array([0.1, 0.0, 0.0])
+    assert ring_along_twig(np.array([0.03, 0.0, -0.025]), a, b) == pytest.approx(0.03)
+    assert ring_along_twig(np.array([0.12, 0.01, -0.02]), a, b) == pytest.approx(0.12)
+
+
+def test_creep_ignores_pendulum_swing_but_catches_drift():
+    """The hanging ornament rocks ~0.5 s per swing; only a shift of its mean position is creep."""
+    from examples.christmas_ornament.motion import creep
+
+    t = np.arange(0.0, 2.0, 1.0 / 60.0)
+    swing = 0.003 * np.sin(2.0 * np.pi * t / 0.49)
+    assert creep(t, swing) < 0.001
+    drift = swing + 0.004 * t  # 8 mm over the window
+    assert creep(t, drift) > 0.005

@@ -85,12 +85,16 @@ Checks
 
 * finite state and a hook-point tracking error below 25 mm;
 * the ring encircling the target twig on every frame of ``admire``;
-* finger-to-ring clearance above 5 mm over the final 2 s;
+* finger-to-ring clearance above 5 mm from the end of ``withdraw`` on, where a dragging finger
+  would still be next to the ring;
+* the ring drifting less than 2 mm along the twig over the last 2 s of ``admire`` (settling after
+  the drop is allowed), with at least 10 mm of twig left before the segment's end;
 * the hang point dipping at least 3 mm under the ornament;
 * the ornament nearly at rest at the end (below 0.05 m/s);
 * in ``hang`` mode, the trunk top moving less than 5 cm.
 
-The JSON metrics also carry per-phase samples (ring centre, hang point, hook error) that show
+The JSON metrics also report ``nontarget_contacts``, the number of frames in which the ornament
+touches tree parts other than the target branch, and carry per-phase samples (ring centre, hang point, hook error) that show
 where a failed run lost the ornament.
 
 Design notes
@@ -111,11 +115,13 @@ Verified configuration
 On 2026-11-18, Newton revision ``405ec9b54c3743b126cafe3ea59416a921ac36c8`` with Warp 1.17.0 on
 an RTX 5090, at the default 20 substeps and 20 VBD iterations at 60 FPS:
 
-* ``--mode probe --check`` passed 8 of 8 consecutive runs (dip 9.2 to 10.3 mm, final finger
+* ``--mode probe --check`` passed 8 of 8 consecutive runs, and 4 of 4 again with the creep,
+  tip-margin and clearance gates added after review (dip 9.2 to 10.3 mm, final finger
   clearance about 16 cm, peak hook error 0.6 mm), about 45 s each;
-* ``--mode hang --check`` passed 2 of 2 runs with the full tree (dip 9.9 and 10.1 mm, peak hook
-  error 0.8 mm, trunk-top motion 0.2 mm), about 5 minutes each with CUDA graph capture;
-* the test suite passed (19 tests, about 3.5 minutes including the probe).
+* ``--mode hang --check`` passed 3 of 3 runs with the full tree (dip 9.9 to 10.2 mm, peak hook
+  error 0.8 mm, trunk-top motion 0.2 mm, ring creep 0.5 mm, no non-target contacts), about
+  5 minutes each with CUDA graph capture and per-frame measurement;
+* the test suite passed (25 tests, about 3 minutes including the probe).
 
 GPU contact ordering makes runs non-deterministic, so judge changes over several probe runs rather
 than one. These runs shared the GPU with other jobs; they qualify correctness, not real-time speed.
