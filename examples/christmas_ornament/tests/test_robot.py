@@ -51,6 +51,14 @@ def test_fixed_base_and_hand_pose(builder):
     assert len(ARM_JOINTS) == 10 and ARM_JOINTS[0] == "waist_yaw_joint" and ARM_JOINTS[-1] == "right_wrist_yaw_joint"
 
 
+def test_robot_shapes_use_tight_contact_gap(builder):
+    """A wide default gap floods the ornament's per-body contact buffer and drops real contacts."""
+    assert builder.rigid_gap == pytest.approx(0.002)
+    collide = int(newton.ShapeFlags.COLLIDE_SHAPES)
+    gaps = [builder.shape_gap[s] for s in range(builder.shape_count) if builder.shape_flags[s] & collide]
+    assert gaps and max(gaps) <= 0.002
+
+
 def test_hook_point_on_finger(builder):
     """The hook point sits on the proximal phalanx's top surface, where the ring will rest."""
     body = next(i for i, label in enumerate(builder.body_label) if label.endswith("/" + HOOK_LINK))

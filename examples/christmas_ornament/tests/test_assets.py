@@ -20,12 +20,12 @@ pytestmark = [pytest.mark.kitless, pytest.mark.unit]
 
 
 def test_ring_geometry():
-    """A 40 mm inner diameter clears a Dex3 finger plus a twig; the tube is 2.5 mm."""
+    """A 60 mm inner diameter passes a twig beside a 26 mm Dex3 finger with margin; the tube is 2.5 mm."""
     vertices, triangles = ring_mesh()
     mesh = trimesh.Trimesh(vertices, triangles, process=False)
     assert mesh.is_watertight and mesh.is_winding_consistent
     radial = np.hypot(vertices[:, 0], vertices[:, 2])
-    assert np.min(radial) == pytest.approx(0.020, abs=0.0005)
+    assert np.min(radial) == pytest.approx(0.030, abs=0.0005)
     assert 0.5 * (np.max(radial) - np.min(radial)) == pytest.approx(0.0025, abs=0.0003)
     assert np.max(np.abs(vertices[:, 1])) == pytest.approx(0.0025, abs=0.0003)
 
@@ -37,7 +37,7 @@ def test_ornament_mass_and_layout():
     assert builder.body_mass[ornament.body] == pytest.approx(0.035, rel=0.1)
     com = np.asarray(builder.body_com[ornament.body])
     assert com[2] < np.asarray(ornament.ring_center_local)[2] - 0.03
-    assert ornament.ring_inner_radius == pytest.approx(0.020)
+    assert ornament.ring_inner_radius == pytest.approx(0.030)
     assert np.allclose(ornament.ring_axis_local, (0.0, 1.0, 0.0))
 
 

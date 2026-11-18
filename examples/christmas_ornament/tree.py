@@ -25,11 +25,12 @@ import numpy as np
 import warp as wp
 
 TRUNK_YOUNG_MODULUS = 5.0e9  # [Pa] green softwood; the trunk must stand
-# [Pa] Branch and twig wood. Softer than green softwood on purpose: with converged bending, a
-# 35 g ornament dips a reachable branch ~15 mm at 0.1 GPa but only ~1.5 mm at 0.9 GPa.
-BRANCH_YOUNG_MODULUS = 1.0e8
+# [Pa] Branch and twig wood, softer than green softwood (~5-10 GPa) so an ornament visibly dips
+# a branch (~5 mm), yet stiff enough that the loaded tip stays level: much softer and the last
+# twig joint tips downhill under the ring, which then creeps off the end.
+BRANCH_YOUNG_MODULUS = 2.0e8
 TWIST_RATIO = 0.75  # GJ / EI for a round section (G ~ E / 2.6, J = 2 I)
-BEND_DAMPING_RATIO = 0.05  # bend damping as a fraction of bend stiffness [s]
+BEND_DAMPING_RATIO = 0.15  # [s] bend damping / bend stiffness; needle-laden branches are well damped
 # Rod stretch stiffness [N/m]. The trunk carries the whole tree; branches carry < 2 N. Keeping
 # branch stretch near the bend scale matters: at 1e7 N/m against bend stiffness of 2-50 N m/rad,
 # 20 VBD iterations leave branch bending ~10x under-converged and branches sag from solver
@@ -46,7 +47,7 @@ HEIGHT = 1.6
 TRUNK_SEGMENTS = 14
 FIRST_WHORL = 3
 TARGET_HEIGHT_RANGE = (0.95, 1.15)  # target whorl root height above the tree origin [m]
-HANG_FRACTION = 0.35  # hang point along the target's last segment, from its root end
+HANG_FRACTION = 0.5  # hang point along the target's last segment, from its root end
 ROBOT_SECTOR = (math.radians(25.0), 0.55, 1.0)  # half-angle, min radius [m], max height [m]
 CORRIDOR = (0.20, 0.07)  # length outward from the hang point [m], clearance radius [m]
 

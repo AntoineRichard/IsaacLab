@@ -79,7 +79,9 @@ def test_target_branch_reachable_and_clear():
     builder = _builder()
     tree = build_tree(builder, ORIGIN, FACING)
     hang = _hang_point_world(builder, tree)
-    assert 1.00 <= hang[2] <= 1.15
+    assert 1.00 <= hang[2] <= 1.17
+    assert tree.target.hang_body == tree.target.segment_bodies[-1]  # outer segment, halfway out
+    assert tree.target.hang_local[2] == pytest.approx(0.0)
 
     tangent = np.array(wp.quat_rotate(builder.body_q[tree.target.hang_body].q, wp.vec3(*tree.target.tangent_local)))
     corridor = (hang, hang + 0.20 * tangent)
@@ -112,9 +114,9 @@ def test_target_branch_reachable_and_clear():
 
 @pytest.mark.skipif(not wp.is_cuda_available(), reason="needs CUDA for a 2.4k-body VBD rollout")
 def test_tree_stands_and_dips_under_load():
-    """The trunk stands within 5 cm; a 35 g load at the hang point dips the branch by >= 10 mm."""
+    """The trunk stands; a 35 g load dips the branch >= 3 mm without tipping its tip downhill."""
 
-    def settle(with_load: bool) -> tuple[np.ndarray, np.ndarray]:
+    def settle(with_load: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         builder = _builder()
         tree = build_tree(builder, ORIGIN, FACING)
         if with_load:
@@ -142,10 +144,15 @@ def test_tree_stands_and_dips_under_load():
             s0, s1 = s1, s0
         q = s0.body_q.numpy()
         assert np.all(np.isfinite(q))
-        hang = np.array(wp.transform_point(wp.transform(*q[tree.target.hang_body]), wp.vec3(*tree.target.hang_local)))
-        return q[tree.trunk_top_body, :3] - top0, hang
+        pose = wp.transform(*q[tree.target.hang_body])
+        hang = np.array(wp.transform_point(pose, wp.vec3(*tree.target.hang_local)))
+        tangent = np.array(wp.quat_rotate(pose.q, wp.vec3(*tree.target.tangent_local)))
+        return q[tree.trunk_top_body, :3] - top0, hang, tangent
 
-    top_disp, hang_free = settle(False)
+    top_disp, hang_free, _ = settle(False)
     assert np.linalg.norm(top_disp) < 0.05
-    _, hang_loaded = settle(True)
-    assert hang_free[2] - hang_loaded[2] >= 0.010
+    _, hang_loaded, tangent_loaded = settle(True)
+    # A visible dip, but the loaded twig must not run downhill toward its tip: a ring on a
+    # downhill twig creeps off the end.
+    assert hang_free[2] - hang_loaded[2] >= 0.003
+    assert tangent_loaded[2] >= 0.0

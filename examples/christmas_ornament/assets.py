@@ -15,7 +15,7 @@ import newton
 import numpy as np
 import warp as wp
 
-RING_INNER_RADIUS = 0.020  # [m] clears a Dex3 finger (~20 mm) plus a twig
+RING_INNER_RADIUS = 0.030  # [m] a twig threads beside the 26 mm Dex3 finger with a 6 mm margin
 RING_TUBE_RADIUS = 0.0025  # [m]
 CAP_RADIUS = 0.007  # [m]
 CAP_HALF_HEIGHT = 0.004  # [m]
@@ -26,6 +26,7 @@ CAP_DENSITY = 2700.0  # [kg/m^3] aluminium
 RIGID_CONTACT_STIFFNESS = 1.0e4  # [N/m] the atelier's qualified light-object contact
 RIGID_CONTACT_DAMPING = 30.0  # [N s/m]
 RING_FRICTION = 0.8
+RIGID_GAP = 0.002  # [m] speculative contact gap, matching tree.configure_builder
 
 
 @dataclass
@@ -111,10 +112,11 @@ def add_ornament(builder: newton.ModelBuilder, xform: wp.transform, color: tuple
 
 G1_ASSET_REVISION = "a96f0973b6ae69c90609f9fafef9d2c1db2d6431"
 G1_URDF = "urdf/g1_29dof_with_hand_rev_1_0.urdf"
-HOOK_LINK = "right_hand_index_0_link"
-# Top of the proximal index phalanx, mid-length: the ring's inner top edge rests here. The link's
-# +X runs along the finger and +Z is the finger's back when the palm faces down.
-HOOK_OFFSET = wp.vec3(0.025, 0.0, 0.0129)
+HOOK_LINK = "right_hand_index_1_link"
+# Back of the distal index phalanx, 35 mm out (17 mm from the tip): the ring's inner top edge
+# rests here. Only the index reaches this far, so the ring and the ornament below it clear the
+# other digits. The link's +X runs along the finger and +Z is the finger's back.
+HOOK_OFFSET = wp.vec3(0.035, 0.0, 0.0131)
 ARM_JOINTS = [
     "waist_yaw_joint",
     "waist_roll_joint",
@@ -161,6 +163,9 @@ def robot_builder(
     straight by stiff PD; the waist and arms by the arm gains; the hand by soft finger gains.
     """
     builder = newton.ModelBuilder()
+    # Shapes keep the gap of the builder that created them; the default is far wider than the
+    # millimetre clearances between ring, finger and twig and floods the per-body contact buffer.
+    builder.rigid_gap = RIGID_GAP
     builder.add_urdf(str(urdf), floating=False, xform=pelvis_xform, enable_self_collisions=False)
     builder.collapse_fixed_joints()
     if any(int(t) == int(newton.JointType.FREE) for t in builder.joint_type):
