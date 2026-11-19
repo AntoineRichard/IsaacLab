@@ -281,6 +281,11 @@ OVERRIDES = {
         visualizers=("newton_gl",),
         required_modules=("isaaclab_contrib",),
     ),
+    "examples/demos/christmas_atelier.py": ScriptOverride(
+        args=("--max_steps", "10"),
+        fixed_physics_backend="newton_vbd",
+        visualizers=("newton_gl",),
+    ),
     "examples/newton_viewer_dominoes.py": ScriptOverride(
         fixed_physics_backend="newton_xpbd",
         visualizers=("newton_gl",),

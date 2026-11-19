@@ -3,12 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Native Newton VBD prototype for the Christmas stocking-filling atelier.
-
-Run from the repository root with ``uv run python -m examples.christmas_atelier.run``.
-All dynamics, including the Franka joints, run in SolverVBD. No external rigid solver,
-kinematic grasp, candy teleportation, or force attachment is used.
-"""
+"""Scene, scripted control, and rollout checks for the Isaac Lab Christmas atelier."""
 
 from __future__ import annotations
 
@@ -24,10 +19,16 @@ from pathlib import Path
 import newton
 import newton.ik as ik
 import newton.utils
-import newton.viewer
 import numpy as np
 import warp as wp
+from isaaclab_newton.physics import NewtonCfg, NewtonCollisionPipelineCfg, NewtonSoftContactCfg, VBDSolver, VBDSolverCfg
+from isaaclab_visualizers.newton import NewtonGLBackendCfg
 from newton.solvers import SolverVBD
+
+import isaaclab.sim as sim_utils
+from isaaclab.app import add_launcher_args, launch_simulation
+from isaaclab.utils import configclass
+from isaaclab.visualizers import VisualizerCfg
 
 from .assets import (
     CANDY_CAPSULE_HALF_LENGTH,
@@ -54,6 +55,46 @@ GRIP_FRICTION = 1.5
 RIGID_CONTACT_STIFFNESS = 1.0e4
 RIGID_CONTACT_DAMPING = 30.0
 FRANKA_ASSET_REVISION = "a96f0973b6ae69c90609f9fafef9d2c1db2d6431"
+
+
+class _AtelierVBDSolver(VBDSolver):
+    """Initialize the authored posture and solve the loose candies after the robot."""
+
+    @classmethod
+    def prepare_builder(cls, cfg: VBDSolverCfg, builder: newton.ModelBuilder) -> None:
+        super().prepare_builder(cfg, builder)
+        candy_bodies = {index for index, label in enumerate(builder.body_label) if label.startswith("candy_")}
+        if not candy_bodies or len(candy_bodies) == builder.body_count:
+            return
+        # The candy contact solve sees the updated fingertip poses when these groups run separately.
+        body_groups = []
+        for group in builder.body_color_groups:
+            robot_bodies = [body for body in group if body not in candy_bodies]
+            if robot_bodies:
+                body_groups.append(np.asarray(robot_bodies, dtype=np.int32))
+        body_groups.append(np.asarray(sorted(candy_bodies), dtype=np.int32))
+        builder.body_color_groups = body_groups
+
+    def build(self, model: newton.Model, mode: wp.DeterministicMode, env_template: str | None) -> SolverVBD:
+        # VBD captures joint rest transforms when constructed, before Isaac Lab initializes the live state.
+        newton.eval_fk(model, model.joint_q, model.joint_qd, model)
+        return super().build(model, mode, env_template)
+
+    def create_collision_pipeline(self, **kwargs) -> newton.CollisionPipeline:
+        # The Newton revision used by this demo names the detection-only distance a gap.
+        kwargs["soft_contact_gap"] = kwargs.pop("soft_contact_margin")
+        return super().create_collision_pipeline(**kwargs)
+
+
+@configclass
+class _AtelierVBDSolverCfg(VBDSolverCfg):
+    """VBD settings for the stocking mesh and individual candy bodies."""
+
+    class_type: type = _AtelierVBDSolver
+    particle_self_contact_radius: float | None = None
+    particle_self_contact_gap: float = 0.003
+    particle_collision_detection_interval: int | None = None
+    particle_enable_tile_solve: bool = True
 
 
 def _robot_builder(
@@ -132,14 +173,15 @@ def _solve_waypoints(builder: newton.ModelBuilder, positions: np.ndarray, finger
 
 
 class Atelier:
-    """Own the native scene, dynamic states, scripted controls and measured rollout."""
+    """Build the workcell and drive the scripted routine through Isaac Lab."""
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, sim: sim_utils.SimulationContext, args: argparse.Namespace):
+        self.sim = sim
         self.args = args
         self.mouth = (MOUTH[0], MOUTH[1], args.cuff_height)
         self.frame = 0
         self.sim_time = 0.0
-        self.device = wp.get_device(args.device)
+        self.device = wp.get_device(sim.device)
         self.has_robot = args.mode in ("probe", "fill")
         self.has_stocking = args.mode != "probe"
         self.candy_count = 0 if args.mode == "drape" else (1 if args.mode == "probe" else args.candies)
@@ -147,7 +189,7 @@ class Atelier:
             (0.45 + (index - (self.candy_count - 1) / 2) * 0.075, -0.23, TABLE_TOP + 0.028)
             for index in range(self.candy_count)
         ]
-        builder = newton.ModelBuilder()
+        builder = sim.backend_manager.builder
         self.reference_model = None
         if self.has_robot:
             urdf = args.robot_urdf
@@ -171,47 +213,9 @@ class Atelier:
             self._build_stocking(builder)
         self.candy_bodies = []
         self._build_candies(builder)
-        # Warp's balancing pass can stall on this closed-toe graph; coloring alone is sufficient.
-        builder.color(include_bending=True, balance_colors=False)
-        if self.has_robot and self.candy_bodies:
-            # Solve candy updates after the robot so the grasp contact sees the updated fingertip poses.
-            candy_ids = set(self.candy_bodies)
-            body_groups = []
-            for group in builder.body_color_groups:
-                robot_bodies = [body for body in group if body not in candy_ids]
-                if robot_bodies:
-                    body_groups.append(np.asarray(robot_bodies, dtype=np.int32))
-            body_groups.append(np.asarray(self.candy_bodies, dtype=np.int32))
-            builder.body_color_groups = body_groups
-        self.model = builder.finalize(device=self.device)
-        self.model.soft_contact_ke = args.contact_stiffness
-        self.model.soft_contact_kd = 0.1
-        self.model.soft_contact_mu = args.friction
-        # ALM captures joint rest transforms at construction, so initialize FK BEFORE the solver.
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
-        self.state = self.model.state()
-        self.next_state = self.model.state()
-        self.control = self.model.control()
-        self.pipeline = newton.CollisionPipeline(
-            self.model, broad_phase="sap", soft_contact_gap=0.004, enable_rigid_soft_full_surface_contact=True
-        )
-        self.contacts = self.pipeline.contacts()
-        self.solver = SolverVBD(
-            self.model,
-            iterations=args.iterations,
-            rigid_compliant_alm=True,
-            integrate_with_external_rigid_solver=False,
-            rigid_joint_linear_ke=1.0e7,
-            rigid_joint_angular_ke=1.0e6,
-            rigid_body_contact_buffer_size=256,
-            rigid_body_particle_contact_buffer_size=4096,
-            particle_enable_self_contact=self.has_stocking,
-            particle_self_contact_margin=2 * args.particle_radius,
-            particle_self_contact_gap=0.003,
-            particle_enable_tile_solve=self.device.is_cuda,
-            friction_epsilon=1.0e-3,
-        )
-        self.control_targets = self.control.joint_target_q.numpy() if self.has_robot else None
+        sim.reset()
+        self.backend = sim.backend_manager.backend
+        self.control_targets = self.backend.control.joint_target_q.numpy() if self.has_robot else None
         self.max_tcp_error = 0.0
         self.max_joint_error = 0.0
         self.lift_heights = np.zeros(self.candy_count)
@@ -219,9 +223,13 @@ class Atelier:
         self.last_phase = ""
         self.phase_samples = []
         self.cloth_speed_squared = deque(maxlen=FPS)
-        self.graphs = {}
         self.initial_particles = self.state.particle_q.numpy().copy() if self.has_stocking else None
         self.started = time.perf_counter()
+
+    @property
+    def state(self) -> newton.State:
+        """The current state owned by Isaac Lab's Newton backend."""
+        return self.backend.state_0
 
     def _build_workcell(self, builder: newton.ModelBuilder) -> None:
         """Build an open bin, wooden bench and brass cuff support from analytic shapes."""
@@ -368,8 +376,9 @@ class Atelier:
 
     def step(self) -> None:
         """Apply joint targets, then solve all contacts and dynamics together in VBD."""
-        iterations = self.args.iterations
+        target = None
         if self.has_robot:
+            iterations = self.args.iterations
             target = sample_motion(self.sim_time, self.times, self.targets).astype(np.float32)
             # Choreography labels the destination of each interpolated segment.
             phase_index = min(int(np.searchsorted(self.times, self.sim_time, side="right")), len(self.phases) - 1)
@@ -381,37 +390,20 @@ class Atelier:
             if pickup or opening:
                 iterations = min(iterations, self.args.grasp_iterations)
             self.control_targets[:9] = target
-            self.control.joint_target_q.assign(self.control_targets)
+            self.backend.control.joint_target_q.assign(self.control_targets)
             self.reference_state.joint_q.assign(target)
             newton.eval_fk(
                 self.reference_model, self.reference_state.joint_q, self.reference_model.joint_qd, self.reference_state
             )
-        self.solver.iterations = iterations
-        graph = self.graphs.get(iterations)
-        if graph is None:
-            self._advance_physics()
-            # Warm up allocations before capture. The even number of swaps returns to the
-            # same state arrays, so the graphs can share both states across iteration budgets.
-            if self.device.is_cuda and not self.args.disable_cuda_graph and self.args.substeps % 2 == 0:
-                with wp.ScopedCapture() as capture:
-                    self._advance_physics()
-                self.graphs[iterations] = capture.graph
-        else:
-            wp.capture_launch(graph)
+            if self.backend.solver.iterations != iterations:
+                self.backend.solver.iterations = iterations
+                self.backend.invalidate_graph()
+        # Each physics tick refreshes both the rigid contacts and VBD's cloth BVH.
+        for substep in range(self.args.substeps):
+            self.sim.step(render=substep == self.args.substeps - 1)
         self.sim_time += 1.0 / FPS
         self.frame += 1
-        self._measure_frame(target if self.has_robot else None)
-
-    def _advance_physics(self) -> None:
-        """Advance one rendered frame using device-resident physics operations only."""
-        dt = 1.0 / FPS / self.args.substeps
-        for _ in range(self.args.substeps):
-            self.state.clear_forces()
-            if self.has_stocking:
-                self.solver.rebuild_bvh(self.state)
-            self.pipeline.collide(self.state, self.contacts)
-            self.solver.step(self.state, self.next_state, self.control, self.contacts, dt)
-            self.state, self.next_state = self.next_state, self.state
+        self._measure_frame(target)
 
     def _measure_frame(self, target: np.ndarray | None) -> None:
         """Measure the physical rollout after physics has completed."""
@@ -427,7 +419,7 @@ class Atelier:
             )
             actual = np.array(wp.transform_point(wp.transform(*poses[self.tcp]), TCP_OFFSET))
             self.max_tcp_error = max(self.max_tcp_error, float(np.linalg.norm(actual - expected)))
-            newton.eval_ik(self.model, self.state, self.state.joint_q, self.state.joint_qd)
+            newton.eval_ik(self.backend.model, self.state, self.state.joint_q, self.state.joint_qd)
             self.max_joint_error = max(
                 self.max_joint_error, float(np.max(np.abs(self.state.joint_q.numpy()[:7] - target[:7])))
             )
@@ -468,11 +460,11 @@ class Atelier:
                 revision = result.stdout.strip()
         report = {
             "mode": self.args.mode,
-            "solver": "SolverVBD",
-            "external_rigid_solver": False,
+            "solver": type(self.backend.solver).__name__,
+            "external_rigid_solver": self.backend.cfg.solver_cfg.integrate_with_external_rigid_solver,
             "device": str(self.device),
             "frames": self.frame,
-            "cuda_graph": bool(self.graphs),
+            "cuda_graph": bool(self.backend.graphs),
             "simulated_seconds": self.sim_time,
             "wall_seconds": time.perf_counter() - self.started,
             "complete": complete,
@@ -564,12 +556,44 @@ class Atelier:
         return report
 
 
+def _run(sim: sim_utils.SimulationContext, args: argparse.Namespace) -> None:
+    scene = Atelier(sim, args)
+    frames = args.max_steps or math.ceil(scene.duration * FPS)
+    recorder = None
+    if args.output is not None:
+        from newton.viewer import ViewerUSD  # noqa: PLC0415
+
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        recorder = ViewerUSD(output_path=str(args.output), num_frames=frames)
+        recorder.set_model(scene.backend.model)
+    try:
+        while scene.frame < frames and sim.is_running():
+            scene.step()
+            if recorder is not None:
+                recorder.begin_frame(scene.sim_time)
+                recorder.log_state(scene.state)
+                recorder.end_frame()
+    finally:
+        if recorder is not None:
+            recorder.close()
+
+    if args.metrics is not None or args.check:
+        report = scene.report()
+        if args.metrics is not None:
+            args.metrics.parent.mkdir(parents=True, exist_ok=True)
+            args.metrics.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+            logger.info("Measurements: %s", args.metrics)
+        if args.check and not report["passed"]:
+            raise SystemExit("Physical sequence did not pass. Use --metrics to save the rollout measurements.")
+
+
 def main() -> None:
-    """Run an isolated solver probe, drape/drop calibration, or full filling sequence."""
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    """Launch the filling demo or a shorter calibration scene."""
+    parser = argparse.ArgumentParser(
+        description="Fill a Christmas stocking with a scripted Franka FR3 in Isaac Lab.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument("--mode", choices=("probe", "drape", "drop", "fill"), default="fill")
-    parser.add_argument("--viewer", choices=("gl", "usd", "null"), default="gl")
-    parser.add_argument("--device", default=None)
     parser.add_argument(
         "--robot-urdf", type=Path, help="Local FR3 + Franka hand URDF; otherwise use Newton's asset cache."
     )
@@ -581,7 +605,7 @@ def main() -> None:
         help="Rigid collider for the candy core.",
     )
     parser.add_argument(
-        "--num-frames", type=int, default=0, help="Zero runs the complete sequence; positive values truncate it."
+        "--max_steps", type=int, default=0, help="Limit the number of 60 Hz frames. Zero runs the complete sequence."
     )
     parser.add_argument("--arm-stiffness", type=float, default=32000.0)
     parser.add_argument("--arm-damping", type=float, default=240.0)
@@ -596,13 +620,13 @@ def main() -> None:
         "--iterations",
         type=int,
         default=argparse.SUPPRESS,
-        help="VBD iterations per substep. Defaults to 15 for the sewn-stocking drop and 60 otherwise.",
+        help="VBD iterations per substep. Defaults to 15 for the sewn stocking and 60 for option B.",
     )
     parser.add_argument("--grasp-iterations", type=int, default=15, help="Cap VBD iterations during pickup and carry.")
     parser.add_argument(
         "--disable-cuda-graph", action="store_true", help="Disable physics graph capture for comparison."
     )
-    parser.add_argument("--stocking-pattern", choices=("B", "sewn"), default="B")
+    parser.add_argument("--stocking-pattern", choices=("B", "sewn"), default="sewn")
     parser.add_argument("--mesh-rings", type=int, default=28)
     parser.add_argument("--mesh-sides", type=int, default=32)
     parser.add_argument("--areal-density", type=float, default=0.25, help="Cloth surface density [kg/m^2].")
@@ -614,22 +638,24 @@ def main() -> None:
     parser.add_argument("--friction", type=float, default=0.5)
     parser.add_argument("--particle-radius", type=float, default=0.002)
     parser.add_argument("--contact-stiffness", type=float, default=2000.0)
-    parser.add_argument("--output", type=Path, default=Path("/tmp/christmas_atelier.usd"))
-    parser.add_argument("--metrics", type=Path, default=Path("/tmp/christmas_atelier.json"))
+    parser.add_argument("--output", type=Path, help="Optional animated USD recording path.")
+    parser.add_argument("--metrics", type=Path, help="Optional JSON rollout measurements path.")
     parser.add_argument("--export-assets", type=Path, help="Export USD art assets and exit without simulating.")
     parser.add_argument(
         "--check", action="store_true", help="Exit unsuccessfully unless the complete physical sequence passes."
     )
+    add_launcher_args(parser)
+    parser.set_defaults(visualizer=["newton_gl"])
     args = parser.parse_args()
     if not hasattr(args, "iterations"):
-        args.iterations = 15 if args.mode == "drop" and args.stocking_pattern == "sewn" else 60
+        args.iterations = 15 if args.stocking_pattern == "sewn" else 60
     if args.export_assets:
         export_assets(args.export_assets, sewn=args.stocking_pattern == "sewn")
         return
     if not 1 <= args.candies <= 5:
         parser.error("--candies must be between 1 and 5.")
-    if args.substeps < 1 or args.iterations < 1 or args.grasp_iterations < 1 or args.num_frames < 0:
-        parser.error("Substeps and iterations must be positive; num-frames must be nonnegative.")
+    if args.substeps < 1 or args.iterations < 1 or args.grasp_iterations < 1 or args.max_steps < 0:
+        parser.error("Substeps and iterations must be positive. --max_steps must be nonnegative.")
     if args.mesh_rings < 8 or args.mesh_sides < 8:
         parser.error("The stocking requires at least eight mesh rings and sides.")
     for name in (
@@ -651,35 +677,43 @@ def main() -> None:
     lowest = float(mesh(args.mesh_rings, args.mesh_sides)[0][:, 2].min())
     if not math.isfinite(args.cuff_height) or args.cuff_height + lowest <= TABLE_TOP:
         parser.error("--cuff-height must leave the undeformed stocking above the bench.")
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    with wp.ScopedDevice(args.device):
-        scene = Atelier(args)
-        frames = args.num_frames or math.ceil(scene.duration * FPS)
-        if args.viewer == "gl":
-            viewer = newton.viewer.ViewerGL(num_frames=frames)
-        elif args.viewer == "usd":
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            viewer = newton.viewer.ViewerUSD(output_path=str(args.output), num_frames=frames)
-        else:
-            viewer = newton.viewer.ViewerNull(num_frames=frames)
-        viewer.set_model(scene.model)
-        viewer.set_camera(pos=wp.vec3(1.65, -1.9, 1.65), pitch=-18.0, yaw=124.0)
+    sim_cfg = sim_utils.SimulationCfg(
+        dt=1.0 / FPS / args.substeps,
+        render_interval=args.substeps,
+        device=args.device,
+        physics=NewtonCfg(
+            use_cuda_graph=not args.disable_cuda_graph,
+            solver_cfg=_AtelierVBDSolverCfg(
+                iterations=args.iterations,
+                update_joint_state=False,
+                particle_enable_self_contact=args.mode != "probe",
+                particle_self_contact_margin=2 * args.particle_radius,
+                particle_enable_tile_solve=args.device.startswith("cuda"),
+                rigid_compliant_alm=True,
+                rigid_joint_linear_ke=1.0e7,
+                rigid_joint_angular_ke=1.0e6,
+                rigid_body_contact_buffer_size=256,
+                rigid_body_particle_contact_buffer_size=4096,
+                friction_epsilon=1.0e-3,
+            ),
+            collision_cfg=NewtonCollisionPipelineCfg(
+                broad_phase="sap", soft_contact_margin=0.004, enable_rigid_soft_full_surface_contact=True
+            ),
+            soft_contact_cfg=NewtonSoftContactCfg(
+                soft_contact_ke=args.contact_stiffness, soft_contact_kd=0.1, soft_contact_mu=args.friction
+            ),
+        ),
+        visualizer_cfgs=VisualizerCfg(
+            eye=(1.65, -2.25, 1.9),
+            lookat=(0.34, 0.0, 1.0),
+            focal_length=34.0,
+            enable_live_plots=False,
+            backend=NewtonGLBackendCfg(show_particles=False),
+        ),
+    )
+    with launch_simulation(sim_cfg, args):
+        sim = sim_utils.SimulationContext(sim_cfg)
         try:
-            while scene.frame < frames and viewer.is_running():
-                if viewer.should_step():
-                    scene.step()
-                viewer.begin_frame(scene.sim_time)
-                viewer.log_state(scene.state)
-                viewer.end_frame()
+            _run(sim, args)
         finally:
-            viewer.close()
-            report = scene.report()
-            args.metrics.parent.mkdir(parents=True, exist_ok=True)
-            args.metrics.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
-            logger.info("Measurements: %s", args.metrics)
-        if args.check and not report["passed"]:
-            raise SystemExit("Physical sequence did not pass; inspect the measurements JSON.")
-
-
-if __name__ == "__main__":
-    main()
+            sim_utils.SimulationContext.clear_instance()
