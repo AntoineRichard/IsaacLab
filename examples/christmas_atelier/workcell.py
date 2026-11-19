@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import math
 import subprocess
@@ -21,14 +20,11 @@ import newton.ik as ik
 import newton.utils
 import numpy as np
 import warp as wp
-from isaaclab_newton.physics import NewtonCfg, NewtonCollisionPipelineCfg, NewtonSoftContactCfg, VBDSolver, VBDSolverCfg
-from isaaclab_visualizers.newton import NewtonGLBackendCfg
+from isaaclab_newton.physics import VBDSolver, VBDSolverCfg
 from newton.solvers import SolverVBD
 
 import isaaclab.sim as sim_utils
-from isaaclab.app import add_launcher_args, launch_simulation
 from isaaclab.utils import configclass
-from isaaclab.visualizers import VisualizerCfg
 
 from .assets import (
     CANDY_CAPSULE_HALF_LENGTH,
@@ -39,7 +35,6 @@ from .assets import (
     GREEN,
     RED,
     candy_mesh,
-    export_assets,
     panel_stocking_mesh,
     stocking_mesh,
 )
@@ -55,6 +50,10 @@ GRIP_FRICTION = 1.5
 RIGID_CONTACT_STIFFNESS = 1.0e4
 RIGID_CONTACT_DAMPING = 30.0
 FRANKA_ASSET_REVISION = "a96f0973b6ae69c90609f9fafef9d2c1db2d6431"
+FRANKA_ARM_JOINTS = tuple(f"fr3_joint{index}" for index in range(1, 8))
+FRANKA_FINGER_JOINTS = ("fr3_finger_joint1", "fr3_finger_joint2")
+FRANKA_JOINTS = (*FRANKA_ARM_JOINTS, *FRANKA_FINGER_JOINTS)
+FRANKA_HOME = (0.0, -0.5, 0.0, -2.1, 0.0, 1.6, math.pi / 4, 0.04, 0.04)
 
 
 class _AtelierVBDSolver(VBDSolver):
@@ -87,7 +86,7 @@ class _AtelierVBDSolver(VBDSolver):
 
 
 @configclass
-class _AtelierVBDSolverCfg(VBDSolverCfg):
+class AtelierVBDSolverCfg(VBDSolverCfg):
     """VBD settings for the stocking mesh and individual candy bodies."""
 
     class_type: type = _AtelierVBDSolver
@@ -95,6 +94,15 @@ class _AtelierVBDSolverCfg(VBDSolverCfg):
     particle_self_contact_gap: float = 0.003
     particle_collision_detection_interval: int | None = None
     particle_enable_tile_solve: bool = True
+
+
+def _franka_joint_ids(builder: newton.ModelBuilder) -> list[int]:
+    """Resolve joint labels within the imported FR3 and Franka hand."""
+    by_name = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.joint_label)}
+    missing = set(FRANKA_JOINTS) - by_name.keys()
+    if missing:
+        raise ValueError(f"The Franka URDF is missing joints: {', '.join(sorted(missing))}")
+    return [by_name[name] for name in FRANKA_JOINTS]
 
 
 def _robot_builder(
@@ -112,10 +120,12 @@ def _robot_builder(
     # frames into their physical links, retaining the massive hand as our measured TCP parent.
     builder.collapse_fixed_joints(joints_to_keep=["fr3/fr3_hand_joint"])
     # VBD does not solve the URDF mimic equality. Give each physical finger its own target.
-    for index in range(len(builder.joint_target_ke)):
-        builder.joint_target_ke[index] = arm_stiffness if index < 7 else 1500.0
-        builder.joint_target_kd[index] = arm_damping if index < 7 else 8.0
-    builder.joint_q[:] = [0.0, -0.5, 0.0, -2.1, 0.0, 1.6, math.pi / 4, 0.04, 0.04]
+    for joint, name, position in zip(_franka_joint_ids(builder), FRANKA_JOINTS, FRANKA_HOME, strict=True):
+        dof = builder.joint_qd_start[joint]
+        is_finger = name in FRANKA_FINGER_JOINTS
+        builder.joint_target_ke[dof] = 1500.0 if is_finger else arm_stiffness
+        builder.joint_target_kd[dof] = 8.0 if is_finger else arm_damping
+        builder.joint_q[builder.joint_q_start[joint]] = position
     # The stocking only contacts analytic finger/candy geometry; avoid mesh volume SDFs on CPU.
     finger_bodies = {
         index for index, label in enumerate(builder.body_label) if label.endswith(("leftfinger", "rightfinger"))
@@ -129,7 +139,9 @@ def _robot_builder(
     return builder
 
 
-def _solve_waypoints(builder: newton.ModelBuilder, positions: np.ndarray, fingers: np.ndarray, device: str) -> tuple:
+def _solve_waypoints(
+    builder: newton.ModelBuilder, positions: np.ndarray, fingers: np.ndarray, finger_coords: list[int], device: str
+) -> tuple:
     """Solve IK on a separate reference model; never overwrite simulated body poses."""
     model = builder.finalize(device=device)
     tcp = next(index for index, label in enumerate(model.body_label) if label.endswith("fr3_hand"))
@@ -160,7 +172,7 @@ def _solve_waypoints(builder: newton.ModelBuilder, positions: np.ndarray, finger
         position.set_target_position(0, wp.vec3(*map(float, target)))
         solver.step(q, q, iterations=80)
         values = q.numpy().ravel()
-        values[7:9] = opening
+        values[finger_coords] = opening
         q.assign(values.reshape(1, -1))
         newton.eval_fk(model, q.flatten(), model.joint_qd, state)
         error = np.linalg.norm(
@@ -200,7 +212,11 @@ class Atelier:
                 )
             robot = _robot_builder(urdf, args.arm_stiffness, args.arm_damping, args.grip_contact_damping)
             self.times, positions, fingers, self.phases = choreography(self.initial_candies, self.mouth)
-            self.reference_model, self.tcp, self.targets = _solve_waypoints(robot, positions, fingers, str(self.device))
+            self.reference_coords = [robot.joint_q_start[joint] for joint in _franka_joint_ids(robot)]
+            self.finger_coords = self.reference_coords[len(FRANKA_ARM_JOINTS) :]
+            self.reference_model, self.tcp, self.targets = _solve_waypoints(
+                robot, positions, fingers, self.finger_coords, str(self.device)
+            )
             self.reference_state = self.reference_model.state()
             robot.joint_q[:] = self.targets[0].tolist()
             builder.add_builder(robot)
@@ -215,7 +231,11 @@ class Atelier:
         self._build_candies(builder)
         sim.reset()
         self.backend = sim.backend_manager.backend
-        self.control_targets = self.backend.control.joint_target_q.numpy() if self.has_robot else None
+        if self.has_robot:
+            live_joints = _franka_joint_ids(builder)
+            self.drive_dofs = [builder.joint_qd_start[joint] for joint in live_joints]
+            self.arm_coords = [builder.joint_q_start[joint] for joint in live_joints[: len(FRANKA_ARM_JOINTS)]]
+            self.control_targets = self.backend.control.joint_target_q.numpy()
         self.max_tcp_error = 0.0
         self.max_joint_error = 0.0
         self.lift_heights = np.zeros(self.candy_count)
@@ -384,12 +404,12 @@ class Atelier:
             phase_index = min(int(np.searchsorted(self.times, self.sim_time, side="right")), len(self.phases) - 1)
             phase = self.phases[phase_index]
             pickup = phase.startswith(("approach_", "descend_", "grasp_", "lift_", "transport_", "lower_"))
-            opening = phase.startswith("release_") and target[7] < 0.018
+            opening = phase.startswith("release_") and target[self.finger_coords[0]] < 0.018
             # The rounded core lifts reliably at the qualified grasp budget. Switch to the
             # cloth budget once the fingers clear the core, before it reaches the stocking.
             if pickup or opening:
                 iterations = min(iterations, self.args.grasp_iterations)
-            self.control_targets[:9] = target
+            self.control_targets[self.drive_dofs] = target[self.reference_coords]
             self.backend.control.joint_target_q.assign(self.control_targets)
             self.reference_state.joint_q.assign(target)
             newton.eval_fk(
@@ -420,8 +440,9 @@ class Atelier:
             actual = np.array(wp.transform_point(wp.transform(*poses[self.tcp]), TCP_OFFSET))
             self.max_tcp_error = max(self.max_tcp_error, float(np.linalg.norm(actual - expected)))
             newton.eval_ik(self.backend.model, self.state, self.state.joint_q, self.state.joint_qd)
+            reference_arm = target[self.reference_coords[: len(FRANKA_ARM_JOINTS)]]
             self.max_joint_error = max(
-                self.max_joint_error, float(np.max(np.abs(self.state.joint_q.numpy()[:7] - target[:7])))
+                self.max_joint_error, float(np.max(np.abs(self.state.joint_q.numpy()[self.arm_coords] - reference_arm)))
             )
             phase_index = min(int(np.searchsorted(self.times, self.sim_time, side="right")), len(self.phases) - 1)
             phase = self.phases[phase_index]
@@ -554,166 +575,3 @@ class Atelier:
             passed = passed and all(report["released"])
         report["passed"] = bool(passed)
         return report
-
-
-def _run(sim: sim_utils.SimulationContext, args: argparse.Namespace) -> None:
-    scene = Atelier(sim, args)
-    frames = args.max_steps or math.ceil(scene.duration * FPS)
-    recorder = None
-    if args.output is not None:
-        from newton.viewer import ViewerUSD  # noqa: PLC0415
-
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        recorder = ViewerUSD(output_path=str(args.output), num_frames=frames)
-        recorder.set_model(scene.backend.model)
-    try:
-        while scene.frame < frames and sim.is_running():
-            scene.step()
-            if recorder is not None:
-                recorder.begin_frame(scene.sim_time)
-                recorder.log_state(scene.state)
-                recorder.end_frame()
-    finally:
-        if recorder is not None:
-            recorder.close()
-
-    if args.metrics is not None or args.check:
-        report = scene.report()
-        if args.metrics is not None:
-            args.metrics.parent.mkdir(parents=True, exist_ok=True)
-            args.metrics.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
-            logger.info("Measurements: %s", args.metrics)
-        if args.check and not report["passed"]:
-            raise SystemExit("Physical sequence did not pass. Use --metrics to save the rollout measurements.")
-
-
-def main() -> None:
-    """Launch the filling demo or a shorter calibration scene."""
-    parser = argparse.ArgumentParser(
-        description="Fill a Christmas stocking with a scripted Franka FR3 in Isaac Lab.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument("--mode", choices=("probe", "drape", "drop", "fill"), default="fill")
-    parser.add_argument(
-        "--robot-urdf", type=Path, help="Local FR3 + Franka hand URDF; otherwise use Newton's asset cache."
-    )
-    parser.add_argument("--candies", type=int, default=3)
-    parser.add_argument(
-        "--candy-collider",
-        choices=("capsule", "cylinder"),
-        default="capsule",
-        help="Rigid collider for the candy core.",
-    )
-    parser.add_argument(
-        "--max_steps", type=int, default=0, help="Limit the number of 60 Hz frames. Zero runs the complete sequence."
-    )
-    parser.add_argument("--arm-stiffness", type=float, default=32000.0)
-    parser.add_argument("--arm-damping", type=float, default=240.0)
-    parser.add_argument(
-        "--grip-contact-damping",
-        type=float,
-        default=RIGID_CONTACT_DAMPING,
-        help="Contact damping for the finger and candy core materials [N s/m].",
-    )
-    parser.add_argument("--substeps", type=int, default=12)
-    parser.add_argument(
-        "--iterations",
-        type=int,
-        default=argparse.SUPPRESS,
-        help="VBD iterations per substep. Defaults to 15 for the sewn stocking and 60 for option B.",
-    )
-    parser.add_argument("--grasp-iterations", type=int, default=15, help="Cap VBD iterations during pickup and carry.")
-    parser.add_argument(
-        "--disable-cuda-graph", action="store_true", help="Disable physics graph capture for comparison."
-    )
-    parser.add_argument("--stocking-pattern", choices=("B", "sewn"), default="sewn")
-    parser.add_argument("--mesh-rings", type=int, default=28)
-    parser.add_argument("--mesh-sides", type=int, default=32)
-    parser.add_argument("--areal-density", type=float, default=0.25, help="Cloth surface density [kg/m^2].")
-    parser.add_argument("--stretch-stiffness", type=float, default=1500.0)
-    parser.add_argument("--stretch-damping", type=float, default=0.01)
-    parser.add_argument("--bend-stiffness", type=float, default=5.0e-7)
-    parser.add_argument("--bend-damping", type=float, default=4.0e-3)
-    parser.add_argument("--cuff-height", type=float, default=MOUTH[2], help="Supported cuff height above ground [m].")
-    parser.add_argument("--friction", type=float, default=0.5)
-    parser.add_argument("--particle-radius", type=float, default=0.002)
-    parser.add_argument("--contact-stiffness", type=float, default=2000.0)
-    parser.add_argument("--output", type=Path, help="Optional animated USD recording path.")
-    parser.add_argument("--metrics", type=Path, help="Optional JSON rollout measurements path.")
-    parser.add_argument("--export-assets", type=Path, help="Export USD art assets and exit without simulating.")
-    parser.add_argument(
-        "--check", action="store_true", help="Exit unsuccessfully unless the complete physical sequence passes."
-    )
-    add_launcher_args(parser)
-    parser.set_defaults(visualizer=["newton_gl"])
-    args = parser.parse_args()
-    if not hasattr(args, "iterations"):
-        args.iterations = 15 if args.stocking_pattern == "sewn" else 60
-    if args.export_assets:
-        export_assets(args.export_assets, sewn=args.stocking_pattern == "sewn")
-        return
-    if not 1 <= args.candies <= 5:
-        parser.error("--candies must be between 1 and 5.")
-    if args.substeps < 1 or args.iterations < 1 or args.grasp_iterations < 1 or args.max_steps < 0:
-        parser.error("Substeps and iterations must be positive. --max_steps must be nonnegative.")
-    if args.mesh_rings < 8 or args.mesh_sides < 8:
-        parser.error("The stocking requires at least eight mesh rings and sides.")
-    for name in (
-        "arm_stiffness",
-        "arm_damping",
-        "areal_density",
-        "stretch_stiffness",
-        "bend_stiffness",
-        "friction",
-        "particle_radius",
-        "contact_stiffness",
-    ):
-        if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
-            parser.error(f"--{name.replace('_', '-')} must be positive and finite.")
-    for name in ("bend_damping", "stretch_damping", "grip_contact_damping"):
-        if not math.isfinite(getattr(args, name)) or getattr(args, name) < 0:
-            parser.error(f"--{name.replace('_', '-')} must be nonnegative and finite.")
-    mesh = panel_stocking_mesh if args.stocking_pattern == "sewn" else stocking_mesh
-    lowest = float(mesh(args.mesh_rings, args.mesh_sides)[0][:, 2].min())
-    if not math.isfinite(args.cuff_height) or args.cuff_height + lowest <= TABLE_TOP:
-        parser.error("--cuff-height must leave the undeformed stocking above the bench.")
-    sim_cfg = sim_utils.SimulationCfg(
-        dt=1.0 / FPS / args.substeps,
-        render_interval=args.substeps,
-        device=args.device,
-        physics=NewtonCfg(
-            use_cuda_graph=not args.disable_cuda_graph,
-            solver_cfg=_AtelierVBDSolverCfg(
-                iterations=args.iterations,
-                update_joint_state=False,
-                particle_enable_self_contact=args.mode != "probe",
-                particle_self_contact_margin=2 * args.particle_radius,
-                particle_enable_tile_solve=args.device.startswith("cuda"),
-                rigid_compliant_alm=True,
-                rigid_joint_linear_ke=1.0e7,
-                rigid_joint_angular_ke=1.0e6,
-                rigid_body_contact_buffer_size=256,
-                rigid_body_particle_contact_buffer_size=4096,
-                friction_epsilon=1.0e-3,
-            ),
-            collision_cfg=NewtonCollisionPipelineCfg(
-                broad_phase="sap", soft_contact_margin=0.004, enable_rigid_soft_full_surface_contact=True
-            ),
-            soft_contact_cfg=NewtonSoftContactCfg(
-                soft_contact_ke=args.contact_stiffness, soft_contact_kd=0.1, soft_contact_mu=args.friction
-            ),
-        ),
-        visualizer_cfgs=VisualizerCfg(
-            eye=(1.65, -2.25, 1.9),
-            lookat=(0.34, 0.0, 1.0),
-            focal_length=34.0,
-            enable_live_plots=False,
-            backend=NewtonGLBackendCfg(show_particles=False),
-        ),
-    )
-    with launch_simulation(sim_cfg, args):
-        sim = sim_utils.SimulationContext(sim_cfg)
-        try:
-            _run(sim, args)
-        finally:
-            sim_utils.SimulationContext.clear_instance()

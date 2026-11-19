@@ -282,7 +282,6 @@ OVERRIDES = {
         required_modules=("isaaclab_contrib",),
     ),
     "examples/demos/christmas_atelier.py": ScriptOverride(
-        args=("--max_steps", "10"),
         fixed_physics_backend="newton_vbd",
         visualizers=("newton_gl",),
     ),

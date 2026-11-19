@@ -8,6 +8,7 @@ Christmas stocking. Run the demo from an Isaac Lab checkout after the standard u
 
    uv run isaaclab demo christmas-atelier
 
+In an installed Isaac Lab environment, run ``isaaclab demo christmas-atelier``.
 The demo opens Isaac Lab's Newton GL visualizer. Pass ``--viz none`` for a headless run.
 The first launch downloads the pinned FR3 and Franka hand asset bundle. Use
 ``--robot-urdf PATH`` with a local copy of the same URDF and its meshes for offline runs.
@@ -43,7 +44,8 @@ the twisted tails. The red and cream panels share vertices at the seams. The bra
 supports the open cuff while the rest of the cloth deforms freely.
 
 The demo plans end-effector waypoints once on a separate IK model and writes interpolated
-joint targets to Isaac Lab's live Newton backend. Both fingers have physical drives. VBD
+joint targets to Isaac Lab's live Newton backend. It resolves the arm and finger joints by
+name in each model. Both fingers have physical drives. VBD
 solves the candy bodies in a separate group after the fingers so grasp contacts use updated
 finger poses. The fingertips release the candy above the opening and gravity carries it into
 the stocking.
