@@ -276,6 +276,12 @@ OVERRIDES = {
         visualizers=("newton_gl", "newton_rtx"),
     ),
     "examples/multi_asset.py": ScriptOverride(args=("--num_envs", "4")),
+    "examples/demos/christmas_ornament.py": ScriptOverride(
+        args=("--max_steps", "10"),
+        skip_reason="requires the internal Agile One URDF (AGILE_ONE_URDF)",
+        fixed_physics_backend="newton_vbd",
+        visualizers=("newton_gl",),
+    ),
     "examples/demos/newton_viewer_block_and_tackle.py": ScriptOverride(
         fixed_physics_backend="newton_vbd",
         visualizers=("newton_gl",),

@@ -118,6 +118,12 @@ DEMOS = (
         "Interact with a Newton VBD block-and-tackle scene.",
     ),
     ProgramSpec(
+        "christmas-ornament",
+        "examples/demos/christmas_ornament.py",
+        "Hang a glass ornament on a VBD fir tree with a scripted Agile One (external robot asset required).",
+        extras=("importers",),
+    ),
+    ProgramSpec(
         "snowball-smash",
         "examples/demos/snowball_smash.py",
         "Smash rigid crates with MPM snowballs.",
