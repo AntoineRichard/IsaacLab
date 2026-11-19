@@ -1,1 +1,1 @@
-* Added the ``isaaclab demo christmas-atelier`` command for a scripted Franka stocking fill with Newton VBD.
+* Added ``isaaclab demo christmas-atelier``, a scripted Franka stocking fill with Newton VBD and GL or RTX visualization.

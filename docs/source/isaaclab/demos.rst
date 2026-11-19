@@ -108,9 +108,9 @@ No source checkout is required.
        <button type="button" class="demo-card" aria-pressed="false"
                data-demo-name="Christmas Atelier" data-demo-id="christmas-atelier"
                data-demo-physics="newton_vbd" data-demo-fixed-physics="true"
-               data-demo-visualizers="newton_gl"
+               data-demo-visualizers="newton_gl,newton_rtx"
                data-demo-description="Watch a scripted Franka FR3 fill a sewn stocking with wrapped candies.">
-         <img src="../../_static/demos/christmas_atelier.jpg" alt="Franka holding a wrapped candy beside a hanging stocking" loading="lazy">
+         <img src="../../_static/demos/christmas_atelier.jpg" alt="Franka beside a tray of wrapped candies and a hanging stocking" loading="lazy">
          <span>Christmas Atelier</span>
        </button>
        <button type="button" class="demo-card" aria-pressed="false"

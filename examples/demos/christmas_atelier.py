@@ -8,178 +8,65 @@
 .. code-block:: bash
 
     uv run isaaclab demo christmas-atelier
+    uv run --extra ovrtx isaaclab demo christmas-atelier --viz newton_rtx
 
-In an installed Isaac Lab environment, run ``isaaclab demo christmas-atelier``.
-The first launch downloads the Franka assets. The demo uses Newton VBD and opens
-the Newton GL visualizer. Pass ``--viz none`` to run headless.
+Use ``--viz none`` for a headless run. Both visualizers use the same USD scene and Newton VBD simulation.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+from pathlib import Path
 
 import newton
 import newton.ik as ik
-import newton.utils
 import numpy as np
+import torch
 import warp as wp
-from isaaclab_newton.physics import (
-    NewtonCfg,
-    NewtonCollisionPipelineCfg,
-    NewtonSoftContactCfg,
-    VBDSolver,
-    VBDSolverCfg,
-)
+from isaaclab_newton.cloner import copy_newton_clone_source, newton_builder_world_hook
+from isaaclab_newton.physics import NewtonCfg, NewtonCollisionPipelineCfg, NewtonSoftContactCfg, VBDSolver, VBDSolverCfg
 from isaaclab_visualizers.newton import NewtonGLBackendCfg
 from newton.solvers import SolverVBD
-from scipy.interpolate import PchipInterpolator
+
+from pxr import UsdGeom
 
 import isaaclab.sim as sim_utils
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.app import add_launcher_args, launch_simulation
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.visualizers import VisualizerCfg
 
-RED = (0.68, 0.025, 0.045)
-CREAM = (0.96, 0.90, 0.75)
-GREEN = (0.025, 0.30, 0.13)
-GOLD = (0.95, 0.60, 0.08)
-CANDY_CORE_RADIUS = 0.014
-CANDY_CORE_HALF_LENGTH = 0.014
-CANDY_CAPSULE_HALF_LENGTH = 0.005
-
-TABLE_TOP = 0.72
-MOUTH = (0.48, 0.22, 1.20)
+ASSET_DIR = Path(__file__).resolve().parents[1] / "assets"
 FPS = 60
 SUBSTEPS = 12
 PARTICLE_RADIUS = 0.002
-CANDY_POSITIONS = [(0.45 + (index - 1) * 0.075, -0.23, TABLE_TOP + 0.028) for index in range(3)]
 TCP_OFFSET = wp.vec3(0.0, 0.0, 0.1034)
-GRIP_FRICTION = 1.5
-# Resolve the light candy/rubber contact without the stiff, underdamped pinch that ejects it.
-RIGID_CONTACT_STIFFNESS = 1.0e4
-RIGID_CONTACT_DAMPING = 30.0
-FRANKA_ASSET_REVISION = "a96f0973b6ae69c90609f9fafef9d2c1db2d6431"
 FRANKA_ARM_JOINTS = tuple(f"fr3_joint{index}" for index in range(1, 8))
 FRANKA_FINGER_JOINTS = ("fr3_finger_joint1", "fr3_finger_joint2")
 FRANKA_JOINTS = (*FRANKA_ARM_JOINTS, *FRANKA_FINGER_JOINTS)
 FRANKA_HOME = (0.0, -0.5, 0.0, -2.1, 0.0, 1.6, math.pi / 4, 0.04, 0.04)
 
 
-def stocking_mesh() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Shape two cloth panels around an open cuff and join their side and sole seams.
+@configclass
+class AtelierSceneCfg(InteractiveSceneCfg):
+    """One FR3 and the authored stocking workcell."""
 
-    Rows run across the garment. The two side outlines independently shape the heel and
-    instep. The curved sole closes on a line of shared vertices, as on a sewn stocking.
-    """
-    # Coordinates in the flat pattern, from cuff to sole. Pin the mouth to the filling hoop.
-    stations = [0.0, 0.16, 0.46, 0.62, 0.73, 0.81, 0.88, 0.95, 1.0]
-    heel = PchipInterpolator(
-        stations,
-        [
-            [-0.075, 0],
-            [-0.091, -0.058],
-            [-0.084, -0.158],
-            [-0.082, -0.215],
-            [-0.087, -0.250],
-            [-0.087, -0.273],
-            [-0.082, -0.288],
-            [-0.072, -0.300],
-            [-0.057, -0.318],
-        ],
+    robot = ArticulationCfg(
+        prim_path="{ENV_REGEX_NS}/Robot",
+        spawn=sim_utils.UsdFileCfg(usd_path=str(ASSET_DIR / "christmas_atelier_fr3.usd")),
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.72), joint_pos=dict(zip(FRANKA_JOINTS, FRANKA_HOME, strict=True))
+        ),
+        actuators={"drives": ImplicitActuatorCfg(joint_names_expr=list(FRANKA_JOINTS), stiffness=None, damping=None)},
     )
-    instep = PchipInterpolator(
-        stations,
-        [
-            [0.075, 0],
-            [0.091, -0.058],
-            [0.078, -0.155],
-            [0.066, -0.201],
-            [0.070, -0.224],
-            [0.088, -0.242],
-            [0.120, -0.260],
-            [0.145, -0.277],
-            [0.150, -0.297],
-        ],
+    workcell = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Atelier",
+        spawn=sim_utils.UsdFileCfg(usd_path=str(ASSET_DIR / "christmas_atelier.usda")),
     )
-    vertices = []
-    faces = []
-    panel_indices = []
-    # Use matching column counts so both soles share every stitch.
-    rings, columns = 28, 16
-    u = np.linspace(0, 1, columns + 1)
-    arc = 0.5 - 0.5 * np.cos(np.pi * u)
-    for panel in range(2):
-        sign = 1 if panel == 0 else -1
-        indices = np.empty((rings, columns + 1), dtype=np.int32)
-        for row, t in enumerate(np.linspace(0, 1, rings)):
-            opening = np.exp(-((t / 0.17) ** 2))
-            across = (1 - opening) * u + opening * arc
-            outline = heel(t) + across[:, None] * (instep(t) - heel(t))
-            # A rounded sole and two lightly separated faces leave slack to wrap around a load.
-            outline[:, 1] -= 0.044 * np.sin(np.pi * u) * t**3
-            profile = np.sin(np.pi * u)
-            half_depth = 0.007 + (0.0585 - 0.007) * opening
-            depth = half_depth * profile ** (1 - 0.5 * (1 - opening)) * np.clip((1 - t) / 0.11, 0, 1)
-            for col in range(columns + 1):
-                if panel and (col in (0, columns) or row == rings - 1):
-                    indices[row, col] = panel_indices[0][row, col]
-                else:
-                    indices[row, col] = len(vertices)
-                    vertices.append((outline[col, 0], sign * depth[col], outline[col, 1]))
-                if row and col:
-                    a, b = indices[row - 1, col - 1 : col + 1]
-                    c, d = indices[row, col - 1 : col + 1]
-                    # At either sole corner, route the diagonal through the panel interior.
-                    split_ad = col != 1 and ((row + col) % 2 or (row == rings - 1 and col == columns))
-                    pair = [(a, b, d), (a, d, c)] if split_ad else [(a, b, c), (b, d, c)]
-                    faces.extend(pair if not panel else [triangle[::-1] for triangle in pair])
-        panel_indices.append(indices)
-    vertices = np.asarray(vertices, dtype=np.float32)
-    faces = np.asarray(faces, dtype=np.int32)
-    center = vertices[faces].mean(axis=1)
-    colors = np.tile(RED, (len(faces), 1)).astype(np.float32)
-    colors[(center[:, 2] > -0.052) | ((center[:, 0] > 0.105) & (center[:, 2] < -0.23))] = CREAM
-    cuff = np.r_[panel_indices[0][0, ::-1], panel_indices[1][0, 1:-1]]
-    return vertices, faces, colors, cuff
-
-
-def candy_mesh() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return a closed twist-wrapper mesh, 64 mm long with a 28 mm candy core.
-
-    The core is aligned along x. Use the complete mesh for cloth contacts and a simple rigid
-    core collider for grasping so the fingers cannot snag on decorative folds.
-    """
-    sides = 24
-    x = np.array([-0.032, -0.024, -0.019, -CANDY_CORE_HALF_LENGTH, CANDY_CORE_HALF_LENGTH, 0.019, 0.024, 0.032])
-    radius = np.array([0.011, 0.004, 0.006, CANDY_CORE_RADIUS, CANDY_CORE_RADIUS, 0.006, 0.004, 0.011])
-    angle = np.arange(sides) * (2 * np.pi / sides)
-    vertices = []
-    for ring, (position, size) in enumerate(zip(x, radius, strict=True)):
-        twist = 0.65 * ring
-        folds = 1 + 0.16 * np.cos(6 * angle) if ring in (0, 1, 6, 7) else np.ones(sides)
-        vertices.extend(
-            zip(
-                np.full(sides, position),
-                size * folds * np.cos(angle + twist),
-                size * folds * np.sin(angle + twist),
-                strict=True,
-            )
-        )
-    vertices.extend([(x[0], 0, 0), (x[-1], 0, 0)])
-    faces = []
-    for ring in range(len(x) - 1):
-        for side in range(sides):
-            a, b = ring * sides + side, ring * sides + (side + 1) % sides
-            faces.extend([(a, b, a + sides), (b, b + sides, a + sides)])
-    for side in range(sides):
-        nxt = (side + 1) % sides
-        faces.extend(
-            [(len(x) * sides, nxt, side), (len(x) * sides + 1, (len(x) - 1) * sides + side, (len(x) - 1) * sides + nxt)]
-        )
-    faces = np.asarray(faces, dtype=np.int32)
-    colors = np.array([CREAM if (index // 2) % 6 < 2 else RED for index in range(len(faces))], dtype=np.float32)
-    return np.asarray(vertices, dtype=np.float32), faces, colors
+    lighting = AssetBaseCfg(prim_path="/World/StudioLight", spawn=sim_utils.DomeLightCfg(intensity=500.0))
 
 
 class _AtelierVBDSolver(VBDSolver):
@@ -188,7 +75,9 @@ class _AtelierVBDSolver(VBDSolver):
     @classmethod
     def prepare_builder(cls, cfg: VBDSolverCfg, builder: newton.ModelBuilder) -> None:
         super().prepare_builder(cfg, builder)
-        candy_bodies = {index for index, label in enumerate(builder.body_label) if label.startswith("candy_")}
+        candy_bodies = {
+            index for index, label in enumerate(builder.body_label) if label.rsplit("/", 1)[-1].startswith("candy_")
+        }
         # The candy contact solve sees the updated fingertip poses when these groups run separately.
         body_groups = []
         for group in builder.body_color_groups:
@@ -227,39 +116,6 @@ def _franka_joint_ids(builder: newton.ModelBuilder) -> list[int]:
     if missing:
         raise ValueError(f"The Franka URDF is missing joints: {', '.join(sorted(missing))}")
     return [by_name[name] for name in FRANKA_JOINTS]
-
-
-def _robot_builder() -> newton.ModelBuilder:
-    """Import the complete Franka chain and explicitly drive both fingers for VBD."""
-    urdf = newton.utils.download_asset("franka_emika_panda", ref=FRANKA_ASSET_REVISION) / "urdf/fr3_franka_hand.urdf"
-    builder = newton.ModelBuilder()
-    builder.add_urdf(
-        str(urdf),
-        floating=False,
-        xform=wp.transform((0.0, 0.0, TABLE_TOP), wp.quat_identity()),
-        enable_self_collisions=False,
-    )
-    # A massless URDF frame becomes immovable in a maximal-coordinate solve. Merge those
-    # frames into their physical links, retaining the massive hand as the TCP parent.
-    builder.collapse_fixed_joints(joints_to_keep=["fr3/fr3_hand_joint"])
-    # VBD does not solve the URDF mimic equality. Give each physical finger its own target.
-    for joint, name, position in zip(_franka_joint_ids(builder), FRANKA_JOINTS, FRANKA_HOME, strict=True):
-        dof = builder.joint_qd_start[joint]
-        is_finger = name in FRANKA_FINGER_JOINTS
-        builder.joint_target_ke[dof] = 1500.0 if is_finger else 32000.0
-        builder.joint_target_kd[dof] = 8.0 if is_finger else 240.0
-        builder.joint_q[builder.joint_q_start[joint]] = position
-    # Limit robot-cloth contacts to the fingertips.
-    finger_bodies = {
-        index for index, label in enumerate(builder.body_label) if label.endswith(("leftfinger", "rightfinger"))
-    }
-    for shape, body in enumerate(builder.shape_body):
-        if body not in finger_bodies:
-            builder.shape_flags[shape] &= ~int(newton.ShapeFlags.COLLIDE_PARTICLES)
-        builder.shape_material_mu[shape] = GRIP_FRICTION if body in finger_bodies else 0.5
-        builder.shape_material_ke[shape] = RIGID_CONTACT_STIFFNESS
-        builder.shape_material_kd[shape] = RIGID_CONTACT_DAMPING
-    return builder
 
 
 def _solve_waypoints(
@@ -307,7 +163,9 @@ def _solve_waypoints(
     return np.array(targets, dtype=np.float32)
 
 
-def _choreography() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _choreography(
+    pick_positions: list[tuple[float, float, float]], mouth: tuple[float, float, float]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Plan the three pickups and releases, with a hold before each lift and after each drop."""
     home = (0.38, -0.02, 1.22)
     times, positions, openings = [0.0], [home], [0.04]
@@ -317,11 +175,11 @@ def _choreography() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         positions.append(position)
         openings.append(opening)
 
-    mouth_x, mouth_y, mouth_z = MOUTH
+    mouth_x, mouth_y, mouth_z = mouth
     above_stocking = (mouth_x, mouth_y, mouth_z + 0.15)
     release = (mouth_x, mouth_y, mouth_z + 0.075)
     arrive(1.0, home, 0.04)
-    for pick in CANDY_POSITIONS:
+    for pick in pick_positions:
         above_tray = (pick[0], pick[1], 1.25)
         arrive(2.0, above_tray, 0.04)
         arrive(2.0, pick, 0.04)
@@ -345,181 +203,87 @@ def _sample_motion(time: float, times: np.ndarray, targets: np.ndarray) -> np.nd
     return targets[segment] + blend * (targets[segment + 1] - targets[segment])
 
 
-def _add_workcell_props(builder: newton.ModelBuilder) -> None:
-    """Build an open bin, wooden bench and brass cuff support from analytic shapes."""
+def _collapse_franka_frames(builder: newton.ModelBuilder) -> None:
+    # Keep the hand as a body for the tool-center-point objective.
+    hand_joints = [label for label in builder.joint_label if label.endswith("/fr3_hand_joint")]
+    builder.collapse_fixed_joints(joints_to_keep=hand_joints)
 
-    def box(name: str, center: tuple, half: tuple, color: tuple) -> None:
-        builder.add_shape_box(
-            -1,
-            xform=wp.transform(center, wp.quat_identity()),
-            hx=half[0],
-            hy=half[1],
-            hz=half[2],
-            color=color,
-            cfg=newton.ModelBuilder.ShapeConfig(
-                mu=0.5, ke=RIGID_CONTACT_STIFFNESS, kd=RIGID_CONTACT_DAMPING, gap=0.001
-            ),
-            label=name,
+
+def _prepare_world(builder: newton.ModelBuilder, _world: int, _position: np.ndarray, _orientation: np.ndarray) -> None:
+    """Apply the fixed cuff and the collision split between the candy core and wrapper."""
+    stage = sim_utils.get_current_stage()
+    stocking = next(path for path in builder.surface_label if path.endswith("/Atelier/Stocking"))
+    cloth = stage.GetPrimAtPath(stocking)
+    cuff = cloth.GetAttribute("primvars:atelier:cuffIndices").Get()
+    # The stocking is the scene's only deformable, so its vertex IDs index the particle buffer directly.
+    for vertex in cuff:
+        builder.particle_mass[vertex] = 0.0
+
+    # The scene-data provider publishes the deforming surface to RTX. Give Newton GL the same face colors.
+    colors = UsdGeom.Gprim(stage.GetPrimAtPath(f"{stocking}/Surface")).GetDisplayColorAttr().Get()
+    builder.tri_color[:] = [tuple(color) for color in colors]
+
+    rigid_contact = int(newton.ShapeFlags.COLLIDE_SHAPES)
+    particle_contact = int(newton.ShapeFlags.COLLIDE_PARTICLES)
+    for index, label in enumerate(builder.shape_label):
+        if "/Atelier/" in label and builder.shape_body[index] == -1:
+            builder.shape_flags[index] |= int(newton.ShapeFlags.VISIBLE)
+        elif label.endswith("/WrapperCollision"):
+            builder.shape_flags[index] &= ~rigid_contact
+        elif label.endswith("/Core") or (
+            "/Robot/" in label and not any(finger in label for finger in ("/fr3_leftfinger/", "/fr3_rightfinger/"))
+        ):
+            builder.shape_flags[index] &= ~particle_contact
+
+
+def _run(sim: sim_utils.SimulationContext, scene: InteractiveScene, max_steps: int) -> None:
+    env = scene.env_prim_paths[0]
+    transforms = UsdGeom.XformCache()
+
+    def position(path: str) -> tuple[float, float, float]:
+        return tuple(
+            transforms.GetLocalToWorldTransform(scene.stage.GetPrimAtPath(f"{env}/Atelier/{path}")).ExtractTranslation()
         )
 
-    builder.add_ground_plane(
-        color=(0.08, 0.12, 0.13),
-        cfg=newton.ModelBuilder.ShapeConfig(ke=RIGID_CONTACT_STIFFNESS, kd=RIGID_CONTACT_DAMPING),
-    )
-    box("walnut_bench", (0.30, 0.0, TABLE_TOP - 0.03), (0.62, 0.53, 0.03), (0.23, 0.10, 0.045))
-    for x in (-0.2, 0.8):
-        for y in (-0.42, 0.42):
-            box(f"leg_{x}_{y}", (x, y, 0.345), (0.035, 0.035, 0.345), GREEN)
-    box("candy_bin_floor", (0.45, -0.23, TABLE_TOP + 0.007), (0.23, 0.085, 0.007), GREEN)
-    for side in (-1, 1):
-        box(f"bin_end_{side}", (0.45 + side * 0.23, -0.23, TABLE_TOP + 0.02), (0.006, 0.09, 0.02), GREEN)
-        box(f"bin_side_{side}", (0.45, -0.23 + side * 0.09, TABLE_TOP + 0.02), (0.23, 0.006, 0.02), GREEN)
-    mouth_x, mouth_y, mouth_z = MOUTH
-    box("stand_base", (mouth_x, mouth_y + 0.15, TABLE_TOP + 0.012), (0.12, 0.07, 0.012), GOLD)
-    post_bottom = TABLE_TOP + 0.024
-    post_top = mouth_z + 0.01
-    box(
-        "stand_post",
-        (mouth_x, mouth_y + 0.15, (post_bottom + post_top) / 2),
-        (0.008, 0.008, (post_top - post_bottom) / 2),
-        GOLD,
-    )
-    box("stand_arm", (mouth_x, mouth_y + 0.105, mouth_z), (0.008, 0.045, 0.008), GOLD)
-    # Match the elliptical cloth mouth; the rim is visual, supported particles enforce it.
-    for segment in range(32):
-        angles = np.array([segment, segment + 1]) * 2 * np.pi / 32
-        points = np.column_stack(
-            [
-                mouth_x + 0.075 * np.cos(angles),
-                mouth_y + 0.0585 * np.sin(angles),
-                np.full(2, mouth_z),
-            ]
-        )
-        delta = points[1] - points[0]
-        builder.add_shape_capsule(
-            -1,
-            xform=wp.transform(points.mean(axis=0), wp.quat_between_vectors(wp.vec3(0, 0, 1), wp.vec3(*delta))),
-            radius=0.002,
-            half_height=float(np.linalg.norm(delta) / 2),
-            color=GOLD,
-            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=False),
-            label=f"cuff_rim_{segment}",
-        )
+    times, positions, openings = _choreography([position(f"candy_{index}") for index in range(3)], position("Stocking"))
+    reference = copy_newton_clone_source(f"{env}/Robot")
+    _collapse_franka_frames(reference)
+    reference_coords = [reference.joint_q_start[joint] for joint in _franka_joint_ids(reference)]
+    for coord, angle in zip(reference_coords, FRANKA_HOME, strict=True):
+        reference.joint_q[coord] = angle
+    finger_coords = reference_coords[len(FRANKA_ARM_JOINTS) :]
+    targets = _solve_waypoints(reference, positions, openings, finger_coords, sim.device)[:, reference_coords]
 
+    builder = sim.backend_manager.builder
+    _collapse_franka_frames(builder)
+    for joint, angle in zip(_franka_joint_ids(builder), targets[0], strict=True):
+        builder.joint_q[builder.joint_q_start[joint]] = float(angle)
+    sim.reset()
 
-def _add_stocking(builder: newton.ModelBuilder) -> None:
-    """Add the sewn cloth shell and pin its cuff to the hoop."""
-    vertices, faces, colors, cuff = stocking_mesh()
-    builder.add_cloth_mesh(
-        pos=wp.vec3(*MOUTH),
-        rot=wp.quat_identity(),
-        scale=1.0,
-        vel=wp.vec3(0.0),
-        vertices=vertices.tolist(),
-        indices=faces.ravel().tolist(),
-        density=0.25,
-        tri_ke=1500.0,
-        tri_ka=1500.0,
-        tri_kd=0.01,
-        edge_ke=5.0e-7,
-        edge_kd=4.0e-3,
-        particle_radius=PARTICLE_RADIUS,
-        color=colors,
-        validate_mesh=True,
-        label="christmas_stocking",
-    )
-    for particle in cuff:
-        builder.particle_mass[int(particle)] = 0.0
-
-
-def _add_candies(builder: newton.ModelBuilder) -> None:
-    """Give each wrapped candy a capsule grasp collider and a closed cloth collider."""
-    vertices, faces, colors = candy_mesh()
-    # The closed, unsplit mesh supplies cloth contacts. The two color meshes stay visual.
-    wrapper = newton.Mesh(vertices, faces.ravel(), compute_inertia=False)
-    wrapper_cfg = newton.ModelBuilder.ShapeConfig(
-        density=0.0,
-        has_shape_collision=False,
-        has_particle_collision=True,
-        is_visible=False,
-        mu=1.2,
-        ke=RIGID_CONTACT_STIFFNESS,
-        kd=RIGID_CONTACT_DAMPING,
-    )
-    visual_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False, has_particle_collision=False)
-    white = np.all(np.isclose(colors, CREAM), axis=1)
-    for index, (position, wrapper_color) in enumerate(zip(CANDY_POSITIONS, (RED, GREEN, GOLD), strict=True)):
-        body = builder.add_body(
-            xform=wp.transform(position, wp.quat_identity()),
-            mass=0.02,
-            inertia=wp.mat33(2.0e-6, 0, 0, 0, 2.0e-6, 0, 0, 0, 2.0e-6),
-            label=f"candy_{index}",
-        )
-        builder.add_shape_capsule(
-            body,
-            radius=CANDY_CORE_RADIUS,
-            half_height=CANDY_CAPSULE_HALF_LENGTH,
-            xform=wp.transform((0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 1, 0), math.pi / 2)),
-            cfg=newton.ModelBuilder.ShapeConfig(
-                density=0.0,
-                mu=1.2,
-                ke=RIGID_CONTACT_STIFFNESS,
-                kd=RIGID_CONTACT_DAMPING,
-                gap=0.0005,
-                is_visible=False,
-                has_particle_collision=False,
-            ),
-            label=f"candy_core_{index}",
-        )
-        builder.add_shape_mesh(body, mesh=wrapper, cfg=wrapper_cfg, label=f"wrapper_contact_{index}")
-        for mask, color in ((white, CREAM), (~white, wrapper_color)):
-            mesh = newton.Mesh(vertices, faces[mask].ravel(), compute_inertia=False)
-            builder.add_shape_mesh(
-                body, mesh=mesh, cfg=visual_cfg, color=color, label=f"wrapper_{index}_{bool(mask[0])}"
-            )
-
-
-class Atelier:
-    """Build the workcell and run the prescribed Franka motion through Isaac Lab."""
-
-    def __init__(self, sim: sim_utils.SimulationContext):
-        self.sim = sim
-        self.sim_time = 0.0
-        self.times, positions, openings = _choreography()
-
-        robot = _robot_builder()
-        self.reference_coords = [robot.joint_q_start[joint] for joint in _franka_joint_ids(robot)]
-        finger_coords = self.reference_coords[len(FRANKA_ARM_JOINTS) :]
-        self.targets = _solve_waypoints(robot, positions, openings, finger_coords, sim.device)
-        robot.joint_q[:] = self.targets[0].tolist()
-
-        builder = sim.backend_manager.builder
-        builder.add_builder(robot)
-        _add_workcell_props(builder)
-        _add_stocking(builder)
-        _add_candies(builder)
-        self.drive_dofs = [builder.joint_qd_start[joint] for joint in _franka_joint_ids(builder)]
-        sim.reset()
-
-        self.joint_targets = sim.backend_manager.backend.control.joint_target_q
-        self.control_targets = self.joint_targets.numpy()
-
-    def step(self) -> None:
-        """Apply one frame of scripted targets and advance the physics."""
-        target = _sample_motion(self.sim_time, self.times, self.targets).astype(np.float32)
-        self.control_targets[self.drive_dofs] = target[self.reference_coords]
-        self.joint_targets.assign(self.control_targets)
-        # Refresh rigid contacts and the cloth BVH at each physics tick.
-        for substep in range(SUBSTEPS):
-            self.sim.step(render=substep == SUBSTEPS - 1)
-        self.sim_time += 1.0 / FPS
+    robot = scene["robot"]
+    joint_ids, _ = robot.find_joints(FRANKA_JOINTS, preserve_order=True)
+    frames = math.ceil(times[-1] * FPS)
+    if max_steps:
+        frames = min(frames, max_steps)
+    sim_time = 0.0
+    for _ in range(frames):
+        if not sim.is_running():
+            break
+        target = torch.as_tensor(_sample_motion(sim_time, times, targets), dtype=torch.float32, device=sim.device)
+        robot.actuators.target_command.set_position_index(value=target.unsqueeze(0), joint_ids=joint_ids)
+        scene.write_data_to_sim()
+        for _ in range(SUBSTEPS):
+            sim.step(render=False)
+        scene.update(1.0 / FPS)
+        sim.render()
+        sim_time += 1.0 / FPS
 
 
 def main() -> None:
     """Launch the workcell and run one complete stocking fill."""
     parser = argparse.ArgumentParser(
         description="Fill a Christmas stocking with a scripted Franka FR3 in Isaac Lab.",
-        epilog="The first launch downloads the Franka assets. Use --viz none to run headless.",
+        epilog="Use --viz newton_rtx with the ovrtx extra, or --viz none to run headless.",
     )
     parser.add_argument(
         "--max_steps", type=int, default=0, help="Limit the run to this many frames. Zero runs it in full."
@@ -561,16 +325,12 @@ def main() -> None:
             backend=NewtonGLBackendCfg(show_particles=False),
         ),
     )
-    with launch_simulation(sim_cfg, args):
+    scene_cfg = AtelierSceneCfg(num_envs=1, env_spacing=0.0)
+    with launch_simulation({"sim": sim_cfg, "scene": scene_cfg}, args):
         sim = sim_utils.SimulationContext(sim_cfg)
-        scene = Atelier(sim)
-        frames = math.ceil(scene.times[-1] * FPS)
-        if args.max_steps:
-            frames = min(frames, args.max_steps)
-        for _ in range(frames):
-            if not sim.is_running():
-                break
-            scene.step()
+        with newton_builder_world_hook(_prepare_world):
+            scene = InteractiveScene(scene_cfg)
+        _run(sim, scene, args.max_steps)
 
 
 if __name__ == "__main__":

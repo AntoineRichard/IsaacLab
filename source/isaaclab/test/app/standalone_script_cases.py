@@ -283,7 +283,7 @@ OVERRIDES = {
     ),
     "examples/demos/christmas_atelier.py": ScriptOverride(
         fixed_physics_backend="newton_vbd",
-        visualizers=("newton_gl",),
+        visualizers=("newton_gl", "newton_rtx"),
     ),
     "examples/newton_viewer_dominoes.py": ScriptOverride(
         fixed_physics_backend="newton_xpbd",
