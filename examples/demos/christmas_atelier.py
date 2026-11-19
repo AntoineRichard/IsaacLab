@@ -37,7 +37,7 @@ from isaaclab.app import add_launcher_args, launch_simulation
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.utils import configclass
-from isaaclab.visualizers import VisualizerCfg
+from isaaclab.visualizers import VisualizerCfg, WindowCfg
 
 ASSET_DIR = Path(__file__).resolve().parents[1] / "assets"
 FPS = 60
@@ -66,7 +66,11 @@ class AtelierSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Atelier",
         spawn=sim_utils.UsdFileCfg(usd_path=str(ASSET_DIR / "christmas_atelier.usda")),
     )
-    lighting = AssetBaseCfg(prim_path="/World/StudioLight", spawn=sim_utils.DomeLightCfg(intensity=500.0))
+    studio = AssetBaseCfg(
+        prim_path="/World/AtelierStudio",
+        spawn=sim_utils.UsdFileCfg(usd_path=str(ASSET_DIR / "christmas_atelier_studio.usda")),
+        cloning_contexts=(),
+    )
 
 
 class _AtelierVBDSolver(VBDSolver):
@@ -320,8 +324,9 @@ def main() -> None:
         visualizer_cfgs=VisualizerCfg(
             eye=(1.65, -2.25, 1.9),
             lookat=(0.34, 0.0, 1.0),
-            focal_length=34.0,
+            focal_length=33.3,
             enable_live_plots=False,
+            window=WindowCfg(size=(1280, 800)),
             backend=NewtonGLBackendCfg(show_particles=False),
         ),
     )

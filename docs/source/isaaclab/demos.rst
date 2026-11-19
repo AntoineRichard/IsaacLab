@@ -110,7 +110,7 @@ No source checkout is required.
                data-demo-physics="newton_vbd" data-demo-fixed-physics="true"
                data-demo-visualizers="newton_gl,newton_rtx"
                data-demo-description="Watch a scripted Franka FR3 fill a sewn stocking with wrapped candies.">
-         <img src="../../_static/demos/christmas_atelier.jpg" alt="Franka beside a tray of wrapped candies and a hanging stocking" loading="lazy">
+         <img src="../../_static/demos/christmas_atelier.jpg" alt="Franka carrying a wrapped candy toward a knitted stocking" loading="lazy">
          <span>Christmas Atelier</span>
        </button>
        <button type="button" class="demo-card" aria-pressed="false"
