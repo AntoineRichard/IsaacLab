@@ -3,4 +3,4 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Unitree G1 hangs an ornament on a VBD rod-graph Christmas tree."""
+"""An Agile One hangs an ornament on a VBD rod-graph Christmas tree."""

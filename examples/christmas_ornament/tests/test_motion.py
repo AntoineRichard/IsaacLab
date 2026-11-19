@@ -11,14 +11,13 @@ import pytest
 from examples.christmas_ornament.motion import (
     FINGER_PITCH_DEG,
     FINGER_THICKNESS,
-    FINGER_TIP_PITCH_DEG,
-    HOOK_TO_TIP,
     PHASES,
     choreography,
     densify,
     min_distance_points_to_capsule,
     ring_encircles,
     sample_motion,
+    side_offset,
 )
 
 pytestmark = [pytest.mark.kitless, pytest.mark.unit]
@@ -43,8 +42,8 @@ def test_phase_order_and_durations():
         ("present", 2.5),
         ("align", 1.5),
         ("thread", 2.0),
-        ("lower", 1.5),
-        ("tip", 1.5),
+        ("lower", 2.0),
+        ("release", 1.0),
         ("withdraw", 2.0),
         ("retreat", 1.5),
         ("home", 2.0),
@@ -69,15 +68,21 @@ def _axes(q):
     return finger, back
 
 
-def test_thread_puts_twig_under_finger_mid_ring():
+def _side():
+    side = np.cross([0.0, 0.0, 1.0], TANGENT)
+    return side / np.linalg.norm(side)
+
+
+def test_thread_puts_twig_beside_and_under_finger_mid_ring():
     _, positions, _, phases = _plan()
     align, thread = positions[phases.index("align")], positions[phases.index("thread")]
     step = align - thread
     assert np.linalg.norm(np.cross(step, TANGENT)) < 1e-3  # collinear with the branch
     assert np.dot(step, TANGENT) == pytest.approx(0.10, abs=1e-3)  # starts 10 cm outward
-    # Thread ends right over the hang point: the ring later slides ~1-2 cm inward off the tip,
-    # toward the fork and away from the branch tip it would otherwise creep off.
-    assert np.allclose(thread[:2], HANG[:2])
+    # Thread ends beside the hang point, just far enough sideways for the finger to pass the twig.
+    offset = side_offset(TWIG)
+    assert offset == pytest.approx(TWIG + 0.5 * FINGER_THICKNESS + 0.004)
+    assert np.allclose(thread[:2], HANG[:2] + offset * _side()[:2])
     # The twig runs midway between the finger's underside and the hanging ring's bottom.
     twig_z = _twig_z_under(thread)
     finger_bottom = thread[2] - FINGER_THICKNESS
@@ -86,36 +91,33 @@ def test_thread_puts_twig_under_finger_mid_ring():
     assert min(finger_bottom - twig_z, twig_z - ring_bottom) - TWIG > 0.008
 
 
-def test_lower_tip_and_withdraw_slide_ring_off_the_fingertip():
+def test_lower_past_the_twig_then_slide_out_of_the_ring():
     _, positions, rotations, phases = _plan()
-    thread, lower, tip, withdraw = (positions[phases.index(p)] for p in ("thread", "lower", "tip", "withdraw"))
-    q_lower, q_tip = rotations[phases.index("lower")], rotations[phases.index("tip")]
-    # Lower: straight down until the finger's underside is 12 mm above the twig: the twig rises
-    # toward the palm ~15 degrees relative to the finger, so less would touch it.
+    thread, lower, release, withdraw = (positions[phases.index(p)] for p in ("thread", "lower", "release", "withdraw"))
+    # Lower: straight down beside the twig until the finger sits at the centre of the ring's hole
+    # as the ring will hang from the twig, so the finger touches neither.
     assert np.allclose(lower[:2], thread[:2])
     twig_z = _twig_z_under(lower)
-    assert lower[2] - FINGER_THICKNESS == pytest.approx(twig_z + TWIG + 0.012, abs=1e-6)
-    # Tip: pitch the finger tip-down past the ring's friction angle, pivoting about the fingertip.
-    finger_lower, _ = _axes(q_lower)
-    finger_tip, back_tip = _axes(q_tip)
-    assert np.degrees(np.arcsin(-finger_tip[2])) == pytest.approx(FINGER_TIP_PITCH_DEG, abs=1e-6)
-    assert FINGER_TIP_PITCH_DEG >= 40.0
-    # The fingertip lifts 5 mm while the finger pitches, for clearance over the twig.
-    assert np.allclose(
-        lower + HOOK_TO_TIP * finger_lower + np.array([0, 0, 0.005]), tip + HOOK_TO_TIP * finger_tip, atol=1e-9
-    )
-    assert back_tip[2] > 0.5
-    # Withdraw: straight back out along the branch, keeping the tipped orientation.
-    out = withdraw - tip
-    assert np.linalg.norm(np.cross(out, TANGENT)) < 1e-3 and np.dot(out, TANGENT) == pytest.approx(0.15, abs=1e-3)
-    assert np.allclose(rotations[phases.index("withdraw")], q_tip)
+    finger_centre = lower[2] - 0.5 * FINGER_THICKNESS
+    ring_centre = twig_z + TWIG + RING_TOP - R
+    assert finger_centre == pytest.approx(ring_centre, abs=1e-6)
+    lateral = side_offset(TWIG)
+    assert R - lateral - 0.5 * FINGER_THICKNESS > 0.005  # finger clear of the ring's inside
+    assert lateral - TWIG - 0.5 * FINGER_THICKNESS >= 0.004  # and of the twig on the way down
+    # Release: hold still while the ring settles on the twig.
+    assert np.allclose(release, lower)
+    # Withdraw: straight back along the finger's own axis, out of the ring.
+    finger, _ = _axes(rotations[phases.index("withdraw")])
+    out = withdraw - release
+    assert np.allclose(out / np.linalg.norm(out), -finger, atol=1e-9)
+    assert np.linalg.norm(out) == pytest.approx(0.15)
 
 
 def test_finger_tip_up_while_carrying():
     """Aimed along the branch in plan view and pitched tip-up whenever it carries the ring."""
     _, _, rotations, phases = _plan()
     inward = -TANGENT[:2] / np.linalg.norm(TANGENT[:2])
-    for phase in ("settle", "present", "align", "thread", "lower", "retreat", "home", "admire"):
+    for phase, _ in PHASES:
         finger, back = _axes(rotations[phases.index(phase)])
         assert finger[2] == pytest.approx(np.sin(np.radians(FINGER_PITCH_DEG)), abs=1e-6)
         assert np.allclose(finger[:2] / np.linalg.norm(finger[:2]), inward, atol=1e-6)

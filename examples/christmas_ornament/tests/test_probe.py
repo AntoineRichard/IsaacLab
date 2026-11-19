@@ -3,19 +3,23 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""The handoff qualifier: the G1 hangs the ornament on a standalone branch, by contact only."""
+"""The handoff qualifier: the Agile One hangs the ornament on a standalone branch, by contact only."""
 
 import json
+import os
 import subprocess
 import sys
 
 import pytest
 import warp as wp
 
+from examples.christmas_ornament.assets import AGILE_URDF_ENV
+
 pytestmark = [pytest.mark.kitless]
 
 
 @pytest.mark.skipif(not wp.is_cuda_available(), reason="needs CUDA for the full probe rollout")
+@pytest.mark.skipif(not os.environ.get(AGILE_URDF_ENV), reason=f"{AGILE_URDF_ENV} not set (internal asset)")
 def test_probe_check_passes(tmp_path):
     metrics = tmp_path / "probe.json"
     result = subprocess.run(

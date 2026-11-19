@@ -3,11 +3,12 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""The glass ornament with a rigid SDF ring, and the fixed-base Unitree G1."""
+"""The glass ornament with a rigid SDF ring, and the fixed-base Agile One with Wuji hands."""
 
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import newton
 import numpy as np
 import warp as wp
 
-RING_INNER_RADIUS = 0.030  # [m] a twig threads beside the 26 mm Dex3 finger with a 6 mm margin
+RING_INNER_RADIUS = 0.030  # [m] room to thread a twig under the 17 mm Wuji fingertip
 RING_TUBE_RADIUS = 0.0025  # [m]
 CAP_RADIUS = 0.007  # [m]
 CAP_HALF_HEIGHT = 0.004  # [m]
@@ -125,20 +126,30 @@ def add_ornament(builder: newton.ModelBuilder, xform: wp.transform, color: tuple
 
 
 # ----------------------------------------------------------------------------------------------
-# Unitree G1 with Dex3 hands, fixed lower body
+# Agile One SN with Wuji hands, fixed lower body
 # ----------------------------------------------------------------------------------------------
 
-G1_ASSET_REVISION = "a96f0973b6ae69c90609f9fafef9d2c1db2d6431"
-G1_URDF = "urdf/g1_29dof_with_hand_rev_1_0.urdf"
-HOOK_LINK = "right_hand_index_1_link"
-# Back of the distal index phalanx, 35 mm out (17 mm from the tip): the ring's inner top edge
-# rests here. Only the index reaches this far, so the ring and the ornament below it clear the
-# other digits. The link's +X runs along the finger and +Z is the finger's back.
-HOOK_OFFSET = wp.vec3(0.035, 0.0, 0.0131)
-ARM_JOINTS = [
-    "waist_yaw_joint",
-    "waist_roll_joint",
-    "waist_pitch_joint",
+AGILE_URDF_ENV = "AGILE_ONE_URDF"
+PELVIS_HEIGHT = 0.8096  # [m] the asset's own initial root height, legs straight
+
+# The hook is the right index finger, measured from its Wuji collision meshes. Each phalanx runs
+# along its link's -Z, flexes about +X and has its nail toward -Y; the distal phalanx is 26 mm
+# long. The arm moves alone, and it cannot hold the finger level with the nail up in front of the
+# chest (the forearm would have to roll past its limit), so the ring rides on the finger's
+# thumb side (+X), which faces up when the hand points forward thumb-up, as it rests.
+HOOK_LINK = "r_index_finger_distal"
+# Thumb side of the distal phalanx, 10 mm past the last knuckle (16 mm from the tip): the ring's
+# inner top edge rests here.
+HOOK_OFFSET = wp.vec3(0.0065, 0.0, -0.010)
+# The choreography plans in a hook frame with +X down the finger and +Z out of the surface the
+# ring rests on, which is link (-Z, +Y, +X) as (X, Y, Z): this rotation, applied in the link frame.
+HOOK_FRAME = wp.quat(0.0, 0.70710678, 0.0, 0.70710678)
+# Index phalanges as one capsule (a, b, radius) in each link's frame, for finger-ring clearance.
+FINGER_LINKS = ("r_index_finger_middle", "r_index_finger_distal")
+FINGER_CAPSULE = ((0.0, 0.0, 0.004), (0.0, 0.0, -0.026), 0.0085)
+
+# Only the right arm moves; the waist and head hold their zero pose.
+ARM_JOINTS = (
     "right_shoulder_pitch_joint",
     "right_shoulder_roll_joint",
     "right_shoulder_yaw_joint",
@@ -146,25 +157,40 @@ ARM_JOINTS = [
     "right_wrist_roll_joint",
     "right_wrist_pitch_joint",
     "right_wrist_yaw_joint",
-]
-# Index straight (the hook); thumb and middle curled to 80 % of their range, out of the ring's way.
-HAND_POSE = {
-    "right_hand_index_0_joint": 0.0,
-    "right_hand_index_1_joint": 0.0,
-    "right_hand_middle_0_joint": 0.8 * 1.57079632,
-    "right_hand_middle_1_joint": 0.8 * 1.74532925,
-    "right_hand_thumb_0_joint": 0.0,
-    "right_hand_thumb_1_joint": 0.8 * -1.04719755,
-    "right_hand_thumb_2_joint": 0.8 * -1.74532925,
+)
+_CURL = 0.8  # fraction of the flexion range for the digits kept out of the ring's way
+# Joint positions that differ from the URDF default.
+POSE = {
+    **{f"r_index_finger_{j}": 0.0 for j in ("mcp_flex", "mcp_abd", "pip", "dip")},
+    **{
+        f"r_{finger}_{j}": _CURL * upper
+        for finger in ("middle_finger", "ring_finger", "pinky")
+        for j, upper in (("mcp_flex", 1.57), ("pip", 2.094), ("dip", 1.57))
+    },
+    "r_thumb_cmc_flex": _CURL * 1.291,
+    "r_thumb_mcp": _CURL * 1.57,
+    "r_thumb_ip": _CURL * 1.57,
+    # The asset's zero pose holds both forearms forward; the idle left arm would reach into the
+    # tree, so it hangs at the robot's side instead.
+    "left_elbow_joint": 1.4,
 }
-RIGHT_HAND_LINKS = ("right_hand_", "right_wrist_yaw_link")
+FINGER_JOINT_PREFIXES = ("l_", "r_")  # Wuji finger joints, driven by the soft hand gains
+COLLIDE_LINK_PREFIXES = ("r_", "right_wrist_yaw_link")  # only the right hand collides
 LEG_KE, LEG_KD = 5.0e4, 500.0
 HAND_KE, HAND_KD = 1500.0, 8.0
 
 
-def g1_urdf() -> Path:
-    """The pinned G1 URDF from Newton Assets (downloaded on first use)."""
-    return newton.utils.download_asset("unitree_g1", ref=G1_ASSET_REVISION) / G1_URDF
+def agile_one_urdf() -> Path:
+    """The Agile One SN with Wuji hands (``robot_menagerie``'s ``hands_wuji`` URDF).
+
+    The asset is internal and has no public download: point ``AGILE_ONE_URDF`` at
+    ``agile_robotics/agile_one_sn/generated/hands_wuji/urdf/hands_wuji.urdf`` in a checkout with
+    its Git LFS meshes pulled.
+    """
+    path = os.environ.get(AGILE_URDF_ENV)
+    if not path:
+        raise FileNotFoundError(f"set {AGILE_URDF_ENV} to the Agile One hands_wuji URDF")
+    return Path(path)
 
 
 def _short(label: str) -> str:
@@ -174,11 +200,11 @@ def _short(label: str) -> str:
 def robot_builder(
     urdf: Path, pelvis_xform: wp.transform, arm_ke: float = 32000.0, arm_kd: float = 240.0
 ) -> newton.ModelBuilder:
-    """Import the G1 with its pelvis welded to the world and only the right hand colliding.
+    """Import the Agile One with its pelvis welded to the world and only the right hand colliding.
 
     ``collapse_fixed_joints`` merges massless URDF frames into physical links and the welded
     pelvis into the world, so the legs, waist and arms hang off the world body. Legs are held
-    straight by stiff PD; the waist and arms by the arm gains; the hand by soft finger gains.
+    straight by stiff PD; the waist, head and arms by the arm gains; the fingers by soft gains.
     """
     builder = newton.ModelBuilder()
     # Shapes keep the gap of the builder that created them; the default is far wider than the
@@ -187,18 +213,18 @@ def robot_builder(
     builder.add_urdf(str(urdf), floating=False, xform=pelvis_xform, enable_self_collisions=False)
     builder.collapse_fixed_joints()
     if any(int(t) == int(newton.JointType.FREE) for t in builder.joint_type):
-        raise RuntimeError("G1 import kept a free base joint; the lower body must be fixed")
+        raise RuntimeError("Agile One import kept a free base joint; the lower body must be fixed")
 
     for joint, label in enumerate(builder.joint_label):
         name = _short(label)
         q, dof = builder.joint_q_start[joint], builder.joint_qd_start[joint]
         if "hip" in name or "knee" in name or "ankle" in name:
             ke, kd = LEG_KE, LEG_KD
-        elif "hand" in name:
+        elif name.startswith(FINGER_JOINT_PREFIXES):
             ke, kd = HAND_KE, HAND_KD
         else:
             ke, kd = arm_ke, arm_kd
-        value = HAND_POSE.get(name, builder.joint_q[q])
+        value = POSE.get(name, builder.joint_q[q])
         builder.joint_q[q] = value
         builder.joint_target_q[q] = value
         builder.joint_target_ke[dof] = ke
@@ -206,7 +232,7 @@ def robot_builder(
 
     collide = int(newton.ShapeFlags.COLLIDE_SHAPES)
     for shape, body in enumerate(builder.shape_body):
-        hand = body >= 0 and _short(builder.body_label[body]).startswith(RIGHT_HAND_LINKS)
+        hand = body >= 0 and _short(builder.body_label[body]).startswith(COLLIDE_LINK_PREFIXES)
         if not hand:
             builder.shape_flags[shape] &= ~collide
         builder.shape_material_ke[shape] = RIGID_CONTACT_STIFFNESS
@@ -219,59 +245,147 @@ def body_index(model_or_builder, link: str) -> int:
     return next(i for i, label in enumerate(model_or_builder.body_label) if _short(label) == link)
 
 
-def solve_waypoints(
-    builder: newton.ModelBuilder, hook_targets: np.ndarray, hook_rotations: np.ndarray, device
-) -> tuple[newton.Model, int, np.ndarray]:
-    """Solve hook-point IK on a separate reference model; only waist and right-arm joints move.
+def hook_rotation(body_rotation) -> np.ndarray:
+    """World hook-frame orientation (x, y, z, w) from the hook link's world orientation."""
+    return np.array(wp.mul(wp.quat(*body_rotation), HOOK_FRAME))
 
-    ``hook_rotations`` are world orientations (x, y, z, w) of ``HOOK_LINK``. Returns the
-    reference model, the hook body index and one full joint-coordinate vector per waypoint.
-    Raises if any waypoint misses by more than 3 mm.
-    """
+
+def _arm_coords(model: newton.Model) -> np.ndarray:
+    """Joint-coordinate indices of the IK's free joints (the right arm)."""
+    starts = model.joint_q_start.numpy()
+    return np.array([starts[j] for j, label in enumerate(model.joint_label) if _short(label) in ARM_JOINTS])
+
+
+def _hook_error(model: newton.Model, state, hook: int, coords, target, quat) -> tuple[float, float]:
+    """Hook-point position error [m] and hook-frame angle error [rad] for ``coords``."""
+    newton.eval_fk(model, wp.array(coords, dtype=wp.float32, device=model.device), model.joint_qd, state)
+    body = state.body_q.numpy()[hook]
+    error = float(np.linalg.norm(np.array(wp.transform_point(wp.transform(*body), HOOK_OFFSET)) - np.asarray(target)))
+    dot = min(1.0, abs(float(np.dot(hook_rotation(body[3:]), np.asarray(quat)))))
+    return error, 2.0 * math.acos(dot)
+
+
+def _ik_solver(model: newton.Model, problems: int, target, quat):
     from newton import ik
 
-    model = builder.finalize(device=device)
     hook = body_index(model, HOOK_LINK)
     position = ik.IKObjectivePosition(
         link_index=hook,
         link_offset=HOOK_OFFSET,
-        target_positions=wp.array([hook_targets[0]], dtype=wp.vec3, device=device),
+        target_positions=wp.array([wp.vec3(*map(float, target))] * problems, dtype=wp.vec3, device=model.device),
     )
     rotation = ik.IKObjectiveRotation(
         link_index=hook,
-        link_offset_rotation=wp.quat_identity(),
-        target_rotations=wp.array([hook_rotations[0]], dtype=wp.vec4, device=device),
+        link_offset_rotation=HOOK_FRAME,
+        target_rotations=wp.array([wp.vec4(*map(float, quat))] * problems, dtype=wp.vec4, device=model.device),
     )
     limits = ik.IKObjectiveJointLimit(
         joint_limit_lower=model.joint_limit_lower, joint_limit_upper=model.joint_limit_upper, weight=10.0
     )
     solver = ik.IKSolver(
         model=model,
-        n_problems=1,
+        n_problems=problems,
         objectives=[position, rotation, limits],
         lambda_initial=0.1,
         jacobian_mode=ik.IKJacobianType.ANALYTIC,
     )
+    return solver, position, rotation
+
+
+def _multistart(model: newton.Model, rest: np.ndarray, target, quat, seeds: int = 128) -> list[np.ndarray]:
+    """Converged (1 mm, 0.5 degree) IK solutions from random right-arm seeds; other joints at ``rest``."""
+    solver, _, _ = _ik_solver(model, seeds, target, quat)
+    lower, upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
+    arm = _arm_coords(model)
+    coords = np.tile(rest, (seeds, 1))
+    coords[:, arm] = np.random.default_rng(0).uniform(lower[arm], upper[arm], size=(seeds, len(arm)))
+    q = wp.array(coords.astype(np.float32), dtype=wp.float32, device=model.device)
+    fixed = np.ones(rest.shape, dtype=bool)
+    fixed[arm] = False
+    for _ in range(60):
+        solver.step(q, q, iterations=10)
+        values = q.numpy()
+        values[:, fixed] = rest[fixed]
+        q.assign(values)
+    state = model.state()
+    hook = body_index(model, HOOK_LINK)
+    converged = []
+    for coords_k in q.numpy():
+        error, angle = _hook_error(model, state, hook, coords_k, target, quat)
+        if error < 0.001 and angle < math.radians(0.5):
+            converged.append(coords_k.copy())
+    return converged
+
+
+def solve_home(builder: newton.ModelBuilder, hook_target: np.ndarray, hook_quat: np.ndarray, device) -> np.ndarray:
+    """Rest-pose IK from many random right-arm seeds.
+
+    The arm reaches most hook poses on several branches (elbow and wrist configurations), and
+    only some continue smoothly along the choreography. Returns the full joint-coordinate vector
+    of the converged seed whose arm joints stay farthest from their limits.
+    """
+    model = builder.finalize(device=device)
+    solutions = _multistart(model, model.joint_q.numpy().copy(), hook_target, hook_quat)
+    if not solutions:
+        raise RuntimeError(f"Unreachable home {np.round(hook_target, 3).tolist()}")
+    lower, upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
+    arm = _arm_coords(model)
+    return max(solutions, key=lambda c: float(np.min(np.minimum(c[arm] - lower[arm], upper[arm] - c[arm]))))
+
+
+# Largest arm-joint change between consecutive waypoints [rad]: more means IK switched branch and
+# the interpolated motion would swing the hand off its path.
+MAX_WAYPOINT_JUMP = 0.5
+
+
+def solve_waypoints(
+    builder: newton.ModelBuilder, hook_targets: np.ndarray, hook_rotations: np.ndarray, device
+) -> tuple[newton.Model, int, np.ndarray]:
+    """Solve hook-point IK on a separate reference model; only the right-arm joints move.
+
+    ``hook_rotations`` are world orientations (x, y, z, w) of the hook frame. Each waypoint
+    starts from the previous solution (``builder.joint_q`` for the first). Where that stalls, it
+    re-solves from many seeds and takes the solution nearest the previous one. Returns the
+    reference model, the hook body index and one full joint-coordinate vector per waypoint.
+    Raises if a waypoint misses by more than 3 mm or needs an arm-joint jump above
+    ``MAX_WAYPOINT_JUMP``.
+    """
+    model = builder.finalize(device=device)
+    hook = body_index(model, HOOK_LINK)
+    solver, position, rotation = _ik_solver(model, 1, hook_targets[0], hook_rotations[0])
     rest = model.joint_q.numpy().copy()
-    free = np.zeros_like(rest, dtype=bool)
-    for joint, label in enumerate(model.joint_label):
-        if _short(label) in ARM_JOINTS:
-            free[builder.joint_q_start[joint]] = True
+    arm = _arm_coords(model)
+    fixed = np.ones(rest.shape, dtype=bool)
+    fixed[arm] = False
     q = wp.array(rest.reshape(1, -1), dtype=wp.float32, device=device)
     state = model.state()
+    previous = rest
     solutions = []
     for target, quat in zip(hook_targets, hook_rotations, strict=True):
         position.set_target_position(0, wp.vec3(*map(float, target)))
         rotation.set_target_rotation(0, wp.vec4(*map(float, quat)))
-        for _ in range(20):
+        # 20 rounds converge most waypoints; awkward wrist poses get up to 80 to close the last mm.
+        for round_ in range(80):
             solver.step(q, q, iterations=10)
             values = q.numpy().ravel()
-            values[~free] = rest[~free]
+            values[fixed] = rest[fixed]
             q.assign(values.reshape(1, -1))
-        newton.eval_fk(model, q.flatten(), model.joint_qd, state)
-        hook_world = np.array(wp.transform_point(wp.transform(*state.body_q.numpy()[hook]), HOOK_OFFSET))
-        error = float(np.linalg.norm(hook_world - target))
+            if round_ >= 19 and round_ % 10 == 9:
+                error, _ = _hook_error(model, state, hook, values, target, quat)
+                if error < 0.001:
+                    break
+        coords = q.numpy().ravel().copy()
+        if error > 0.001:
+            candidates = _multistart(model, rest, target, quat)
+            if candidates:
+                coords = min(candidates, key=lambda c: float(np.max(np.abs(c[arm] - previous[arm]))))
+                error, _ = _hook_error(model, state, hook, coords, target, quat)
+                q.assign(coords.reshape(1, -1))
         if error > 0.003:
             raise RuntimeError(f"Unreachable hook waypoint {np.round(target, 3).tolist()}: IK error {error:.4f} m")
-        solutions.append(q.numpy().ravel().copy())
+        jump = float(np.max(np.abs(coords[arm] - previous[arm])))
+        if solutions and jump > MAX_WAYPOINT_JUMP:
+            raise RuntimeError(f"IK branch switch at {np.round(target, 3).tolist()}: arm joints jump {jump:.2f} rad")
+        solutions.append(coords)
+        previous = coords
     return model, hook, np.array(solutions, dtype=np.float32)

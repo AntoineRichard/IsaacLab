@@ -75,11 +75,14 @@ def test_two_moduli():
 
 
 def test_target_branch_reachable_and_clear():
-    """The hang point is at hand height, unobstructed, and the robot's standing sector is free."""
+    """The hang point is at hand height, unobstructed, and the robot's standing sector is free.
+
+    Hand height is below about 1 m: the Agile One's right arm alone holds the finger level only
+    that low in front of it."""
     builder = _builder()
     tree = build_tree(builder, ORIGIN, FACING)
     hang = _hang_point_world(builder, tree)
-    assert 1.00 <= hang[2] <= 1.17
+    assert 0.88 <= hang[2] <= 0.98
     assert tree.target.hang_body == tree.target.segment_bodies[-1]  # outer segment, halfway out
     assert tree.target.hang_local[2] == pytest.approx(0.0)
 

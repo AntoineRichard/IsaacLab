@@ -6,19 +6,15 @@
 """Scripted hook-point waypoints for hanging the ornament, and the geometry that judges it.
 
 The ornament starts hanging from the extended index finger: the ring's inner top edge rests
-on the finger's back (the hook point), and both the finger and the target twig pass through
+on the finger's upper side (the hook point), and both the finger and the target twig pass through
 the ring's hole along its axis. All heights below follow from that picture.
 """
 
 import numpy as np
 
-# Dex3 proximal index phalanx, measured from its collision mesh (+-12.9 mm about the axis).
-FINGER_THICKNESS = 0.026  # [m]
-# Hook point to fingertip along the distal phalanx [m] (hook at 35 mm of a 52 mm phalanx).
-HOOK_TO_TIP = 0.017
-# Pitched this far tip-down, the ring slides off the fingertip: past the ring-on-finger friction
-# angle (~33 degrees for the 0.8 / 0.5 ring and finger friction).
-FINGER_TIP_PITCH_DEG = 40.0
+# Wuji index fingertip across its sides, measured from its collision meshes; the ring rides on
+# its thumb side.
+FINGER_THICKNESS = 0.016  # [m]
 # The finger aims along the branch in plan view but stays pitched tip-up: outer branches slope
 # upward toward their tips, and a finger copying that slope points down and sheds the ring.
 FINGER_PITCH_DEG = 5.0
@@ -28,8 +24,8 @@ PHASES = [
     ("present", 2.5),
     ("align", 1.5),
     ("thread", 2.0),
-    ("lower", 1.5),
-    ("tip", 1.5),
+    ("lower", 2.0),
+    ("release", 1.0),
     ("withdraw", 2.0),
     ("retreat", 1.5),
     ("home", 2.0),
@@ -66,6 +62,11 @@ def _x_axis(q: np.ndarray) -> np.ndarray:
     return np.array([1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w)])
 
 
+def side_offset(twig_radius: float, finger_thickness: float = FINGER_THICKNESS) -> float:
+    """How far beside the twig the finger travels [m]: clear of it by 4 mm on the way down."""
+    return twig_radius + 0.5 * finger_thickness + 0.004
+
+
 def choreography(
     hang_point: np.ndarray,
     tangent: np.ndarray,
@@ -84,9 +85,10 @@ def choreography(
     pointing outward toward the tip. ``ring_top_offset`` is how far the ring's inner top rides
     above the hook point, as measured on the hanging ornament.
 
-    Hand-over: thread the twig under the finger, midway down the ring; lower until the finger is
-    just above the twig; then pitch the finger tip-down about its fingertip so the ring slides off
-    the tip onto the twig, inboard of the finger. Withdrawing then cannot touch the ring.
+    Hand-over: thread the twig through the ring beside and below the finger; lower the finger
+    straight down past the twig, so the ring lands on the twig and the finger ends at the centre
+    of the ring's hole, touching neither; then slide the finger back out along its own axis. The
+    finger stays level throughout, which the right arm alone can hold in front of the robot.
     """
     hang_point, tangent, home = (np.asarray(v, dtype=float) for v in (hang_point, tangent, home))
     tangent = tangent / np.linalg.norm(tangent)
@@ -94,23 +96,26 @@ def choreography(
     space = 2.0 * ring_inner_radius - ring_top_offset - finger_thickness
     if space <= 2.0 * twig_radius:
         raise ValueError("ring too small to pass a twig under the finger")
+    lateral = side_offset(twig_radius, finger_thickness)
+    if ring_inner_radius - lateral - 0.5 * finger_thickness < 0.005:
+        raise ValueError("ring too small to lower the finger beside the twig")
     carry = finger_rotation(tangent)
-    tipped = finger_rotation(tangent, -FINGER_TIP_PITCH_DEG)
-    carry_dir, tipped_dir = _x_axis(carry), _x_axis(tipped)
-    # Thread right over the hang point: the ring slides ~1-2 cm inward off the fingertip, landing
-    # toward the fork; from further out, branch bounce walks it off the tip.
-    over = hang_point  # the twig's axis under the hook
+    finger_dir = _x_axis(carry)
+    # Beside the hang point, on the robot's side of the branch's plane (to its right, for a branch
+    # pointing back at it), far enough over for the finger to pass the twig.
+    side = np.cross(up, tangent)
+    side /= np.linalg.norm(side)
+    over = hang_point + lateral * side
     thread = over + 0.5 * (finger_thickness + 2.0 * ring_inner_radius - ring_top_offset) * up
     align = thread + 0.10 * tangent
     present = align + 0.05 * up
-    # 12 mm above the twig: the twig rises toward the palm ~15 degrees relative to the finger.
-    lower = over + (twig_radius + 0.012 + finger_thickness) * up
-    fingertip = lower + HOOK_TO_TIP * carry_dir
-    tip = fingertip + 0.005 * up - HOOK_TO_TIP * tipped_dir  # pivot about the (lifted) fingertip
-    withdraw = tip + 0.15 * tangent
+    # Down until the finger's centre is where the ring's centre will be once it hangs from the twig.
+    ring_centre = hang_point[2] + twig_radius + ring_top_offset - ring_inner_radius
+    lower = np.array([over[0], over[1], ring_centre + 0.5 * finger_thickness])
+    withdraw = lower - 0.15 * finger_dir
     retreat = withdraw - 0.05 * up
-    positions = np.array([home, present, align, thread, lower, tip, withdraw, retreat, home, home])
-    rotations = np.array([tipped if name in ("tip", "withdraw") else carry for name, _ in PHASES])
+    positions = np.array([home, present, align, thread, lower, lower, withdraw, retreat, home, home])
+    rotations = np.array([carry for _ in PHASES])
     times = np.cumsum([d for _, d in PHASES])  # each phase ends on its waypoint
     return times, positions, rotations, [name for name, _ in PHASES]
 

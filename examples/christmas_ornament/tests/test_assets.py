@@ -20,7 +20,7 @@ pytestmark = [pytest.mark.kitless, pytest.mark.unit]
 
 
 def test_ring_geometry():
-    """A 60 mm inner diameter passes a twig beside a 26 mm Dex3 finger with margin; the tube is 2.5 mm."""
+    """A 60 mm inner diameter passes a twig under the 17 mm Wuji fingertip with margin; the tube is 2.5 mm."""
     vertices, triangles = ring_mesh()
     mesh = trimesh.Trimesh(vertices, triangles, process=False)
     assert mesh.is_watertight and mesh.is_winding_consistent

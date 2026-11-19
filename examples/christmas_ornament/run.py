@@ -3,9 +3,9 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""A fixed-base Unitree G1 hangs a glass ornament on a VBD Christmas tree.
+"""A fixed-base Agile One hangs a glass ornament on a VBD Christmas tree.
 
-Robot, ornament and tree share one ``SolverVBD``. The ornament starts hanging from the G1's
+Robot, ornament and tree share one ``SolverVBD``. The ornament starts hanging from the robot's
 extended right index finger; the robot threads the ornament's rigid ring over the tip of one
 outer branch, lowers its finger so the branch takes the weight, and withdraws. Nothing welds,
 attaches or kinematically drives the ornament.
@@ -27,14 +27,19 @@ import numpy as np
 import warp as wp
 
 from examples.christmas_ornament.assets import (
+    FINGER_CAPSULE,
+    FINGER_LINKS,
     HOOK_LINK,
     HOOK_OFFSET,
+    PELVIS_HEIGHT,
     RING_INNER_RADIUS,
     RING_TUBE_RADIUS,
     add_ornament,
+    agile_one_urdf,
     body_index,
-    g1_urdf,
+    hook_rotation,
     robot_builder,
+    solve_home,
     solve_waypoints,
 )
 from examples.christmas_ornament.motion import (
@@ -63,15 +68,33 @@ FPS = 60
 DIP_GATE = 0.003  # [m] visible but modest: a stiffer tip keeps the ring from creeping off
 CREEP_GATE = 0.002  # [m] the ring may not walk along the twig during admire
 TIP_MARGIN_GATE = 0.01  # [m] twig left between the ring and the end of its segment
-PELVIS = wp.transform(wp.vec3(0.0, 0.0, 0.793), wp.quat_identity())
-# Where the target branch's hang point sits horizontally, relative to the robot (world frame,
-# robot at origin facing +x). The tree stands on the ground, so the height is the tree's own; the
-# probe's standalone branch is placed at exactly the same point.
+# Where the target branch's hang point sits horizontally (world frame; the tree is laid out for a
+# robot near the origin facing +x). The tree stands on the ground, so the height is the tree's
+# own; the probe's standalone branch is placed at exactly the same point.
 HANG_XY = np.array([0.40, -0.10])
-HOME = np.array([0.26, -0.17, 0.96])  # hook point at rest, ornament hanging from the finger
 BRANCH_YAW = math.pi  # the target branch points from its trunk back toward the robot
-FINGER_LINKS = ("right_hand_index_0_link", "right_hand_index_1_link")
-FINGER_CAPSULE = (np.array([-0.007, 0.0, 0.0]), np.array([0.052, 0.0, 0.0]), 0.013)  # link frame
+# Where the robot stands: only its right arm moves, so it stands where that arm alone can hold
+# the finger level along the branch with its nail up.
+ROBOT_XY = np.array([-0.10, -0.02])  # hang point 0.50 m ahead, 0.08 m right of the pelvis
+ROBOT_YAW = 0.0  # [rad] about +z
+HOME_LOCAL = np.array([0.38, -0.22, 0.92])  # hook point at rest in the robot's frame
+
+
+def robot_xform() -> wp.transform:
+    return wp.transform(
+        wp.vec3(float(ROBOT_XY[0]), float(ROBOT_XY[1]), PELVIS_HEIGHT),
+        wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), ROBOT_YAW),
+    )
+
+
+def robot_to_world(local) -> np.ndarray:
+    """A point in the robot's frame (origin under the pelvis on the ground, +x forward)."""
+    c, s = math.cos(ROBOT_YAW), math.sin(ROBOT_YAW)
+    x, y, z = local
+    return np.array([ROBOT_XY[0] + c * x - s * y, ROBOT_XY[1] + s * x + c * y, z])
+
+
+HOME = robot_to_world(HOME_LOCAL)  # hook point at rest, ornament hanging from the finger
 UP = np.array([0.0, 0.0, 1.0])
 
 
@@ -121,10 +144,10 @@ class OrnamentScene:
         configure_builder(builder)
 
         # Robot first, so its joint coordinates are the first slice of joint_target_q.
-        urdf = args.robot_urdf or g1_urdf()
-        robot = robot_builder(urdf, PELVIS)
+        robot = self._robot_builder()
         self.robot_coords = robot.joint_coord_count
         self.home_rotation = finger_rotation(np.array([math.cos(BRANCH_YAW), math.sin(BRANCH_YAW), 0.0]))
+        robot.joint_q[:] = solve_home(robot, HOME, self.home_rotation, device=self.device).tolist()
         self.reference_model, self.hook_ref, q_home = solve_waypoints(
             robot, HOME[None, :], self.home_rotation[None, :], device=self.device
         )
@@ -180,11 +203,12 @@ class OrnamentScene:
             self._filter_hand_from_tree(builder)
 
         # The ornament hangs from the finger at home: ring inner top on the hook point, ring
-        # axis along the finger. Ornament local Y is the ring axis; the hook link's local X the finger.
+        # axis along the finger. Ornament local Y is the ring axis; the hook frame's X the finger.
         hook_xform = wp.transform(*home_body_q[self.hook_ref])
         hook_world = np.array(wp.transform_point(hook_xform, HOOK_OFFSET))
-        orn_rot = wp.mul(hook_xform.q, wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -0.5 * math.pi))
-        back = _quat_rotate(np.array(hook_xform.q), UP)
+        hook_q = hook_rotation(home_body_q[self.hook_ref, 3:])
+        orn_rot = wp.mul(wp.quat(*hook_q), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -0.5 * math.pi))
+        back = _quat_rotate(hook_q, UP)
         self.ornament = add_ornament(
             builder,
             wp.transform(wp.vec3(*(hook_world - (RING_INNER_RADIUS - 0.0005) * back)), orn_rot),
@@ -295,7 +319,7 @@ class OrnamentScene:
         self.hang_settled = hang
         # Where the hanging ring actually rides on the finger (contact, not the nominal hook point).
         hook = _point(body_q, self.hook_body, HOOK_OFFSET)
-        back = _quat_rotate(body_q[self.hook_body, 3:], UP)
+        back = _quat_rotate(hook_rotation(body_q[self.hook_body, 3:]), UP)
         ring_top = (
             _point(body_q, self.ornament.body, self.ornament.ring_center_local) + self.ornament.ring_inner_radius * back
         )
@@ -317,8 +341,11 @@ class OrnamentScene:
         self.phase_names = names
         self.planned = True
 
+    def _robot_builder(self) -> newton.ModelBuilder:
+        return robot_builder(self.args.robot_urdf or agile_one_urdf(), robot_xform())
+
     def _ik_robot(self) -> newton.ModelBuilder:
-        robot = robot_builder(self.args.robot_urdf or g1_urdf(), PELVIS)
+        robot = self._robot_builder()
         robot.joint_q[:] = self.q_home.tolist()
         return robot
 
@@ -528,7 +555,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--metrics", type=Path, default=Path("/tmp/christmas_ornament.json"))
     p.add_argument("--output", type=Path, default=Path("/tmp/christmas_ornament.usd"))
     p.add_argument("--disable-cuda-graph", action="store_true")
-    p.add_argument("--robot-urdf", type=Path, default=None)
+    p.add_argument("--robot-urdf", type=Path, default=None, help="Override the robot's URDF path.")
     return p
 
 

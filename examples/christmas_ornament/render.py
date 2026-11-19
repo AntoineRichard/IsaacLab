@@ -25,12 +25,12 @@ from examples.christmas_ornament.run import FPS, OrnamentScene
 from examples.christmas_ornament.run import parser as run_parser
 from examples.christmas_ornament.tree import BRANCH_YOUNG_MODULUS
 
-# (position, look-at) per camera; the robot stands at the origin facing +x, the hang point is
-# near (0.40, -0.10, 1.12) and the tree trunk ~0.4 m beyond it.
+# (position, look-at) per camera; the robot stands near the origin facing +x, the hang point is
+# near (0.40, -0.10, 0.93) and the tree trunk ~0.5 m beyond it.
 CAMERAS = {
-    "wide": ((-0.9, -2.3, 1.35), (0.55, 0.0, 0.85)),
-    "close": ((0.42, -0.62, 1.17), (0.40, -0.10, 1.11)),
-    "hand": ((-0.30, -0.42, 1.45), (0.40, -0.10, 1.10)),
+    "wide": ((-0.9, -2.3, 1.25), (0.55, 0.0, 0.80)),
+    "close": ((0.42, -0.62, 0.99), (0.40, -0.10, 0.93)),
+    "hand": ((-0.30, -0.42, 1.30), (0.40, -0.10, 0.92)),
 }
 
 
