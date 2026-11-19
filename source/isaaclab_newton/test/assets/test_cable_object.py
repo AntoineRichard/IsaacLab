@@ -405,3 +405,40 @@ def test_cable_callback_does_not_retain_asset():
         gc.collect()
 
         assert cable_ref() is None
+
+
+def test_welded_cable_graph_replicates():
+    """A hard junction welds two USD cables into one rod graph, which replication must accept."""
+    from pxr import Sdf
+
+    sim_cfg = SimulationCfg(
+        dt=0.01,
+        device="cpu",
+        physics=NewtonCfg(solver_cfg=VBDSolverCfg(iterations=10), num_substeps=2, use_cuda_graph=False),
+    )
+    with build_simulation_context(sim_cfg=sim_cfg) as sim:
+        material = CableMaterialCfg(thickness=0.01, density=500.0, stretch_stiffness=1.0e5, bend_stiffness=1.0e3)
+        stem = CableCfg(positions=((0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)), physics_material=material)
+        twig = CableCfg(positions=((0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)), physics_material=material)
+        stem.func("/World/Env_0/Tree/stem", stem)
+        twig.func("/World/Env_0/Tree/twig", twig)
+        stage = sim_utils.get_current_stage()
+        weld = stage.DefinePrim("/World/Env_0/Tree/weld", "PhysicsAttachment")
+        weld.CreateRelationship("physics:src0").SetTargets(["/World/Env_0/Tree/stem/geometry/mesh"])
+        weld.CreateRelationship("physics:src1").SetTargets(["/World/Env_0/Tree/twig/geometry/mesh"])
+        for name, value in (("type0", "point"), ("type1", "point")):
+            weld.CreateAttribute(f"physics:{name}", Sdf.ValueTypeNames.Token).Set(value)
+        weld.CreateAttribute("physics:indices0", Sdf.ValueTypeNames.IntArray).Set([1])
+        weld.CreateAttribute("physics:indices1", Sdf.ValueTypeNames.IntArray).Set([0])
+
+        plan = cloner.clone_plan_from_env_0(
+            cloner.CloneCfg(clone_template="/World/Env_{}"), (AssetBaseCfg(prim_path="/World/Env_0/Tree"),), 1, 0.0
+        )
+        cloner.replicate(plan)
+        sim.reset()
+        sim.step(render=False)
+
+        model = sim.backend_manager.backend.model
+        # One welded graph: four segment bodies under the first curve's label.
+        assert sum("/Tree/stem" in label for label in model.body_label) == 4
+        assert torch.isfinite(wp.to_torch(sim.backend_manager.backend.state_0.body_q)).all()

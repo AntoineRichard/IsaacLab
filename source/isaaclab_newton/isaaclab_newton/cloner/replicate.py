@@ -205,13 +205,15 @@ def _replicate_newton(
         cables = source_cables[source] = {}
         if not simulation or not imported["path_cable_map"]:
             continue
-        shapes = {label: index for index, label in enumerate(source_builders[source].shape_label)}
+        # Map each segment body to its capsule. Labels cannot be rebuilt from the curve path: a
+        # welded rod graph labels its capsules by graph edge, under its first curve's path.
+        body_shapes = source_builders[source].body_shapes
         for path, (bodies, _) in imported["path_cable_map"].items():
             if imported["path_cable_attrs"][path]["closed"]:
                 continue
             if len(UsdGeom.BasisCurves(stage.GetPrimAtPath(path)).GetCurveVertexCountsAttr().Get()) != 1:
                 continue
-            cables[path] = [shapes[f"{path}_edge_capsule_{segment}"] for segment in range(len(bodies))]
+            cables[path] = [body_shapes[body][0] for body in bodies]
     if simulation:
         for entry in entries:
             ancestors = reversed(Sdf.Path(entry.root_path).GetPrefixes())

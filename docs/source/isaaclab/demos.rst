@@ -106,6 +106,15 @@ No source checkout is required.
          <span>Newton Block and Tackle</span>
        </button>
        <button type="button" class="demo-card" aria-pressed="false"
+               data-demo-name="Christmas Ornament" data-demo-id="christmas-ornament"
+               data-demo-physics="newton_vbd" data-demo-fixed-physics="true"
+               data-demo-visualizers="newton_gl,newton_rtx"
+               data-demo-args="--device cuda:0"
+               data-demo-description="Watch an Agile One hang a glass ornament on a fir tree with its right arm.">
+         <img src="../../_static/demos/christmas_ornament.jpg" alt="Agile One hanging a red ornament on a fir branch" loading="lazy">
+         <span>Christmas Ornament</span>
+       </button>
+       <button type="button" class="demo-card" aria-pressed="false"
                data-demo-name="Snowball Smash" data-demo-id="snowball-smash"
                data-demo-physics="newton_mpm" data-demo-fixed-physics="true"
                data-demo-visualizers="kit,newton_gl,newton_rtx,rerun,viser"
@@ -144,6 +153,12 @@ No source checkout is required.
          <p class="admonition-title">Pick and place</p>
          <p>Pick and place requires Kit input.</p>
        </aside>
+     <aside class="admonition hint demo-command-note" data-demo-note="christmas-ornament" hidden>
+       <p class="admonition-title">Agile One asset</p>
+       <p>The Agile One is internal. Set <code>AGILE_ONE_URDF</code> to the <code>hands_wuji</code> URDF in a
+         <code>robot_menagerie</code> checkout with its Git LFS meshes; the demo converts it to USD on first launch
+         with the <code>importers</code> extra. Newton RTX draws the tree without its needles.</p>
+     </aside>
      <aside class="admonition hint demo-command-note" data-demo-note="rizon-sharpa-coffee" hidden>
        <p class="admonition-title">Coffee assets</p>
        <p>Coffee props and the licensed Rizon/Sharpa robot bundle load from the Isaac Lab asset library.
