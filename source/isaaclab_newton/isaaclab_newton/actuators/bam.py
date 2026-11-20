@@ -279,7 +279,7 @@ class DriveBam(DriveBase):
         self.delay_hold_prob = delay_hold_prob
         self.delay_update_period = delay_update_period
         self.delay_seed = delay_seed
-        # Newton's selection API reads and writes per-DOF parameters by attribute name.
+        # Group parameter access reads and writes per-DOF parameters by attribute name.
         for name in self.PER_DOF_PARAMS:
             setattr(self, name, per_dof[name])
 

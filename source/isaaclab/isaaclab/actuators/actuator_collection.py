@@ -12,7 +12,9 @@ import itertools
 import logging
 import warnings
 from collections.abc import Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 import warp as wp
 from prettytable import PrettyTable
@@ -26,6 +28,9 @@ from .actuator_base import ActuatorBase, resolve_joint_parameter
 from .actuator_base_cfg import ActuatorBaseCfg, _is_implicit_actuator_cfg
 from .actuator_control import _JOINT_PROPERTY_KEYS, ActuatorControl
 from .actuator_pd import IdealPDActuator, ImplicitActuator
+
+if TYPE_CHECKING:
+    from .newton.adapter import NewtonActuatorSelection
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +94,16 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
         self._output_command = ActuatorOutputCommand(self)
         self._native_group_names = self._control.prepare_native_actuators(self, resolved_cfgs)
         self._build_groups(resolved_cfgs, resolved_group_joints)
-        self._newton_selection = self._control.finalize_native_actuators(self)
+        selection = self._control.finalize_native_actuators(self)
+        # Per native group: (Newton actuator, parameter entry of each env and group joint, driven group joints).
+        self._newton_group_entries: dict[str, list[tuple[object, torch.Tensor, torch.Tensor]]] = {}
         if self._native_group_names:
-            if self._newton_selection is None:
+            if selection is None:
                 raise RuntimeError(
                     "The backend declared Newton-executed actuator groups "
                     f"{sorted(self._native_group_names)} but finalize_native_actuators returned no selection."
                 )
-            for actuator_name in self._native_group_names:
-                self._groups[actuator_name] = self._resolve_newton_group_actuators(actuator_name)
+            self._resolve_newton_groups(selection)
         self._validate_coverage()
         self._build_execution_plan()
         if self._debug_value_resolution:
@@ -228,18 +234,6 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
     def submit_commands(self) -> None:
         """Submit processed actuator command buffers through the backend control object."""
         self._control.submit_commands(self)
-
-    def _newton_group_columns(self, name: str) -> torch.Tensor:
-        """Backend view columns of one group's joints, in group joint order."""
-        joint_ids = self._group_joint_indices[name]
-        if isinstance(joint_ids, slice):
-            columns = torch.arange(self.num_joints, device=self.device)
-        else:
-            columns = joint_ids.to(self.device, dtype=torch.long)
-        user_to_backend = self._newton_selection.joint_user_to_backend_indices
-        if user_to_backend is not None:
-            columns = torch.tensor(user_to_backend, dtype=torch.long, device=self.device)[columns]
-        return columns
 
     # Construction and property resolution.
 
@@ -378,24 +372,44 @@ class ActuatorCollection(Mapping[str, "ActuatorBase | object"]):
             if isinstance(actuator, ImplicitActuator):
                 actuator._bind_actuator_parameters(self._control)
 
-    def _resolve_newton_group_actuators(self, name: str) -> object:
-        """Return the Newton actuator object(s) that drive one group's joints.
+    def _resolve_newton_groups(self, selection: NewtonActuatorSelection) -> None:
+        """Map each native group to the Newton actuators that drive its joints.
 
-        Newton merges structurally identical joints into one actuator, so the
-        returned object can be shared between groups. A single covering actuator
-        is returned directly; a group spanning several returns them as a tuple.
+        Newton merges structurally identical joints into one actuator, so an actuator
+        can be shared between groups. A group covered by one actuator maps to it
+        directly; a group spanning several maps to a tuple. Each pairing keeps the
+        entry of every group joint in the actuator's parameter arrays, which the
+        group-scoped parameter access indexes directly.
         """
-        view = self._newton_selection.view
-        columns = self._newton_group_columns(name)
-        matched = []
-        for actuator in self._newton_selection.actuators:
-            mapping = wp.to_torch(view._get_actuator_dof_mapping(actuator))
-            env_columns = mapping.reshape(self.num_instances, -1)[0]
-            if bool((env_columns[columns] >= 0).any()):
-                matched.append(actuator)
-        if not matched:
-            raise RuntimeError(f"No Newton actuator drives any joint of group '{name}'.")
-        return matched[0] if len(matched) == 1 else tuple(matched)
+        joint_dofs = selection.joint_dof_indices
+        if joint_dofs is None:
+            joint_dofs = torch.arange(self.num_instances * self.num_joints).view(self.num_instances, self.num_joints)
+        joint_dofs = joint_dofs.to(self.device, dtype=torch.long)
+        # Entry of each joint in every actuator's parameter arrays; -1 where the actuator does not drive it.
+        actuator_entries = []
+        for actuator in selection.actuators:
+            dofs = torch.from_numpy(actuator.indices.numpy().astype(np.int64)).to(self.device)
+            lookup_size = int(torch.cat((joint_dofs.flatten(), dofs)).max()) + 1
+            lookup = torch.full((lookup_size,), -1, dtype=torch.long, device=self.device)
+            lookup[dofs] = torch.arange(len(dofs), device=self.device)
+            actuator_entries.append(lookup[joint_dofs])
+        for name in self._native_group_names:
+            joint_ids = self._group_joint_indices[name]
+            if not isinstance(joint_ids, slice):
+                joint_ids = joint_ids.to(self.device, dtype=torch.long)
+            matched = []
+            for actuator, entries in zip(selection.actuators, actuator_entries):
+                entries = entries[:, joint_ids]
+                driven = (entries >= 0).any(dim=0)
+                if not driven.any():
+                    continue
+                if (entries[:, driven] < 0).any():
+                    raise RuntimeError(f"A Newton actuator drives joints of group '{name}' in only some environments.")
+                matched.append((actuator, entries, driven))
+            if not matched:
+                raise RuntimeError(f"No Newton actuator drives any joint of group '{name}'.")
+            self._newton_group_entries[name] = matched
+            self._groups[name] = matched[0][0] if len(matched) == 1 else tuple(actuator for actuator, _, _ in matched)
 
     def _implicit_group_joint_indices(self) -> list[slice | torch.Tensor]:
         """Joint selectors of the implicit groups, consumed by backend implicit-DOF masks."""
