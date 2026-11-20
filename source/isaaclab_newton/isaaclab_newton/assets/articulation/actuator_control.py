@@ -161,14 +161,7 @@ class NewtonActuatorControl(ArticulationActuatorControl):
 
         if adapter is None:
             return None
-        joint_ordering = articulation.data.joint_ordering
-        return NewtonActuatorSelection(
-            view=articulation._root_view,
-            actuators=adapter.actuators,
-            joint_user_to_backend_indices=(
-                joint_ordering.user_to_backend_indices if joint_ordering is not None else None
-            ),
-        )
+        return NewtonActuatorSelection(actuators=adapter.actuators, joint_dof_indices=self._joint_dof_indices())
 
     def compute_native_actuators(self, collection: ActuatorCollection, dt: float) -> bool:
         return self._native_actuator_path_active
@@ -351,6 +344,14 @@ class NewtonActuatorControl(ArticulationActuatorControl):
             self._articulation._backend_manager.register_post_actuator_callback(
                 lambda bridge=bridge, drive=drive: bridge.publish_dof_friction(drive.friction_budget)
             )
+
+    def _joint_dof_indices(self) -> torch.Tensor:
+        """Return the model DOF of every joint, shape ``(num_instances, num_joints)`` in public joint order."""
+        view = self._articulation._root_view
+        dof_layout = view.frequency_layouts[Model.AttributeFrequency.JOINT_DOF]
+        dofs = torch.from_numpy(dof_layout.get_absolute_indices(view.world_count, view.count_per_world))
+        dofs = dofs.reshape(self.num_instances, self.num_joints)
+        return dofs[:, self._articulation.map_joint_ids_to_backend(list(range(self.num_joints)))]
 
     def _joint_dof_offset(self) -> int:
         """Return the first selected joint DOF's model offset within an environment."""

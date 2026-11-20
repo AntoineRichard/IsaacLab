@@ -20,8 +20,8 @@ Public API surface:
   post-actuator kernel.
 * :func:`~isaaclab.actuators.newton.adapter.read_group_parameter` /
   :func:`~isaaclab.actuators.newton.adapter.write_group_parameter` —
-  group-scoped, user-ordered access to Newton actuator parameters through
-  the selection API; the raw alternative is the Newton actuator object
+  group-scoped, user-ordered access to Newton actuator parameters, indexed
+  straight into the actuator-owned storage; the raw alternative is the Newton actuator object
   returned by the actuator collection mapping.
 
 USD authoring lives on the schema side as

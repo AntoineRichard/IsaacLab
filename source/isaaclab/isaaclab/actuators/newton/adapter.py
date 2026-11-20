@@ -26,12 +26,8 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 import numpy as np
 import torch
 import warp as wp
-from newton import Model
-from newton._src.utils.selection import FrequencyLayout
 from newton.actuators import Actuator, ClampingBase, Delay, parse_actuator_prim
-from newton.selection import ArticulationView
 
-from ...utils import index_fill_
 from .kernels import (
     build_implicit_dof_mask,
     build_per_dof_env_mask_kernel,
@@ -334,7 +330,7 @@ class NewtonActuatorAdapter:
 
 
 # ---------------------------------------------------------------------------
-# Component-addressed parameter access via Newton's selection API.
+# Component-addressed parameter access into the actuator-owned storage.
 # ---------------------------------------------------------------------------
 
 
@@ -353,22 +349,22 @@ def read_group_parameter(collection: ActuatorCollection, name: str, component: s
         attr: Parameter name on that component (e.g. ``"kp"``, ``"max_effort"``).
 
     Returns:
-        Live values in the group's joint order, shape
+        Copy of the live values in the group's joint order, shape
         ``(num_instances, group_num_joints)``, in the parameter's dtype.
+        Joints whose actuator does not expose the parameter read as zero.
         Units follow the addressed parameter.
 
     Raises:
         ValueError: If the group is not executed by Newton actuators, the
-            component name is unknown, or no actuator exposes the parameter.
+            component name is unknown, no actuator exposes the parameter, or
+            the parameter is shared instead of stored per actuator DOF.
     """
-    owners = _group_parameter_owners(collection, name, component, attr)
-    view = collection._newton_selection.view
     values: torch.Tensor | None = None
-    for actuator, owner in owners:
-        # Non-driven DOFs read as zeros, and groups are disjoint, so overlaying is a sum.
-        projected = wp.to_torch(view.get_actuator_parameter(actuator, owner, attr))
-        values = projected if values is None else values + projected
-    return values[:, collection._newton_group_columns(name)]
+    for parameter, entries, driven in _group_parameter_owners(collection, name, component, attr):
+        if values is None:
+            values = torch.zeros((*entries.shape, *parameter.shape[1:]), dtype=parameter.dtype, device=parameter.device)
+        values[:, driven] = parameter[entries[:, driven]]
+    return values
 
 
 def write_group_parameter(
@@ -382,9 +378,10 @@ def write_group_parameter(
 ) -> None:
     """Write one Newton actuator parameter for a native group.
 
-    Group-scoped, user-ordered writes that reach the drive-owned storage
-    through Newton's selection API. For raw component access, use the group's
-    Newton actuator object (the collection mapping entry) directly.
+    Group-scoped, user-ordered writes straight into the drive-owned storage;
+    only the addressed environments and joints are touched. For raw component
+    access, use the group's Newton actuator object (the collection mapping
+    entry) directly.
 
     Args:
         collection: The articulation's actuator collection.
@@ -401,34 +398,29 @@ def write_group_parameter(
     Raises:
         ValueError: Same conditions as :func:`read_group_parameter`.
     """
-    owners = _group_parameter_owners(collection, name, component, attr)
-    view = collection._newton_selection.view
     device = collection.device
-    columns = collection._newton_group_columns(name)
+    if isinstance(env_ids, torch.Tensor):
+        env_ids = env_ids.to(device)
     if joint_ids is not None:
-        columns = columns[joint_ids.to(device, dtype=torch.long)]
-    mask = None
-    env_rows: torch.Tensor | slice | None = None
-    if env_ids is not None and env_ids != slice(None):
-        env_rows = env_ids if isinstance(env_ids, slice) else env_ids[:, None]
-        mask_torch = torch.zeros(collection.num_instances, dtype=torch.bool, device=device)
-        index_fill_(mask_torch, env_ids, True)
-        mask = wp.from_torch(mask_torch, dtype=wp.bool)
-    values = values.to(device)
-    for actuator, owner in owners:
-        current = view.get_actuator_parameter(actuator, owner, attr)
-        current_torch = wp.to_torch(current)
-        if env_rows is None:
-            current_torch[:, columns] = values.to(dtype=current_torch.dtype)
-        else:
-            current_torch[env_rows, columns] = values.to(dtype=current_torch.dtype)
-        view.set_actuator_parameter(actuator=actuator, component=owner, name=attr, values=current, mask=mask)
+        joint_ids = joint_ids.to(device, dtype=torch.long)
+    for parameter, entries, driven in _group_parameter_owners(collection, name, component, attr):
+        if env_ids is not None:
+            entries = entries[env_ids]
+        if joint_ids is not None:
+            entries, driven = entries[:, joint_ids], driven[joint_ids]
+        values = values.to(device, dtype=parameter.dtype).expand(*entries.shape, *parameter.shape[1:])
+        parameter[entries[:, driven]] = values[:, driven]
 
 
 def _group_parameter_owners(
     collection: ActuatorCollection, name: str, component: str, attr: str
-) -> list[tuple[Actuator, Any]]:
-    """Resolve the component instances exposing ``attr`` for one native group."""
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Resolve the live storage exposing ``attr`` for one native group.
+
+    Returns, per owning actuator, the parameter storage as a tensor, the entry of
+    each environment and group joint along its leading axis, and the mask of group
+    joints that actuator drives.
+    """
     if component == "controller":
         # stacklevel=3 points at the caller of read_group_parameter / write_group_parameter.
         warnings.warn(
@@ -440,16 +432,18 @@ def _group_parameter_owners(
         component = "drive"
     if name not in collection._groups:
         raise KeyError(name)
-    if collection._newton_selection is None or name not in collection._native_group_names:
+    if name not in collection._native_group_names:
         raise ValueError(f"Actuator group '{name}' is not executed by Newton actuators.")
-    group_actuators = collection._groups[name]
-    if not isinstance(group_actuators, tuple):
-        group_actuators = (group_actuators,)
-    owners = [
-        (actuator, owner)
-        for actuator in group_actuators
-        if (owner := resolve_actuator_component(actuator, component, attr)) is not None
-    ]
+    owners = []
+    for actuator, entries, driven in collection._newton_group_entries[name]:
+        owner = resolve_actuator_component(actuator, component, attr)
+        if owner is None:
+            continue
+        parameter = getattr(owner, attr)
+        # Shared parameters (e.g. lookup tables) hold no entry per driven DOF, so the entries cannot index them.
+        if not isinstance(parameter, wp.array) or parameter.shape[0] != actuator.indices.shape[0]:
+            raise ValueError(f"Parameter '{attr}' of {type(owner).__name__} is not stored per actuator DOF.")
+        owners.append((wp.to_torch(parameter, requires_grad=False), entries, driven))
     if not owners:
         raise ValueError(f"No Newton actuator exposes parameter ('{component}', '{attr}').")
     return owners
@@ -459,10 +453,8 @@ def resolve_actuator_component(actuator: Actuator, component: str, attr: str) ->
     """Return the component instance that exposes ``attr`` on the addressed component kind.
 
     ``component`` selects the actuator's ``"drive"``, ``"delay"``, or
-    ``"clamping"`` entry; the returned object is what Newton's
-    :meth:`~newton.selection.ArticulationView.get_actuator_parameter` and
-    :meth:`~newton.selection.ArticulationView.set_actuator_parameter` take as
-    their ``component`` argument. Returns ``None`` when the component is absent
+    ``"clamping"`` entry; the returned object owns the parameter array named
+    ``attr``. Returns ``None`` when the component is absent
     on this actuator or does not expose ``attr``. Raises ``ValueError`` on
     unknown component names or ambiguous clamping matches.
     """
@@ -483,60 +475,25 @@ def resolve_actuator_component(actuator: Actuator, component: str, attr: str) ->
     return owner
 
 
-class LightArticulationView:
-    """Newton's actuator-parameter selection over bare actuators, without a Model.
-
-    The PhysX-family backends build Newton actuators from USD without a Newton
-    :class:`~newton.Model`, so they cannot construct a real
-    :class:`~newton.selection.ArticulationView`. This stand-in provides the placement
-    attributes and DOF mapping cache for the PhysX flat layout (one articulation per world,
-    identity joint order, per-world DOF stride equal to the joint count) and
-    borrows the real implementations unchanged.
-    """
-
-    def __init__(self, num_envs: int, num_joints: int, device: str):
-        self.world_count = num_envs
-        self.count_per_world = 1
-        self.device = device
-        self.full_mask = wp.ones(num_envs, dtype=wp.bool, device=device)
-        self._actuator_dof_mapping_cache = {}
-        self.frequency_layouts = {
-            Model.AttributeFrequency.JOINT_DOF: FrequencyLayout(
-                offset=0,
-                stride_between_worlds=num_joints,
-                stride_within_worlds=num_joints,
-                value_count=num_joints,
-                indices=list(range(num_joints)),
-                device=device,
-            )
-        }
-
-    get_actuator_parameter = ArticulationView.get_actuator_parameter
-    set_actuator_parameter = ArticulationView.set_actuator_parameter
-    _get_actuator_dof_mapping = ArticulationView._get_actuator_dof_mapping
-    _create_actuator_dof_mapping = ArticulationView._create_actuator_dof_mapping
-    _resolve_world_mask = ArticulationView._resolve_world_mask
-
-
 @dataclass(frozen=True)
 class NewtonActuatorSelection:
     """Execution-setup handoff for Newton actuator parameter access.
 
     Pure data returned by
     :meth:`~isaaclab.actuators.ActuatorControl.finalize_native_actuators` and
-    consumed by the group-scoped parameter access functions
-    (:func:`read_group_parameter` / :func:`write_group_parameter`) and by the
-    collection when it maps native groups to their Newton actuator objects.
+    consumed by the collection when it maps native groups to their Newton
+    actuator objects and parameter entries.
     """
 
-    view: Any
-    """Newton :class:`~newton.selection.ArticulationView` or :class:`LightArticulationView` over the articulation."""
-
     actuators: list[Actuator]
-    """Newton actuators visible to the view."""
+    """Newton actuators that may drive the articulation's joints."""
 
-    joint_user_to_backend_indices: tuple[int, ...] | None = None
-    """Optional public-to-backend joint permutation for the view's DOF columns."""
+    joint_dof_indices: torch.Tensor | None = None
+    """DOF of every joint, in the index space of :attr:`~newton.actuators.Actuator.indices`.
+
+    Shape is ``(num_instances, num_joints)`` in public joint order. ``None`` selects the flat
+    environment-major layout ``env * num_joints + joint`` of the PhysX-family adapters.
+    """
 
 
 # ---------------------------------------------------------------------------
