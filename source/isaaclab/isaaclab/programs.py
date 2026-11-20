@@ -118,6 +118,11 @@ DEMOS = (
         "Interact with a Newton VBD block-and-tackle scene.",
     ),
     ProgramSpec(
+        "christmas-atelier",
+        "examples/demos/christmas_atelier.py",
+        "Fill a sewn Christmas stocking with wrapped candies using a scripted Franka FR3.",
+    ),
+    ProgramSpec(
         "snowball-smash",
         "examples/demos/snowball_smash.py",
         "Smash rigid crates with MPM snowballs.",
