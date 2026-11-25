@@ -15,6 +15,14 @@ OvPhysX
 OvPhysX runs PhysX without Omniverse Kit. It reads scene-level solver settings
 from the USD ``PhysicsScene`` prim. :class:`~isaaclab_ov.physics.OvPhysxCfg` holds
 GPU buffer settings that USD does not represent.
+It can also author selected contact settings onto that prim:
+``bounce_threshold_velocity``, ``friction_correlation_distance`` and
+``solve_articulation_contact_last``. Optional ``solver_type`` (0 for PGS, 1 for TGS),
+``min_position_iteration_count``, ``max_position_iteration_count``,
+``min_velocity_iteration_count``, ``max_velocity_iteration_count``,
+``friction_offset_threshold``, and ``gpu_max_num_partitions`` preserve task-specific
+solver tuning when migrating from Isaac Sim PhysX. Settings left at ``None`` keep
+the stage value. GPU partition settings apply only to GPU scenes.
 
 OvPhysX is selected through :class:`~isaaclab_ov.physics.OvPhysxCfg`:
 
@@ -25,12 +33,129 @@ OvPhysX is selected through :class:`~isaaclab_ov.physics.OvPhysxCfg`:
 
     sim_cfg = SimulationCfg(physics=OvPhysxCfg())
 
+Explicit backend operations
+---------------------------
+
+The OvPhysX manager owns an :class:`~isaaclab_ov.physics.OvPhysxBackend` for its
+simulation context. Obtain that backend after initializing and resetting the
+simulation, then call its methods directly:
+
+.. code-block:: python
+
+    backend = sim.backend_manager.backend
+    backend.set_gravity((0.0, 0.0, -3.0), physics_prim_path=sim.cfg.physics_prim_path)
+    backend.step(sim.cfg.dt)
+
+``backend.step(dt)`` advances the selected native runtime and waits for the
+step to complete. It does not advance the manager's simulation clock.
+``backend.forward()`` refreshes state without advancing time;
+``backend.update_kinematics()`` applies a pending kinematic refresh. Backend state,
+including ``kinematics_dirty``, ``gravity`` and ``scene_data``, belongs to the
+backend instance. The existing ``sim.backend_manager`` methods remain available;
+use ``sim.step()`` for simulation-context clock and rendering orchestration.
+
+For direct use without a :class:`~isaaclab.sim.SimulationContext`:
+
+.. code-block:: python
+
+    from isaaclab_ov.physics import OvPhysxBackend, OvPhysxBackendCfg
+
+    backend = OvPhysxBackend(OvPhysxBackendCfg(device="cpu"))
+    try:
+        backend.load(stage_usda)
+        # Complete any native cloning before initializing physics buffers.
+        backend.warmup()
+        backend.step(0.01)
+        poses = backend.scene_data.transforms.transforms  # wp.transformf per rigid body
+    finally:
+        backend.close()
+
+The exported USD string must contain configured ``PhysicsScene``
+prims, including dynamics and broadphase attributes matching the selected CPU or
+CUDA device. The manager authors these scene settings automatically.
+``load()`` leaves ``backend.is_ready`` false so native cloning can finish before
+``warmup()`` initializes physics buffers. A completed ``step()`` also makes the
+backend ready. Requesting a scene-data publication before either operation raises
+``RuntimeError``; the request can be retried after initialization. Reloading or
+closing clears the old publication and readiness.
+
+``backend.set_gravity()`` requires the ``physics_prim_path`` keyword argument naming
+a physics scene in the attached stage; OVStage does not report unknown paths.
+Successfully applied vectors are stored in ``backend.gravity`` by physics-scene
+path; editing one scene does not replace another scene's entry, and ``load()``
+clears the cache. Repeating a vector that is already applied creates no control update. The manager's ``get_gravity()`` reads its configured scene's
+entry, falling back to the simulation configuration until that scene is updated.
+
+Native construction settings are defined by :class:`~isaaclab_ov.physics.OvPhysxBackendCfg`
+in ``isaaclab_ov.physics.ovphysx_backend_cfg``, separate from manager settings.
+Scene publication is implemented by
+:class:`~isaaclab_ov.physics.ovphysx_scene_data.OvPhysxSceneDataBackend`.
+The configuration classes remain exported by :mod:`isaaclab_ov.physics`, and
+existing imports of the moved classes from the manager modules remain available.
+
+Native runtime scope
+~~~~~~~~~~~~~~~~~~~~
+
+Python backend state is owned by each instance. The OvPhysX runtime
+supports multiple independently attached OVStages in one process. Construct a
+separate backend and stage for each simulation; the stages can use identical prim
+paths. Stepping, reloading, or closing one backend leaves the other backend's
+state and publications intact. The same OVStage cannot be attached twice.
+
+Several ``PhysicsScene`` prims can share an attached stage, but a native step
+advances those scenes together. Use separate backends and stages for independent
+stepping.
+
+Native process configuration, logging, the tolerance scale, and recording transport
+remain shared. The cooked-collider cache location is selected when its datastore
+starts; later backends in the process must name the same directory. CPU and CUDA
+dynamics are authored per scene; ``PhysX.set_cpu_mode(True)`` instead requests an
+irreversible process-wide CPU-only policy. Isaac Lab's CPU backend uses scene
+attributes so CUDA scenes can coexist.
+
+Compatible CPU or CUDA backends can also be constructed after another backend
+starts stepping. Startup settings are applied only when needed, and
+the backends use compatible common Carbonite settings. This does not permit
+arbitrary process settings to differ between backend instances.
+
+Serialize native calls on each backend, including stepping and tensor access.
+Separate worker processes started with ``spawn`` remain an option for process
+isolation. Do not fork a process after constructing a native ``PhysX`` instance:
+the runtime, CUDA and Carbonite state are not fork-safe.
+
 Why use OvPhysX?
 ----------------
 
 * **No Kit runtime.** Run headless simulations without Isaac Sim.
 * **USD configuration.** Scene-authoring tools can set solver parameters directly
   on the ``PhysicsScene`` prim.
+
+Migrating existing commands
+---------------------------
+
+Supported contributed tasks and examples now default to OvPhysX and OVRTX.
+Install the ``ov`` extra for these defaults, and use ``--viz newton_rtx`` for
+Newton RTX visualization. Tasks with renderer presets keep an explicit Isaac RTX
+alternative for their retained Isaac Sim physics path:
+
+.. code-block:: bash
+
+   uv run python scripts/environments/random_agent.py --task IsaacContrib-Stack-Cube-Franka-IK-Rel-Visuomotor \
+      physics=ovphysx renderer=ovrtx --viz newton_rtx
+
+   uv run --extra isaacsim python scripts/environments/random_agent.py \
+      --task IsaacContrib-Stack-Cube-Franka-IK-Rel-Visuomotor \
+      physics=isaacsim_physx renderer=isaacsim_rtx --viz newton_gl
+
+Use only presets listed by the task's ``--help``. Migrated examples that already
+accepted ``--physics isaacsim_physx`` retain that explicit option and choose Newton
+OpenGL for its default viewer. The launcher warns when an Isaac Sim backend is
+selected: the Kit path is deprecated in 3.1 and scheduled for removal in 3.2.
+OVRTX and Newton RTX cannot share a process with Kit.
+
+The deprecated Franka absolute-IK alias follows the migrated OvPhysX default.
+Prefer its canonical command, ``--task Isaac-Reach-Franka physics=ovphysx presets=diffik_abs``;
+the canonical task also exposes ``physics=isaacsim_physx`` during the transition.
 
 What works today
 ----------------
@@ -236,6 +361,20 @@ CPU has no native environment-ID filtering
 in OvPhysX 0.6.3, so it imports all declared USD copies and uses collision groups.
 Large overlapping original layouts can still exhaust broadphase pair capacity;
 use spatially separated environments.
+
+Compiled-stage cache
+--------------------
+
+OvPhysX 0.8 can store compiled physics stages in the cooked-collider cache
+directory. Large deformable scenes can attach faster with compiled-stage
+caching disabled. Set ``OvPhysxCfg(disable_compiled_stage_cache=True)`` to opt
+out for a scene. The Franka cloth and soft-beam lift tasks set this option
+in their ``physics=ovphysx`` presets. The default inherits the runtime mode.
+
+The opt-out does not affect cooked-collider caching. Isaac Lab restores the
+process-wide compiled-stage cache setting after submitting the attach task.
+Code using the native OvPhysX API in the same process should avoid attaching
+a separate stage concurrently with an Isaac Lab attach.
 
 Deformable limitations
 ----------------------

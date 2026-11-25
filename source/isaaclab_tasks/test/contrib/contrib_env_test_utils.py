@@ -34,6 +34,8 @@ Runtime = Literal["kitless", "kit", "kit_cameras"]
 _SKIPPED_TASKS = {
     "IsaacContrib-AutoMate-Assembly-Direct": "Requires CUDA support outside the standard environment test runner.",
     "IsaacContrib-AutoMate-Disassembly-Direct": "Requires CUDA support outside the standard environment test runner.",
+    "IsaacContrib-Cartpole-Lidar": "Requires OVRTX tiled lidar and CUDA.",
+    "IsaacContrib-Cartpole-Lidar-Direct": "Requires OVRTX tiled lidar and CUDA.",
 }
 _SKIPPED_TASK_SUBSTRINGS = {
     "RmpFlow": "Uses SingleArticulation, which requires an update.",
@@ -107,6 +109,8 @@ def contrib_environment_params(runtime: Runtime) -> list:
 
 def num_envs(task_name: str) -> int:
     """Return how many environments the smoke test steps for a task."""
+    if task_name == "IsaacContrib-NIST-Franka":
+        return 64
     if task_name in ("IsaacContrib-Franka-Pour", "IsaacContrib-G1-Terrain", "IsaacContrib-UR10-Particle-Push"):
         return 1
     return 3 if task_name == "IsaacContrib-Multitask-Manipulation" else 2
